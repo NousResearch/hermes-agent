@@ -4,8 +4,36 @@ Hermes Agent CLI launcher.
 
 This wrapper should behave like the installed `hermes` command, including
 subcommands such as `gateway`, `cron`, and `doctor`.
+
+Runs under whatever ``python3`` the caller happens to have on PATH, which on
+macOS can be the system 3.9. The package needs 3.10+ syntax and the install
+venv's dependencies, so re-exec into that venv before importing anything.
+Keep this file's own syntax 3.9-compatible.
 """
 
+import os
+import sys
+
+
+def _reexec_in_venv():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.environ.get("HERMES_LAUNCHER_REEXEC"):
+        return
+    for name in ("venv", ".venv"):
+        target = os.path.join(here, name)
+        python = os.path.join(target, "bin", "python")
+        if not os.path.exists(python):
+            continue
+        if os.path.abspath(sys.prefix) == target:
+            return
+        env = dict(os.environ)
+        env["HERMES_LAUNCHER_REEXEC"] = "1"
+        env.pop("PYTHONPATH", None)
+        env.pop("PYTHONHOME", None)
+        os.execve(python, [python, os.path.abspath(__file__)] + sys.argv[1:], env)
+
+
 if __name__ == "__main__":
+    _reexec_in_venv()
     from hermes_cli.main import main
     main()

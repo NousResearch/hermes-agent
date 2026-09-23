@@ -134,6 +134,16 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
 
     def test_namespace_without_apps_is_not_sdk_available(self, monkeypatch):
         """A sibling microsoft_teams package must not count as the Teams SDK."""
+        # tests/gateway/test_teams.py installs a FULL fake microsoft_teams.*
+        # tree into sys.modules at import time (via _ensure_teams_mock) and
+        # never removes it. When that file runs first in the same process, the
+        # submodules survive here, so find_spec("microsoft_teams.apps") resolves
+        # against the leftover fake and the adapter reports the SDK as present.
+        # Drop the whole namespace before planting the apps-less one, so this
+        # test asserts its own fixture rather than sibling import order.
+        for name in list(sys.modules):
+            if name == "microsoft_teams" or name.startswith("microsoft_teams."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
         ns = types.ModuleType("microsoft_teams")
         ns.__path__ = []  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "microsoft_teams", ns)

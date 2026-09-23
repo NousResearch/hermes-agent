@@ -34,7 +34,11 @@ from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
-from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
+from hermes_cli.relay_plugin_cutover import (
+    LEGACY_RELAY_PLUGIN_KEYS,
+    RELAY_PLUGINS_CONFIG_ENV,
+    legacy_relay_plugin_keys,
+)
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (  # noqa: F401 — re-exported
     _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_skill_namespace,
@@ -1388,6 +1392,64 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
                         sum(1 for p in self._plugins.values() if p.enabled))
         self._refresh_plugin_compat_report(list(to_load.values()))
+        # An entry in ``plugins.enabled`` that matched NO discovered manifest
+        # is a silent no-op: the operator asked for a plugin, discovery never
+        # saw it, and nothing said so. Measured on this install — a profile
+        # listed four user guard plugins in ``plugins.enabled`` while its
+        # ``$HERMES_HOME/plugins/`` directory did not exist at all, so every
+        # one of those pre_tool_call gates was inert while the config read as
+        # if they were on. User plugins are per-home (``$HERMES_HOME/plugins``),
+        # so copying a profile's config without copying its plugins reproduces
+        # this every time.
+        #
+        # Warn once per discovery with the exact unmatched keys. Deliberately
+        # NOT an error: an allow-list entry for a plugin installed on another
+        # machine / another profile of a shared config is legitimate, and
+        # failing discovery over it would break that setup.
+        self._warn_enabled_but_undiscovered(enabled, winners.values())
+
+    def _warn_enabled_but_undiscovered(self, enabled, manifests) -> None:
+        """Log the ``plugins.enabled`` entries no DISCOVERED manifest matched.
+
+        ``enabled`` is the allow-list from :func:`_get_enabled_plugins`
+        (``None``/empty means "opt-in default, nothing enabled" — nothing to
+        warn about). ``manifests`` is the deduped set discovery actually found.
+
+        Matching is against the discovered manifests, NOT against
+        ``self._plugins``: a plugin can be found and then legitimately not
+        loaded (explicitly disabled, load error, removed-Relay refusal), and
+        those cases already report themselves. The condition this warns about
+        is strictly "the operator named something discovery never saw at all".
+        A key counts as matched when it equals a manifest's registry key OR its
+        name, mirroring the ``lookup_key in enabled or manifest.name in
+        enabled`` gate discovery itself applies. Legacy Relay keys are excluded
+        because they already warn separately.
+        """
+        if not enabled:
+            return
+        seen: set = set()
+        for manifest in manifests:
+            key = getattr(manifest, "key", None)
+            name = getattr(manifest, "name", None)
+            if key:
+                seen.add(key)
+            if name:
+                seen.add(name)
+        missing = sorted(
+            k
+            for k in enabled
+            if k not in seen and k not in LEGACY_RELAY_PLUGIN_KEYS
+        )
+        if not missing:
+            return
+        logger.warning(
+            "plugins.enabled lists %d plugin(s) no manifest was found for: %s. "
+            "They are NOT loaded and their hooks are inert. User plugins are "
+            "per-profile — install them under $HERMES_HOME/plugins/ or remove "
+            "the entries from plugins.enabled.",
+            len(missing),
+            ", ".join(missing),
+        )
 
     def _refresh_plugin_compat_report(self, manifests: List[PluginManifest]) -> None:
         """Refresh HERMES_HOME/.plugin-compat-report.json from this discovery pass (hermes_cli.plugin_compat).
@@ -1977,6 +2039,8 @@ def _dispatch_pre_tool_call_hooks(
 def get_pre_verify_continue_message(
     *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
     attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,
+    open_todos: Optional[List[Dict[str, Any]]] = None,
+    pending_children: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
     ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
@@ -1984,6 +2048,7 @@ def get_pre_verify_continue_message(
     hook_results = invoke_hook(
         "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
         attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
+        open_todos=list(open_todos or []), pending_children=list(pending_children or []),
     )
     for result in hook_results:
         if not isinstance(result, dict):

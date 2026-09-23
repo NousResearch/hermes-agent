@@ -3965,6 +3965,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if any(m in err_str for m in _transient_markers):
                 logger.warning("[%s] Transient network error editing message %s (will retry): %s", self.name, message_id, safe_error)
                 return SendResult(success=False, error=safe_error, retryable=True)
+            # The target message is GONE (user deleted it, or its topic/thread was
+            # removed). That is a normal Telegram outcome, not a fault: the caller
+            # already falls back to a fresh send. Logging it at ERROR made a clean
+            # gateway look broken and buried real errors in the log.
+            if "message to edit not found" in err_str or "message can't be edited" in err_str:
+                logger.info(
+                    "[%s] Edit target %s no longer exists (deleted/thread gone) — falling back to a new send",
+                    self.name, message_id)
+                return SendResult(success=False, error=safe_error)
             logger.error("[%s] Failed to edit Telegram message %s: %s", self.name, message_id, safe_error)
             return SendResult(success=False, error=safe_error)
 
@@ -4161,11 +4170,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _send_control_message(
         self, chat_id: str, text: str, *, parse_mode: Any, thread_id: Optional[str], metadata: Optional[Dict[str, Any]],
-        reply_markup: Any = None, reply_to_mode: Optional[str] = None):
+        reply_markup: Any = None, reply_to_mode: Optional[str] = None, disable_notification: bool = False):
         """Send a control-style message (prompt/picker) with topic routing + thread fallback."""
         reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=reply_to_mode)
         kwargs: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode, **self._link_preview_kwargs()}
+        if disable_notification:
+            kwargs["disable_notification"] = True
         if reply_markup is not None:
             kwargs["reply_markup"] = reply_markup
         kwargs["reply_to_message_id"] = reply_to_id
@@ -4273,6 +4284,18 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
         text-capture mode); without choices, plain question and the gateway text-intercept captures."""
+        # Outbound approval cards must be preceded by a separate Telegram
+        # bubble containing the exact draft. Sam cannot reliably review a
+        # long email from the compact button card alone.
+        preview = re.search(r"VOLLEDIGE TEKST:\n(.*?)\nEINDE TEKST", question, re.DOTALL)
+        if preview:
+            try:
+                await self._send_control_message(
+                    chat_id, preview.group(1), parse_mode=None,
+                    thread_id=self._metadata_thread_id(metadata), metadata=metadata,
+                    disable_notification=True)
+            except Exception as exc:
+                return SendResult(success=False, error=_redact_telegram_error_text(exc))
         def build():
             text = f"❓ {_html.escape(question)}"
             keyboard = None

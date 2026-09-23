@@ -65,6 +65,60 @@ _NO_DELIVERABLE = "No deliverable text or media remained after processing MEDIA 
 _TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429", "service unavailable", "503",
                                "gateway timeout", "504")
 
+# Mirrors the gateway adapter's _FLOOD_INLINE_WAIT_CAP_SECS: past a few seconds a flood
+# penalty is an outage to route around, not a pause to sit through.
+_FLOOD_SLEEP_CAP_SECONDS = 5.0
+
+
+def _is_flood_error(exc) -> bool:
+    """True when Telegram refused this send with flood control (429 + a retry delay)."""
+    text = str(exc or "").lower()
+    if "flood control exceeded" in text:
+        return True
+    return getattr(exc, "retry_after", None) is not None
+
+
+async def _telegram_send_via_fallback_bot(chat_id, message, thread_id, *, reason: str = ""):
+    """Resend plain text on TELEGRAM_FALLBACK_BOT_TOKEN. ``None`` when unavailable or failed.
+
+    The primary bot's flood ban is per-bot and per-chat, so the backup bot is a genuinely
+    different lane rather than a retry of the same one. Plain text only: no MarkdownV2 that
+    was escaped for the primary path, and no buttons (this bot has no callback handlers).
+    """
+    token = (os.environ.get("TELEGRAM_FALLBACK_BOT_TOKEN") or "").strip()
+    if not token:
+        return None
+    text = _strip_mdv2_safe(str(message or ""))
+    if not text.strip():
+        return None
+    try:
+        from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+        import httpx
+
+        body = {"chat_id": str(normalize_telegram_chat_id(chat_id)),
+                "text": text[:4096], "disable_web_page_preview": True}
+        thread_kwargs = _telegram_thread_kwargs(thread_id)
+        tid = thread_kwargs.get("message_thread_id")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            data = (await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={**body, "message_thread_id": tid} if tid else body)).json()
+            if not data.get("ok") and tid:
+                # Stale or closed topic: the main lane still beats losing the message.
+                data = (await client.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage", json=body)).json()
+    except Exception as fb_err:
+        logger.warning("send_message: Telegram failover bot send failed: %s",
+                       _sanitize_error_text(fb_err))
+        return None
+    if not data.get("ok"):
+        logger.warning("send_message: Telegram failover bot refused the send: %s",
+                       _sanitize_error_text(str(data.get("description"))))
+        return None
+    logger.info("send_message: delivered via Telegram failover bot (primary unusable: %s)",
+                reason or "flood control")
+    return str((data.get("result") or {}).get("message_id") or "")
+
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are
@@ -72,19 +126,128 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:
-            return max(float(retry_after), 0.0)
+            wait = max(float(retry_after), 0.0)
         except (TypeError, ValueError):
             return 1.0
+        # A long server penalty must NOT be slept here. On 2026-09-09 a 12448s ban on
+        # Sam's DM made this sleep 8085s inside one send, so the standalone path held the
+        # message instead of failing fast enough for the caller to reach the backup bot.
+        # Short waits stay absorbed: they are ordinary pacing, not an outage.
+        return wait if wait <= _FLOOD_SLEEP_CAP_SECONDS else None
     text = str(exc).lower()
     if "timed out" in text or "timeout" in text:
         return None
     return float(2 ** attempt) if any(marker in text for marker in _TELEGRAM_TRANSIENT_MARKERS) else None
 
 
+# --- cross-process outbound pacing -------------------------------------------------
+# The gateway adapter throttles with an in-process token bucket. Standalone sends (CLI,
+# every cron delivery) each run in a NEW process, where an in-process bucket is always
+# full and therefore paces nothing. This bucket lives in a file under an flock so all
+# senders on this box share one pace. Without it, bursty crons earn multi-hour flood
+# bans and Hermes looks dead on Telegram.
+_PACE_PER_CHAT_INTERVAL = 1.05   # seconds between messages to one chat (Telegram: ~1/s)
+_PACE_OVERALL_INTERVAL = 0.05    # seconds between messages overall (Telegram: ~30/s)
+_PACE_MAX_WAIT = 20.0            # never stall a send longer than this
+
+
+def _pace_state_path():
+    home = os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+    d = os.path.join(home, "state")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        return None
+    return os.path.join(d, "telegram-outbound-pace.json")
+
+
+def _pace_reserve(chat_id) -> float:
+    """Reserve this process's slot; return seconds to wait before sending.
+
+    Reserving under the lock (rather than sleeping under it) means concurrent senders
+    each get a distinct slot instead of all waking at once.
+    """
+    import fcntl
+    import json as _json
+
+    path = _pace_state_path()
+    if not path:
+        return 0.0
+    key = str(chat_id)
+    now = time.time()
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return 0.0
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        raw = os.read(fd, 65536).decode("utf-8", "replace").strip()
+        try:
+            state = _json.loads(raw) if raw else {}
+        except ValueError:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        chats = state.get("chats")
+        if not isinstance(chats, dict):
+            chats = {}
+        # Drop chats untouched for an hour so the file cannot grow without bound.
+        chats = {k: v for k, v in chats.items()
+                 if isinstance(v, (int, float)) and v > now - 3600}
+
+        chat_next = float(chats.get(key) or 0.0)
+        all_next = float(state.get("next_any") or 0.0)
+        send_at = max(now, chat_next, all_next)
+        wait = send_at - now
+        if wait > _PACE_MAX_WAIT:
+            # Too congested to be worth queueing: send now and let the flood
+            # failover handle it rather than holding the message for a minute.
+            send_at, wait = now, 0.0
+        chats[key] = send_at + _PACE_PER_CHAT_INTERVAL
+        state["chats"] = chats
+        # Advance the overall gate on the OVERALL clock. Deriving it from send_at would
+        # let one chat's per-chat wait delay every other chat too.
+        state["next_any"] = max(all_next, now) + _PACE_OVERALL_INTERVAL
+        payload = _json.dumps(state).encode()
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, payload)
+        os.ftruncate(fd, len(payload))
+        return max(0.0, wait)
+    except Exception:  # pacing must never be the reason a message fails
+        return 0.0
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+async def _pace_telegram_send(chat_id) -> None:
+    """Wait for this sender's turn unless Telegram throttling is explicitly disabled."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        extra = (((cfg.get("platforms") or {}).get("telegram") or {}).get("extra") or {})
+        if ((extra.get("rate_limit") or {}).get("enabled")) is False:
+            return
+        wait = _pace_reserve(chat_id)
+    except Exception:
+        return
+    if wait > 0:
+        logger.info("send_message: pacing Telegram send to chat %s by %.2fs "
+                    "(cross-process throttle)", chat_id, wait)
+        await asyncio.sleep(min(wait, _PACE_MAX_WAIT))
+# --- end cross-process outbound pacing ---------------------------------------------
+
 async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
-    """``bot.send_message`` with bounded retries on transient failures."""
+    """``bot.send_message`` with bounded retries on transient failures.
+
+    Paces every attempt through the cross-process bucket: retries are exactly the
+    bursts that turn a soft limit into a multi-hour ban.
+    """
     for attempt in range(attempts):
         try:
+            await _pace_telegram_send(kwargs.get("chat_id"))
             return await bot.send_message(**kwargs)
         except Exception as exc:
             delay = _telegram_retry_delay(exc, attempt)
@@ -305,6 +468,15 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
+        # A flood ban on the primary bot is not a dead transport: the backup bot is a
+        # separate lane. Without this the message waited out the whole penalty and Hermes
+        # read as unresponsive in the chat (2026-09-09, 12448s on Sam's DM).
+        if _is_flood_error(e) and not (media_files or []):
+            fallback_id = await _telegram_send_via_fallback_bot(
+                chat_id, message, thread_id, reason=_sanitize_error_text(e))
+            if fallback_id is not None:
+                return _success("telegram", chat_id, ["Delivered via failover bot: primary bot is flood-limited."],
+                                message_id=fallback_id, via="failover_bot")
         return _error(f"Telegram send failed: {e}")
 
 

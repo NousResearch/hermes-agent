@@ -4242,20 +4242,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._runner = None
                 self._site = None
                 if getattr(exc, "errno", None) == errno.EADDRINUSE:
-                    # Config error: non-retryable, or the reconnect watcher leaks fds forever.
+                    # At initial startup, a port conflict is a configuration
+                    # error: another process owns the listener, so drop it
+                    # from the retry queue and require an explicit fix.
+                    #
+                    # During reconnect, the same errno can be a replacement
+                    # race: the old gateway still owns the port for a few
+                    # seconds while the new gateway starts. Making that
+                    # non-retryable strands the API server forever even after
+                    # the old listener exits (Mac incident, 2026-08-28). Let
+                    # the reconnect watcher retry that shape; it already
+                    # disposes failed adapters so no ResponseStore fds leak.
                     self._set_fatal_error(
-                        # A port conflict is a configuration error, not a transient blip — another process
-                        # holds the port for its lifetime. A bare ``return False`` makes the reconnect
-                        # watcher in gateway.run treat it as retryable and loop forever at the backoff cap
-                        # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting to
-                        # the same port, #52132), filling errors.log and leaking the adapter's ResponseStore
-                        # fds each retry. Non-retryable drops it from the reconnect queue; the operator
-                        # recovers with ``/platform resume api_server`` after changing the port.
                         "api_server_port_in_use",
                         f"Port {self._port} already in use. Set "
                         f"platforms.api_server.port in config.yaml to a "
                         f"different value, then `/platform resume api_server`.",
-                        retryable=False)
+                        retryable=is_reconnect)
                 logger.error(
                     "[%s] Could not bind %s:%d: %s. Set a different port in "
                     "config.yaml: platforms.api_server.port",

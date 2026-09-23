@@ -34,6 +34,11 @@ def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
         return DEFAULT_MAX_VERIFY_NUDGES
 
 
+def pre_verify_without_edits(config: Optional[dict[str, Any]] = None) -> bool:
+    """Opt in to completion policy for read-only and delegated work."""
+    return is_truthy_value(_agent_cfg(config).get("pre_verify_without_edits", False), default=False)
+
+
 def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Return the optional guidance appended to verification-stop nudges."""
     if not is_truthy_value(_agent_cfg(config).get("verify_guidance", True), default=True):

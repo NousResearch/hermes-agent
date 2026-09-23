@@ -371,7 +371,15 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only
+            except PermissionError:
+                # macOS / containers may forbid group signals; rg is our own direct child.
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
         proc.wait()
         drainer.join()
         proc.stdout.close()
@@ -653,7 +661,10 @@ class SearchMixin:
             common = os.path.commonpath([root, home])
         except ValueError:
             return False
-        return root == home or common == root
+        if root == home or common == root:
+            return True
+        p = Path(root)
+        return p.name in {'primary-root', '.hermes', '.hermes-primary', '.claude', 'Developer', 'active', 'repos', 'CloudStorage', 'Caches'}
 
     def _search_files(self, pattern: str, path: str | List[str], limit: int, offset: int,
                       order: str = "discovery") -> SearchResult:
@@ -665,6 +676,8 @@ class SearchMixin:
         roots = [path] if isinstance(path, str) else path
         if not roots:
             return SearchResult(error="File search requires at least one search root in 'path'.")
+        if any(self._is_broad_local_search_root(root) for root in roots):
+            return SearchResult(error="BLOCKED [bounded-search]: search root covers a whole home or aggregate tree; choose a source directory")
 
         # Prefer ripgrep: bounded parallel traversal with ignore semantics. Resolve
         # the engine and exact-order capability BEFORE admission so a queued request
@@ -822,6 +835,8 @@ class SearchMixin:
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Content search: rg, else grep; attaches zero-match steering hints."""
+        if self._is_broad_local_search_root(path or "."):
+            return SearchResult(error="BLOCKED [bounded-search]: search root covers a whole home or aggregate tree; choose a source directory")
         used_rg = self._has_command('rg')
         if used_rg:
             result = self._search_with_rg(pattern, path, file_glob, limit, offset, output_mode, context,

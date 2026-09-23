@@ -88,6 +88,36 @@ class TestTelegramSendClarify:
         assert "cid1" in adapter._clarify_state
         assert adapter._clarify_state["cid1"] == "sk1"
 
+    @pytest.mark.asyncio
+    async def test_outbound_approval_sends_exact_draft_bubble_before_card(self):
+        adapter = _make_adapter()
+        preview_msg = MagicMock(message_id=104)
+        card_msg = MagicMock(message_id=105)
+        bot = adapter._bot
+        assert bot is not None
+        bot.send_message = AsyncMock(side_effect=[preview_msg, card_msg])
+        draft = "Hoi Delfine,\n\nJa, laten we de upgrade doen.\n\nGroet,\nSam"
+        question = (
+            f"VOLLEDIGE TEKST:\n{draft}\nEINDE TEKST\n\n"
+            "Stuur ik deze mail?"
+        )
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question=question,
+            choices=["Stuur", "Niet sturen"],
+            clarify_id="cid-preview",
+            session_key="sk-preview",
+        )
+
+        assert result.success is True
+        assert bot.send_message.await_count == 2
+        preview = bot.send_message.await_args_list[0].kwargs
+        card = bot.send_message.await_args_list[1].kwargs
+        assert preview["text"] == draft
+        assert "reply_markup" not in preview
+        assert "VOLLEDIGE TEKST:" in card["text"]
+        assert card["reply_markup"] is not None
 
         # The button label should be short ("1"), not the long choice
         # (we can't inspect mock button labels directly, but the send

@@ -2749,6 +2749,83 @@ class SlackAdapter(BasePlatformAdapter):
                 str(p).strip() for p in parts if str(p).strip())
         return cached
 
+    def _slack_bot_hop_limit(self) -> int:
+        """How many bot->bot mention hops a thread may carry. Default 1.
+
+        A bot mention is a valid summons under allow_bots=mentions, so two
+        agents that mention each other by name form a loop with no terminator.
+        Measured on 2026-09-07: an agent CAN post a real ``<@Uxxxx>`` user
+        element, so nothing in Slack itself stops this. 0 disables bot->bot,
+        1 permits a single hop (claim -> answer), higher goes deeper.
+        """
+        raw = self.config.extra.get("bot_hop_limit")
+        if raw is None:
+            raw = os.getenv("SLACK_BOT_HOP_LIMIT", "1")
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "[Slack] Unknown bot_hop_limit=%r; treating as 1", raw
+            )
+            return 1
+        return max(0, value)
+
+    def _slack_count_bot_hops(self, messages: list) -> int:
+        """Count bot-authored messages that mention someone, in order.
+
+        A human message anywhere in the chain resets the count to zero: Sam can
+        always re-open a thread that agents have exhausted. Pure function over
+        an already-fetched message list so it is testable without Slack.
+        """
+        hops = 0
+        for msg in messages:
+            is_bot = bool(
+                msg.get("bot_id")
+                or msg.get("bot_profile")
+                or msg.get("subtype") == "bot_message"
+            )
+            if not is_bot:
+                hops = 0
+                continue
+            if "<@" in (msg.get("text") or ""):
+                hops += 1
+        return hops
+
+    async def _slack_bot_hop_exhausted(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str | None = None,
+        incoming_ts: str | None = None,
+    ) -> bool:
+        """True when this thread already used up its bot->bot hop budget.
+
+        ``incoming_ts`` is the ts of the message being judged right now. It is
+        excluded from the count, because the budget describes what the thread
+        ALREADY carried, not the summons under evaluation. Without that, an
+        unthreaded bot message (where the caller falls back to the message's own
+        ts) counted itself and blocked the very first hop: measured on
+        2026-09-07 09:41 UTC, every bot-to-bot mention was dropped.
+
+        Fails OPEN on an API error: a transient Slack failure must not silence
+        the fleet. It fails CLOSED on limit 0, where the intent is explicit.
+        """
+        limit = self._slack_bot_hop_limit()
+        if limit <= 0:
+            return True
+        try:
+            client = self._get_client(channel_id, team_id)
+            resp = await client.conversations_replies(
+                channel=channel_id, ts=thread_ts, limit=20
+            )
+            messages = resp.get("messages") or []
+        except Exception as exc:  # noqa: BLE001 - transient Slack failure
+            logger.debug("[Slack] hop-limit lookup failed, allowing: %s", exc)
+            return False
+        if incoming_ts:
+            messages = [msg for msg in messages if msg.get("ts") != incoming_ts]
+        return self._slack_count_bot_hops(messages) >= limit
+
     def _event_declares_bot_sender(self, event: dict) -> bool:
         """Return True when the Slack event itself identifies a bot sender."""
         if event.get("bot_id") or event.get("bot_profile") or event.get("subtype") == "bot_message":
@@ -4392,7 +4469,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _peer_bot_drop(
         self, event: dict, user_id: str, bot_uid: Optional[str], channel_id: str, team_id: str,
-        is_mentioned: bool) -> bool:
+        is_mentioned: bool, thread_ts: Optional[str] = None,
+        incoming_ts: Optional[str] = None) -> bool:
         """True when a bot *user* post (peer agent: no bot_id/subtype) must be dropped.
         Such posts would otherwise re-trigger via old thread mentions or active sessions and cause
         agent-agent loops. Under ``mentions`` only the current text counts as a summons."""
@@ -4405,7 +4483,26 @@ class SlackAdapter(BasePlatformAdapter):
         if not sender_is_bot_user:
             return False
         allow_bots = self._slack_allow_bots()
-        return allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned)
+        if allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned):
+            return True
+        # Hop limit: a bot mention IS a valid summons, so two agents that mention each other by
+        # name form a loop with no terminator. Measured 2026-09-07: an agent can post a real
+        # <@Uxxxx> user element, so Slack itself stops nothing. Only a first-hop bot summons wakes
+        # us; any human message in the thread resets the budget.
+        # Callers always pass ``event_thread_ts or ts`` (a message always has a ts), so
+        # thread_ts is truthy at every real call site. The missing-thread_ts case is still
+        # handled explicitly and separately from the gate itself, so the gate's own if-condition
+        # stays a pure await call and cannot be silently defanged by an `and`/`or` in front of it.
+        if not thread_ts:
+            return False
+        if await self._slack_bot_hop_exhausted(
+                channel_id=channel_id, thread_ts=thread_ts, team_id=team_id,
+                incoming_ts=incoming_ts):
+            logger.info(
+                "[Slack] Dropping bot message: bot->bot hop limit reached in %s thread %s",
+                channel_id, thread_ts)
+            return True
+        return False
 
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
@@ -4496,7 +4593,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Internal triggers (reactions) skip the mention requirement but NOT
         # allowed_channels or user authorization.
         force_process = bool(event.get("_hermes_force_process"))
-        if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
+        if await self._peer_bot_drop(
+                event, user_id, bot_uid, channel_id, team_id, is_mentioned,
+                thread_ts=event_thread_ts or ts, incoming_ts=ts):
             return
         if (
             not is_one_to_one_dm and bot_uid and not await self._channel_gate_allows(

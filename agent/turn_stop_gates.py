@@ -2,7 +2,7 @@
 
 When the model stops with a text answer, three gates may instead append the answer as an
 interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
+the ``pre_verify`` plugin hook, and the kanban worker terminal-tool guard.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -50,26 +51,40 @@ def _verify_on_stop_nudge(agent) -> Optional[str]:
 
 
 def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
-    """After code edits a registered ``pre_verify`` hook may keep the agent going one
-    more turn; no default continuation cost."""
+    """Run registered completion policy within the configured continuation limit."""
     _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
     try:
-        from agent.verify_hooks import max_verify_nudges
+        from agent.verify_hooks import max_verify_nudges, pre_verify_without_edits
         from hermes_cli.lifecycle import has_hook
         from hermes_cli.plugins import get_pre_verify_continue_message
 
-        if _edited and has_hook("pre_verify") and attempt < max_verify_nudges():
+        if (_edited or pre_verify_without_edits()) and has_hook("pre_verify") and attempt < max_verify_nudges():
             # Posture is fixed for the session — resolve once + cache.
             coding = getattr(agent, "_resolved_is_coding", None)
             if coding is None:
                 from agent.coding_context import is_coding_context
                 coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
                 agent._resolved_is_coding = coding
+            todo_store = getattr(agent, "_todo_store", None)
+            todos = todo_store.read() if todo_store is not None else []
+            child_lock = getattr(agent, "_active_children_lock", None)
+            with child_lock if child_lock is not None else nullcontext():
+                children = list(getattr(agent, "_active_children", []) or [])
+            pending_children = [
+                {"subagent_id": getattr(child, "_subagent_id", ""), "status": "running"}
+                for child in children if not getattr(child, "_interrupt_requested", False)
+            ]
+            from tools.async_delegation import has_live_for_session
+
+            if has_live_for_session(parent_session_id=str(getattr(agent, "session_id", "") or "")):
+                pending_children.append({"source": "async_delegation", "status": "running"})
             return get_pre_verify_continue_message(
                 session_id=getattr(agent, "session_id", None) or "",
                 platform=getattr(agent, "platform", "") or "",
                 model=getattr(agent, "model", "") or "", coding=coding, attempt=attempt,
                 final_response=final_response, changed_paths=_edited,
+                open_todos=[item for item in todos if item.get("status") in {"pending", "in_progress"}],
+                pending_children=pending_children,
             )
     except Exception:
         logger.debug("pre_verify hook check failed", exc_info=True)
@@ -89,6 +104,23 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
     except Exception:
         logger.debug("kanban stop-loop check failed", exc_info=True)
         return None
+
+
+def _kanban_terminal_already_committed(messages) -> bool:
+    """True when this session already ran ``kanban_complete`` / ``kanban_block``.
+
+    Board state, not turn state: once the terminal tool committed, the card is
+    closed and the worker must be allowed to leave. Best-effort — a failure here
+    must never keep a completed worker alive by accident, so it returns False
+    only when the check itself could not run.
+    """
+    try:
+        from agent.kanban_stop import kanban_stop_nudge_enabled, session_called_kanban_terminal
+
+        return bool(kanban_stop_nudge_enabled() and session_called_kanban_terminal(messages))
+    except Exception:
+        logger.debug("kanban terminal-committed check failed", exc_info=True)
+        return False
 
 
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
@@ -112,6 +144,14 @@ def apply_stop_gates(
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""
 
+    budget = getattr(agent, "iteration_budget", None)
+    if getattr(agent, "_interrupt_requested", False) or (budget is not None and budget.remaining <= 0):
+        return StopGateVerdict(
+            continue_turn=False, final_response=final_response,
+            pending_verification_response=pending_verification_response,
+            pending_verification_response_previewed=pending_verification_response_previewed,
+        )
+
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
         append_message(messages, {"role": "user", "content": nudge, flag: True})
@@ -127,7 +167,17 @@ def apply_stop_gates(
             ),
         )
 
+    # A kanban worker that already committed a terminal tool (kanban_complete /
+    # kanban_block) must NOT be nudged back into the loop. Both verify gates are
+    # turn-shaped: they fire on ``_turn_file_mutation_paths`` and know nothing
+    # about board state, so a worker that edited files on its final turn kept
+    # taking turns against a card no sweeper could correlate it to any more
+    # (t_b8bacffe, worker pid 65495 outlived its card by 25 minutes).
+    _kanban_terminal_committed = _kanban_terminal_already_committed(messages)
+
     _verify_nudge = _verify_on_stop_nudge(agent)
+    if _kanban_terminal_committed:
+        _verify_nudge = None
     if _verify_nudge:
         agent._verification_stop_nudges = getattr(agent, "_verification_stop_nudges", 0) + 1
         final_msg["finish_reason"] = "verification_required"
@@ -140,7 +190,10 @@ def apply_stop_gates(
         return verdict
 
     _attempt = getattr(agent, "_pre_verify_nudges", 0)
-    _verify_nudge2 = _pre_verify_nudge(agent, final_response, _attempt)
+    _verify_nudge2 = (
+        None if _kanban_terminal_committed
+        else _pre_verify_nudge(agent, final_response, _attempt)
+    )
     if _verify_nudge2:
         agent._pre_verify_nudges = _attempt + 1
         final_msg["finish_reason"] = "verify_hook_continue"

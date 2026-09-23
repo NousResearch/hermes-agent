@@ -38,11 +38,20 @@ class TodoStore:
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """Replace the list (default) or merge by id; returns the full list after writing."""
         before = self.read()
+        candidate = TodoStore()
+        candidate._items = self.read()
         if merge:
-            self._merge(todos)
+            candidate._merge(todos)
         else:
-            self._items = self._fresh_items(todos)
-        del self._items[MAX_TODO_ITEMS:]  # keep the priority head; replays can't grow unbounded
+            candidate._items = self._fresh_items(todos)
+        # Permit updates to already-restored oversized state, never new overflow.
+        ceiling = max(MAX_TODO_ITEMS, len(before)) if merge else MAX_TODO_ITEMS
+        if len(candidate._items) > ceiling:
+            raise ValueError(
+                f"Todo capacity is {MAX_TODO_ITEMS}; no changes saved. "
+                "Keep the full backlog in durable tasks and use a bounded active list."
+            )
+        self._items = candidate._items
         self._sanitize_parents(self._items)
         if self._items != before:
             self._revision += 1
@@ -87,7 +96,7 @@ class TodoStore:
 
     def restore(self, todos: List[Dict[str, Any]], *, revision: Any = 0) -> List[Dict[str, str]]:
         """Restore a trusted snapshot without manufacturing a new revision."""
-        self._items = self._fresh_items(todos)[:MAX_TODO_ITEMS]
+        self._items = self._fresh_items(todos)
         try:
             self._revision = max(0, int(revision or 0))
         except (TypeError, ValueError):

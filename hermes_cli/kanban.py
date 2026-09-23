@@ -898,6 +898,25 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     return None
 
 
+def _human_gate_rejection(task):
+    """CLI mirror of the human-gate in tools/kanban_tools.py.
+
+    INCIDENT 2026-08-29: the tool path was gated after a worker closed eight of
+    Sam's unanswered decision cards, but `hermes kanban complete` reached the
+    same ``kb.complete_task`` with no check at all. A guard on one verb is not a
+    guard on the state, and an agent has a shell.
+
+    Imported from the single definition in tools.kanban_tools so the two paths
+    can never drift. Fails open if that import is unavailable (a CLI on a host
+    without the tools package must still work).
+    """
+    try:
+        from tools.kanban_tools import _human_gate_rejection as _shared
+    except Exception:
+        return None
+    return _shared(task)
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids, rc = _require_ids(args)
@@ -916,6 +935,13 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
+            if not getattr(args, "i_am_sam", False):
+                human_gate = _human_gate_rejection(kb.get_task(conn, tid))
+                if human_gate is not None:
+                    fail_msg[tid] = (
+                        "refusing to complete %s: %s Pass --i-am-sam if you are "
+                        "the human answering it." % (tid, human_gate))
+                    return False
             gate_err = _goal_gate_error(
                 conn, tid, (summary or args.result or "").strip(), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",

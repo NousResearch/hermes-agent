@@ -433,10 +433,25 @@ class TestConfigFallbackIps:
 class TestAdapterFallbackIps:
     def _make_adapter(self, extra=None):
         import sys
+        from importlib.machinery import PathFinder
         from unittest.mock import MagicMock
 
-        # Ensure telegram mock is in place
-        if "telegram" not in sys.modules or not hasattr(sys.modules["telegram"], "__file__"):
+        # Ensure telegram mock is in place -- but only when PTB genuinely is
+        # not available. "not imported yet" is a different question from "not
+        # installed": mocking on the former shadows the real
+        # telegram.request.BaseRequest for the rest of the process and breaks
+        # any later test that subclasses it (see the same fix in conftest.py).
+        # PathFinder is used rather than importlib.util.find_spec because the
+        # latter raises on an already-cached MagicMock.
+        _real_available = (
+            "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__")
+        )
+        if not _real_available:
+            try:
+                _real_available = PathFinder.find_spec("telegram", None) is not None
+            except Exception:
+                _real_available = False
+        if not _real_available:
             mod = MagicMock()
             mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
             mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"

@@ -631,6 +631,37 @@ _ANTHROPIC_BEDROCK_MODEL_RE = re.compile(
 )
 
 
+# Anthropic model families AWS has published only as inference profiles
+# (no on-demand foundation-model ARN). Invoking the bare ID gives:
+#   ValidationException: Invocation of model ID <id> with on-demand
+#   throughput isn't supported. Retry ... with an inference profile.
+# Seen recurring in prod (2026-08-29, 2026-09-01) for claude-fable-5 picked
+# via the model picker without its "global." prefix, burning 3 retries per
+# turn and returning no reply. Fail-open: only prefixes known-blocked
+# families; anything else passes through unchanged.
+_BEDROCK_ON_DEMAND_BLOCKED_ANTHROPIC_MODELS: Tuple[str, ...] = (
+    "anthropic.claude-fable-5",
+)
+
+
+def normalize_bedrock_model_id(model_id: str) -> str:
+    """Auto-prefix bare model IDs that Bedrock only serves via inference profile.
+
+    A bare ``anthropic.claude-fable-5`` (no ``global.``/``us.``/``eu.`` prefix)
+    is rejected by Bedrock's on-demand ConverseStream path even though it is
+    a valid, listed model ID -- AWS requires routing it through an inference
+    profile. Rewriting to ``global.<id>`` here fixes it transparently
+    regardless of how the caller (config, model picker, cron) requested it.
+    """
+    if not model_id:
+        return model_id
+    if model_id in _BEDROCK_ON_DEMAND_BLOCKED_ANTHROPIC_MODELS:
+        return f"global.{model_id}"
+    return model_id
+
+
+
+
 def is_anthropic_bedrock_model(model_id: str) -> bool:
     """True for Claude on Bedrock (``anthropic.claude-*``, any regional prefix): AnthropicBedrock SDK path."""
     return _ANTHROPIC_BEDROCK_MODEL_RE.match(model_id) is not None
@@ -1010,7 +1041,7 @@ def build_converse_kwargs(
     system_prompt, converse_messages = convert_messages_to_converse(messages)
     cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if _model_supports_prompt_cache(model) else set()
     inference_config: Dict[str, Any] = {} if max_tokens is None else {"maxTokens": max_tokens}
-    kwargs: Dict[str, Any] = {"modelId": model, "messages": converse_messages, "inferenceConfig": inference_config}
+    kwargs: Dict[str, Any] = {"modelId": normalize_bedrock_model_id(model), "messages": converse_messages, "inferenceConfig": inference_config}
     if system_prompt:
         kwargs["system"] = system_prompt + [dict(_CACHE_POINT)] if "system" in cache_at else system_prompt
     from agent.anthropic_adapter import _forbids_sampling_params
@@ -1122,9 +1153,44 @@ def _list_inference_profiles(client, filter_set: set, models: List[Dict[str, Any
         seen_ids.add(profile_id.lower())
 
 
+def _list_marketplace_model_endpoints(client, filter_set: set, models: List[Dict[str, Any]]) -> None:
+    """Append registered, in-service Bedrock Marketplace endpoints (paginated)."""
+    endpoints, next_token = [], None
+    while True:
+        response = client.list_marketplace_model_endpoints(
+            **({"nextToken": next_token} if next_token else {})
+        )
+        if not isinstance(response, dict):
+            return
+        endpoints.extend(response.get("marketplaceModelEndpoints", []))
+        if not (next_token := response.get("nextToken")):
+            break
+
+    seen_ids = {m["id"].lower() for m in models}
+    for endpoint in endpoints:
+        endpoint_arn = (endpoint.get("endpointArn") or "").strip()
+        source_arn = (endpoint.get("modelSourceIdentifier") or "").strip()
+        provider = _extract_marketplace_provider(source_arn)
+        if (not endpoint_arn or endpoint.get("status") != "REGISTERED"
+                or endpoint_arn.lower() in seen_ids
+                or (filter_set and provider.lower() not in filter_set)):
+            continue
+        details = client.get_marketplace_model_endpoint(endpointArn=endpoint_arn).get(
+            "marketplaceModelEndpoint", {}
+        )
+        if details.get("endpointStatus", "").lower() != "inservice":
+            continue
+        name = endpoint_arn.rsplit("/", 1)[-1].replace("-", " ").strip()
+        models.append(_model_entry(endpoint_arn, name, provider, ["TEXT"], ["TEXT"]))
+        seen_ids.add(endpoint_arn.lower())
+
+
 def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Foundation models + inference profiles (cached 1h per region/filter), ``global.`` profiles first then
-    by name; [] when the client cannot be built."""
+    """Discover Bedrock foundation models, inference profiles, and Marketplace endpoints.
+
+    Results are cached for one hour per region/filter. ``global.`` profiles sort first;
+    an unavailable account-scoped discovery API does not hide the other model classes.
+    """
     # The list is account-scoped (whichever credentials the control client signs with), so a routed
     # profile gets its own entry; unscoped keeps the region:filter key byte-for-byte.
     from hermes_constants import get_hermes_home_override, hermes_home_key
@@ -1144,6 +1210,7 @@ def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = 
     for step, log, message in (
         (_list_foundation_models, logger.warning, "Failed to list Bedrock foundation models: %s"),
         (_list_inference_profiles, logger.debug, "Skipping inference profile discovery: %s"),
+        (_list_marketplace_model_endpoints, logger.debug, "Skipping Marketplace endpoint discovery: %s"),
     ):
         try:
             step(client, filter_set, models)
@@ -1152,6 +1219,15 @@ def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = 
     models.sort(key=lambda m: (0 if m["id"].startswith("global.") else 1, m["name"].lower()))
     _discovery_cache[cache_key] = {"timestamp": time.time(), "models": models}
     return models
+
+
+def _extract_marketplace_provider(source_arn: str) -> str:
+    """Extract a stable provider label from a SageMaker public hub model ARN."""
+    match = re.search(r"/Model/([^/]+)", source_arn)
+    if not match:
+        return "marketplace"
+    name = match.group(1).strip().lower()
+    return name.split("-", 1)[0] or "marketplace"
 
 
 def _extract_provider_from_arn(arn: str) -> str:

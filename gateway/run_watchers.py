@@ -113,6 +113,55 @@ class GatewaySessionWatchersMixin:
                 candidates[session_key] = (adapter, overflow[0])
         return candidates
 
+    def _wake_stalled_agent(self, session_key: str) -> bool:
+        """Nudge the live turn itself, once per stall episode.
+
+        The notice alone tells the USER something is wrong but leaves the agent
+        exactly as stuck as it was. ``redirect()`` interrupts the in-flight model
+        call and delivers the nudge now; ``steer()`` only queues text for the
+        next tool result, which never arrives when the stall IS the model call.
+        So redirect first and fall back to steer only when redirect declines
+        (it returns False while tools are executing).
+
+        Returns True when a nudge actually reached the agent this call, so the
+        caller can latch the episode even if the user-facing notice then fails
+        to send. Without that, a soft send failure (flood wait) re-entered this
+        path every tick and stacked identical redirects on a turn that had
+        already been woken.
+        """
+        if getattr(self, "_session_stall_woken", None) is None:
+            self._session_stall_woken = {}
+        if self._session_stall_woken.get(session_key):
+            return False
+        agent = (getattr(self, "_running_agents", None) or {}).get(session_key)
+        if agent is None:
+            return False
+        nudge = (
+            "[watchdog] This turn has been idle with an inbound message waiting. "
+            "Continue where you left off, or say what is blocking you."
+        )
+        accepted = False
+        try:
+            redirect = getattr(agent, "redirect", None)
+            if redirect is not None:
+                accepted = bool(redirect(nudge))
+                if accepted:
+                    logger.warning("Session stall auto-redirect accepted: session=%s", session_key)
+        except Exception as exc:
+            logger.debug("Session stall redirect failed for %s: %s", session_key, exc)
+        woke = accepted
+        if not accepted:
+            try:
+                steer = getattr(agent, "steer", None)
+                if steer is not None:
+                    steer(nudge)
+                    woke = True
+                    logger.warning("Session stall steer queued: session=%s", session_key)
+            except Exception as exc:
+                logger.debug("Session stall steer failed for %s: %s", session_key, exc)
+        self._session_stall_woken[session_key] = True
+        return woke
+
     async def _check_session_stalls(self, timeout_seconds: float) -> int:
         """Notify once per stall episode for pending inbound sessions; returns notices sent."""
         if getattr(self, "_session_stall_notified", None) is None:  # tests may build bare runners
@@ -127,16 +176,24 @@ class GatewaySessionWatchersMixin:
                 timeout_seconds=timeout_seconds, idle_seconds=idle_seconds, has_pending_inbound=True
             ):
                 notified_map.pop(session_key, None)
+                (getattr(self, "_session_stall_woken", None) or {}).pop(session_key, None)
             if idle_seconds is None or not should_emit_session_stall_notification(
                 timeout_seconds=timeout_seconds, idle_seconds=idle_seconds,
                 has_pending_inbound=True, already_notified=bool(notified_map.get(session_key)),
             ):
                 continue
+            woke = self._wake_stalled_agent(session_key)
             if await self._notify_session_stall(
                 session_key, adapter, pending_event, idle_seconds, activity or {},
                 timeout_seconds, notified_map,
             ):
                 sent += 1
+            elif woke:
+                # The agent WAS woken; only the user-facing notice failed to
+                # send. Latch the episode anyway, otherwise every tick re-runs
+                # the whole path and the recovery nudge is the thing that gets
+                # repeated. The notice retries on the next genuine stall.
+                notified_map[session_key] = True
         # Drop latches for sessions that no longer appear in any pending map.
         for key in [k for k in notified_map if k not in candidates]:
             notified_map.pop(key, None)

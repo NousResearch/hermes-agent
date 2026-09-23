@@ -784,12 +784,28 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
         # host idle watchdog defaults to 120s. Clamp the idle window up to at least the effective aux
         # compression timeout so prep/chunking work with no streamed tokens yet is not cut off. Only raises:
         # an explicit cfg value above the aux budget is kept, and idle never exceeds the ceiling.
-        from agent.auxiliary_client import _effective_aux_timeout
+        from agent.auxiliary_client import (
+            _compression_config_claims_fast_lane,
+            _effective_aux_timeout,
+            _get_auxiliary_task_config,
+        )
         _aux_budget = float(_effective_aux_timeout("compression", None))
         if _aux_budget > 0:
             if _aux_budget > ceiling:
                 ceiling = _aux_budget
             idle = max(idle, min(_aux_budget, ceiling))
+            # A certified fast route uses a short request budget as its NO-PROGRESS
+            # deadline. Reusing that same value as the absolute ceiling defeats the
+            # progress-aware fence: a healthy summary that is still streaming is
+            # discarded exactly when its first idle window ends. Give live output up
+            # to four request windows, bounded by the normal 10-minute ceiling. A
+            # silent/dead route still stops at ``idle`` unchanged.
+            if _compression_config_claims_fast_lane(_get_auxiliary_task_config("compression")):
+                progress_ceiling = min(
+                    DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS,
+                    4.0 * _aux_budget,
+                )
+                ceiling = max(ceiling, progress_ceiling)
     return idle, ceiling
 
 

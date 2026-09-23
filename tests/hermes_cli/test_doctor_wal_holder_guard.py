@@ -48,7 +48,8 @@ def test_wal_checkpoint_skipped_while_live_writer_holds_db(tmp_path):
             pass
 
     assert finding.fixed == 0
-    assert any("gateway" in issue for issue in finding.issues)
+    # A live writer holding the WAL is expected; doctor must not put it on the issue list.
+    assert finding.issues == []
 
 
 def test_doctor_names_retired_wal_holders_instead_of_healthy_state_db(tmp_path, monkeypatch, capsys):

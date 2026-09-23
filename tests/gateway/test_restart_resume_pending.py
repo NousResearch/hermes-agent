@@ -302,6 +302,22 @@ class TestResumePendingSystemNote:
         )
 
 
+    def test_empty_message_interactive_note_reports_for_duty_and_resumes(self):
+        """Interactive platforms (Sam standing rule 2026-08-31 / 2026-09-17): the auto-resume
+        turn must instruct the agent to recall what it was working on, update its
+        to-do list, and complete all pending tasks immediately — never ask what to do next."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "Resume the interrupted work immediately" in note
+        assert "update your to-do list" in note
+        assert "complete all pending tasks" in note
+        assert "ask what they would like to do next" not in note
+        # Must not tell the model to skip the unfinished work it should finish.
+        assert "skip any unfinished work" not in note
+        # Still guards against re-running already-recorded tool calls and
+        # against releasing outbound drafts without approval.
+        assert "already appear in the history" in note
+        assert "Never send outbound messages" in note
+
     def test_empty_message_noninteractive_note_continues_task(self):
         """Non-interactive platforms (webhook, API server): nobody can answer
         'what next?', so the resumed turn must complete the interrupted work

@@ -36,6 +36,11 @@ from typing import Any, Dict, Optional, Tuple
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Restart recovery starts gradually, so old turns do not stampede the router.
+# Fresh inbound messages do not use this limiter.
+_STARTUP_RESUME_CONCURRENCY = 2
+_STARTUP_RESUME_START_GAP_SECONDS = 0.75
+
 
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
@@ -58,18 +63,37 @@ class GatewayStartupMixin:
     def _serving_state(self) -> str:
         return "degraded" if self._startup_parked_platforms else "running"
 
+    async def _wait_for_startup_resume_slot(self) -> None:
+        """Space recovery starts without delaying ordinary inbound messages."""
+        lock = getattr(self, "_startup_resume_start_lock", None)
+        if lock is None:
+            lock = self._startup_resume_start_lock = asyncio.Lock()
+        async with lock:
+            last = float(getattr(self, "_startup_resume_last_start", 0.0) or 0.0)
+            delay = _STARTUP_RESUME_START_GAP_SECONDS - (time.monotonic() - last)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._startup_resume_last_start = time.monotonic()
+
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
     ) -> None:
         """Dispatch one synthetic startup resume and wait for its agent turn (inbound stays queued
         until it finishes, else a user message can race it)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        semaphore = getattr(self, "_startup_resume_semaphore", None)
+        if semaphore is None:
+            semaphore = self._startup_resume_semaphore = asyncio.Semaphore(
+                _STARTUP_RESUME_CONCURRENCY
+            )
         try:
-            await adapter.handle_message(event)
-            session_tasks = getattr(adapter, "_session_tasks", {})
-            task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
-            if task is not None:
-                await asyncio.shield(task)
+            async with semaphore:
+                await self._wait_for_startup_resume_slot()
+                await adapter.handle_message(event)
+                session_tasks = getattr(adapter, "_session_tasks", {})
+                task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
+                if task is not None:
+                    await asyncio.shield(task)
         finally:
             # Release the pre-claimed slot if handle_message raised before _handle_message took ownership.
             _pre_state = self._peek_session_state(session_key)

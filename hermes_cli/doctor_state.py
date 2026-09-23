@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
+
 import subprocess
 from pathlib import Path
 from hermes_cli.doctor_report import (
@@ -34,6 +35,20 @@ def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
         if not config_path.exists():
             return {}
         section = load_user_config_effective(config_path).get("memory")
+        return section if isinstance(section, dict) else {}
+    except Exception:
+        return {}
+
+
+def _doctor_sessions_config(hermes_home: Path | None = None) -> dict:
+    """Return the effective sessions section used by state-size diagnostics."""
+    from hermes_cli.doctor import HERMES_HOME
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        config_path = (hermes_home if hermes_home is not None else HERMES_HOME) / "config.yaml"
+        if not config_path.exists():
+            return {}
+        section = load_user_config_effective(config_path).get("sessions")
         return section if isinstance(section, dict) else {}
     except Exception:
         return {}
@@ -106,12 +121,15 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
     # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
     # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
-        detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
+        auto_prune = bool(_doctor_sessions_config().get("auto_prune", False))
+        detail = ("auto-prune active; future growth is bounded" if auto_prune
+                  else "consider enabling sessions.auto_prune in config.yaml to bound growth")
         stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
                          and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
         if stats.get("fts_rebuild_pending") or stale_trigram:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
-        lines.append(("warn", f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
+        kind = "info" if auto_prune else "warn"
+        lines.append((kind, f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
     # WAL runaway is deliberately NOT warned here: _state_db_wal already warns above 50 MB and offers --fix.
     return lines
 
@@ -346,9 +364,9 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
                 check_info(_text + (f" {_detail}" if _detail else ""))
                 continue
             check_warn(_text, _detail)
-            if "auto_prune" in _detail:
+            if "state.db is large" in _text and "auto-prune active" not in (_detail or ""):
                 issues.append("state.db is large — enable sessions.auto_prune in config.yaml"
-                              + (" and run 'hermes sessions optimize-storage' offline (gateway stopped)" if "optimize-storage" in _detail else ""))
+                              + (" and run hermes sessions optimize-storage offline (gateway stopped)" if "optimize-storage" in (_detail or "") else ""))
 
 
 def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
@@ -373,7 +391,9 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
                 # users straight into the second-writer trap (#110054).
                 check_warn(title, "(normal while Desktop or the gateway is running, or state.db cannot be "
                                   "inspected — checkpoint only with them stopped)")
-                return f.issues.append(_SKIP)
+                # A live gateway holding the WAL is expected. Do not put it on the issue list;
+                # --fix is unsafe until that writer is gone (#110054).
+                return None
             check_warn(title, "(may indicate missed checkpoints)")
             if not should_fix:
                 return f.issues.append(
@@ -502,9 +522,21 @@ def _memory_provider_mem0(issues: list) -> None:
     if mem0_cfg.get("api_key", ""):
         check_ok("Mem0 API key configured")
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
-    else:
-        _fail_and_issue("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)",
-                        "Mem0 is set as memory provider but API key is missing", issues)
+        return
+    # OSS/self-hosted mem0 nests vector_store/embedder/llm under ``oss``.
+    # Looking only at top-level keys made every healthy fleet box permanently red.
+    oss_cfg = mem0_cfg.get("oss") if isinstance(mem0_cfg.get("oss"), dict) else {}
+    def _block(key: str):
+        top = mem0_cfg.get(key)
+        nested = oss_cfg.get(key)
+        return top if isinstance(top, dict) and top else nested if isinstance(nested, dict) and nested else None
+    local_backend = any(_block(key) for key in ("vector_store", "embedder", "llm"))
+    if str(mem0_cfg.get("mode", "")).lower() == "oss" or local_backend:
+        check_ok("Mem0 local/self-hosted backend configured")
+        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+        return
+    _fail_and_issue("Mem0 API key not set", "(set MEM0_API_KEY in .env or configure a local mem0 backend)",
+                    "Mem0 is set as memory provider but neither a cloud API key nor local backend is configured", issues)
 
 
 # provider -> (checker, ImportError row, ImportError issue, label for "check failed")

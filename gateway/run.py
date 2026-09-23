@@ -1767,7 +1767,12 @@ async def _reclaim_stale(runner: object) -> None:
         return
     try:
         ids = await reclaim(
-            "gateway stopped mid-handoff; state reclaimed at startup. Re-run /handoff to try again.")
+            # /handoff is cli_only=True, so a messaging surface cannot
+            # dispatch it. This notice lands in the chat the handoff was
+            # heading to, where a user following it hits a dead end and the
+            # agent looks broken. Name the CLI as the place to re-run it.
+            "gateway stopped mid-handoff; state reclaimed at startup. "
+            "Start it again from the Hermes CLI.")
     except Exception:
         logger.debug("Stale-handoff reclaim raised", exc_info=True)
         return

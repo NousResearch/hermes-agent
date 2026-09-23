@@ -68,6 +68,78 @@ def _run(outcome="completed", run_id=1, error=None):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# hallucinated_cards — terminal-status exemption
+#
+# Regression: a `done` card was emitted as an active diagnostic in 51
+# consecutive self-heal sweeps over ten hours (live card t_fc48b87f).
+# The rule's auto-clear is event-ORDER based: it only clears when a clean
+# `completed`/`edited` event arrives AFTER the blocked event. A worker
+# that outlives its own card emits its blocked completion AFTER the real
+# completion, so nothing ever supersedes it. Status is the authoritative
+# terminal signal; event order is not.
+# ---------------------------------------------------------------------------
+
+
+def test_hallucinated_cards_fires_on_a_live_card():
+    """Negative control for the exemption below: the rule must still
+    fire on a non-terminal card, otherwise the fix is just a filter that
+    always returns empty."""
+    now = int(time.time())
+    task = _task(status="ready")
+    events = [
+        _event("completion_blocked_hallucination", now - 60,
+               phantom_cards=["t_deadbeef1"]),
+    ]
+    diags = kd._rule_hallucinated_cards(task, events, [], now, {})
+    assert len(diags) == 1
+    assert diags[0].kind == "hallucinated_cards"
+    assert "t_deadbeef1" in diags[0].data["phantom_ids"]
+
+
+@pytest.mark.parametrize("status", ["done", "archived"])
+def test_hallucinated_cards_exempt_on_terminal_card(status):
+    """A terminal card's completion was by definition not blocked."""
+    now = int(time.time())
+    task = _task(status=status)
+    events = [
+        _event("completion_blocked_hallucination", now - 60,
+               phantom_cards=["t_deadbeef1"]),
+    ]
+    assert kd._rule_hallucinated_cards(task, events, [], now, {}) == []
+
+
+def test_hallucinated_cards_exempt_when_block_lands_after_completion():
+    """The exact live shape: card completes, THEN a stale worker's
+    blocked completion arrives. Event-order auto-clear cannot fire here
+    because the clean event precedes the blocked one."""
+    now = int(time.time())
+    task = _task(status="done")
+    events = [
+        _event("completed", now - 600),
+        _event("completion_blocked_hallucination", now - 430,
+               phantom_cards=["t_deadbeef1"]),
+    ]
+    # The event-order clear genuinely does NOT clear this — that is the bug.
+    still_active = kd._active_hallucination_events(
+        events, "completion_blocked_hallucination")
+    assert len(still_active) == 1
+    # The status guard is what saves it.
+    assert kd._rule_hallucinated_cards(task, events, [], now, {}) == []
+
+
+def test_hallucinated_cards_still_clears_by_event_order_on_a_live_card():
+    """The pre-existing auto-clear must survive the new guard."""
+    now = int(time.time())
+    task = _task(status="ready")
+    events = [
+        _event("completion_blocked_hallucination", now - 600,
+               phantom_cards=["t_deadbeef1"]),
+        _event("completed", now - 60),
+    ]
+    assert kd._rule_hallucinated_cards(task, events, [], now, {}) == []
+
+
 
 
 
@@ -238,3 +310,140 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+
+# ---------------------------------------------------------------------------
+# stranded_in_review
+#
+# Regression cover for the live incident on 2026-08-22 (card t_1165020d):
+# request_review(reviewer="reviewer") wrote a non-existent profile onto
+# tasks.assignee, the review dispatcher skipped the rows as non-spawnable
+# every tick (a deliberately quiet bucket), and two finished cards
+# sat ungraded in 'review' for ~4h with no signal on any surface.
+# ---------------------------------------------------------------------------
+
+
+def test_stranded_in_review_is_critical_when_reviewer_is_not_a_profile(
+    monkeypatch,
+):
+    """The headline regression: an unroutable reviewer is critical
+    immediately, not after 6x the threshold, because no amount of waiting
+    can ever produce a worker for it."""
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists", lambda name: name == "verifier"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_diagnostics._assignee_has_run_history",
+        lambda name: False,
+    )
+    now = 100_000
+    task = _task(status="review", assignee="reviewer", claim_lock=None)
+    # 45 min: past the 30 min threshold but well under the 6x (3h) mark
+    # that would make a ROUTABLE reviewer critical on age alone.
+    events = [_event("review_requested", ts=now - 45 * 60)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = [d for d in diags if d.kind == "stranded_in_review"]
+    assert len(stranded) == 1
+    assert stranded[0].severity == "critical"
+    assert stranded[0].data["assignee"] == "reviewer"
+    assert stranded[0].data["assignee_is_profile"] is False
+    # The operator must be told WHY it can never be claimed.
+    assert "not an existing hermes profile" in stranded[0].detail.lower()
+
+
+def test_stranded_in_review_real_profile_is_only_a_warning(monkeypatch):
+    """A real reviewer profile that is merely slow is a warning at the
+    same age — this is what keeps the rule from crying wolf on a busy
+    but correctly-wired board."""
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists", lambda name: name == "verifier"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_diagnostics._assignee_has_run_history",
+        lambda name: False,
+    )
+    now = 100_000
+    task = _task(status="review", assignee="verifier", claim_lock=None)
+    events = [_event("review_requested", ts=now - 45 * 60)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = [d for d in diags if d.kind == "stranded_in_review"]
+    assert len(stranded) == 1
+    assert stranded[0].severity == "warning"
+    assert stranded[0].data["assignee_is_profile"] is True
+
+
+def test_stranded_in_review_silent_under_threshold_and_when_claimed(
+    monkeypatch,
+):
+    """No false positives: a fresh review, and a review under a live
+    reviewer claim, must both stay silent even with a bad assignee."""
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists", lambda name: name == "verifier"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_diagnostics._assignee_has_run_history",
+        lambda name: False,
+    )
+    now = 100_000
+    fresh = _task(status="review", assignee="reviewer", claim_lock=None)
+    diags = kd.compute_task_diagnostics(
+        fresh, [_event("review_requested", ts=now - 5 * 60)], [], now=now
+    )
+    assert [d for d in diags if d.kind == "stranded_in_review"] == []
+
+    claimed = _task(
+        status="review", assignee="reviewer", claim_lock="host:123"
+    )
+    diags = kd.compute_task_diagnostics(
+        claimed, [_event("review_requested", ts=now - 45 * 60)], [], now=now
+    )
+    assert [d for d in diags if d.kind == "stranded_in_review"] == []
+
+
+def test_stranded_in_review_ignores_non_review_status(monkeypatch):
+    """A ready task with the same stale timestamps belongs to
+    stranded_in_ready, not this rule. Guards against double-flagging."""
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists", lambda name: name == "verifier"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_diagnostics._assignee_has_run_history",
+        lambda name: False,
+    )
+    now = 100_000
+    task = _task(status="ready", assignee="reviewer", claim_lock=None)
+    events = [_event("review_requested", ts=now - 45 * 60)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_review"] == []
+
+
+def test_stranded_in_review_is_registered():
+    """The rule must be wired into the registry and the kind legend, or
+    it computes nothing and the UI cannot render it."""
+    assert kd._rule_stranded_in_review in kd._RULES
+    assert "stranded_in_review" in kd.DIAGNOSTIC_KINDS
+
+
+def test_stranded_in_review_human_lane_with_run_history_is_only_a_warning(
+    monkeypatch,
+):
+    """A human pull-lane (e.g. 'sam') has no Hermes profile but has
+    real run history. Age-based flag still fires, but it is NOT the
+    'unclaimable' critical that would fire for a typo like 'reviewer'."""
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists", lambda name: name == "verifier"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_diagnostics._assignee_has_run_history",
+        lambda name: name == "sam",
+    )
+    now = 100_000
+    task = _task(status="review", assignee="sam", claim_lock=None)
+    events = [_event("review_requested", ts=now - 45 * 60)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = [d for d in diags if d.kind == "stranded_in_review"]
+    assert len(stranded) == 1
+    assert stranded[0].severity == "warning"
+    assert stranded[0].data["assignee_is_profile"] is False
+    assert stranded[0].data["assignee_has_lane_history"] is True
+    assert "unclaimable" not in stranded[0].title.lower()

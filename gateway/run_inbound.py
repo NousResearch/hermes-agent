@@ -1026,6 +1026,22 @@ class GatewayInboundMixin:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         if self._draining:
+            # Sam policy (2026-08-30): never refuse drain-time work — queue it for
+            # the next turn so nothing is lost across a restart. Local patch 162
+            # carried this on the old gateway/run.py quick-command path; that path
+            # was rewritten into this file and the fix went with it (held as
+            # "present upstream", measured 2026-09-09: entirely absent).
+            # Mirrors the queue/refuse decision at the busy path above so both
+            # drain gates behave identically instead of one silently dropping.
+            queue_during_drain = self._queue_during_drain_enabled()
+            if queue_during_drain:
+                adapter = self._adapter_for_source(source)
+                if adapter is not None:
+                    self._queue_or_replace_pending_event(self._session_key_for_source(source), event)
+                    return True, (
+                        f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn "
+                        "after it comes back."
+                    ), command
             return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
 
         # User-defined quick commands (bypass agent loop, no LLM call)

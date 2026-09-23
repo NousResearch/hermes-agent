@@ -6,6 +6,8 @@ from __future__ import annotations
 import logging
 import os
 
+from gateway.platforms._shared import get_scoped_secret
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["register"]
@@ -34,9 +36,13 @@ def validate_config(config) -> bool:
 
 
 def is_connected(config) -> bool:
-    """'Connected' when explicitly enabled (the gateway only instantiates enabled platforms)."""
+    """Connected when this profile explicitly enabled A2A or owns a scoped port.
+
+    Under multiplex, ``os.environ`` is the default profile's bridge. Reading it here made every
+    secondary profile inherit A2A_PORT and fight the primary listener forever.
+    """
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("enabled")) or bool(os.getenv("A2A_PORT"))
+    return bool(extra.get("enabled")) or bool(get_scoped_secret("A2A_PORT", ""))
 
 
 def interactive_setup() -> None:

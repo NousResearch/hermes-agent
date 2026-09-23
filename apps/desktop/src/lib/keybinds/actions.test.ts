@@ -12,13 +12,13 @@ describe('session.archive keybind action', () => {
     expect(action?.category).toBe('session')
   })
 
-  it('ships unbound so it does not claim a chord for every user', () => {
+  it('ships bound to mod+l (⌘L / Ctrl+L)', () => {
     const action = keybindAction('session.archive')
 
-    expect(action?.defaults).toEqual([])
+    expect(action?.defaults).toEqual(['mod+l'])
     // A missing entry would silently drop from the panel; an accidental
-    // default binding would change behaviour for everyone. Guard both.
-    expect(defaultBindings()['session.archive']).toEqual([])
+    // empty default would leave archive unbound. Guard both.
+    expect(defaultBindings()['session.archive']).toEqual(['mod+l'])
   })
 
   it('has an English label so it renders in the shortcuts panel', () => {

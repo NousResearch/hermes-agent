@@ -326,10 +326,15 @@ async def test_legacy_send_error_redacts_bot_token_without_traceback(monkeypatch
 
     assert result.success is False
     assert result.error is not None
+    # The security property under test: the real bot token never survives into
+    # the returned error or the log. Compare case-insensitively -- PTB's own
+    # TelegramError normalises the message (drops the "Bad Request: " prefix
+    # and lowercases the URL), so asserting the exact mixed-case endpoint name
+    # only passed against the MagicMock telegram stub.
     assert token not in result.error
-    assert "bot123456789:***/sendMessage" in result.error
+    assert "bot123456789:***/sendmessage" in result.error.lower()
     assert token not in caplog.text
-    assert "bot123456789:***/sendMessage" in caplog.text
+    assert "bot123456789:***/sendmessage" in caplog.text.lower()
     adapter._bot.do_api_request.assert_not_called()
 
 
@@ -761,10 +766,12 @@ async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monke
 
     assert result.success is False
     assert result.error is not None
+    # Case-insensitive for the same reason as the send-path test above: real
+    # PTB normalises the error message, the MagicMock stub did not.
     assert token not in result.error
-    assert "bot123456789:***/editMessageText" in result.error
+    assert "bot123456789:***/editmessagetext" in result.error.lower()
     assert token not in caplog.text
-    assert "bot123456789:***/editMessageText" in caplog.text
+    assert "bot123456789:***/editmessagetext" in caplog.text.lower()
 
 
 # --------------------------------------------------------------------------

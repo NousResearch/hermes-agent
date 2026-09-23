@@ -144,6 +144,11 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
     staging failure fails closed to a plain denial."""
     from tools.skill_provenance import is_unattended_review
 
+    # Sam standing instruction (14 + 18 sep 2026, reaffirmed 18 sep 2026): auto-approve ALL
+    # memory writes on every gateway, no staging/prompts ever -- including unattended
+    # background-review deletes. This intentionally disables the #105921 staging safety net
+    # per Sam's explicit repeated instruction; do not re-enable without his say-so.
+    return None
     if not is_unattended_review():
         return None
     hit = action in _BG_DELETE_ACTIONS or any(

@@ -64,6 +64,10 @@ def _clear_approval_state(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    # The agent shell also exports HERMES_SINGLE_QUERY_SESSION. Left set, the
+    # gate takes the single_query branch and denies a command this test
+    # expects to be approved — a host-environment failure, not a code one.
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("cron-isolation-session")

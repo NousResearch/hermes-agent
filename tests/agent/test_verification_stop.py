@@ -255,3 +255,125 @@ def test_is_non_code_path_classification():
     assert _is_non_code_path("src/app.ts") is False
     assert _is_non_code_path("config.yaml") is False
     assert _is_non_code_path("run_agent.py") is False
+
+
+def test_ephemeral_verify_artifacts_do_not_nudge(tmp_path):
+    """The gate must not feed on its own evidence scripts or deleted scratch.
+
+    Regression for the self-feeding loop observed 2026-08-19: each round's
+    `hermes-verify-*` temp script became the next round's "changed path", so
+    the gate had no terminal state.
+    """
+    import tempfile as _tempfile
+
+    from agent.verification_stop import (
+        _filter_verifiable_paths,
+        _is_ephemeral_verify_artifact,
+    )
+
+    temp_root = Path(_tempfile.gettempdir())
+
+    # 1. Ad-hoc verify scripts under temp are ephemeral even while they exist.
+    probe = temp_root / "hermes-verify-abc123.sh"
+    probe.write_text("#!/bin/bash\necho ok\n")
+    try:
+        assert _is_ephemeral_verify_artifact(str(probe)) is True
+    finally:
+        probe.unlink()
+    # ... and after deletion.
+    assert _is_ephemeral_verify_artifact(str(probe)) is True
+    assert _is_ephemeral_verify_artifact(str(temp_root / "hermes-ad-hoc-x.py")) is True
+
+    # 2. A DELETED ordinary temp path has nothing left to verify.
+    gone = temp_root / "task_check_gone_xyz.sh"
+    assert not gone.exists()
+    assert _is_ephemeral_verify_artifact(str(gone)) is True
+
+    # 3. An EXISTING ordinary temp script still verifies (only deletion or the
+    #    verify prefix exempts it).
+    live = temp_root / "hermes_stop_gate_live_fixture.sh"
+    live.write_text("#!/bin/bash\n")
+    try:
+        assert _is_ephemeral_verify_artifact(str(live)) is False
+    finally:
+        live.unlink()
+
+    # 4. Non-temp paths that EXIST, and deleted paths inside a real workspace,
+    #    never get the exemption (a deleted tracked file is a real change to
+    #    verify). Use the live repo as the workspace fixture: pytest's tmp_path
+    #    is under the system temp dir, so it cannot stand in for one, and a
+    #    made-up path like /Users/nobody/repo is neither existing nor inside a
+    #    workspace -- it would now be treated as deleted scratch and silently
+    #    stop testing what this case is about.
+    repo_root = Path(__file__).resolve().parents[2]
+    assert (repo_root / ".git").exists(), "fixture expects the real checkout"
+
+    repo_file = str(repo_root / "agent" / "verification_stop.py")
+    assert Path(repo_file).exists()
+    assert _is_ephemeral_verify_artifact(repo_file) is False
+
+    # Deleted, but inside a .git workspace -> still a real change.
+    repo_deleted = str(repo_root / "agent" / "deleted_fixture_never_created.py")
+    assert not Path(repo_deleted).exists()
+    assert _is_ephemeral_verify_artifact(repo_deleted) is False
+
+    # A magic-named lookalike inside a real workspace is NOT exempt either:
+    # the hermes-verify-/hermes-ad-hoc- prefix only applies under temp.
+    lookalike = str(repo_root / "agent" / "hermes-verify-lookalike.sh")
+    assert _is_ephemeral_verify_artifact(lookalike) is False
+
+    # The same contract must hold for a real workspace located UNDER /tmp.
+    # Update rehearsals use a disposable worktree there, whose ``.git`` is
+    # a file rather than a directory. A magic verify name inside that repo
+    # is still tracked code, never disposable evidence.
+    temp_repo = tmp_path / "repo"
+    temp_repo.mkdir()
+    (temp_repo / ".git").write_text("gitdir: /tmp/fake-worktree-meta\n")
+    temp_lookalike = temp_repo / "hermes-verify-lookalike.sh"
+    temp_lookalike.write_text("#!/bin/bash\n")
+    assert _is_ephemeral_verify_artifact(str(temp_lookalike)) is False
+
+    # ...and the boundary still holds the other way: a stray marker sitting
+    # DIRECTLY in the temp root must not promote loose scratch to project code.
+    # Mutation-proven 2026-08-28: swapping the temp-aware walk for the generic
+    # _in_workspace() makes this assertion fail whenever /tmp/package.json
+    # exists, which is exactly how the deleted-scratch exemption died before.
+    stray_marker = Path(tempfile.gettempdir()) / "package.json"
+    created_stray = not stray_marker.exists()
+    if created_stray:
+        stray_marker.write_text("{}\n")
+    try:
+        loose_probe = Path(tempfile.gettempdir()) / "hermes-ad-hoc-boundary-probe.py"
+        loose_probe.write_text("x = 1\n")
+        try:
+            assert _is_ephemeral_verify_artifact(str(loose_probe)) is True
+        finally:
+            loose_probe.unlink(missing_ok=True)
+    finally:
+        if created_stray:
+            stray_marker.unlink(missing_ok=True)
+
+    # 4b. Deleted scratch OUTSIDE temp and outside any workspace IS exempt.
+    #     A file that no longer exists has no behavior left to verify, so
+    #     demanding evidence for it can never be satisfied and re-nudges every
+    #     turn (regression guard for the 2026-08-22 loop: a throwaway
+    #     ~/.hermes/scripts restart script nudged three turns running).
+    #     $HOME itself must not count as a workspace -- a stray ~/package.json
+    #     otherwise makes every path under home look like a project.
+    home_scratch = str(Path.home() / ".hermes" / "scripts" / "deleted-scratch-fixture.sh")
+    assert not Path(home_scratch).exists()
+    assert _is_ephemeral_verify_artifact(home_scratch) is True
+
+    # ...but the same directory's LIVE files still nudge.
+    for sibling in (Path.home() / ".hermes" / "scripts").glob("*.sh"):
+        assert _is_ephemeral_verify_artifact(str(sibling)) is False
+        break
+
+    # 5. Relative paths are left alone.
+    assert _is_ephemeral_verify_artifact("src/app.ts") is False
+
+    # 6. End to end through the filter: only the real repo file survives.
+    kept = _filter_verifiable_paths(
+        [str(probe), str(gone), repo_file, "notes.md"]
+    )
+    assert kept == [repo_file]

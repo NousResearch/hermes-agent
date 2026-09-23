@@ -93,11 +93,19 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     from hermes_cli.doctor_state import _honcho_is_configured_for_doctor
     updated_available, updated_unavailable = list(available), []
+    xai_oauth = False
+    try:
+        from hermes_cli.auth import get_xai_oauth_auth_status
+        xai_oauth = bool((get_xai_oauth_auth_status() or {}).get("logged_in"))
+    except Exception:
+        xai_oauth = False
     for item in unavailable:
         if _is_kanban_worker_env_gate(item):
             gated = "kanban"
         elif item.get("name") == "honcho" and _honcho_is_configured_for_doctor():
             gated = "honcho"
+        elif item.get("name") == "x_search" and xai_oauth:
+            gated = "x_search"
         else:
             updated_unavailable.append(item)
             continue

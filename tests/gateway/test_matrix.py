@@ -1664,31 +1664,6 @@ class TestMatrixDiagnostics:
         assert "diagnostic-secret-recovery-key" not in str(diagnostics)
 
 
-class TestMatrixEncryptedSendFallback:
-    @pytest.mark.asyncio
-    async def test_send_retries_after_e2ee_error(self):
-        """send() should retry with crypto.share_keys() on E2EE errors."""
-        adapter = _make_adapter()
-        adapter._encryption = True
-
-        fake_client = MagicMock()
-        fake_client.send_message_event = AsyncMock(side_effect=[
-            Exception("encryption error"),
-            "$event123",  # mautrix returns EventID string directly
-        ])
-        mock_crypto = MagicMock()
-        mock_crypto.share_keys = AsyncMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        result = await adapter.send("!room:example.org", "hello")
-
-        assert result.success is True
-        assert result.message_id == "$event123"
-        mock_crypto.share_keys.assert_awaited_once()
-        assert fake_client.send_message_event.await_count == 2
-
-
 # ---------------------------------------------------------------------------
 # E2EE: _joined_rooms reference preservation for CryptoStateStore
 # ---------------------------------------------------------------------------

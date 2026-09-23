@@ -1,12 +1,14 @@
 """Causal Matrix transport and lifecycle regressions (no homeserver)."""
 import asyncio
 import sys
+from json import JSONDecodeError
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from mautrix.api import Method
-from mautrix.errors import MatrixResponseError
+from mautrix.client import Client
+from mautrix.errors import EncryptionError
 
 from plugins.platforms.matrix import adapter as matrix
 
@@ -229,29 +231,102 @@ async def test_cancelled_partial_connect_owns_session_until_teardown(monkeypatch
     assert closes == [True]
 
 
-@pytest.mark.asyncio
-async def test_definitive_response_error_still_shares_keys_and_retries_once():
+def _http_backed_adapter(response, calls):
+    def request(*args, **kwargs):
+        calls.append((args, kwargs))
+        return response
+
+    api = matrix._create_matrix_http_api(
+        base_url="https://example.invalid", token="",
+        client_session=SimpleNamespace(request=request), default_retry_count=0)
+    client = Client(api=api)
+    client.state_store = SimpleNamespace(is_encrypted=_false_encryption)
+    client.crypto = SimpleNamespace(share_keys=_unexpected_share)
     adapter = object.__new__(matrix.MatrixAdapter)
     adapter.platform = matrix.Platform.MATRIX
     adapter._encryption = True
-    calls = []
-    async def share():
-        calls.append("share")
-    adapter._client = SimpleNamespace(crypto=SimpleNamespace(share_keys=share))
+    adapter._client = client
     adapter.format_message = lambda text: text
     adapter.truncate_message = lambda text, _limit: [text]
     adapter.max_message_length = 1000
     adapter._build_text_message_content = lambda text: {"msgtype": "m.text", "body": text}
     adapter._apply_relation_metadata = lambda *args, **kwargs: None
-    async def send_event(*args):
-        calls.append("send")
-        if calls == ["send"]:
-            raise MatrixResponseError("response did not fulfill expectations")
-        return "$recovered"
-    adapter._send_room_message = send_event
-    result = await adapter.send("!r", "hello")
-    assert result.success and result.message_id == "$recovered"
-    assert calls == ["send", "share", "send"]
+    return adapter, client
+
+
+async def _false_encryption(_room):
+    return False
+
+
+async def _unexpected_share():
+    pytest.fail("no key share is allowed after a possible HTTP send")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_json", [False, True], ids=["missing-event-id", "malformed-json"])
+async def test_accepted_send_with_unusable_response_never_creates_another_transaction(bad_json):
+    calls = []
+    response = Response(200)
+    if bad_json:
+        async def malformed_json():
+            raise JSONDecodeError("invalid success JSON", "{", 1)
+        response.json = malformed_json
+    else:
+        response.data = {}
+    adapter, _client = _http_backed_adapter(response, calls)
+    result = await adapter._send_with_retry("!r", "hello", max_retries=2, base_delay=0)
+    assert not result.success
+    assert result.raw_response == {"matrix_send_final": True, "matrix_send_disposition": "unknown"}
+    assert len(calls) == 1
+    assert "/send/" in str(calls[0][0][1])
+
+
+@pytest.mark.asyncio
+async def test_protocol_rejection_does_not_trigger_key_share_or_fallback():
+    calls = []
+    response = Response(403)
+    response.data = {"errcode": "M_FORBIDDEN", "error": "forbidden"}
+    adapter, _client = _http_backed_adapter(response, calls)
+    result = await adapter._send_with_retry("!r", "hello", max_retries=2, base_delay=0)
+    assert not result.success
+    assert result.raw_response == {"matrix_send_final": True, "matrix_send_disposition": "rejected"}
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pre_send_crypto_failure_can_recover_after_key_share():
+    calls = []
+    adapter, client = _http_backed_adapter(Response(200), calls)
+    crypto_steps = []
+    class Crypto:
+        async def encrypt_megolm_event(self, *_args):
+            crypto_steps.append("encrypt")
+            if len(crypto_steps) < 4:
+                raise EncryptionError("no group session")
+            return {"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "local"}
+
+        async def share_group_session(self, *_args):
+            crypto_steps.append("group-share")
+
+        async def share_keys(self):
+            crypto_steps.append("key-share")
+
+    client.crypto = Crypto()
+    client.state_store = SimpleNamespace(
+        is_encrypted=_true_encryption, has_full_member_list=_true_encryption,
+        get_members=_empty_members)
+    result = await adapter._send_with_retry("!r", "hello", max_retries=2, base_delay=0)
+    assert result.success and result.message_id == "$ok"
+    assert crypto_steps == ["encrypt", "group-share", "encrypt", "key-share", "encrypt"]
+    assert len(calls) == 1  # the first send fails during encryption, before HTTP
+
+
+async def _true_encryption(_room):
+    return True
+
+
+async def _empty_members(_room):
+    return []
 
 
 @pytest.mark.asyncio

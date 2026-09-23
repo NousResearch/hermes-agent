@@ -1551,18 +1551,22 @@ class MatrixAdapter(BasePlatformAdapter):
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
-                from aiohttp import ClientError
-                from mautrix.errors import MatrixConnectionError
-                ambiguous = isinstance(exc, (TimeoutError, ClientError, MatrixConnectionError,
-                                             ConnectionError, OSError))
-                if (ambiguous or _is_matrix_rate_limit(exc)
-                        or not (self._encryption and getattr(self._client, "crypto", None))):
+                from mautrix.errors import EncryptionError, MatrixRequestError
+                # mautrix encrypts before ClientAPI issues the PUT. Only its local
+                # EncryptionError proves this event has not reached the send endpoint.
+                # Even a 2xx response can fail during JSON parsing or event_id lookup;
+                # every other error is final rather than risking a fresh transaction.
+                if not (isinstance(exc, EncryptionError) and self._encryption
+                        and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
                     return SendResult(
                         success=False, error=str(exc),
                         error_kind="rate_limited" if _is_matrix_rate_limit(exc) else None,
-                        raw_response={"matrix_send_final": True} if ambiguous or _is_matrix_rate_limit(exc) else None)
-                try:  # E2EE error: retry once after sharing keys
+                        raw_response={
+                            "matrix_send_final": True,
+                            "matrix_send_disposition": (
+                                "rejected" if isinstance(exc, MatrixRequestError) else "unknown")})
+                try:  # Pre-send E2EE failure: retry once after sharing keys
                     await self._client.crypto.share_keys()
                     last_event_id = await self._send_room_message(chat_id, msg_content)
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)

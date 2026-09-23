@@ -1580,7 +1580,19 @@ def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
     provider = None
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
+        runtime = resolve_runtime_provider(requested=None)
+        provider = _normalize_job_optional_text(runtime.get("provider"))
+        if provider and provider.lower() == "custom":
+            # Bare "custom" is the billing class shared by every named entry — pinning it loses the
+            # identity, and replaying it falls through the ladder to OpenRouter (#109765). Pin the
+            # durable identity, the same lookup session persistence heals with.
+            with contextlib.suppress(Exception):
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                provider = canonical_custom_identity(
+                    base_url=str(runtime.get("base_url") or ""),
+                    config_provider=str(runtime.get("requested_provider") or ""),
+                ) or provider
     return (provider.lower() if provider else None), model
 
 

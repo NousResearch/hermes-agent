@@ -23,6 +23,7 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
+from hermes_cli.process_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -201,12 +202,13 @@ async def _lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # Desktop-spawned backends fire cron jobs themselves, since the app has no
+    # gateway running the scheduler. Server `hermes dashboard` is unaffected —
+    # it relies on its own gateway.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
+    desktop_owned = is_desktop_owned_backend()
+    if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
         # launchd, still holding the platform WebSocket) before forking a fresh
         # one that would race the same credential (#77276). Runs
@@ -277,7 +279,7 @@ async def _lifespan(app: "FastAPI"):
             shutdown_local_runtime()
         except Exception:  # noqa: BLE001
             pass
-        if os.getenv("HERMES_DESKTOP") == "1":
+        if desktop_owned:
             _terminate_desktop_managed_gateway()
         eager_reconcile_thread.join()
 
@@ -1212,35 +1214,41 @@ def _best_effort(what: str, fn) -> None:
 
 
 def _publish_host_rendezvous(host: str, port: int) -> None:
-    """Publish the machine-level serve owner unless this is a Desktop-owned pool child."""
-    # Desktop-spawned backends (flag + per-spawn token; the bare flag is inherited by every
-    # Desktop shell) are loopback, random-port and per-profile. Recording one as the host owner
+    """Publish this backend's host record: ``ROLE_SERVE`` for the machine-level owner,
+    ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child."""
+    # Desktop-spawned backends (flag + per-spawn credential; the bare flag is inherited by every
+    # Desktop shell) are loopback, random-port and per-profile. Recording one as the HOST owner
     # made a later independently supervised `dashboard --host 0.0.0.0 --port N` refuse behind
-    # the private child on every restart (#119824). Desktop discovers its own backends through
-    # spawn-ledger.json, never through this record.
-    from hermes_cli.process_identity import is_desktop_owned_backend
-
-    if is_desktop_owned_backend():
-        return
-
+    # the private child on every restart (#119824): the attach/refuse ladder reads ROLE_SERVE
+    # only. They still publish under their own role so `hermes plugins install` from a terminal
+    # can reach the backend hosting the open chats on a Desktop-only box (#119644).
     from gateway import host_rendezvous as hr
 
-    outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
+    desktop_child = is_desktop_owned_backend()
+    role = hr.ROLE_DESKTOP_SERVE if desktop_child else hr.ROLE_SERVE
+
+    outcome, error = hr.claim_host_lock(role)
     if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
         _log.warning(
             "Host backend lock could not be opened (%s); this backend is not discoverable. "
             "This is NOT another backend holding it.", error)
         return
     if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
-        owner = hr.read_record(hr.ROLE_SERVE)
+        owner = hr.read_record(role)
+        if desktop_child:
+            # A second pool child is Desktop's own topology, not a conflict.
+            _log.debug("another Desktop backend holds the %s record (%s)", role,
+                       hr.describe(owner) if owner else "owner unknown")
+            return
         _log.warning(
             "Another backend already owns this host (%s); this one bound anyway "
             "(observe-only). Multiplex-only expects exactly one backend per host.",
             hr.describe(owner) if owner else "owner unknown",
         )
         return
+    app.state.host_role = role
     hr.publish_record(
-        hr.ROLE_SERVE,
+        role,
         host=host,
         port=port,
         profiles=hr.served_profiles(),
@@ -1249,7 +1257,7 @@ def _publish_host_rendezvous(host: str, port: int) -> None:
         token=_SESSION_TOKEN,
     )
     # SIGTERM included: it is the normal stop, and it does not run atexit here.
-    hr.cleanup_on_exit(hr.ROLE_SERVE)
+    hr.cleanup_on_exit(role)
 
 
 def _on_server_started(
@@ -1282,7 +1290,7 @@ def _on_server_started(
 
         reap_orphaned_mcp_helpers()
 
-    if os.getenv("HERMES_DESKTOP") == "1":
+    if is_desktop_owned_backend():
         _best_effort("orphan desktop-local serve reap", _reap_desktop_serves)
     # Same sweep for stdio MCP helpers (#61514): positive identity only (spawn
     # ledger + spawner provably dead); anything alive or unprovable is untouched.

@@ -566,17 +566,6 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _desktop_ssh_backend(argv: list) -> bool:
-    """A Desktop-owned ``serve --ssh-session-token-file`` child has a fixed identity too.
-
-    The Desktop client names the remote profile explicitly (``--profile <name>``, or none for
-    the root home). Following the remote host's sticky ``active_profile`` instead silently
-    re-homes the backend into a profile the UI never asked for, so Settings read one
-    ``config.yaml`` and the user edits another (KC's "nothing sticks over SSH").
-    """
-    return "--ssh-session-token-file" in argv
-
-
 def _s6_supervised_gateway_run(argv: list) -> bool:
     """A bare ``gateway run`` inside the s6 image names the ``gateway-default`` slot too.
 
@@ -614,7 +603,8 @@ def _apply_profile_override() -> None:
     if profile_name is None and hermes_home_env and os.environ.get("HERMES_UPDATE_POST_SWAP") == "1":
         return
 
-    if (profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv)
+    if (profile_name is None and not _under_gateway_supervisor(argv)
+            and not _startup_fast.is_desktop_ssh_backend_argv(argv)
             and not _s6_supervised_gateway_run(argv)):
         try:
             from hermes_constants import get_default_hermes_root

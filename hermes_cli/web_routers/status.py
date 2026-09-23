@@ -130,9 +130,11 @@ async def get_host_identity(request: Request):
     headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
     """
     _require_token(request)
-    # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
-    # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
-    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
+    # ``role`` is the host ROLE this process published (gateway/host_rendezvous.ROLE_SERVE, or
+    # ROLE_DESKTOP_SERVE for a Desktop-owned child), not the launch mode: `hermes serve` and
+    # `hermes dashboard` are one host role that differ in SPA.
+    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(),
+            "role": getattr(app.state, "host_role", None) or "serve",
             "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 

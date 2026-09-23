@@ -87,6 +87,11 @@ export interface ManagedSshUpdateServiceDependencies<
 > {
   resolveSource: (connectionId: string) => TSource | null | undefined
   readRecoveryRecords: () => TRecord[]
+  /** Reuse the Desktop-owned admission gate and operation maps across every update entry point. */
+  gate?: ManagedConnectionUpdateGate
+  activeUpdates?: Map<string, Promise<ManagedConnectionUpdateResult>>
+  activeRecoveries?: Map<string, Promise<void>>
+  primaryRestoreOwners?: Map<string, { correlationId: string; profile: string; source: TSource }>
   captureScopes: (source: TSource) => Promise<TScope[]>
   openTransport: (source: TSource) => Promise<ManagedSshUpdateTransport>
   targetFromState: (state: unknown) => RemoteUpdateTarget
@@ -219,12 +224,12 @@ export function createManagedSshUpdateService<
   TScope extends ManagedSshUpdateScope = ManagedSshUpdateScope,
   TRecord extends ManagedSshRecoveryRecord = ManagedSshRecoveryRecord
 >(deps: ManagedSshUpdateServiceDependencies<TSource, TScope, TRecord>): ManagedSshUpdateService<TSource> {
-  const activeUpdates = new Map<string, Promise<ManagedConnectionUpdateResult>>()
+  const activeUpdates = deps.activeUpdates ?? new Map<string, Promise<ManagedConnectionUpdateResult>>()
   const activePreparations = new Map<string, Promise<ManagedSshPreparationResult>>()
-  const activeRecoveries = new Map<string, Promise<void>>()
-  const primaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: TSource }>()
+  const activeRecoveries = deps.activeRecoveries ?? new Map<string, Promise<void>>()
+  const primaryRestoreOwners = deps.primaryRestoreOwners ?? new Map<string, { correlationId: string; profile: string; source: TSource }>()
 
-  const gate = new ManagedConnectionUpdateGate(connectionId => {
+  const gate = deps.gate ?? new ManagedConnectionUpdateGate(connectionId => {
     const record = deps.readRecoveryRecords().find(item => item.connectionId === connectionId)
 
     return record?.correlationId || null

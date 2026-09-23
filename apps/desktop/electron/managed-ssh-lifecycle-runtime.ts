@@ -1,4 +1,5 @@
 import { recoverManagedSshScopes, type RemoteUpdateTarget } from './managed-ssh-update'
+import { createManagedSshUpdateService } from './managed-ssh-update-service'
 
 // The desktop shell owns the maps, gate, pool, and transport. This runtime
 // borrows those exact instances for the managed SSH update transaction.
@@ -267,7 +268,8 @@ export function createManagedSshLifecycleRuntime(deps: any) {
   }
 
   async function openManagedSshUpdateTransport(
-    source
+    source,
+    context?: { signal: AbortSignal }
   ): Promise<{ close: () => Promise<void>; target: RemoteUpdateTarget }> {
     const config = managedSshConfig(source)
 
@@ -280,7 +282,7 @@ export function createManagedSshLifecycleRuntime(deps: any) {
       { rememberLog: sshRememberLog }
     )
 
-    await ssh.open()
+    await ssh.open({ signal: context?.signal })
 
     try {
       const platform: any = await detectRemotePlatform(ssh, config.remoteHermesPath || '')
@@ -530,10 +532,77 @@ export function createManagedSshLifecycleRuntime(deps: any) {
     await Promise.allSettled(readManagedSshRecoveryRecords().map(record => recoverManagedSshUpdate(record)))
   }
 
+  // Fleet dispatch borrows the same gate, operation maps, recovery journal, and
+  // scope machinery as the individual updater. A second service-owned gate
+  // would permit two remote mutations against one installation.
+  const managedSshUpdateService = createManagedSshUpdateService({
+    gate: managedConnectionUpdateGate,
+    activeUpdates: managedConnectionUpdates,
+    activeRecoveries: managedConnectionRecoveries,
+    primaryRestoreOwners: managedPrimaryRestoreOwners,
+    resolveSource: connectionId =>
+      readDesktopConnectionsRegistry().connections.find(source => source.id === connectionId) || null,
+    readRecoveryRecords: readManagedSshRecoveryRecords,
+    captureScopes: captureManagedSshScopes,
+    openTransport: openManagedSshUpdateTransport,
+    targetFromState: remoteUpdateTargetFromState,
+    executeRemoteUpdate: (target, correlationId, context) =>
+      executeManagedRemoteUpdate(target, correlationId, {}, async () => {
+        markManagedSshRecoveryLaunching(context.connectionId, correlationId)
+        await context.onLaunchProved()
+      }, context.intent),
+    preflightRemote: assertManagedUpdatePreflightClear,
+    awaitRestoreClearance: waitForManagedRemoteClearance,
+    drainScope: drainManagedSshScope,
+    closeTransports: async (scopes, ephemeral) => {
+      const transports = new Set<any>(
+        scopes.filter(scope => scope.drained).map(scope => scope.state?.ssh).filter(Boolean)
+      )
+
+      await Promise.allSettled([...transports].map(ssh => ssh.close()))
+
+      if (ephemeral) {await ephemeral.close()}
+    },
+    restoreScope: async (scope, source, correlationId) => {
+      if (scope.unsafeDrainFailure) {
+        if (!scope.forwardRestored) {
+          throw new Error(`The original ${scope.profile} SSH forward could not be restored safely.`)
+        }
+
+        return scope.entry.connectionPromise
+      }
+
+      const scopedSource = scope.reuseToken
+        ? { ...source, token: encryptDesktopSecret(scope.reuseToken) }
+        : source
+
+      if (scope.primary) {return restoreManagedPrimarySshBackend(scopedSource, scope.profile, correlationId)}
+
+      return scope.registryScoped
+        ? ensureManagedSshBackend(scopedSource, scope.profile, correlationId)
+        : ensureManagedSshBackendAtKey(scopedSource, scope.profile, scope.key, correlationId, 'profile')
+    },
+    prepareRecovery: async (source, correlationId, scopes) => {
+      persistManagedSshRecovery(source, correlationId, scopes)
+    },
+    completeRecovery: async (source, correlationId) => {
+      clearManagedSshRecovery(source.id, correlationId)
+    },
+    restoreRecoveryScope: (record, scope, correlationId) =>
+      scope.kind === 'primary'
+        ? restoreManagedPrimarySshBackend(record.source, scope.profile, correlationId)
+        : scope.kind === 'legacy'
+          ? ensureManagedSshBackendAtKey(record.source, scope.profile, scope.key, correlationId, 'profile')
+          : ensureManagedSshBackend(record.source, scope.profile, correlationId),
+    logRecovery: sshRememberLog
+  })
 
   return {
     managedConnectionUpdateGate,
+    managedSshUpdateService,
     managedSshConfig,
+    captureManagedSshScopes,
+    openManagedSshUpdateTransport,
     updateManagedSshConnection,
     resumeManagedSshRecoveries
   }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import type { ManagedSshUpdateIntent, RemoteUpdateTarget } from './managed-ssh-update'
+import { ManagedConnectionUpdateGate, type ManagedSshUpdateIntent, type RemoteUpdateTarget } from './managed-ssh-update'
 import {
   createManagedSshUpdateService,
   type ManagedSshUpdateScope,
@@ -120,6 +120,26 @@ test('service admission deduplicates duplicate claims and refuses foreign source
   assert.equal(executions, 1)
   assert.equal(service.activeUpdates.size, 0)
   assert.equal(service.gate.owner('homelab'), null)
+})
+
+test('fleet service uses the exact legacy gate and operation maps for admission', async () => {
+  const gate = new ManagedConnectionUpdateGate()
+  const activeUpdates = new Map<string, Promise<any>>()
+  const activeRecoveries = new Map<string, Promise<void>>()
+  const primaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: TestSource }>()
+
+  const service = createManagedSshUpdateService(deps({
+    gate, activeUpdates, activeRecoveries, primaryRestoreOwners
+  }))
+
+  assert.strictEqual(service.gate, gate)
+  assert.strictEqual(service.activeUpdates, activeUpdates)
+  assert.strictEqual(service.activeRecoveries, activeRecoveries)
+  assert.equal(gate.claim('homelab', CORRELATION), true)
+  const blocked = await service.request('homelab', { correlationId: OTHER_CORRELATION })
+  assert.equal(blocked.outcome, 'refused')
+  assert.equal(gate.owner('homelab'), CORRELATION)
+  gate.release('homelab', CORRELATION)
 })
 
 test('durable ownership fences new admission and only the exact owner can release it', () => {

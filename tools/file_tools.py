@@ -626,13 +626,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if _file_ops_uses_host_paths(_get_file_ops(task_id)):
             kind = _special_file_kind(_resolved)
             if kind is not None:
-                return json.dumps({
-                    "success": False,
-                    "note": (
-                        f"'{path}' is {kind}, not a regular file — reading "
-                        "it would block indefinitely, so no read was "
-                        "attempted. Use terminal utilities if you need to "
-                        "interact with it.")})
+                message = (
+                    f"'{path}' is {kind}, not a regular file — reading "
+                    "it would block indefinitely, so no read was "
+                    "attempted. Use terminal utilities if you need to "
+                    "interact with it.")
+                return json.dumps({"success": False, "error": message, "note": message})
 
         # Hermes internal denylist (prompt injection via catalog metadata,
         # credential stores). Runs BEFORE document extraction so a

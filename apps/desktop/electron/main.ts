@@ -81,7 +81,6 @@ import {
 import { createContentFileRuntime } from './content-file-runtime'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { createDesktopAppLifecycleRuntime } from './desktop-app-lifecycle-runtime'
 import { createDesktopBackendOwnershipRuntime } from './desktop-backend-ownership-runtime'
 import { registerDesktopBootstrapIpc } from './desktop-bootstrap-ipc'
 import { createDesktopBootstrapMarkerRuntime } from './desktop-bootstrap-marker-runtime'
@@ -95,7 +94,6 @@ import { registerDesktopConnectionRegistryIpc } from './desktop-connection-regis
 import { createDesktopExternalOpenRuntime } from './desktop-external-open-runtime'
 import { registerDesktopFileIpc } from './desktop-file-ipc'
 import { createDesktopGatewayReadinessRuntime } from './desktop-gateway-readiness-runtime'
-import { createDesktopHeldQuitRuntime } from './desktop-held-quit-runtime'
 import { createDesktopHostAttachRuntime } from './desktop-host-attach-runtime'
 import {
   createDesktopMediaProtocolRuntime,
@@ -105,6 +103,7 @@ import {
   writeFileAtomic
 } from './desktop-host-utilities'
 import { createDesktopLocalRuntime } from './desktop-local-runtime'
+import { installDesktopMainLifecycle } from './desktop-main-lifecycle-assembly'
 import { createDesktopNativeChromeRuntime } from './desktop-native-chrome-runtime'
 import { createDesktopNativePreferencesRuntime, registerDesktopF12PreferenceIpc } from './desktop-native-preferences-runtime'
 import { createDesktopNativeWindowServicesRuntime } from './desktop-native-window-services-runtime'
@@ -124,7 +123,6 @@ import {
 import { createDesktopProfileMutationRuntime } from './desktop-profile-mutation-runtime'
 import { registerDesktopProfileRoutingIpc } from './desktop-profile-routing-ipc'
 import { registerDesktopQuickEntryIpc } from './desktop-quick-entry-ipc'
-import { registerDesktopQuitRuntime } from './desktop-quit-runtime'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
 import { createDesktopRendererAssetsRuntime } from './desktop-renderer-assets-runtime'
 import { createDesktopRuntimeDiscovery } from './desktop-runtime-discovery'
@@ -2006,117 +2004,33 @@ function handleDeepLink(url) {
   desktopAppLifecycle.handleDeepLink(url)
 }
 
-const desktopAppLifecycle = createDesktopAppLifecycleRuntime({
-  app,
-  ipcMain,
-  Menu,
-  screen,
-  session,
-  safeStorage,
-  path,
-  tls,
-  pathToFileURL,
-  CHROMIUM_LOG_PATH,
-  CRASH_DIAGNOSTICS,
-  DEV_SERVER,
-  HERMES_PROTOCOL,
-  IS_MAC,
-  backendShutdown,
-  buildApplicationMenu,
-  createWindow,
-  ensureLoginShellPath,
-  ensureMainWindow,
-  ensureWslWindowsFonts,
+const { desktopAppLifecycle, isPrimaryInstance } = installDesktopMainLifecycle({
+  startup, windows, connections, primaryTeardown,
+  app, ipcMain, Menu, screen, session, safeStorage, path, tls, pathToFileURL,
+  DEV_SERVER, HERMES_PROTOCOL, IS_MAC, IS_WINDOWS,
+  backendShutdown, buildApplicationMenu, ensureLoginShellPath,
+  ensureMainWindow, ensureWslWindowsFonts,
   enableBasicPasswordStoreEncryption,
-  focusWindow,
   getIsQuittingForHandoff: () => isQuittingForHandoff,
   getMainWindow: () => mainWindow,
   getPendingOpenUpdates: () => _pendingOpenUpdates,
   getRendererReadyForDeepLink: () => _rendererReadyForDeepLink,
-  installDownloadHandling,
-  installApplicationMenuAfterFirstWindow,
-  installCommandScreenshot,
-  installEmbedReferer,
-  installHudModifierTap,
-  installMediaPermissions,
-  installPreviewGuestPreload,
-  installRemoteHeaderRules,
-  installWindowsSystemCaTrust,
-  keepAwake,
-  migrateLegacyEncryptedSecretsOnce,
-  minimizeToTray,
-  openHudWindow,
-  primaryBackendIsRemote,
-  primaryProfileKey,
-  readPersistedDisableF12,
-  readPersistedKeepAwake,
-  readQuickEntrySettings,
-  registerMediaProtocol,
-  registerPowerResumeListeners,
-  rememberLog,
-  resolveRendererIndex,
-  resumeManagedSshRecoveries,
-  sendOpenUpdatesRequested,
-  setActiveGatewayProfile,
-  setF12Blocked: blocked => {
-    f12Blocked = blocked
-  },
-  setPendingOpenUpdates: pending => {
-    _pendingOpenUpdates = pending
-  },
-  setRendererReadyForDeepLink: ready => {
-    _rendererReadyForDeepLink = ready
-  },
-  setWslBridgeProfileState,
-  startChromiumLogWatcher,
-  wakeIndicatorController,
-  applyQuickEntrySettings
-})
-
-const isPrimaryInstance = desktopAppLifecycle.isPrimaryInstance
-
-// Register after lifecycle setup so the held quit precedes normal teardown.
-const heldQuitForActiveWork = createDesktopHeldQuitRuntime({
-  app,
-  BrowserWindow,
-  dialog,
-  activeWorkByWebContents,
-  minimizeToTray,
-  getIsQuittingForHandoff: () => isQuittingForHandoff,
-  skipQuitConfirm: SKIP_QUIT_CONFIRM
-})
-
-registerDesktopQuitRuntime({
-  IS_WINDOWS,
-  app,
-  backendConnectionState,
+  installDownloadHandling, installApplicationMenuAfterFirstWindow,
+  installCommandScreenshot, installEmbedReferer, installHudModifierTap,
+  installMediaPermissions, installWindowsSystemCaTrust, keepAwake,
+  readPersistedDisableF12, readPersistedKeepAwake,
+  registerMediaProtocol, registerPowerResumeListeners,
+  resolveRendererIndex, resumeManagedSshRecoveries,
+  sendOpenUpdatesRequested, setActiveGatewayProfile,
+  setF12Blocked: blocked => { f12Blocked = blocked },
+  setPendingOpenUpdates: pending => { _pendingOpenUpdates = pending },
+  setRendererReadyForDeepLink: ready => { _rendererReadyForDeepLink = ready },
+  setWslBridgeProfileState, BrowserWindow, dialog,
+  activeWorkByWebContents, backendConnectionState,
   backendQuitNeedsWait,
-  backendShutdown,
-  closePetOverlay,
-  closeQuickEntryWindow,
-  flushDesktopLogBufferSync,
   getBootstrapAbortController: () => bootstrapAbortController,
-  getIsQuittingForHandoff: () => isQuittingForHandoff,
   getWindowsSandboxFallbackSticky: () => sandboxState.fallbackSticky,
-  heldQuitForActiveWork,
-  introRevealController,
-  localBackendLifecycle,
-  managedConnectionRecoveries,
-  managedConnectionUpdates,
-  managedUpdateQuitState,
-  markerAfterSuccessfulBoot,
-  minimizeToTray,
-  poolStopper,
-  previewTargetRuntime,
-  quitTeardown,
-  shellOverlayRuntime,
-  sshBootstrapCoordinator,
-  sshConnections,
-  sshTeardowns,
-  stopDesktopLogFlushTimer,
-  teardownSshForQuit,
-  terminalIpc,
-  waitForManagedUpdateOperations,
-  wakeIndicatorController,
-  writeSandboxMarker
+  localBackendLifecycle, markerAfterSuccessfulBoot, poolStopper,
+  previewTargetRuntime, quitTeardown, teardownSshForQuit,
+  terminalIpc, waitForManagedUpdateOperations, writeSandboxMarker
 })

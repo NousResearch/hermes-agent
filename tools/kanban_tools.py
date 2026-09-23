@@ -639,11 +639,11 @@ _PUBLISHED_PR_RE = re.compile(
 # gh api check-run conclusions that are NOT completion evidence, classified so
 # the worker/human sees what kind of action each one needs.
 _CODE_FAILURE_CONCLUSIONS = frozenset({"failure"})
-_INFRA_CONCLUSIONS = frozenset({
-    "cancelled", "timed_out", "action_required", "stale", "neutral", "skipped"})
+_INFRA_CONCLUSIONS = frozenset({"cancelled", "timed_out", "action_required", "stale"})
+_OPTIONAL_CONCLUSIONS = frozenset({"neutral", "skipped"})
 
 
-def _gh_api_json(args: list[str], timeout: float = 30.0) -> Optional[dict]:
+def _gh_api_json(args: list[str], timeout: float = 15.0) -> Optional[dict]:
     """One ``gh api`` call returning parsed JSON, or None on any failure.
 
     The gate runs in the worker's process; workers that publish PRs already run
@@ -674,26 +674,26 @@ def _classify_pr_ci(head_sha: str, runs: list[dict], combined_state: str,
     """Pure classifier: ``(state, detail_lines)`` for one exact-head snapshot.
 
     ``state`` is one of:
-      - ``success`` — every reported run concluded ``success`` (and any legacy
-        commit-status contexts are green); the ONLY completion evidence.
+      - ``success`` — required checks concluded ``success`` (and any legacy
+        commit-status contexts are green); optional/skipped reruns do not veto.
       - ``failure`` — at least one run concluded ``failure`` (code-level: fix,
         push, re-complete). Lines carry the failing runs.
       - ``pending`` — a run has not concluded yet (wait, then re-complete).
-      - ``infra`` — cancelled/timed_out/stale/action_required/neutral/skipped
-        runs, or a gh/network/auth failure: not code, not evidence (re-run or
-        block; never done).
-      - ``missing`` — the head reports no check runs AND no commit statuses
-        (missing / zero-run suite): not evidence.
-    Any run that is not ``success`` dominates; the message lists everything.
+      - ``infra`` — cancelled/timed_out/stale/action_required runs, or a
+        gh/network/auth failure: not code, not evidence (re-run or block).
+      - ``missing`` — the head reports no successful check runs AND no green
+        commit statuses (missing / zero-run suite / only skipped): not evidence.
     """
     lines: list[str] = []
     pending = [r for r in runs if (r.get("status") or "") != "completed"]
     concluded = [r for r in runs if (r.get("status") or "") == "completed"]
     code_failures = [r for r in concluded if r.get("conclusion") in _CODE_FAILURE_CONCLUSIONS]
     infra_runs = [r for r in concluded if r.get("conclusion") in _INFRA_CONCLUSIONS]
+    success_runs = [r for r in concluded if r.get("conclusion") == "success"]
     unknown = [r for r in concluded
                if r.get("conclusion") not in _CODE_FAILURE_CONCLUSIONS
                and r.get("conclusion") not in _INFRA_CONCLUSIONS
+               and r.get("conclusion") not in _OPTIONAL_CONCLUSIONS
                and r.get("conclusion") != "success"]
 
     def _run_line(run: dict) -> str:
@@ -719,10 +719,10 @@ def _classify_pr_ci(head_sha: str, runs: list[dict], combined_state: str,
         return ("pending", lines)
     if infra_runs or unknown:
         return ("infra", lines)
-    # No runs concluded outside success: green only if something was actually
-    # reported. Zero-run / missing suites are non-success (Issue #104595).
     if not runs and not statuses:
         return ("missing", [f"no check runs and no commit statuses reported for head {head_sha}"])
+    if not success_runs and not statuses:
+        return ("missing", [f"no successful check runs and no commit statuses reported for head {head_sha}"])
     bad_statuses = [s for s in statuses if (s.get("state") or "") not in ("success",)]
     for s in bad_statuses[:20]:
         lines.append(f"- status {s.get('context')!r}: state={s.get('state')!r}")
@@ -750,18 +750,30 @@ def _fetch_pr_ci_state(pr_url: str) -> tuple[str, list[str]]:
         return ("infra", [f"could not query {owner}/{repo} pull #{number}: "
                           "gh api failed (missing CLI, auth, rate limit or network)"])
     head_sha: str = pr["head_sha"]
-    runs_payload = _gh_api_json(
-        [f"repos/{owner}/{repo}/commits/{head_sha}/check-runs",
-         "--jq", "{total_count,check_runs:[.check_runs[]|"
-                 "{name,status,conclusion,html_url,external_id}]}"])
+    runs: list[dict] = []
+    page = 1
+    total = 0
+    while True:
+        runs_payload = _gh_api_json(
+            [f"repos/{owner}/{repo}/commits/{head_sha}/check-runs?per_page=100&page={page}",
+             "--jq", "{total_count,check_runs:[.check_runs[]|"
+                     "{name,status,conclusion,html_url,external_id}]}"])
+        if runs_payload is None:
+            return ("infra", [f"could not read check state for {owner}/{repo}@{head_sha}: "
+                              "gh api failed (missing CLI, auth, rate limit or network)"])
+        page_runs = runs_payload.get("check_runs") or []
+        runs.extend(page_runs)
+        total = runs_payload.get("total_count") or len(runs)
+        if len(runs) >= total or not page_runs or page >= 10:
+            break
+        page += 1
+
     status_payload = _gh_api_json(
         [f"repos/{owner}/{repo}/commits/{head_sha}/status",
          "--jq", "{state,statuses:[.statuses[]|{context,state}]}"])
-    if runs_payload is None or status_payload is None:
-        return ("infra", [f"could not read check state for {owner}/{repo}@{head_sha}: "
+    if status_payload is None:
+        return ("infra", [f"could not read status state for {owner}/{repo}@{head_sha}: "
                           "gh api failed (missing CLI, auth, rate limit or network)"])
-    runs: list[dict] = runs_payload.get("check_runs") or []
-    total = runs_payload.get("total_count") or len(runs)
     statuses: list[dict] = (status_payload.get("statuses") or [])
     state, lines = _classify_pr_ci(head_sha, runs, status_payload.get("state") or "",
                                    statuses)

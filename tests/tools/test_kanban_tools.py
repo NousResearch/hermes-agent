@@ -1280,6 +1280,38 @@ class TestPrCiClassifier:
         assert state == "failure"
         assert any("SARIF upload" in ln for ln in lines)
 
+    def test_skipped_optional_run_does_not_veto_required_success(self):
+        """Regression for andrexibiza review on PR #104627:
+        exact-head 'All required checks pass=success' plus optional
+        'Rerun review-labels job=skipped' runs must be accepted, not classified as infra.
+        """
+        from tools import kanban_tools as kt
+        runs = [
+            {"name": "All required checks pass", "status": "completed", "conclusion": "success"},
+            {"name": "Rerun review-labels job", "status": "completed", "conclusion": "skipped"},
+            {"name": "Optional neutral job", "status": "completed", "conclusion": "neutral"},
+        ]
+        state, lines = kt._classify_pr_ci("abc123", runs, "success", [])
+        assert state == "success"
+        assert lines[0].startswith("all checks green")
+
+    def test_skipped_optional_run_with_failing_check_rejects(self):
+        from tools import kanban_tools as kt
+        runs = [
+            {"name": "All required checks pass", "status": "completed", "conclusion": "failure"},
+            {"name": "Rerun review-labels job", "status": "completed", "conclusion": "skipped"},
+        ]
+        state, lines = kt._classify_pr_ci("abc123", runs, "failure", [])
+        assert state == "failure"
+
+    def test_only_skipped_runs_reports_missing(self):
+        from tools import kanban_tools as kt
+        runs = [
+            {"name": "Rerun review-labels job", "status": "completed", "conclusion": "skipped"},
+        ]
+        state, lines = kt._classify_pr_ci("abc123", runs, "", [])
+        assert state == "missing"
+
 
 class TestPrCiGateHandler:
     """Machine-enforced gate on kanban_complete (Issue #104595)."""
@@ -1380,7 +1412,7 @@ class TestPrCiFetch:
         from tools import kanban_tools as kt
         calls: list[str] = []
 
-        def fake_gh(args, timeout=30.0):
+        def fake_gh(args, **kw):
             calls.append(args[0])
             if args[0].startswith("repos/o/r/pulls/"):
                 return {"head_sha": "headNEW", "html_url": "https://github.com/o/r/pull/42"}
@@ -1395,9 +1427,34 @@ class TestPrCiFetch:
         assert any("commits/headNEW/check-runs" in c for c in calls)
         assert any("commits/headNEW/status" in c for c in calls)
 
+    def test_fetch_paginates_check_runs(self, monkeypatch):
+        """Regression for Enough1122 review on PR #104627:
+        check-runs API must paginate and query per_page=100 rather than stopping at 30."""
+        from tools import kanban_tools as kt
+        calls: list[str] = []
+
+        def fake_gh(args, **kw):
+            calls.append(args[0])
+            if args[0].startswith("repos/o/r/pulls/"):
+                return {"head_sha": "headPAGED", "html_url": "https://github.com/o/r/pull/42"}
+            if "check-runs" in args[0]:
+                if "page=1" in args[0]:
+                    return {"total_count": 2, "check_runs": [
+                        {"name": "check1", "status": "completed", "conclusion": "success"}]}
+                else:
+                    return {"total_count": 2, "check_runs": [
+                        {"name": "check2", "status": "completed", "conclusion": "success"}]}
+            return {"state": "success", "statuses": []}
+
+        monkeypatch.setattr(kt, "_gh_api_json", fake_gh)
+        state, _ = kt._fetch_pr_ci_state("https://github.com/o/r/pull/42")
+        assert state == "success"
+        assert any("page=1" in c for c in calls)
+        assert any("page=2" in c for c in calls)
+
     def test_fetch_gh_failure_is_infra(self, monkeypatch):
         from tools import kanban_tools as kt
-        monkeypatch.setattr(kt, "_gh_api_json", lambda args, timeout=30.0: None)
+        monkeypatch.setattr(kt, "_gh_api_json", lambda args, **kw: None)
         state, lines = kt._fetch_pr_ci_state("https://github.com/o/r/pull/42")
         assert state == "infra"
         assert "gh api failed" in lines[0]

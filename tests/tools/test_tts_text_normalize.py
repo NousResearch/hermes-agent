@@ -61,6 +61,12 @@ def test_prepare_spoken_text_strips_media_file_links():
     assert "Bye" in spoken
 
 
+def test_prepare_spoken_text_keeps_sentence_break_after_inline_media_link():
+    spoken = prepare_spoken_text("See MEDIA:/tmp/report-2026-q3.xlsx. Then reply.")
+    assert "report" not in spoken
+    assert spoken == "See. Then reply."
+
+
 def test_prepare_spoken_text_closes_trailing_colons():
     # "the regex list:" + a now-removed raw token would leave the voice hanging
     # on an open colon-pause (the "aaaa" stutter). Close it with a period.

@@ -7,7 +7,10 @@ const PARAGRAPH_BREAK_RE = /[ \t]*\n{2,}[ \t]*/g
 const PUNCTUATED_PARAGRAPH_BREAK_RE = /([.!?])([*_~`>"'’”)}\]]*)[ \t]*\n{2,}[ \t]*/g
 const SOFT_BREAK_RE = /[ \t]*\n[ \t]*/g
 
-const MEDIA_PATH_RE = /MEDIA:\S+/g
+// A file-link token ("MEDIA:/path/to/report.xlsx") renders as a chip on
+// screen; spoken, its hyphenated slug makes voices loop. It is silence, but a
+// sentence-final period/comma after it is kept ("see MEDIA:/x.py. Then").
+const MEDIA_PATH_RE = /[ \t]*MEDIA:\S+?(?=[.,;:!?)\]]*(?:\s|$))/g
 const LINE_FINAL_COLON_RE = /:\s*$/gm
 
 const THINKING_PREFIX_RE =
@@ -101,9 +104,23 @@ function parseMarkdownTableRow(line: string): MarkdownTableRow | null {
   return { blockquoteDepth, cells }
 }
 
-function stripMarkdownTables(text: string): string {
+// The header row is spoken in place of the table ("Model, Price, Context."):
+// the listener learns a table is on screen and what it compares, in the reply's
+// own language, without the body data being read cell by cell (#86602). A
+// table with an empty header stays silent — there is nothing to announce.
+function speakableTableHeader(cells: string[]): string {
+  const header = cells
+    .map(cell => cell.replace(/\\\|/g, ' ').trim())
+    .filter(Boolean)
+    .join(', ')
+
+  return header && !/[.!?:]$/.test(header) ? `${header}.` : header
+}
+
+function summarizeMarkdownTables(text: string): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   const tableLines = new Set<number>()
+  const headers = new Map<number, string>()
 
   let index = 1
 
@@ -125,6 +142,7 @@ function stripMarkdownTables(text: string): string {
 
     tableLines.add(index - 1)
     tableLines.add(index)
+    headers.set(index - 1, speakableTableHeader(headerRow.cells))
 
     let rowIndex = index + 1
 
@@ -141,7 +159,17 @@ function stripMarkdownTables(text: string): string {
     index = rowIndex
   }
 
-  return lines.filter((_, index) => !tableLines.has(index)).join('\n')
+  return lines
+    .flatMap((line, index) => {
+      if (!tableLines.has(index)) {
+        return [line]
+      }
+
+      const header = headers.get(index)
+
+      return header ? [header] : []
+    })
+    .join('\n')
 }
 
 function normalizeLineBreaks(text: string): string {
@@ -156,13 +184,15 @@ function normalizeLineBreaks(text: string): string {
 export function sanitizeTextForSpeech(text: string): string {
   // Tables first: their right-align marker is a trailing colon (":-"), and
   // closing colons before the table detector runs would mangle it.
-  const withoutTables = stripMarkdownTables(String(text))
+  const withoutTables = summarizeMarkdownTables(String(text))
 
   // Close line-final colons BEFORE newlines are flattened: "the regex list:"
   // followed by a code block keeps its colon if this runs after the flatten,
   // and the voice hangs on it. Closing early turns it into "the regex list.".
   const pre = withoutTables.replace(LINE_FINAL_COLON_RE, '.')
 
+  // Unspeakable tokens are silence, never a placeholder word: an English
+  // "code block omitted" / "link" is wrong for every non-English voice.
   return normalizeLineBreaks(pre)
     .replace(FENCED_CODE_RE, '')
     .replace(THINKING_PREFIX_RE, ' ')

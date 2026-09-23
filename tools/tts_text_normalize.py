@@ -32,8 +32,9 @@ _MD_TABLE_PIPE_RE = re.compile(r"\s*\|\s*")
 _URL_RE = re.compile(r"https?://\S+")
 # Local file links ("MEDIA:/Users/me/file.xlsx") are click targets on screen, not
 # speech: voices loop on the hyphenated slug ("eeeeee"). The token is silence; the
-# assistant's prose already says "the files are below".
-_MEDIA_PATH_RE = re.compile(r"MEDIA:\S+")
+# assistant's prose already says "the files are below". Trailing sentence
+# punctuation is left in place so "see MEDIA:/x.py. Then" keeps its full stop.
+_MEDIA_PATH_RE = re.compile(r"MEDIA:\S+?(?=[.,;:!?)\]]*(?:\s|$))")
 
 _DEGREE_UNITS = (("C", "Celsius"), ("F", "Fahrenheit"))
 # Unit suffix (regex, after a digit) -> spoken word; km/h variants before the bare "m".

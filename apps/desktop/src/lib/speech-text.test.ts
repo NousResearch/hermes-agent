@@ -16,7 +16,7 @@ describe('sanitizeTextForSpeech', () => {
     expect(sanitizeTextForSpeech('Use `git status` after the change.')).toBe('Use git status after the change.')
   })
 
-  it('skips markdown table data while preserving surrounding human text', () => {
+  it('reads the table header, not its data, between surrounding human text', () => {
     const text = `Here is the quick takeaway: the totals remain unchanged.
 
 | Item | Value | Notes |
@@ -27,8 +27,43 @@ describe('sanitizeTextForSpeech', () => {
 Full detail stays visible on screen.`
 
     expect(sanitizeTextForSpeech(text)).toBe(
-      'Here is the quick takeaway: the totals remain unchanged. Full detail stays visible on screen.'
+      'Here is the quick takeaway: the totals remain unchanged. Item, Value, Notes. Full detail stays visible on screen.'
     )
+  })
+
+  it('speaks a non-English reply with no English words injected (#86602)', () => {
+    // Placeholders used to follow the code, not the reply's language: a
+    // Chinese voice read "code block omitted" / "link" and skipped tables
+    // entirely. Code and URLs are silence; the table header is read in the
+    // reply's own language.
+    const text = `对比如下：
+
+| 模型 | 价格 |
+| --- | ---: |
+| 甲 | 10 |
+
+代码：
+\`\`\`py
+print(1)
+\`\`\`
+详情见 https://example.com/docs`
+
+    const spoken = sanitizeTextForSpeech(text)
+
+    expect(spoken).toContain('模型, 价格')
+    expect(spoken).not.toMatch(/[A-Za-z]/)
+  })
+
+  it('stays silent for a table whose header cells are all empty', () => {
+    const text = `Before the table.
+
+|   |   |
+| --- | --- |
+| a | b |
+
+After the table.`
+
+    expect(sanitizeTextForSpeech(text)).toBe('Before the table. After the table.')
   })
 
   it('does not strip prose that merely contains a pipe character', () => {
@@ -51,6 +86,10 @@ Second sentence.`
     const text = 'The files are below.\nMEDIA:/Users/ricardo/Documents/inference-server-shopping-list.xlsx\nBye.'
 
     expect(sanitizeTextForSpeech(text)).toBe('The files are below. Bye.')
+  })
+
+  it('keeps the sentence break after an inline MEDIA token', () => {
+    expect(sanitizeTextForSpeech('See MEDIA:/tmp/report-2026-q3.xlsx. Then reply.')).toBe('See. Then reply.')
   })
 
   it('does not speak a placeholder word for URLs', () => {
@@ -90,7 +129,7 @@ Second sentence.`
     expect(sanitizeTextForSpeech(text)).toBe(expected)
   })
 
-  it('skips markdown tables without leading and trailing pipes', () => {
+  it('reads only the header of markdown tables without leading and trailing pipes', () => {
     const text = `Main takeaway: total is unchanged.
 
 Item | Value
@@ -100,10 +139,10 @@ Example B | 20
 
 Done.`
 
-    expect(sanitizeTextForSpeech(text)).toBe('Main takeaway: total is unchanged. Done.')
+    expect(sanitizeTextForSpeech(text)).toBe('Main takeaway: total is unchanged. Item, Value. Done.')
   })
 
-  it('skips markdown tables nested inside blockquotes', () => {
+  it('reads only the header of markdown tables nested inside blockquotes', () => {
     const text = `Before the table.
 
 > | Item | Value |
@@ -113,7 +152,7 @@ Done.`
 
 After the table.`
 
-    expect(sanitizeTextForSpeech(text)).toBe('Before the table. After the table.')
+    expect(sanitizeTextForSpeech(text)).toBe('Before the table. Item, Value. After the table.')
   })
 
   it('allows marker padding plus three spaces in blockquoted tables', () => {
@@ -125,10 +164,10 @@ After the table.`
 
 After the table.`
 
-    expect(sanitizeTextForSpeech(text)).toBe('Before the table. After the table.')
+    expect(sanitizeTextForSpeech(text)).toBe('Before the table. Item, Value. After the table.')
   })
 
-  it('skips explicit single-column markdown tables', () => {
+  it('reads only the header of explicit single-column markdown tables', () => {
     const text = `Before the table.
 
 | Item |
@@ -137,7 +176,7 @@ After the table.`
 
 After the table.`
 
-    expect(sanitizeTextForSpeech(text)).toBe('Before the table. After the table.')
+    expect(sanitizeTextForSpeech(text)).toBe('Before the table. Item. After the table.')
   })
 
   it('preserves rows outside a table blockquote', () => {
@@ -146,7 +185,7 @@ After the table.`
 > | Example A | 10 |
 Outside | prose`
 
-    expect(sanitizeTextForSpeech(text)).toBe('Outside | prose')
+    expect(sanitizeTextForSpeech(text)).toBe('Item, Value. Outside | prose')
   })
 
   it('preserves malformed tables with mismatched column counts', () => {
@@ -167,10 +206,10 @@ Keep this prose.`
 
 After the table.`
 
-    expect(sanitizeTextForSpeech(text)).toBe('Before the table. After the table.')
+    expect(sanitizeTextForSpeech(text)).toBe('Before the table. Item, Value. After the table.')
   })
 
-  it('skips tables containing escaped pipe characters', () => {
+  it('reads headers containing escaped pipe characters', () => {
     const text = `Before the table.
 
 | Item \\| detail | Value |
@@ -179,7 +218,7 @@ After the table.`
 
 After the table.`
 
-    expect(sanitizeTextForSpeech(text)).toBe('Before the table. After the table.')
+    expect(sanitizeTextForSpeech(text)).toBe('Before the table. Item detail, Value. After the table.')
   })
 
   it('preserves indented code that resembles a table', () => {

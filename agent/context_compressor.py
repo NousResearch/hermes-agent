@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
@@ -36,6 +36,19 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
+
+# User-visible companion to the over-threshold reclamation no-op log warning
+# (#101889): a session stuck above ``threshold_tokens`` with every reclamation
+# path declining keeps slowing until the provider rejects the request, and the
+# operator only sees it in logs. Emitted at most once per dedup key (the same
+# ``_last_reclaim_block_warn`` key that gates the log) via
+# ``reclaim_lockout_warning_callback`` — the host agent's ``_emit_warning``
+# status rail (CLI print + gateway/desktop status_callback), so it is cache-safe:
+# no context or message-list mutation, status channel only.
+RECLAMATION_LOCKOUT_WARNING = (
+    "⚠ Context lockout: this conversation can't be compressed and will keep "
+    "slowing — /compact to compress history now or start a new chat."
+)
 
 
 def _safe_int(value: Any) -> int | None:
@@ -2696,6 +2709,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        reclaim_lockout_warning_callback: "Callable[[str], None] | None" = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2727,6 +2741,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
         self._last_reclaim_block_warn: "tuple[str, int] | None" = None
+        # Optional status-rail emitter for the user-visible companion of the
+        # no-op log warning above (the host agent's ``_emit_warning``). None =
+        # log-only, the pre-callback behavior (standalone/eval constructions
+        # never pass one) — never a new global.
+        self.reclaim_lockout_warning_callback = reclaim_lockout_warning_callback
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -3273,6 +3292,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             "n/a" if before is None else f"{int(before):,}",
             f"{int(self._proactive_prune_rearm_tokens):,}",
         )
+        # User-visible companion on the agent's status rail, gated by the SAME
+        # dedup key as the log above — never more often than the log fires.
+        # Best-effort: a broken status rail must not break the prune path, and
+        # a missing callback (standalone/eval construction) is log-only.
+        callback = self.reclaim_lockout_warning_callback
+        if callback is not None:
+            try:
+                callback(RECLAMATION_LOCKOUT_WARNING)
+            except Exception:
+                logger.debug("Reclamation lockout warning emission failed", exc_info=True)
 
     def prune_tool_results_only(
         self, messages: List[Dict[str, Any]], current_tokens: int | None = None,

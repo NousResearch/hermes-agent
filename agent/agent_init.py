@@ -1953,7 +1953,16 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            # Over-threshold reclamation lockout reaches the user on the same
+            # `_emit_warning` status rail as the other compression warnings
+            # (CLI print + gateway/desktop status_callback); cache-safe, and
+            # the compressor dedups it on the log's own key (#101889).
+            reclaim_lockout_warning_callback=agent._emit_warning,
         )
+    # Plugin engines implementing the same no-op warning get the rail too;
+    # engines without the attribute are unaffected.
+    with suppress(Exception):
+        agent.context_compressor.reclaim_lockout_warning_callback = agent._emit_warning
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         with suppress(Exception):

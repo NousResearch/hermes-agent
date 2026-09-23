@@ -91,6 +91,7 @@ interface ScrollHarnessProps {
   sessionKey: string | null
   scrollProfile?: string
   sessionId?: string | null
+  clampToComposer?: boolean
   window?: TranscriptWindowValue
 }
 
@@ -100,7 +101,8 @@ function ScrollHarness({
   sessionKey,
   scrollProfile,
   sessionId,
-  window
+  window,
+  clampToComposer
 }: ScrollHarnessProps) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     isRunning,
@@ -111,7 +113,12 @@ function ScrollHarness({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <TranscriptWindowProvider value={window ?? { olderAvailable: false, expandWindow: () => {} }}>
-        <Thread scrollProfile={scrollProfile} sessionId={sessionId} sessionKey={sessionKey} />
+        <Thread
+          scrollProfile={scrollProfile}
+          sessionId={sessionId}
+          sessionKey={sessionKey}
+          clampToComposer={clampToComposer}
+        />
       </TranscriptWindowProvider>
     </AssistantRuntimeProvider>
   )
@@ -231,7 +238,7 @@ describe('list session-scroll restore', () => {
     )
 
     const { container, unmount } = render(
-      <ScrollHarness isRunning messages={sessionMessages('clr')} sessionKey="clr" />
+      <ScrollHarness isRunning messages={sessionMessages('clr')} sessionKey="clr" clampToComposer />
     )
     const vp = viewportEl(container)
     const clearance = vp.querySelector('[data-slot="aui_composer-clearance"]')
@@ -252,7 +259,7 @@ describe('list session-scroll restore', () => {
     Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
       configurable: true,
       get() {
-        return this.getAttribute?.('data-slot') === 'aui_composer-clearance' ? 208 : CLIENT_H
+        return this.getAttribute?.('data-slot') === 'aui_composer-clearance' ? CLIENT_H + 168 : CLIENT_H
       }
     })
     scrollHeightValue += 168

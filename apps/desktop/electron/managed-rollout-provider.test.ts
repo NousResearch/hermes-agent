@@ -338,6 +338,24 @@ test('fails closed when the main-process generation is absent instead of default
   }
 })
 
+test('reports missing real-SSH capacity even when a review manifest is not installed', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+
+  try {
+    const provider = createManagedRolloutProvider({
+      ...dependencies,
+      ready: () => false,
+      measuredMaxInstallations: undefined
+    })
+    const capability = await provider.capabilities()
+    assert.equal(capability.available, false)
+    assert.equal(capability.reason, 'unverified-capacity')
+    assert.equal(capability.maxInstallations, 0)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
 test('runs an injected trusted rollout without exposing the launch capability', async () => {
   const { dependencies, journalDirectory, launchCalls } = makeDependencies()
 

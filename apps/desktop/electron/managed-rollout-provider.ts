@@ -839,12 +839,15 @@ export function createManagedRolloutProvider(
 
   const currentCapabilities = (): ManagedRolloutIpcCapabilities => {
     try {
-      if (deps.ready && !deps.ready()) {return capabilities(false)}
       const measured = deps.measuredMaxInstallations?.()
 
-      return typeof measured === 'number' && Number.isSafeInteger(measured) && measured >= 1 && measured <= 500
-        ? capabilities(true, measured)
-        : capabilities(false, 0, MANAGED_ROLLOUT_UNVERIFIED_CAPACITY_REASON)
+      if (typeof measured !== 'number' || !Number.isSafeInteger(measured) || measured < 1 || measured > 500) {
+        return capabilities(false, 0, MANAGED_ROLLOUT_UNVERIFIED_CAPACITY_REASON)
+      }
+
+      if (deps.ready && !deps.ready()) {return capabilities(false)}
+
+      return capabilities(true, measured)
     } catch {
       return capabilities(false, 0, MANAGED_ROLLOUT_UNVERIFIED_CAPACITY_REASON)
     }

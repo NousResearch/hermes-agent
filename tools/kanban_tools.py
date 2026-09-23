@@ -366,6 +366,60 @@ def _require_text(args: dict, name: str, message: Optional[str] = None) -> Any:
 _BOOL_WORDS = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
 
 
+# The ``kanban_create`` schema advertised these as example assignees, so they are what a
+# model copies verbatim. A card assigned to one is never dispatched — the dispatcher only
+# spawns a profile it can resolve, so the card sits in ``ready`` forever (#106163).
+_PLACEHOLDER_ASSIGNEES = frozenset({"reviewer", "writer", "researcher-a"})
+
+
+def _profile_exists(name: Any) -> bool:
+    """Whether *name* resolves to an installed profile; never raises."""
+    try:
+        from hermes_cli.profiles import profile_exists
+
+        return bool(profile_exists(str(name).strip()))
+    except Exception:
+        return False
+
+
+def _known_profile_names() -> str:
+    """Installed profile names, for an actionable rejection message.
+
+    ``list_profile_names`` reads no per-profile config, so it is safe on this path.
+    """
+    try:
+        from hermes_cli.profiles import list_profile_names
+
+        return ", ".join(list_profile_names())
+    except Exception:
+        return ""
+
+
+def _reject_placeholder_assignee(assignee: Any) -> Optional[str]:
+    """Reject copyable placeholder assignees BEFORE any board mutation.
+
+    Deliberately narrower than the reviewer-side existence check: a name that is simply
+    not installed yet stays valid, so orchestrator fan-out to a registered external seat
+    keeps working. Only the documented example tokens, angle-bracket placeholders, and
+    blank names fail closed.
+    """
+    text = str(assignee).strip()
+    if not text:
+        reason = "the assignee is empty/whitespace-only"
+    elif "<" in text or ">" in text:
+        reason = f"{text!r} is a placeholder, not a profile name"
+    elif text.lower() in _PLACEHOLDER_ASSIGNEES and not _profile_exists(text):
+        reason = (f"{text!r} is a documentation example, not an installed profile — a task "
+                  "assigned to it is never dispatched")
+    else:
+        return None
+    names = _known_profile_names()
+    return tool_error(
+        f"assignee rejected: {reason}, so the task was NOT created. "
+        + (f"Installed profiles: {names}." if names else
+           "Pass the name of an installed profile under ~/.hermes/profiles."))
+
+
 def _parse_bool_arg(args: dict, name: str) -> bool:
     value = args.get(name)
     if value is None or isinstance(value, bool):
@@ -1002,6 +1056,9 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    placeholder_err = _reject_placeholder_assignee(assignee)
+    if placeholder_err:
+        return placeholder_err
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing

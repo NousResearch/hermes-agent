@@ -380,10 +380,12 @@ KANBAN_CREATE_SCHEMA = _schema(
     {
         "title": _prop("string", "Short task title (required)."),
         "assignee": _prop("string", (
-                "Profile name that should execute this task "
-                "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                "Required — tasks without an assignee are never "
-                "dispatched."
+                "Profile name that should execute this task: an installed "
+                "profile under ~/.hermes/profiles, or a registered external "
+                "seat. Never invent a name, use a generic role word, or copy "
+                "a placeholder — a task assigned to an unknown profile is "
+                "never dispatched. Required — tasks without an assignee are "
+                "never dispatched."
         )),
         "body": _prop("string", (
                 "Opening post: full spec, acceptance criteria, "

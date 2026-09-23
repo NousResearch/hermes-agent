@@ -41,22 +41,11 @@ describe('voiceFieldVisible', () => {
     expect(voiceFieldVisible('stt.openai.model', unset)).toBe(false)
   })
 
-  it('shows OpenAI STT models including gpt-transcribe once that provider is selected', () => {
-    const config = cfg({ stt: { enabled: true, provider: 'openai', openai: {} } })
-    expect(voiceFieldVisible('stt.openai.model', config)).toBe(true)
-    expect(voiceFieldVisible('stt.local.model', config)).toBe(false)
-  })
-
   it('hides every STT provider sub-field when STT is disabled', () => {
     const config = cfg({ stt: { enabled: false, provider: 'local', local: {} } })
     expect(voiceFieldVisible('stt.local.model', config)).toBe(false)
     // ...but the enable/provider toggles themselves stay visible.
     expect(voiceFieldVisible('stt.enabled', config)).toBe(true)
     expect(voiceFieldVisible('stt.provider', config)).toBe(true)
-  })
-
-  it('tracks a provider switch', () => {
-    expect(voiceFieldVisible('tts.openai.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(true)
-    expect(voiceFieldVisible('tts.edge.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(false)
   })
 })

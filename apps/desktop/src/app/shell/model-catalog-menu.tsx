@@ -33,10 +33,12 @@ import { cn } from '@/lib/utils'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
+  $seenFamilies,
   $visibleModels,
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
   effectiveVisibleKeys,
+  ensureSeenBaseline,
   type ModelFamily,
   modelVisibilityKey,
   setModelVisibilityOpen
@@ -267,10 +269,15 @@ export function ModelCatalogMenu({
 
   // Resolve visibility HERE, against the catalog we actually fetched: an empty
   // provider list would otherwise resolve to an empty key set that reads as
-  // "user hid everything" and blanks the menu on first open.
+  // "user hid everything" and blanks the menu on first open. The seen baseline
+  // is what lets families the catalog gained AFTER the user curated default to
+  // visible instead of freezing out of the unfiltered list (#114369); it is
+  // idempotently seeded for pre-baseline installs on this same read.
+  const seenFamilies = useStore($seenFamilies)
+
   const shownKeys = useMemo(
-    () => effectiveVisibleKeys(visibleModels, pickerProviders),
-    [visibleModels, pickerProviders]
+    () => effectiveVisibleKeys(visibleModels, pickerProviders, ensureSeenBaseline(visibleModels, pickerProviders, seenFamilies)),
+    [visibleModels, pickerProviders, seenFamilies]
   )
 
   const groups = useMemo(

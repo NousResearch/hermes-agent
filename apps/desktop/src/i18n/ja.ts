@@ -706,6 +706,9 @@ export const ja = defineLocale({
         showReasoning: '推論ブロック'
       },
       desktop: {
+        composer: {
+          enterSends: 'Enter キーで送信'
+        },
         repoScanEnabled: 'リポジトリの自動検出',
         repoScanRoots: 'リポジトリの検索ルート',
         repoScanExcludePaths: '除外するリポジトリパス'
@@ -872,6 +875,10 @@ export const ja = defineLocale({
         showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
       },
       desktop: {
+        composer: {
+          enterSends:
+            'オフにすると、Enter で改行、Command/Ctrl+Enter で送信またはキュー追加、実行中は Shift+Enter で指示を修正します。'
+        },
         repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',
         repoScanRoots: '検索するフォルダです。空の場合はホームディレクトリを検索します。',
         repoScanExcludePaths: 'リポジトリ検出時に除外するフォルダとその配下です。'

@@ -679,6 +679,9 @@ export const zhHant = defineLocale({
         showReasoning: '推理區塊'
       },
       desktop: {
+        composer: {
+          enterSends: '按 Enter 傳送'
+        },
         repoScanEnabled: '自動探索程式碼儲存庫',
         repoScanRoots: '程式碼儲存庫掃描根目錄',
         repoScanExcludePaths: '排除的程式碼儲存庫路徑'
@@ -856,6 +859,10 @@ export const zhHant = defineLocale({
         showReasoning: '後端提供推理內容時顯示該區塊。'
       },
       desktop: {
+        composer: {
+          enterSends:
+            '關閉後切換為多行優先輸入：Enter 換行，Ctrl/Cmd+Enter 傳送或加入佇列，Shift+Enter 在執行中修正指令。'
+        },
         repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',
         repoScanRoots: '要掃描的資料夾。留空時掃描主目錄。',
         repoScanExcludePaths: '探索程式碼儲存庫時略過這些資料夾及其子目錄。'

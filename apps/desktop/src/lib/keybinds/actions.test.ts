@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { defaultBindings, KEYBIND_ACTIONS, keybindAction } from './actions'
+import { defaultBindings, KEYBIND_ACTIONS, keybindAction, readonlyKeybindsFor } from './actions'
 
 describe('session.archive keybind action', () => {
   it('is registered under the session category', () => {
@@ -43,5 +43,19 @@ describe('view.cycleSidebarGrouping keybind action', () => {
 
   it('appears exactly once in KEYBIND_ACTIONS', () => {
     expect(KEYBIND_ACTIONS.filter(action => action.id === 'view.cycleSidebarGrouping')).toHaveLength(1)
+  })
+})
+
+describe('composer readonly keybind modes', () => {
+  it('resolves composer and shared shortcuts from one mode-aware helper', () => {
+    const defaultMap = readonlyKeybindsFor(true)
+    const multilineMap = readonlyKeybindsFor(false)
+
+    expect(defaultMap.find(shortcut => shortcut.id === 'composer.send')?.keys).toEqual(['enter', 'mod+enter'])
+    expect(multilineMap.find(shortcut => shortcut.id === 'composer.send')?.keys).toEqual(['mod+enter'])
+    expect(multilineMap.find(shortcut => shortcut.id === 'composer.newline')?.keys).toEqual(['enter'])
+    expect(defaultMap.find(shortcut => shortcut.id === 'view.selectionToComposer')).toEqual(
+      multilineMap.find(shortcut => shortcut.id === 'view.selectionToComposer')
+    )
   })
 })

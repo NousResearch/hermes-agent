@@ -453,6 +453,9 @@ export interface HermesConfig {
   }
   desktop?: {
     font_family?: string
+    composer?: {
+      enter_sends?: boolean
+    }
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]

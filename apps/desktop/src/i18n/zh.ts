@@ -889,6 +889,9 @@ export const zh = defineLocale({
         showReasoning: '推理过程块'
       },
       desktop: {
+        composer: {
+          enterSends: '按 Enter 发送'
+        },
         repoScanEnabled: '自动发现代码仓库',
         repoScanRoots: '代码仓库扫描根目录',
         repoScanExcludePaths: '排除的代码仓库路径'
@@ -1066,6 +1069,10 @@ export const zh = defineLocale({
         showReasoning: '当后端提供推理内容时予以显示。'
       },
       desktop: {
+        composer: {
+          enterSends:
+            '关闭后切换为多行优先输入：Enter 换行，Ctrl/Cmd+Enter 发送或加入队列，Shift+Enter 在运行中修正指令。'
+        },
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',
         repoScanRoots: '要扫描的文件夹。留空时扫描主目录。',
         repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'

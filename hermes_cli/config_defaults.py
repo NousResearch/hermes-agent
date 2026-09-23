@@ -2535,6 +2535,11 @@ DEFAULT_CONFIG = {
         # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
+        "composer": {
+            # Enter-to-send by default. When false, Enter inserts a newline, Ctrl/Cmd+Enter sends
+            # or queues, and Shift+Enter steers a running turn.
+            "enter_sends": True,
+        },
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],

@@ -136,6 +136,9 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
 
     db = acquire()
     try:
-        db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
+        if message.get("mirror_source") == "cron" and message.get("role") == "user":
+            db.append_pending_delivery(session_id, message.get("content"), source="cron")
+        else:
+            db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
     finally:
         release_or_close(db)

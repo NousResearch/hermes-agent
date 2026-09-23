@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
+import cron.scheduler as scheduler
 import cron.scheduler_delivery as delivery
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 # What a gateway process that loaded the ROOT profile's .env holds in os.environ.
 LAUNCH_ENV = {
@@ -157,3 +159,72 @@ def test_the_child_env_is_built_for_the_target_even_while_a_sibling_home_overrid
     assert env["HERMES_HOME"] == str(beta)
     assert "DISCORD_ALLOWED_USERS" not in env, "the firing profile's gate reached another profile's turn"
     assert env["ANTHROPIC_API_KEY"] == "sk-beta"
+
+
+def test_own_profile_delivery_uses_the_firing_home_not_gateway_default(fleet, monkeypatch):
+    """A multiplexed alpha job's bare ``bot-chat`` child and deferred record stay in alpha."""
+    root, _beta = fleet
+    alpha = root / "profiles" / "alpha"
+    alpha.mkdir(parents=True)
+    captured = _capture_child_env(monkeypatch)
+
+    assert delivery._deliver_result(
+        {"id": "alpha-job", "name": "nightly", "deliver": "bot-chat"},
+        "the brief",
+        source_home=alpha,
+    ) is None
+
+    assert captured["env"]["HERMES_HOME"] == str(alpha)
+    assert captured["env"]["HERMES_HOME"] != str(root)
+
+
+def test_run_one_job_passes_its_profile_home_to_the_delivery_phase(fleet, monkeypatch):
+    """The job's home is captured before execution and cannot be re-resolved from gateway env."""
+    root, _beta = fleet
+    alpha = root / "profiles" / "alpha"
+    alpha.mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda job: False)
+    monkeypatch.setattr(
+        scheduler,
+        "_run_with_fire_claim_heartbeat",
+        lambda job, run: run(None),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_run_one_job_body",
+        lambda job, **kwargs: captured.update(kwargs) or True,
+    )
+    token = set_hermes_home_override(alpha)
+    try:
+        assert scheduler.run_one_job({"id": "alpha-job", "execution_id": "execution"})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert captured["source_home"] == alpha.resolve()
+
+
+def test_own_profile_deferred_delivery_is_persisted_under_the_firing_home(fleet, monkeypatch):
+    """An unavailable own Bot Chat queues its receipt under the job's profile, not default."""
+    root, _beta = fleet
+    alpha = root / "profiles" / "alpha"
+    alpha.mkdir(parents=True)
+    monkeypatch.setattr("tools.bot_live_delivery.find_canonical_live_owner", lambda home: None)
+    monkeypatch.setattr("tools.bot_live_delivery.find_canonical_owner", lambda home: object())
+
+    result = delivery._deliver_result(
+        {"id": "alpha-job", "name": "nightly", "deliver": "bot-chat"},
+        "the brief",
+        source_home=alpha,
+    )
+
+    assert result is None
+    pending = list((alpha / "cron" / "bot_chat_pending").glob("*.json"))
+    assert len(pending) == 1
+    assert delivery._deliver_result(
+        {"id": "alpha-job", "name": "nightly", "deliver": "bot-chat"},
+        "the brief",
+        source_home=alpha,
+    ) is None
+    assert len(list((alpha / "cron" / "bot_chat_pending").glob("*.json"))) == 2
+    assert not (root / "cron" / "bot_chat_pending").exists()

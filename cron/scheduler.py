@@ -2736,7 +2736,8 @@ def run_one_job(
                     extra_prompt=extra_prompt,
                     claim_lost=lost_ownership,
                     transport_cancel=cancel_event,
-                    execution_token=execution_token))
+                    execution_token=execution_token,
+                    source_home=profile_home))
     finally:
         with _running_lock:
             executions = _running_fire_owners.get(_fire_key)
@@ -2912,7 +2913,7 @@ class _RunDelivery:
 
 def _save_compose_deliver(
     d: _RunDelivery, fence: _FireOwnership, final_response: str, output: str, *,
-    adapters, loop, verbose: bool, execution_token,
+    adapters, loop, verbose: bool, execution_token, source_home: Path,
 ) -> None:
     """Save output, compose the notice and deliver it (both side effects run under the fire-claim
     fence; a lost claim raises ``_FireClaimLostDuringSideEffect`` for the caller)."""
@@ -2982,6 +2983,7 @@ def _save_compose_deliver(
                 deliver_content,
                 adapters=adapters,
                 loop=loop,
+                source_home=source_home,
                 # Failure summaries (and drift/blocked-config alerts composed into deliver_content
                 # on the failure path) honor the job's failure_deliver override (NS-788).
                 for_failure=not d.success,
@@ -3063,7 +3065,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
 
 
 def _deliver_crash_failure(
-    job: dict, err_text: str, *, adapters, loop,
+    job: dict, err_text: str, *, adapters, loop, source_home: Path,
 ) -> tuple[Optional[str], str]:
     """Failure notice for a run that raised out of run_job. Returns (delivery_error, outcome)."""
     normalized_deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=True))
@@ -3081,6 +3083,7 @@ def _deliver_crash_failure(
             adapters=adapters,
             loop=loop,
             for_failure=True,
+            source_home=source_home,
         )
     except Exception as delivery_exc:
         delivery_error = str(delivery_exc)
@@ -3105,7 +3108,7 @@ def _run_one_job_body(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, claim_lost: Optional[_CancelEventLike] = None,
     transport_cancel: Optional[_CancelEventLike] = None,
-    execution_token: Optional[object] = None,
+    execution_token: Optional[object] = None, source_home: Optional[Path] = None,
 ) -> bool:
     fence = _FireOwnership(job, claim_lost, transport_cancel)
     fire_owner = fence.owner
@@ -3221,7 +3224,8 @@ def _run_one_job_body(
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
-                execution_token=execution_token)
+                execution_token=execution_token,
+                source_home=(source_home or _get_hermes_home()).resolve())
         except _FireClaimLostDuringSideEffect:
             d.side_effect_ownership_lost = True
         finally:
@@ -3293,7 +3297,8 @@ def _run_one_job_body(
             and not _fire_claim_ownership_lost()
         ):
             delivery_error, delivery_outcome = _deliver_crash_failure(
-                job, _err_text, adapters=adapters, loop=loop)
+                job, _err_text, adapters=adapters, loop=loop,
+                source_home=(source_home or _get_hermes_home()).resolve())
         try:
             if (
                 not _consume_interrupted_flag(job["id"], execution_token)

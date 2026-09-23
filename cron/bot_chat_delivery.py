@@ -21,14 +21,15 @@ _running: set[Path] = set()
 _running_lock = threading.Lock()
 
 
-def _root() -> Path:
-    return get_hermes_home().resolve() / "cron" / "bot_chat_pending"
+def _root(source_home: Path | None = None) -> Path:
+    home = source_home.resolve() if source_home is not None else get_hermes_home().resolve()
+    return home / "cron" / "bot_chat_pending"
 
 
-def read_pending(key: str) -> dict | None:
+def read_pending(key: str, *, source_home: Path | None = None) -> dict | None:
     """Exact-id read: fails closed on anything but a JSON object, never licensing an overwrite."""
     try:
-        record = json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
+        record = json.loads((_root(source_home) / f"{key}.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     if not isinstance(record, dict):
@@ -57,13 +58,14 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
 
 
 def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
-          for_failure: bool = False, suppressed: bool = False, degraded: bool = False) -> dict:
+          source_home: Path | None = None, for_failure: bool = False,
+          suppressed: bool = False, degraded: bool = False) -> dict:
     """``degraded`` marks the short notice queued after a CLI-lane turn timed out; the record
     carries it so the consumer recognizes the marker by the record, never by its text."""
-    root = _root()
+    root = _root(source_home)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _FileLock(root / ".lock"):
-        record = read_pending(key)
+        record = read_pending(key, source_home=source_home)
         if record is not None:
             if (record["content"] != content or record["home"] != str(home)
                     or bool(record.get("for_failure")) != for_failure):
@@ -129,7 +131,13 @@ def _drain(root: Path) -> None:
         job = record["job"]
         job.pop("_bot_chat_delivery_receipts", None)
         try:
-            error = _deliver_to_bot_chat(job, record["content"], record["profile"], deferred=record)
+            error = _deliver_to_bot_chat(
+                job,
+                record["content"],
+                record["profile"],
+                deferred=record,
+                source_home=root.parent.parent,
+            )
         except Exception as exc:
             # The claim survives uncertainty; one failed attempt must not stop peers.
             error = f"{type(exc).__name__}: {exc}"

@@ -770,7 +770,7 @@ def _format_failure_streams(result) -> str:
 
 
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None,
-                         for_failure: bool = False) -> Optional[str]:
+                         for_failure: bool = False, source_home=None) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
@@ -803,8 +803,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         f"summarize for the chat.]\n\n{content}"
     )
     try:
-        source_home = get_hermes_home().resolve()
         from pathlib import Path
+        source_home = Path(source_home).resolve() if source_home is not None else get_hermes_home().resolve()
         home = (Path(deferred["home"]) if deferred is not None else
                 get_profile_dir(profile) if profile else source_home).resolve()
         for_failure = for_failure or bool((deferred or {}).get("for_failure"))
@@ -833,12 +833,12 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             from cron.bot_chat_delivery import defer, read_pending
             from tools.bot_live_delivery import find_canonical_owner
 
-            pending = read_pending(key)
+            pending = read_pending(key, source_home=source_home)
             # Suppression is a durable disposition, not a send: record it under the producer
             # lock even when a live owner exists, so the deferred lane never replays it.
             if (pending is not None or suppress_notification
                     or (find_canonical_live_owner(home) is None and find_canonical_owner(home))):
-                pending = defer(key, dict(job), content, profile, home,
+                pending = defer(key, dict(job), content, profile, home, source_home=source_home,
                                 for_failure=for_failure, suppressed=suppress_notification)
             if pending is not None:
                 status = pending["status"]
@@ -958,7 +958,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                 # chars (tools.bot_live_delivery._delivery_id) — so the marker's id is a
                 # fresh digest derived from the execution key, not a suffixed one.
                 marker_key = hashlib.sha256(f"{key}:degraded".encode("utf-8")).hexdigest()
-                _defer_marker(marker_key, dict(job), marker, profile, home,
+                _defer_marker(marker_key, dict(job), marker, profile, home, source_home=source_home,
                               for_failure=for_failure, degraded=True)
                 marker_queued = True
             except Exception as defer_exc:
@@ -1904,7 +1904,7 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
 
 
 def _deliver_result(
-    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False, source_home=None,
 ) -> Optional[str]:
     """Deliver job output to the configured target(s). With ``adapters``/``loop`` (gateway
     running) the live adapter is tried first (E2EE rooms can't use the standalone HTTP path), then
@@ -2019,7 +2019,8 @@ def _deliver_result(
             continue
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
         if target["platform"] == BOT_CHAT_PLATFORM:
-            bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"], for_failure=for_failure)
+            bot_chat_error = _deliver_to_bot_chat(
+                job, content, target["chat_id"], for_failure=for_failure, source_home=source_home)
             suppressed_targets += job.pop("_notification_all_targets_suppressed", False)
             if bot_chat_error:
                 receipt_target = f"bot-chat:{target['chat_id'] or '(own)'}"

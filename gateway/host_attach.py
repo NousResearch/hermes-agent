@@ -381,9 +381,10 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     if attached is not None and attached.standalone:
         # One-process-per-profile fleet: the owner is another profile's standalone gateway. Refusing
         # here exits 78, which every supervisor treats as permanent — on a launchd fleet that parked
-        # every unit but the first to claim the host lock. Start beside it; the host-lock claim logs
-        # the topology and the `gateway migrate --multiplex` path stays the way to converge.
-        logger.warning(
+        # every unit but the first to claim the host lock. Start beside it. decide() runs twice per
+        # start (CLI guard + start_gateway), so this is INFO; the host-lock claim in run.py logs the
+        # one WARNING with the `gateway migrate --multiplex` converge hint.
+        logger.info(
             "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it. "
             "Fold every profile onto one gateway with: hermes gateway migrate --multiplex",
             attached.describe(), profile)

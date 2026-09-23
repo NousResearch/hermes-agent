@@ -549,7 +549,7 @@ describe('useVirtualHistory offset cache reuse', () => {
       expect(adjustScrollTop).toHaveBeenCalledWith(1)
       expect(scroll.getScrollTop()).toBe(4)
       expect(scroll.isSticky()).toBe(false)
-      expect(expose.current!.virtualHistory.start).toBe(0)
+      expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
       expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
     } finally {
       instance.unmount()

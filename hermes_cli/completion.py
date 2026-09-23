@@ -193,7 +193,12 @@ _hermes() {{
     esac
 }}
 
-compdef _hermes hermes
+# Autoloaded from fpath: complete now. Eval'd or sourced: only register.
+if [ "$funcstack[1]" = "_hermes" ]; then
+    _hermes "$@"
+else
+    compdef _hermes hermes
+fi
 """
 
 

@@ -125,6 +125,28 @@ class TestGenerateZsh:
         finally:
             os.unlink(path)
 
+    @pytest.mark.parametrize(
+        ("load", "expected"),
+        [
+            # fpath autoload (oh-my-zsh, ~/.zfunc): the first call is a completion and must complete.
+            ('fpath=("${1:h}" $fpath); compinit -D; _arguments() { print ran; }; _hermes', "ran"),
+            # eval/source in .zshrc: register only, since _arguments errors outside completion.
+            ('compinit -D; _arguments() { print ran; }; source "$1"; print $_comps[hermes]', "_hermes"),
+        ],
+        ids=["autoload", "source"],
+    )
+    def test_zsh_script_works_autoloaded_and_sourced(self, tmp_path, load, expected):
+        if not shutil.which("zsh"):
+            pytest.skip("zsh not installed")
+        script = tmp_path / "_hermes"
+        script.write_text(generate_zsh(_make_parser()))
+        result = subprocess.run(
+            ["zsh", "-dfc", f"autoload -Uz compinit; {load}", "zsh", str(script)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.split() == [expected], result.stderr
+
 
 # ---------------------------------------------------------------------------
 # 4. Fish output

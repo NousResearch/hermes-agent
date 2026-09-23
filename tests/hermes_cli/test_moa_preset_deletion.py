@@ -20,6 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
@@ -216,3 +217,71 @@ def test_deletion_preserves_privacy_filter_and_retained_preset_metadata(tmp_path
     assert on_disk["save_traces"] is True
     assert on_disk["trace_dir"] == "/custom/traces"
     assert on_disk["presets"]["keep_a"]["operator_note"] == "retain me"
+
+
+@pytest.mark.parametrize("include_presets", [False, True], ids=["missing-presets", "empty-presets"])
+def test_legacy_flat_update_preserves_named_presets_and_valid_default(
+    tmp_path, monkeypatch, include_presets
+):
+    """Older flat clients preserve named presets and a valid persisted active selection."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    seeded = _three_presets()
+    seeded["active_preset"] = "keep_b"
+    _seed(home, monkeypatch, seeded)
+
+    payload = {
+        "active_preset": "",
+        "reference_models": [MoaModelSlot(provider="openai-codex", model="gpt-5.8")],
+        "aggregator": MoaModelSlot(provider="anthropic", model="claude-opus-5"),
+        "enabled": True,
+    }
+    if include_presets:
+        payload["presets"] = {}
+
+    set_moa_models(MoaConfigPayload(**payload))
+
+    moa = _on_disk(home)["moa"]
+    assert set(moa["presets"]) == {"keep_a", "doomed", "keep_b"}
+    assert moa["default_preset"] == "keep_a"
+    assert moa["active_preset"] == "keep_b"
+    assert moa["active_preset"] in moa["presets"]
+    assert "default" not in moa["presets"]
+    assert moa["presets"]["keep_a"]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.8", "enabled": True}
+    ]
+    assert moa["presets"]["keep_a"]["aggregator"] == {
+        "provider": "anthropic", "model": "claude-opus-5"
+    }
+    # Legacy flat fields represent the saved default preset. Runtime resolution uses
+    # default_preset when no preset name is explicitly requested; active_preset is metadata.
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    assert resolve_moa_preset(moa)["reference_models"] == moa["presets"]["keep_a"]["reference_models"]
+    assert moa["presets"]["keep_b"] == seeded["presets"]["keep_b"]
+    assert moa["presets"]["doomed"] == seeded["presets"]["doomed"]
+
+
+def test_legacy_flat_update_with_named_default_and_empty_map_does_not_fail(tmp_path, monkeypatch):
+    """A legacy flat payload's default_preset field cannot rename its synthesized map."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _seed(home, monkeypatch, _three_presets())
+
+    result = set_moa_models(
+        MoaConfigPayload(
+            default_preset="keep_b",
+            presets={},
+            reference_models=[MoaModelSlot(provider="openai-codex", model="gpt-5.8")],
+            aggregator=MoaModelSlot(provider="anthropic", model="claude-opus-5"),
+            enabled=True,
+        )
+    )
+
+    moa = _on_disk(home)["moa"]
+    assert result["ok"] is True
+    assert set(moa["presets"]) == {"keep_a", "doomed", "keep_b"}
+    assert moa["default_preset"] == "keep_a"
+    assert moa["presets"]["keep_a"]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.8", "enabled": True}
+    ]

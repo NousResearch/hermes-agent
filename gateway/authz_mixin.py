@@ -158,9 +158,10 @@ def _normalize_nostr_allow_entries(entries: set) -> set:
 
 def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool:
     """Whether *user_id* (under any platform-specific alias) is in *allowed_ids*."""
+    # Qualified ids match directly.  Do NOT derive a bare localpart from "@"-shaped ids: a bare
+    # entry like `alice` must not authorize `alice@<any domain>` on email/iMessage-style ids
+    # (#119446).  The WhatsApp bare-phone case is covered by its own alias expansion below.
     check_ids = {user_id}
-    if "@" in user_id:
-        check_ids.add(user_id.split("@")[0])
 
     # WhatsApp (Baileys + Cloud): phone<->LID / JID aliases match the same principal.
     if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:

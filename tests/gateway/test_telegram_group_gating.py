@@ -179,6 +179,7 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
             require_mention=True,
             allowed_chats=["-100"],
             group_allowed_chats=["-100"],
+            group_allow_from=["111"],
             observe_unmentioned_group_messages=True,
         )
         store = _FakeSessionStore()
@@ -279,7 +280,7 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
-def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):
+def test_identityless_group_observe_source_is_not_authorized_by_group_id_alone(monkeypatch):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -294,7 +295,7 @@ def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkey
     monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100")
     monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
 
-    assert runner._is_user_authorized(source) is True
+    assert runner._is_user_authorized(source) is False
 
 
 class _FakeSessionEntry:
@@ -721,6 +722,7 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
         adapter = _make_adapter(
             require_mention=False,
             group_allowed_chats=["-100"],
+            group_allow_from=["111"],
             observe_unmentioned_group_messages=True,
         )
         adapter.handle_message = AsyncMock()
@@ -969,6 +971,7 @@ def test_sibling_bot_wake_word_message_is_observed_not_dropped():
             mention_patterns=["hermes"],
             allowed_chats=["-100"],
             group_allowed_chats=["-100"],
+            group_allow_from=["555"],
             observe_unmentioned_group_messages=True,
         )
         store = _FakeSessionStore()

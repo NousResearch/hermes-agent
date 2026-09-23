@@ -185,6 +185,49 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
         if hex_user:
             check_ids.add(hex_user)
     return bool(check_ids & allowed_ids)
+def _telegram_config_authorizes_source(source: SessionSource, extra: object) -> Optional[bool]:
+    """Authorize a sender; a configured group list also restricts the group ID."""
+    if not isinstance(extra, dict):
+        return None
+
+    user_id = str(source.user_id or "").strip()
+    global_allowed = _coerce_allow_set(extra.get("allow_from"))
+    if source.chat_type not in {"group", "forum", "channel"}:
+        return _allows(global_allowed, user_id) if global_allowed else None
+
+    group_users = _coerce_allow_set(extra.get("group_allow_from"))
+    group_chats = _coerce_allow_set(extra.get("group_allowed_chats"))
+    if not (global_allowed or group_users or group_chats):
+        return None
+    chat_id = str(source.chat_id or "").strip()
+    group_matches = not group_chats or _allows(group_chats, chat_id)
+    if not group_matches:
+        return False
+    if group_chats:
+        return bool(user_id and _allows(group_users, user_id))
+    if not (global_allowed or group_users):
+        return None
+    sender_matches = bool(user_id) and (_allows(global_allowed, user_id) or _allows(group_users, user_id))
+    return bool(sender_matches)
+
+
+def _telegram_listed_group_decision(source: SessionSource, extra: object) -> Optional[bool]:
+    """A listed Telegram group needs both its group ID and a group sender grant."""
+    if source.chat_type not in _GROUP_CHAT_TYPES:
+        return None
+    config = extra if isinstance(extra, dict) else {}
+    config_groups = _coerce_allow_set(config.get("group_allowed_chats"))
+    groups = config_groups or _coerce_allow_set(_auth_env("TELEGRAM_GROUP_ALLOWED_CHATS"))
+    if not groups:
+        return None
+    senders = (
+        _coerce_allow_set(config.get("group_allow_from")) if config_groups
+        else _coerce_allow_set(_auth_env("TELEGRAM_GROUP_ALLOWED_USERS"))
+    )
+    return bool(
+        source.user_id and _allows(groups, source.chat_id)
+        and _allows(senders, str(source.user_id))
+    )
 
 
 class GatewayAuthorizationMixin:
@@ -541,14 +584,12 @@ class GatewayAuthorizationMixin:
             or self._adapter_flag(source.platform, "authorization_is_upstream", adapter_profile)
         ):
             return True
-        # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
-        # sender_chat posts, channel broadcasts).
-        if is_group and source.chat_id:
+        # Non-Telegram chat-scoped grants can authorize identityless group posts.
+        if is_group and source.chat_id and source.platform != Platform.TELEGRAM:
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
-            # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
-            # strips user_id, so the env-only check above misses it.
+            # Config fallback for non-Telegram platform chat-scoped grants.
             with contextlib.suppress(Exception):
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
@@ -637,6 +678,15 @@ class GatewayAuthorizationMixin:
         adapter_profile = self._adapter_profile_for_source(source)
         is_group = source.chat_type in _GROUP_CHAT_TYPES
         is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
+        if source.platform == Platform.TELEGRAM and is_group:
+            with contextlib.suppress(Exception):
+                extra = self._adapter_extra_for_source(source)
+                listed_group = _telegram_listed_group_decision(source, extra)
+                if listed_group is not None:
+                    return listed_group
+                decision = _telegram_config_authorizes_source(source, extra)
+                if decision is True:
+                    return True
         if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
             return True
         user_id = source.user_id
@@ -677,8 +727,8 @@ class GatewayAuthorizationMixin:
             return _env_truthy("GATEWAY_ALLOW_ALL_USERS")
 
         if is_group_or_forum and source.chat_id:
-            # Telegram group traffic authorized by chat ID (TELEGRAM_GROUP_ALLOWED_USERS gates the sender).
-            if group_chat_allowlist and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
+            # Telegram's listed group/sender gate was resolved above.
+            if source.platform != Platform.TELEGRAM and group_chat_allowlist and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
                 return True
             if (
                 source.platform == Platform.TELEGRAM and group_user_allowlist

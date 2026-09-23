@@ -5,7 +5,7 @@ event building, or response generation occurs.
 """
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -68,6 +68,19 @@ def _make_message(text="hello", *, from_user_id=111, chat_id=-100, chat_type="gr
         sticker=None,
         media_group_id=None,
     )
+
+
+def test_partially_initialized_adapter_preserves_identityless_cold_path():
+    """Pre-initialization media gates must not require ``adapter.platform``."""
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+    except ModuleNotFoundError:  # PR branch before Telegram plugin extraction
+        from gateway.platforms.telegram import TelegramAdapter
+
+    adapter = object.__new__(TelegramAdapter)
+    message = SimpleNamespace(from_user=None, sender_chat=None, chat=None)
+
+    assert adapter._is_user_authorized_from_message(message) is True
 
 
 @pytest.mark.asyncio
@@ -143,6 +156,268 @@ def test_is_user_authorized_from_message_allow_from():
 
     msg = _make_message(from_user_id=333, chat_type="dm")
     assert adapter._is_user_authorized_from_message(msg) is False
+
+
+@pytest.mark.parametrize("forum", [False, True])
+def test_global_allow_from_remains_a_grant_in_group_context(forum):
+    """The platform-wide list is ORed with group-only sender grants."""
+    adapter = _make_adapter(
+        allow_from=["111"],
+        group_allow_from=["222"],
+    )
+    msg = _make_message(from_user_id=111, chat_id=-100, chat_type="supergroup")
+    if forum:
+        msg.chat.is_forum = True
+        msg.is_topic_message = True
+        msg.message_thread_id = 7
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+@pytest.mark.parametrize("forum", [False, True])
+def test_group_requires_listed_chat_and_allowed_sender(forum):
+    """A listed group and a sender grant must both match; DMs stay scoped."""
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter(
+        allow_from=["111"],
+        group_allow_from=["222"],
+        group_allowed_chats=["-100"],
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+
+    def decisions(message):
+        source = adapter._source_from_message_for_auth(message)
+        return adapter._is_user_authorized_from_message(message), runner._is_user_authorized(source)
+
+    msg = _make_message(from_user_id=555, chat_id=-100, chat_type="supergroup")
+    if forum:
+        msg.chat.is_forum = True
+        msg.is_topic_message = True
+        msg.message_thread_id = 7
+
+    assert decisions(msg) == (False, False)
+    adapter.config.extra["group_allow_from"] = ["555"]
+    assert decisions(msg) == (True, True)
+    adapter.config.extra["group_allow_from"] = ["*"]
+    assert decisions(msg) == (True, True)
+    msg.chat.id = -200
+    assert decisions(msg) == (False, False)
+    assert decisions(_make_message(from_user_id=555, chat_id=555, chat_type="private")) == (False, False)
+
+
+def test_configured_group_policy_is_not_widened_by_environment(monkeypatch):
+    """A process-wide environment bridge cannot add groups or senders to YAML."""
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-200")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "555")
+    adapter = _make_adapter(
+        allow_from=["111"], group_allow_from=["111"], group_allowed_chats=["-100"]
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+
+    for sender, group, expected in ((111, -100, True), (555, -100, False), (555, -200, False)):
+        message = _make_message(from_user_id=sender, chat_id=group, chat_type="group")
+        source = adapter._source_from_message_for_auth(message)
+        assert adapter._is_user_authorized_from_message(message) is expected
+        assert runner._is_user_authorized(source) is expected
+
+
+def test_empty_group_config_lists_defer_to_injected_authority():
+    """Empty YAML defaults must not become a sole-authority rejection."""
+    adapter = _make_adapter(
+        group_allow_from=[],
+        group_allowed_chats=[],
+        callback_auth=lambda uid, **_kw: uid == "111",
+    )
+
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id=111, chat_id=-100, chat_type="group")
+    ) is True
+
+
+def test_config_allowlists_require_listed_group_and_group_sender():
+    """A listed group requires group_allow_from; allow_from grants DMs."""
+    adapter = _make_adapter(
+        allow_from=["global-user"],
+        group_allow_from=["group-user"],
+        group_allowed_chats=["-100"],
+    )
+
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="global-user", chat_id=-100, chat_type="group")
+    ) is False
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="group-user", chat_id=-100, chat_type="group")
+    ) is True
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="unlisted-user", chat_id=-100, chat_type="group")
+    ) is False
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="unlisted-user", chat_id=-200, chat_type="group")
+    ) is False
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="global-user", chat_id=-200, chat_type="group")
+    ) is False
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="group-user", chat_id=123, chat_type="private")
+    ) is False
+
+
+def test_runner_config_authorization_matches_telegram_intake(monkeypatch):
+    """YAML-config and environment allowlists produce the same intake result."""
+    from gateway.run import GatewayRunner
+
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter(
+        allow_from=["global-user"],
+        group_allow_from=["group-user"],
+        group_allowed_chats=["-100"],
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+
+    cases = (
+        (_make_message(from_user_id="global-user", chat_id=-100, chat_type="group"), False),
+        (_make_message(from_user_id="group-user", chat_id=-100, chat_type="group"), True),
+        (_make_message(from_user_id="unlisted-user", chat_id=-100, chat_type="group"), False),
+        (_make_message(from_user_id="unlisted-user", chat_id=-200, chat_type="group"), False),
+        (_make_message(from_user_id="global-user", chat_id=-200, chat_type="group"), False),
+        (_make_message(from_user_id="group-user", chat_id=123, chat_type="private"), False),
+    )
+    config_intake = []
+    for message, expected in cases:
+        source = adapter._source_from_message_for_auth(message)
+        config_intake.append(adapter._is_user_authorized_from_message(message))
+        assert runner._is_user_authorized(source) is expected
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "global-user")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "group-user")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100")
+    env_adapter = _make_adapter()
+    env_runner = object.__new__(GatewayRunner)
+    env_runner.adapters = {Platform.TELEGRAM: env_adapter}
+    env_runner.pairing_store = MagicMock()
+    env_runner.pairing_store.is_approved.return_value = False
+    env_adapter._message_handler = env_runner._is_user_authorized
+
+    env_intake = [
+        env_adapter._is_user_authorized_from_message(message)
+        for message, _expected in cases
+    ]
+    assert config_intake == env_intake
+
+
+@pytest.mark.parametrize(
+    ("env_name", "env_value", "message", "expected"),
+    (
+        (
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "group-user",
+            _make_message(from_user_id="group-user", chat_id=-200, chat_type="group"),
+            True,
+        ),
+        (
+            "TELEGRAM_GROUP_ALLOWED_CHATS",
+            "-100",
+            _make_message(from_user_id="unlisted-user", chat_id=-100, chat_type="group"),
+            False,
+        ),
+    ),
+)
+def test_mixed_yaml_and_environment_group_grants_are_unioned(
+    monkeypatch,
+    env_name,
+    env_value,
+    message,
+    expected,
+):
+    """Environment group lists supply sender or group scope, never both at once."""
+    from gateway.run import GatewayRunner
+
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(env_name, env_value)
+
+    adapter = _make_adapter(
+        allow_from=["global-user"],
+        group_allow_from=[],
+        group_allowed_chats=[],
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    adapter._message_handler = runner._is_user_authorized
+
+    assert adapter._is_user_authorized_from_message(message) is expected
+    assert runner._is_user_authorized(adapter._source_from_message_for_auth(message)) is expected
+
+
+def test_scalar_config_allowlists_match_sequence_semantics():
+    """Comma-separated YAML scalars use the same group and sender gates as sequences."""
+    adapter = _make_adapter(
+        allow_from="111, 222",
+        group_allow_from="333, 444",
+        group_allowed_chats="-100, -200",
+    )
+
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id=222, chat_id=-100, chat_type="group")
+    ) is False
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id=444, chat_id=-200, chat_type="group")
+    ) is True
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id=222, chat_id=-300, chat_type="group")
+    ) is False
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id=555, chat_id=-200, chat_type="group")
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    (
+        (
+            {"group_allow_from": ["*"]},
+            _make_message(from_user_id=111, chat_id=-300, chat_type="group"),
+        ),
+        (
+            {"group_allowed_chats": ["*"], "group_allow_from": ["111"]},
+            _make_message(from_user_id=111, chat_id=-300, chat_type="group"),
+        ),
+    ),
+)
+def test_group_scoped_wildcards_authorize(extra, message):
+    adapter = _make_adapter(**extra)
+
+    assert adapter._is_user_authorized_from_message(message) is True
 
 
 def test_allowlist_dm_with_explicit_pair_behavior_reaches_gateway(monkeypatch):
@@ -270,6 +545,272 @@ async def test_unauthorized_dm_with_pair_behavior_builds_event(monkeypatch):
     assert build_called is True
 
 
+def test_registered_gateway_authority_preserves_pairing_union(monkeypatch):
+    """A config miss must not hide a pairing grant from the gateway authority."""
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter(allow_from=["owner"])
+    adapter.set_authorization_check(
+        lambda user_id, chat_type=None, chat_id=None: user_id == "paired-user"
+    )
+    msg = _make_message(
+        from_user_id="paired-user",
+        chat_id="paired-user",
+        chat_type="private",
+    )
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+def test_profile_route_selects_scoped_authority_before_default_callback(monkeypatch):
+    """Shared credentials must authorize against the chat's routed profile."""
+    from gateway.run import GatewayRunner
+
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    seen = []
+
+    adapter = _make_adapter(allow_from=["owner"])
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._multiplex_on = lambda: True
+
+    def canonicalize(source, *, primary_home):
+        source.profile = "routed-profile"
+        return object()
+
+    def authorize(source):
+        seen.append(source)
+        return source.profile == "routed-profile" and source.user_id == "paired-user"
+
+    runner._canonicalize = canonicalize
+    runner._is_user_authorized_for_source = authorize
+    adapter.gateway_runner = runner
+    adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.TELEGRAM))
+    message = _make_message(
+        from_user_id="paired-user",
+        chat_id=-100,
+        chat_type="group",
+    )
+
+    assert adapter._is_user_authorized_from_message(message) is True
+    assert seen and seen[0].profile == "routed-profile"
+    assert seen[0]._transport_adapter_ref() is adapter
+
+
+def test_routed_profile_restriction_is_checked_before_early_pass(monkeypatch):
+    """A routed profile's env restriction must not pass intake as unconfigured."""
+    from gateway.run import GatewayRunner
+
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter(group_allowed_chats=["-100"], group_allow_from=["attacker"])
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._multiplex_on = lambda: True
+
+    def canonicalize(source, *, primary_home):
+        source.profile = "restricted-profile"
+        return object()
+
+    def authorize(source):
+        assert source.profile == "restricted-profile"
+        return False
+
+    runner._canonicalize = canonicalize
+    runner._is_user_authorized_for_source = authorize
+    adapter.gateway_runner = runner
+    adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.TELEGRAM))
+
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="attacker", chat_id=-100, chat_type="group")
+    ) is False
+
+
+def test_routed_profile_pairing_decision_does_not_resume_global_fallback(monkeypatch):
+    """Routed DM rejection may reach pairing without borrowing default-profile auth."""
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "default-profile-owner")
+    seen = []
+
+    adapter = _make_adapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._multiplex_on = lambda: True
+
+    def canonicalize(source, *, primary_home):
+        source.profile = "pairing-profile"
+        return object()
+
+    def authorize(source):
+        seen.append(source.profile)
+        return False
+
+    runner._canonicalize = canonicalize
+    runner._is_user_authorized_for_source = authorize
+    runner._get_unauthorized_dm_behavior = lambda platform, profile=None: "pair"
+    adapter.gateway_runner = runner
+    adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.TELEGRAM))
+
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="new-user", chat_id="new-user", chat_type="private")
+    ) is True
+    assert seen == ["pairing-profile"]
+
+
+def test_scoped_multiplex_auth_env_does_not_leak_process_global(monkeypatch):
+    """A secondary profile with no auth key cannot borrow the default profile's key."""
+    from agent import secret_scope
+    from gateway.authz_mixin import _auth_env
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "default-profile-owner")
+    token = secret_scope.set_secret_scope({})
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert _auth_env("TELEGRAM_ALLOWED_USERS") == ""
+    finally:
+        secret_scope.set_multiplex_active(False)
+        secret_scope.reset_secret_scope(token)
+
+
+def test_profile_secret_scope_restriction_is_enforced_at_intake(monkeypatch):
+    """Multiplex profile allowlists must gate before event construction."""
+    from agent.secret_scope import (
+        is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope,
+    )
+
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter()
+    seen = []
+    adapter.set_authorization_check(
+        lambda user_id, chat_type=None, chat_id=None: seen.append(
+            (user_id, chat_type, chat_id)
+        )
+        or False
+    )
+    token = set_secret_scope({"TELEGRAM_GROUP_ALLOWED_USERS": "owner"})
+    previous_multiplex_state = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        assert adapter._is_user_authorized_from_message(
+            _make_message(from_user_id="attacker", chat_id=-100, chat_type="group")
+        ) is False
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(previous_multiplex_state)
+
+    assert seen == [("attacker", "group", "-100")]
+
+
+def test_profile_secret_scope_does_not_authorize_identityless_allowed_group(monkeypatch):
+    """A listed group without an identified, allowed sender does not grant access."""
+    from agent.secret_scope import (
+        is_multiplex_active,
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-200")
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100",
+        chat_type="channel",
+        user_id=None,
+    )
+    previous_multiplex_state = is_multiplex_active()
+    set_multiplex_active(True)
+    token = set_secret_scope({"TELEGRAM_GROUP_ALLOWED_CHATS": "-100"})
+    try:
+        assert runner._is_user_authorized(source) is False
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(previous_multiplex_state)
+
+
+@pytest.mark.parametrize(
+    ("group_senders", "from_user_id", "expected"),
+    (
+        ("channel-user", "channel-user", True),
+        ("", "other-user", False),
+    ),
+)
+def test_channel_environment_grants_match_group_scopes(
+    monkeypatch,
+    group_senders,
+    from_user_id,
+    expected,
+):
+    """A listed channel requires a group-scoped sender grant too."""
+    from gateway.run import GatewayRunner
+
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100")
+    if group_senders:
+        monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", group_senders)
+
+    adapter = _make_adapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    adapter._message_handler = runner._is_user_authorized
+    message = _make_message(
+        from_user_id=from_user_id,
+        chat_id=-100,
+        chat_type="channel",
+    )
+
+    source = adapter._source_from_message_for_auth(message)
+    assert runner._is_user_authorized(source) is expected
+    assert adapter._is_user_authorized_from_message(message) is expected
+
+
 def test_runner_auth_gets_group_user_allowlist_context(monkeypatch):
     """Group user allowlists need a group-shaped source, not a DM-shaped one."""
     monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "111")
@@ -300,7 +841,7 @@ async def test_unmentioned_group_location_from_removed_user_not_observed():
     adapter = _make_adapter(
         group_allow_from=["222"],
         allowed_chats=["-100"],
-        group_allowed_chats=["-100"],
+        group_allowed_chats=["-200"],
         require_mention=True,
         observe_unmentioned_group_messages=True,
     )
@@ -316,19 +857,15 @@ async def test_unmentioned_group_location_from_removed_user_not_observed():
     assert observed == []
 
 
-def test_group_allowlist_authorized_under_multiplex_closure_handler(monkeypatch):
-    """group_allowed_chats must authorize a chat member under multiplex_profiles.
+def test_group_sender_authorized_under_multiplex_closure_handler(monkeypatch):
+    """A listed group and sender must authorize under multiplex_profiles.
 
-    Regression for #87132: with gateway.multiplex_profiles the primary message
-    handler is a closure, so its ``__self__`` is absent and the early intake
-    filter could not reach GatewayRunner._is_user_authorized — it fell back to
-    env-only auth and default-denied every non-global sender in an explicitly
-    allowlisted group. The platform-bound callback registered via
-    set_authorization_check survives the closure wrapping and must be consulted.
+    With gateway.multiplex_profiles the primary message handler is a closure.
+    The sender and group gates must still work without a bound handler.
     """
     monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
 
-    adapter = _make_adapter(group_allowed_chats=["-100123"])
+    adapter = _make_adapter(group_allowed_chats=["-100123"], group_allow_from=["555"])
 
     # Multiplex: the primary handler is a closure with no ``__self__`` runner.
     def closure_handler(event):
@@ -337,16 +874,13 @@ def test_group_allowlist_authorized_under_multiplex_closure_handler(monkeypatch)
     adapter._message_handler = closure_handler
     assert getattr(closure_handler, "__self__", None) is None
 
-    # The runner installs this callback at adapter registration; it routes
-    # through the full auth chain (here: the chat allowlist) regardless of how
-    # the message handler is wrapped.
+    # The runner installs this callback at adapter registration.
     def auth_check(user_id, chat_type=None, chat_id=None):
         return str(chat_id) in {"-100123"}
 
     adapter.set_authorization_check(auth_check)
 
-    # A sender absent from any user allowlist, posting in the allowlisted group,
-    # is authorized via the chat allowlist.
+    # The sender is explicitly allowed in the listed group.
     allowed = _make_message(from_user_id=555, chat_id=-100123, chat_type="group")
     assert adapter._is_user_authorized_from_message(allowed) is True
 
@@ -359,9 +893,10 @@ def test_multiplex_closure_handler_without_callback_falls_back_to_env(monkeypatc
     """No registered callback + a closure handler (no runner) must not raise and
     falls back to env-only auth — the getattr guard keeps the legacy path safe."""
     monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "111")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
 
-    adapter = _make_adapter(group_allowed_chats=["-100123"])
+    adapter = _make_adapter(group_allowed_chats=["-100123"], group_allow_from=["111"])
     adapter._message_handler = lambda event: None  # closure, no __self__
     # No set_authorization_check() → _authorization_check is absent/None.
 

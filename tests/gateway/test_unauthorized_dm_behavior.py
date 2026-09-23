@@ -258,6 +258,38 @@ async def test_unauthorized_bot_dm_is_never_offered_a_pairing_code(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_routed_profile_dm_uses_profile_pairing_store(monkeypatch):
+    """Pairing generation and rate limiting must match profile-scoped auth."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+    )
+    runner, adapter = _make_runner(Platform.TELEGRAM, config)
+    profile_store = MagicMock()
+    profile_store.is_approved.return_value = False
+    profile_store._is_rate_limited.return_value = False
+    profile_store.generate_code.return_value = "PROFILE1"
+    runner.pairing_stores = {"coder": profile_store}
+    runner._profile_adapters = {"coder": {Platform.TELEGRAM: adapter}}
+
+    event = _make_event(Platform.TELEGRAM, "new-user", "new-user")
+    event.source.profile = "coder"
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    profile_store._is_rate_limited.assert_called_once_with("telegram", "new-user")
+    profile_store.generate_code.assert_called_once_with(
+        "telegram", "new-user", "tester"
+    )
+    runner.pairing_store._is_rate_limited.assert_not_called()
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_awaited_once()
+    assert "PROFILE1" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
 async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(

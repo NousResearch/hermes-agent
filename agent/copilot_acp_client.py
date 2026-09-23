@@ -24,7 +24,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.acp_openai_bridge import (
-    completion_to_stream_chunks as _completion_to_stream_chunks,
     extract_tool_calls_from_text as _extract_tool_calls_from_text,
     render_tool_bridge_sections as _render_tool_bridge_sections,
 )
@@ -328,6 +327,8 @@ class CopilotACPClient:
         tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False, **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
+        if stream:
+            return self._stream_chat_completion(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
         response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
         message = SimpleNamespace(
@@ -339,7 +340,107 @@ class CopilotACPClient:
             usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0, prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
             model=model or "copilot-acp",
         )
-        return _completion_to_stream_chunks(completion) if stream else completion
+        return completion
+
+    def _stream_chat_completion(self, prompt_text: str, *, timeout_seconds: float, model: str | None) -> Iterator[Any]:
+        """Relay ACP updates as they arrive while a worker waits for ``session/prompt`` to finish.
+
+        ACP notifications are consumed on the request thread, whereas OpenAI callers pull an
+        iterator.  The small queue bridges those two protocols without leaving the child process
+        alive after a final response or exception.
+        """
+        updates: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        def _run() -> None:
+            try:
+                text, reasoning = self._run_prompt(
+                    prompt_text, timeout_seconds=timeout_seconds, model=model,
+                    on_update=lambda kind, text: updates.put((kind, text)),
+                )
+            except Exception as exc:
+                updates.put(("error", exc))
+            else:
+                updates.put(("result", (text, reasoning)))
+
+        threading.Thread(target=_run, daemon=True).start()
+        return self._iter_stream_updates(updates, model=model or "copilot-acp")
+
+    @staticmethod
+    def _stream_chunk(*, model: str, content: str | None = None, reasoning: str | None = None,
+                      tool_calls: list[Any] | None = None, finish_reason: str | None = None) -> Any:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                index=0,
+                delta=SimpleNamespace(role="assistant", content=content, reasoning=reasoning,
+                                      reasoning_content=reasoning, tool_calls=tool_calls),
+                finish_reason=finish_reason,
+            )],
+            model=model,
+            usage=None,
+        )
+
+    def _iter_stream_updates(self, updates: queue.Queue[tuple[str, Any]], *, model: str) -> Iterator[Any]:
+        """Convert queued ACP text/thought updates to OpenAI chunks, hiding tool bridge markup."""
+        text = ""
+        pending = ""
+        in_tool_call = False
+        opening, closing = "<tool_call>", "</tool_call>"
+        while True:
+            kind, value = updates.get()
+            if kind == "agent_thought_chunk":
+                yield self._stream_chunk(model=model, reasoning=str(value))
+                continue
+            if kind == "agent_message_chunk":
+                chunk = str(value)
+                text += chunk
+                pending += chunk
+                while pending:
+                    if in_tool_call:
+                        end = pending.find(closing)
+                        if end < 0:
+                            break
+                        pending = pending[end + len(closing):]
+                        in_tool_call = False
+                        continue
+                    start = pending.find(opening)
+                    if start >= 0:
+                        if start:
+                            yield self._stream_chunk(model=model, content=pending[:start])
+                        pending = pending[start + len(opening):]
+                        in_tool_call = True
+                        continue
+                    # Retain only a suffix which could be a split opening marker, not an
+                    # arbitrary tail of ordinary prose.
+                    keep = max((size for size in range(1, min(len(pending), len(opening) - 1) + 1)
+                                if opening.startswith(pending[-size:])), default=0)
+                    emit = pending[:-keep] if keep else pending
+                    if emit:
+                        yield self._stream_chunk(model=model, content=emit)
+                    pending = pending[-keep:] if keep else ""
+                    break
+                continue
+            if kind == "error":
+                raise value
+            assert kind == "result"
+            response_text, _reasoning = value
+            # The final response is authoritative (and includes every notification); use it to
+            # preserve the existing tool-call extraction semantics.
+            tool_calls, _cleaned_text = _extract_tool_calls_from_text(response_text)
+            if pending and not in_tool_call:
+                yield self._stream_chunk(model=model, content=pending)
+            tool_deltas = [
+                SimpleNamespace(index=index, id=call.id, type=call.type,
+                                function=SimpleNamespace(name=call.function.name, arguments=call.function.arguments))
+                for index, call in enumerate(tool_calls)
+            ] or None
+            yield self._stream_chunk(model=model, tool_calls=tool_deltas,
+                                     finish_reason="tool_calls" if tool_calls else "stop")
+            yield SimpleNamespace(
+                choices=[], model=model,
+                usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                                      prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
+            )
+            return
 
     def _spawn(self) -> subprocess.Popen[str]:
         # Fast-fail when the CLI rejects --acp (else the parent waits the full child timeout for stdout that
@@ -400,7 +501,8 @@ class CopilotACPClient:
         session_deadline = time.monotonic() + timeout_seconds
 
         def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
-                     reasoning_parts: list[str] | None = None) -> Any:
+                     reasoning_parts: list[str] | None = None,
+                     update_sink: Callable[[str, str], None] | None = None) -> Any:
             request_id = next(request_ids)
             proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
             proc.stdin.flush()
@@ -412,7 +514,7 @@ class CopilotACPClient:
                     continue
                 if self._handle_server_message(
                     msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
-                    reasoning_parts=reasoning_parts, allow_file_requests=allow_file_requests,
+                    reasoning_parts=reasoning_parts, update_sink=update_sink, allow_file_requests=allow_file_requests,
                 ) or msg.get("id") != request_id:
                     continue
                 if "error" in msg:
@@ -440,7 +542,8 @@ class CopilotACPClient:
         with self._session(timeout_seconds, allow_file_requests=False) as (session, _):
             return _session_model_ids(session)
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None,
+                    on_update: Callable[[str, str], None] | None = None) -> tuple[str, str]:
         # The CLI's `--model` spawn flag is deliberately NOT used: `copilot --acp` validates it (unknown id
         # aborts the spawn) but ignores it for the session; the model is applied after session/new instead.
         requested_model = str(model or "").strip()
@@ -457,11 +560,12 @@ class CopilotACPClient:
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
             prompt = {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]}
-            _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts)
+            _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts, update_sink=on_update)
             return "".join(text_parts), "".join(reasoning_parts)
 
     def _handle_server_message(
         self, msg: dict[str, Any], *, process: subprocess.Popen[str], cwd: str, text_parts: list[str] | None, reasoning_parts: list[str] | None,
+        update_sink: Callable[[str, str], None] | None = None,
         allow_file_requests: bool = True,
     ) -> bool:
         """Consume a server->client message; True when handled (notification or request answered)."""
@@ -475,6 +579,8 @@ class CopilotACPClient:
             sinks = {"agent_message_chunk": text_parts, "agent_thought_chunk": reasoning_parts}
             if chunk_text and (sink := sinks.get(str(update.get("sessionUpdate") or "").strip())) is not None:
                 sink.append(chunk_text)
+                if update_sink is not None:
+                    update_sink(str(update.get("sessionUpdate") or "").strip(), chunk_text)
             return True
         if process.stdin is None:
             return True

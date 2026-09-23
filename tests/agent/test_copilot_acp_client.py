@@ -25,7 +25,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
 
 
 
-    def test_stream_true_preserves_tool_call_deltas(self) -> None:
+    def test_non_streaming_preserves_tool_calls(self) -> None:
         tool_response = (
             "<tool_call>"
             '{"id":"call_read","type":"function",'
@@ -37,23 +37,19 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             stream = self.client._create_chat_completion(
                 model="copilot-acp",
                 messages=[{"role": "user", "content": "read README.md"}],
-                stream=True,
+                stream=False,
             )
 
-        chunks = list(stream)
-        delta = chunks[0].choices[0].delta
-        self.assertIsNone(delta.content)
-        self.assertEqual(chunks[0].choices[0].finish_reason, "tool_calls")
+        delta = stream.choices[0].message
+        self.assertEqual(stream.choices[0].finish_reason, "tool_calls")
         self.assertEqual(len(delta.tool_calls), 1)
         tool_delta = delta.tool_calls[0]
-        self.assertEqual(tool_delta.index, 0)
         self.assertEqual(tool_delta.id, "call_read")
         self.assertEqual(tool_delta.function.name, "read_file")
         self.assertEqual(
             json.loads(tool_delta.function.arguments),
             {"path": "README.md"},
         )
-        self.assertEqual(chunks[1].choices, [])
 
 
     def _dispatch(self, message: dict, *, cwd: str) -> dict:
@@ -475,6 +471,56 @@ print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId
     )
 
     assert client.list_models(timeout_seconds=30) == ["gpt-5.6-sol"]
+
+
+def test_stream_yields_first_acp_update_before_prompt_completes(tmp_path):
+    """A slow deep-reasoning ACP turn must not look hung until its final response."""
+    server = tmp_path / "fake_streaming_copilot_acp.py"
+    server.write_text(
+        """import json
+import sys
+import time
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        result = {"sessionId": "stream-session"}
+    elif method == "session/prompt":
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "first "}},
+        }}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "update": {"sessionUpdate": "agent_thought_chunk", "content": {"text": "thinking"}},
+        }}), flush=True)
+        time.sleep(0.4)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "<tool_call>{\\"id\\":\\"call_read\\",\\"type\\":\\"function\\",\\"function\\":{\\"name\\":\\"read_file\\",\\"arguments\\":\\"{}\\"}}</tool_call>"}},
+        }}), flush=True)
+        result = {"stopReason": "end_turn"}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+
+    stream = client._create_chat_completion(
+        model="copilot-acp", messages=[{"role": "user", "content": "hello"}], stream=True, timeout=30,
+    )
+    first = next(stream)
+
+    assert first.choices[0].delta.content == "first "
+    chunks = [first, *stream]
+    assert "".join(chunk.choices[0].delta.content or "" for chunk in chunks if chunk.choices) == "first "
+    assert any(chunk.choices and chunk.choices[0].delta.reasoning == "thinking" for chunk in chunks)
+    assert chunks[-2].choices[0].finish_reason == "tool_calls"
+    assert chunks[-2].choices[0].delta.tool_calls[0].function.name == "read_file"
+    assert chunks[-1].choices == []
+    assert client.is_closed is True
 
 
 # --- concurrent sessions on a shared client ---------------------------------

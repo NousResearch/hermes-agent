@@ -239,8 +239,10 @@ class PluginLedgerMixin:
         if retired_observers:
             from agent.plugin_stream_hooks import _stop_dispatcher
 
-            # Keep teardown bounded even when a plugin callback is currently blocked. Pending
-            # events belong to the unloaded callback generation and are discarded, not drained.
+            # Retirement was marked while the discovery lock was held: callbacks that had already
+            # passed their worker gate may finish, but no queued callback can start after unload.
+            # Discard pending events and join only after releasing the manager lock; teardown stays
+            # bounded even when an already-running plugin callback is blocked.
             deadline = time.monotonic() + 0.2
             for dispatcher in retired_observers:
                 _stop_dispatcher(

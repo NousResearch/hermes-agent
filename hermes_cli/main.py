@@ -3363,6 +3363,8 @@ def _build_cli_parser():
     chat_parser.set_defaults(func=cmd_chat)
 
     build_model_parser(subparsers, cmd_model=cmd_model)
+    from hermes_cli.engineering_cmd import build_parser as build_engineering_parser
+    build_engineering_parser(subparsers)
     build_moa_parser(subparsers)
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)

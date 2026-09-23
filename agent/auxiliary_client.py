@@ -7790,9 +7790,9 @@ def call_llm(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
-    latency_info: Optional[Dict[str, int]] = None,
+    latency_info: Optional[Dict[str, int]] = None, strict_route: bool = False,
 ) -> Any:
-    """Run an auxiliary LLM request, applying the configured task limit."""
+    """Run an auxiliary LLM request; strict_route forbids route changes and fallback."""
     queue_started_at = time.monotonic()
     semaphore = _acquire_sync_aux_semaphore(task)
     if semaphore is not None:
@@ -7820,6 +7820,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
+                strict_route=strict_route,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -7925,6 +7926,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    strict_route: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7938,6 +7940,12 @@ def _call_llm_impl(
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
     )
+    if strict_route and (
+        not provider or not model
+        or _fallback_provider_from_label(req.request_provider) != provider
+        or req.final_model != model
+    ):
+        raise RuntimeError("selected route changed before dispatch")
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
     # the fallback chain (they assume a complete response); the caller owns reassembly/fallback.
@@ -7999,6 +8007,8 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        if strict_route:
+            raise
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":

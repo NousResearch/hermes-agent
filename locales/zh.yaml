@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: 规划者
+  worker: 执行者
+  reviewer: 审查者
+  select_provider: '为{stage}选择服务商:'
+  select_model: '为{stage}选择模型:'
+  command_help: "运行带验证的工程流程"
+  objective_help: "工程任务目标"
+  workspace_help: "要修改的项目工作树"
+  checks_help: "操作员指定检查项的JSON文件"
+  backend_help: "执行后端"
+  image_help: "已安装的Docker镜像"

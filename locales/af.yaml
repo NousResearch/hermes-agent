@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
     session_not_found:           "Sessie nie in databasis gevind nie."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Beplanner
+  worker: Uitvoerder
+  reviewer: Hersiener
+  select_provider: 'Kies verskaffer vir {stage}:'
+  select_model: 'Kies model vir {stage}:'
+  command_help: "Begin ’n geverifieerde ontwikkelingswerkvloei"
+  objective_help: "Doel van die ontwikkelingstaak"
+  workspace_help: "Projekwerkboom wat verander moet word"
+  checks_help: "JSON-lêer met kontroles deur die operateur bepaal"
+  backend_help: "Uitvoeromgewing"
+  image_help: "Vooraf geïnstalleerde Docker-beeld"

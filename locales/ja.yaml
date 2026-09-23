@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "セッションデータベースが利用できません"
     session_not_found:           "データベースにセッションが見つかりません。"
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: 計画担当
+  worker: 実装担当
+  reviewer: レビュー担当
+  select_provider: '{stage}のプロバイダーを選択:'
+  select_model: '{stage}のモデルを選択:'
+  command_help: "検証付きの開発工程を実行"
+  objective_help: "開発作業の目的"
+  workspace_help: "変更対象の作業ツリー"
+  checks_help: "利用者が指定する検証項目のJSONファイル"
+  backend_help: "実行環境"
+  image_help: "導入済みのDockerイメージ"

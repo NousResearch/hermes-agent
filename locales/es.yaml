@@ -460,3 +460,16 @@ gateway:
     session_db_unavailable_prefix: "Base de datos de sesiones no disponible"
     session_not_found:           "Sesión no encontrada en la base de datos."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Planificador
+  worker: Ejecutor
+  reviewer: Revisor
+  select_provider: 'Selecciona el proveedor para {stage}:'
+  select_model: 'Selecciona el modelo para {stage}:'
+  command_help: "Ejecutar un flujo de ingeniería verificado"
+  objective_help: "Objetivo de la tarea de ingeniería"
+  workspace_help: "Árbol de trabajo del proyecto que se modificará"
+  checks_help: "Archivo JSON de verificaciones definidas por el operador"
+  backend_help: "Entorno de ejecución"
+  image_help: "Imagen de Docker ya instalada"

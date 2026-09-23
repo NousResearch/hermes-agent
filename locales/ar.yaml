@@ -465,3 +465,16 @@ gateway:
     session_db_unavailable_prefix: "قاعدة بيانات الجلسات غير متاحة"
     session_not_found:           "لم يُعثر على الجلسة في قاعدة البيانات."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: المخطط
+  worker: المنفذ
+  reviewer: المراجع
+  select_provider: 'اختر مزود {stage}:'
+  select_model: 'اختر نموذج {stage}:'
+  command_help: "شغّل سير عمل هندسيًا مع التحقق"
+  objective_help: "هدف المهمة الهندسية"
+  workspace_help: "شجرة عمل المشروع المراد تعديلها"
+  checks_help: "ملف JSON للفحوص التي يحددها المشغّل"
+  backend_help: "بيئة التنفيذ"
+  image_help: "صورة Docker مثبتة مسبقًا"

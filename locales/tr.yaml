@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found:           "Oturum veritabanında bulunamadı."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Planlayıcı
+  worker: Uygulayıcı
+  reviewer: İnceleyen
+  select_provider: '{stage} için sağlayıcı seçin:'
+  select_model: '{stage} için model seçin:'
+  command_help: "Doğrulamalı mühendislik iş akışını çalıştır"
+  objective_help: "Mühendislik görevinin amacı"
+  workspace_help: "Değiştirilecek proje çalışma ağacı"
+  checks_help: "İşletici tarafından belirlenen denetimlerin JSON dosyası"
+  backend_help: "Yürütme ortamı"
+  image_help: "Önceden yüklenmiş Docker imajı"

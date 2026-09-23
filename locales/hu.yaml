@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found:           "A munkamenet nem található az adatbázisban."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Tervező
+  worker: Végrehajtó
+  reviewer: Felülvizsgáló
+  select_provider: 'Válasszon szolgáltatót ehhez: {stage}:'
+  select_model: 'Válasszon modellt ehhez: {stage}:'
+  command_help: "Ellenőrzött fejlesztési munkafolyamat futtatása"
+  objective_help: "A fejlesztési feladat célja"
+  workspace_help: "A módosítandó projekt munkafája"
+  checks_help: "Az üzemeltető által meghatározott ellenőrzések JSON-fájlja"
+  backend_help: "Futtatási környezet"
+  image_help: "Előre telepített Docker-kép"

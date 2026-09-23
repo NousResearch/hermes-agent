@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found:           "Session introuvable dans la base de données."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Planificateur
+  worker: Exécutant
+  reviewer: Réviseur
+  select_provider: 'Choisissez le fournisseur pour {stage} :'
+  select_model: 'Choisissez le modèle pour {stage} :'
+  command_help: "Exécuter un flux de travail vérifié"
+  objective_help: "Objectif de la tâche technique"
+  workspace_help: "Arbre de travail du projet à modifier"
+  checks_help: "Fichier JSON des contrôles définis par l’opérateur"
+  backend_help: "Environnement d’exécution"
+  image_help: "Image Docker déjà installée"

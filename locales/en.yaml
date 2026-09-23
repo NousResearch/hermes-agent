@@ -476,3 +476,16 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Planner
+  worker: Worker
+  reviewer: Reviewer
+  select_provider: 'Select provider for {stage}:'
+  select_model: 'Select model for {stage}:'
+  command_help: "Run a verified engineering workflow"
+  objective_help: "Engineering task objective"
+  workspace_help: "Project worktree to change"
+  checks_help: "JSON file of operator-owned checks"
+  backend_help: "Execution backend"
+  image_help: "Preinstalled Docker image"

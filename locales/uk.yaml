@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "База даних сеансів недоступна"
     session_not_found:           "Сеанс не знайдено в базі даних."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Планувальник
+  worker: Виконавець
+  reviewer: Рецензент
+  select_provider: 'Виберіть провайдера для етапу {stage}:'
+  select_model: 'Виберіть модель для етапу {stage}:'
+  command_help: "Запустити інженерний процес із перевіркою"
+  objective_help: "Мета інженерного завдання"
+  workspace_help: "Робоче дерево проєкту для змін"
+  checks_help: "JSON-файл перевірок, заданих оператором"
+  backend_help: "Середовище виконання"
+  image_help: "Попередньо встановлений образ Docker"

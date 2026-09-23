@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"
     session_not_found:           "Session nicht in der Datenbank gefunden."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: Planung
+  worker: Umsetzung
+  reviewer: Prüfung
+  select_provider: 'Anbieter für {stage} wählen:'
+  select_model: 'Modell für {stage} wählen:'
+  command_help: "Verifizierten Entwicklungsablauf ausführen"
+  objective_help: "Ziel der Entwicklungsaufgabe"
+  workspace_help: "Zu ändernder Projekt-Worktree"
+  checks_help: "JSON-Datei mit vorgegebenen Prüfungen"
+  backend_help: "Ausführungsumgebung"
+  image_help: "Vorinstalliertes Docker-Image"

@@ -68,13 +68,20 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
 def _bounded_text(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > MAX_FIELD_CHARS:
         raise HandoffError(f"invalid {field}")
-    if any(marker in value.casefold() for marker in ("bearer ", "api_key=", "password=", "secret=")):
+    if any(
+        marker in value.casefold()
+        for marker in ("bearer ", "api_key=", "password=", "secret=")
+    ):
         raise HandoffError(f"{field} contains credential material")
     return value.strip()
 
 
 def _bounded_list(value: object, *, field: str, required: bool) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) > MAX_LIST_ITEMS or (required and not value):
+    if (
+        not isinstance(value, list)
+        or len(value) > MAX_LIST_ITEMS
+        or (required and not value)
+    ):
         raise HandoffError(f"invalid {field}")
     return tuple(_bounded_text(item, field=field) for item in value)
 
@@ -91,16 +98,21 @@ def parse_handoff(payload: str) -> EngineeringPlan:
         raise HandoffError("handoff schema mismatch")
     return EngineeringPlan(
         objective=_bounded_text(document["objective"], field="objective"),
-        constraints=_bounded_list(document["constraints"], field="constraints", required=False),
+        constraints=_bounded_list(
+            document["constraints"], field="constraints", required=False
+        ),
         steps=_bounded_list(document["steps"], field="steps", required=True),
         acceptance_criteria=_bounded_list(
-            document["acceptance_criteria"], field="acceptance_criteria", required=True,
+            document["acceptance_criteria"],
+            field="acceptance_criteria",
+            required=True,
         ),
     )
 
 
 def verify_receipts(
-    expected: VerificationContext, receipts: Iterable[VerificationReceipt],
+    expected: VerificationContext,
+    receipts: Iterable[VerificationReceipt],
 ) -> bool:
     """Validate exact host provenance; return pass/fail only for complete real exits.
 
@@ -108,9 +120,13 @@ def verify_receipts(
     returning a nonzero exit status. An empty check set cannot certify a run.
     """
     if (
-        not expected.run_id or not expected.workspace_id or not expected.attempt_id
-        or not expected.snapshot_digest or type(expected.revision) is not int
-        or not expected.check_ids or len(set(expected.check_ids)) != len(expected.check_ids)
+        not expected.run_id
+        or not expected.workspace_id
+        or not expected.attempt_id
+        or not expected.snapshot_digest
+        or type(expected.revision) is not int
+        or not expected.check_ids
+        or len(set(expected.check_ids)) != len(expected.check_ids)
     ):
         raise ReceiptError("invalid verification context")
     supplied = list(receipts)
@@ -137,7 +153,8 @@ def verify_receipts(
             type(receipt.exit_code) is not int
             or type(receipt.complete) is not bool
             or type(receipt.timed_out) is not bool
-            or not receipt.complete or receipt.timed_out
+            or not receipt.complete
+            or receipt.timed_out
         ):
             raise ReceiptError("incomplete or invalid verification process")
         passed &= receipt.exit_code == 0
@@ -165,13 +182,18 @@ def revalidate_route(route: StageRoute, catalogue: dict) -> None:
     rows = catalogue.get("providers") if isinstance(catalogue, dict) else None
     if not isinstance(rows, list):
         raise ModelRouteError("model catalogue unavailable")
-    matches = [row for row in rows if isinstance(row, dict) and row.get("slug") == route.provider]
+    matches = [
+        row
+        for row in rows
+        if isinstance(row, dict) and row.get("slug") == route.provider
+    ]
     if len(matches) != 1:
         raise ModelRouteError("selected provider is absent or ambiguous")
     row = matches[0]
     if (
         row.get("authenticated") is not True
-        or route.model not in (row.get("models") or [])
+        or not isinstance(row.get("models"), list)
+        or route.model not in row["models"]
         or route.model in (row.get("unavailable_models") or [])
     ):
         raise ModelRouteError("selected model is unavailable")
@@ -199,7 +221,7 @@ def admit_stage_routes(assignments: dict, catalogue: dict) -> dict[str, StageRou
 class WorkflowLimits:
     max_attempts: int = 3
     max_replans: int = 2
-    max_stage_calls: int = 7
+    max_stage_calls: int = 24
 
 
 @dataclass(frozen=True)
@@ -234,9 +256,18 @@ def _plan_payload(plan: EngineeringPlan) -> str:
 
 
 def run_engineering_workflow(
-    *, objective: str, assignments: dict, catalogue_reader, infer, execute_worker,
-    verify, snapshot_digest, workspace_id: str, check_ids: tuple[str, ...],
-    limits: WorkflowLimits = WorkflowLimits(), stop_requested=None,
+    *,
+    objective: str,
+    assignments: dict,
+    catalogue_reader,
+    infer,
+    execute_worker,
+    verify,
+    snapshot_digest,
+    workspace_id: str,
+    check_ids: tuple[str, ...],
+    limits: WorkflowLimits = WorkflowLimits(),
+    stop_requested=None,
 ) -> WorkflowResult:
     """Run a finite planner, worker, host verifier, and reviewer sequence.
 
@@ -247,9 +278,15 @@ def run_engineering_workflow(
     import uuid
 
     if (
-        type(limits.max_attempts) is not int or limits.max_attempts < 1
-        or type(limits.max_replans) is not int or limits.max_replans < 0
-        or type(limits.max_stage_calls) is not int or limits.max_stage_calls < 1
+        type(limits.max_attempts) is not int
+        or limits.max_attempts < 1
+        or type(limits.max_replans) is not int
+        or limits.max_replans < 0
+        or type(limits.max_stage_calls) is not int
+        or limits.max_stage_calls < 1
+        or limits.max_attempts > 5
+        or limits.max_replans > 4
+        or limits.max_stage_calls > 64
     ):
         raise ValueError("workflow limits must be finite nonnegative integers")
     if not workspace_id or not check_ids:
@@ -261,8 +298,13 @@ def run_engineering_workflow(
 
     def finish(status: str, reason: str, decision_required: str = "") -> WorkflowResult:
         return WorkflowResult(
-            status=status, reason=reason, run_id=run_id, workspace_id=workspace_id,
-            attempts=attempts, revision=revision, stage_calls=calls,
+            status=status,
+            reason=reason,
+            run_id=run_id,
+            workspace_id=workspace_id,
+            attempts=attempts,
+            revision=revision,
+            stage_calls=calls,
             decision_required=decision_required,
         )
 
@@ -276,6 +318,8 @@ def run_engineering_workflow(
         nonlocal calls
         if stopped() or calls >= limits.max_stage_calls:
             raise _Stopped
+        if len(payload.encode("utf-8")) > MAX_HANDOFF_BYTES:
+            raise HandoffError("stage input exceeds handoff limit")
         revalidate_route(routes[stage], catalogue_reader())
         calls += 1
         return infer(stage, routes[stage], payload)
@@ -283,6 +327,8 @@ def run_engineering_workflow(
     try:
         routes = admit_stage_routes(assignments, catalogue_reader())
         plan = parse_handoff(call_stage("planner", objective))
+        if plan.objective != objective:
+            return finish("BLOCKED", "objective_changed")
     except _Stopped:
         return finish("STOP", "stage_budget_or_interrupt")
     except (HandoffError, ModelRouteError):
@@ -298,11 +344,25 @@ def run_engineering_workflow(
             worker_text = call_stage("worker", _plan_payload(plan))
             attempts += 1
             precheck = VerificationContext(
-                run_id=run_id, workspace_id=workspace_id, attempt_id=attempt_id,
-                revision=revision, snapshot_digest="", check_ids=check_ids,
+                run_id=run_id,
+                workspace_id=workspace_id,
+                attempt_id=attempt_id,
+                revision=revision,
+                snapshot_digest="",
+                check_ids=check_ids,
             )
-            outcome = execute_worker(worker_text, precheck)
-            if not isinstance(outcome, WorkerOutcome) or outcome.status not in {"READY", "BLOCKED"}:
+            outcome = execute_worker(
+                worker_text,
+                precheck,
+                lambda payload: call_stage("worker", payload),
+                plan,
+            )
+            if stopped():
+                return finish("STOP", "interrupt")
+            if not isinstance(outcome, WorkerOutcome) or outcome.status not in {
+                "READY",
+                "BLOCKED",
+            }:
                 return finish("BLOCKED", "invalid_worker_status")
             if outcome.status == "BLOCKED":
                 if not outcome.decision_required.strip():
@@ -312,11 +372,20 @@ def run_engineering_workflow(
             if not isinstance(digest, str) or not digest:
                 return finish("BLOCKED", "workspace_snapshot_unavailable")
             context = VerificationContext(
-                run_id=run_id, workspace_id=workspace_id, attempt_id=attempt_id,
-                revision=revision, snapshot_digest=digest, check_ids=check_ids,
+                run_id=run_id,
+                workspace_id=workspace_id,
+                attempt_id=attempt_id,
+                revision=revision,
+                snapshot_digest=digest,
+                check_ids=check_ids,
             )
-            passed = verify_receipts(context, verify(context))
+            receipts = list(verify(context))
+            if stopped():
+                return finish("STOP", "interrupt")
+            passed = verify_receipts(context, receipts)
             if passed:
+                if snapshot_digest() != digest:
+                    raise ReceiptError("workspace changed after verification")
                 return finish("DONE", "verified")
             if attempts >= limits.max_attempts or replans >= limits.max_replans:
                 return finish("STOP", "retry_or_replan_limit")
@@ -325,18 +394,34 @@ def run_engineering_workflow(
                     "objective": objective,
                     "plan": json.loads(_plan_payload(plan)),
                     "verification": "failed",
+                    "failed_checks": [
+                        {"check_id": item.check_id, "exit_code": item.exit_code}
+                        for item in receipts
+                        if item.exit_code != 0
+                    ],
+                    "worker_summary": outcome.summary[:1_024],
                     "attempt_id": attempt_id,
                     "revision": revision,
                 },
                 ensure_ascii=False,
             )
             plan = parse_handoff(call_stage("reviewer", reviewer_input))
+            if plan.objective != objective:
+                return finish("BLOCKED", "objective_changed")
             replans += 1
             revision += 1
         except _Stopped:
             return finish("STOP", "stage_budget_or_interrupt")
         except (HandoffError, ModelRouteError, ReceiptError):
-            return finish("BLOCKED", "invalid_handoff_model_or_receipt")
+            return (
+                finish("STOP", "interrupt")
+                if stopped()
+                else finish("BLOCKED", "invalid_handoff_model_or_receipt")
+            )
         except Exception:
-            return finish("BLOCKED", "stage_unavailable")
+            return (
+                finish("STOP", "interrupt")
+                if stopped()
+                else finish("BLOCKED", "stage_unavailable")
+            )
     return finish("STOP", "retry_limit")

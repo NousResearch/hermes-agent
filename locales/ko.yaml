@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: 계획 담당
+  worker: 작업 담당
+  reviewer: 검토 담당
+  select_provider: '{stage} 제공업체 선택:'
+  select_model: '{stage} 모델 선택:'
+  command_help: "검증되는 개발 작업 흐름 실행"
+  objective_help: "개발 작업 목표"
+  workspace_help: "수정할 프로젝트 작업 트리"
+  checks_help: "사용자가 지정한 검사 항목의 JSON 파일"
+  backend_help: "실행 환경"
+  image_help: "미리 설치된 Docker 이미지"

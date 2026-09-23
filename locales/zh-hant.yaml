@@ -463,3 +463,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found:           "資料庫中找不到此工作階段。"
     warn_passthrough:            "⚠️ {error}"
+
+engineering:
+  planner: 規劃者
+  worker: 執行者
+  reviewer: 審查者
+  select_provider: '為{stage}選擇服務商:'
+  select_model: '為{stage}選擇模型:'
+  command_help: "執行含驗證的工程流程"
+  objective_help: "工程任務目標"
+  workspace_help: "要修改的專案工作樹"
+  checks_help: "使用者指定檢查項的JSON檔案"
+  backend_help: "執行後端"
+  image_help: "已安裝的Docker映像檔"

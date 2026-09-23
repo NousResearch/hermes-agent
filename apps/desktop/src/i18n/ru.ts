@@ -1929,6 +1929,8 @@ export const ru = defineLocale({
     noUsage: period => `Нет использования за последние ${period} ${RU_NOUN(period, 'день', 'дня', 'дней')}.`,
     retry: 'Повторить',
     dailyTokens: 'Токены за день',
+    cacheHitRate: 'Попадания в кэш',
+    cacheHitRateVolume: 'с учётом объёма токенов запроса',
     input: 'вход',
     output: 'выход',
     noDailyActivity: 'Ежедневной активности нет.',

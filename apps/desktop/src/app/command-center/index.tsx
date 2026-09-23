@@ -40,6 +40,7 @@ import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay
 import { OverlayView } from '../overlays/overlay-view'
 
 import { MaintenancePanel } from './maintenance'
+import { cacheHitSummary } from './usage-metrics'
 
 export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
 
@@ -556,6 +557,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
   const totals = usage?.totals
   const byModel = usage?.by_model ?? []
   const topSkills = usage?.skills?.top_skills ?? []
+  const cacheHitBuckets = useMemo(() => daily.map(entry => ({ entry, summary: cacheHitSummary(entry) })), [daily])
 
   const maxTokens = useMemo(() => {
     if (!daily.length) {
@@ -644,6 +646,47 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                   </div>
                 )
               })}
+            </div>
+            <div className="mt-1 flex justify-between text-[0.6rem] text-(--ui-text-tertiary)">
+              <span>{daily[0]?.day}</span>
+              <span>{daily[daily.length - 1]?.day}</span>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section>
+        <div className="mb-2 flex items-baseline justify-between">
+          <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+            {cc.cacheHitRate}
+          </span>
+          <span className="text-[0.65rem] text-(--ui-text-tertiary)">{cc.cacheHitRateVolume}</span>
+        </div>
+        {daily.length === 0 ? (
+          <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {cc.noDailyActivity}
+          </div>
+        ) : (
+          <>
+            <div className="flex h-24 items-end gap-px">
+              {cacheHitBuckets.map(({ entry, summary }) => (
+                <div
+                  className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
+                  key={entry.day}
+                  title={
+                    summary
+                      ? `${entry.day} · ${summary.hitRate.toFixed(1)}% hit · ${compactNumber(summary.cachedTokens)} of ${compactNumber(summary.promptTokens)} prompt tokens cached`
+                      : `${entry.day} · cache data unavailable`
+                  }
+                >
+                  {summary && (
+                    <div
+                      className="w-full rounded-t-[1px] bg-violet-500/60"
+                      style={{ height: Math.max(Math.round((summary.hitRate / 100) * 96), 1) }}
+                    />
+                  )}
+                </div>
+              ))}
             </div>
             <div className="mt-1 flex justify-between text-[0.6rem] text-(--ui-text-tertiary)">
               <span>{daily[0]?.day}</span>

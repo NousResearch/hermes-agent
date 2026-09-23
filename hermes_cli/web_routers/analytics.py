@@ -87,6 +87,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(cache_write_tokens) as cache_write_tokens,
                    SUM(reasoning_tokens) as reasoning_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,

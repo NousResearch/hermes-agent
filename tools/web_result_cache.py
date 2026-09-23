@@ -175,19 +175,39 @@ def _load_index() -> dict:
         return {}
 
 
+def _fetched_at(entry) -> float:
+    try:
+        return float(entry.get("fetched_at", 0))
+    except Exception:  # noqa: BLE001 — a malformed row sorts oldest
+        return 0.0
+
+
 def _save_index(index: dict) -> None:
     if (d := _cache_dir()) is None:
         return
     path = d / _INDEX_FILENAME
+    # Expired rows can only miss, and past the cap the oldest go; a dropped row's .cache.md goes with it,
+    # because the index is the only way back to that file (dropping just the row leaked it forever).
+    horizon = time.time() - ttl_seconds()
+    kept = {k: v for k, v in index.items() if isinstance(v, dict) and _fetched_at(v) > horizon}
+    if len(kept) > _INDEX_MAX_ENTRIES:
+        kept = dict(sorted(kept.items(), key=lambda kv: _fetched_at(kv[1]), reverse=True)[:_INDEX_MAX_ENTRIES])
     try:
-        if len(index) > _INDEX_MAX_ENTRIES:
-            newest = sorted(index.items(), key=lambda kv: kv[1].get("fetched_at", 0), reverse=True)
-            index = dict(newest[:_INDEX_MAX_ENTRIES])
         # CLI, gateway, cron, and subagents all write this index; the replace is atomic, so the worst case
         # under concurrent writers is a lost insert, never a truncated index.
-        atomic_json_write(path, index, indent=None)
+        atomic_json_write(path, kept, indent=None)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to save web extract cache index: %s", exc)
+        return
+    root = d.resolve()
+    for key, entry in index.items():
+        if key in kept or not isinstance(entry, dict):
+            continue
+        with suppress(Exception):
+            file_path = Path(entry["file"]).resolve()
+            # The index is plain JSON on disk: never let a tampered row delete outside cache/web.
+            if root in file_path.parents and file_path.name.endswith(".cache.md"):
+                file_path.unlink(missing_ok=True)
 
 
 def _url_digest(url: str, format: Optional[str], provider: str = "") -> str:

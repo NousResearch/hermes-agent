@@ -108,7 +108,7 @@ def _content_display_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _coerce_message_text(content: Any) -> str:
+def _coerce_message_text(content: Any, *, inline_images: bool = True) -> str:
     """Render ``message['content']`` (str, parts list, or one structured dict) as a plain string. Image parts
     keep their URL inline so the desktop's ``extractEmbeddedImages`` and the resume payload agree with the
     cached message (else the inline image flashed, then vanished); other shapes become a placeholder."""
@@ -118,11 +118,11 @@ def _coerce_message_text(content: Any) -> str:
             if isinstance(part, str) or (isinstance(part, dict) and isinstance(part.get("text"), str)):
                 chunks.append(part if isinstance(part, str) else part["text"])
             elif isinstance(part, dict) and part.get("type"):
-                rendered = _history_dict_text(part, image_urls=True)
+                rendered = _history_dict_text(part, image_urls=inline_images)
                 chunks.append(rendered if part["type"] in _HISTORY_TEXT_KINDS else f"\n{rendered}")
         return "".join(chunks)
     if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=True)
+        return _history_dict_text(content, image_urls=inline_images)
     return "" if content is None else str(content)
 
 
@@ -192,7 +192,7 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
-def _history_to_messages(history: list[dict]) -> list[dict]:
+def _history_to_messages(history: list[dict], *, inline_images: bool = True) -> list[dict]:
     messages = []
     tool_call_args = {}
     for m in history:
@@ -205,7 +205,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
         if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
+        content_text = _coerce_message_text(m.get("content"), inline_images=inline_images)
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":

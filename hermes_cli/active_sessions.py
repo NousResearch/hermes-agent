@@ -434,6 +434,46 @@ def _holds_session(entries: list[dict[str, Any]], session_id: str) -> bool:
     return bool(target) and any(str(e.get("session_id") or "") == target for e in entries)
 
 
+def inspect_active_session(
+    session_id: str, *, requester_live_session_id: str | None = None,
+    registry_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Read one session's live owner without creating, pruning, or rewriting registry files.
+
+    The answer is advisory; acquisition remains the enforcement boundary. Missing state means no
+    recorded owner, while a state file without its coordination lock is deliberately ``unknown``.
+    """
+    target = str(session_id or "")
+    if not target:
+        return {"state": "unknown", "writable": None, "owner_surface": None}
+    state_path, lock_path = _lease_paths(registry_home=registry_home)
+    if not state_path.exists():
+        return {"state": "available", "writable": True, "owner_surface": None}
+    if not lock_path.exists():
+        return {"state": "unknown", "writable": None, "owner_surface": None}
+    try:
+        # Open an existing lock read-only: inspection must not create coordination artifacts.
+        with open(lock_path, "rb") as lock_file:
+            _flock(lock_file, lock=True)
+            try:
+                entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
+            finally:
+                _flock(lock_file, lock=False)
+    except (OSError, RuntimeError, ActiveSessionRegistryError):
+        logger.warning("Active-session registry is unavailable for read-only inspection")
+        return {"state": "unknown", "writable": None, "owner_surface": None}
+    owner = next((entry for entry in entries if str(entry.get("session_id") or "") == target), None)
+    if owner is None:
+        return {"state": "available", "writable": True, "owner_surface": None}
+    requester = {"live_session_id": str(requester_live_session_id or "")}
+    owned_by_requester = _is_same_writer(owner, requester)
+    return {
+        "state": "owned_by_requester" if owned_by_requester else "owned_elsewhere",
+        "writable": owned_by_requester,
+        "owner_surface": str(owner.get("surface") or "unknown"),
+    }
+
+
 def _read_live_entries(
     state_path: Path, *, track_liveness: bool, warn: str,
     target_session_id: str | None = None, target_pid: int | None = None,

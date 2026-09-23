@@ -514,6 +514,7 @@ class _Resume:
         self.profile = (params.get("profile") or "").strip() or None
         self.profile_home = _profile_home(self.profile)
         self.lazy, self.defer_history = _flag(params, "lazy"), _flag(params, "defer_history")
+        self.inline_images = is_truthy_value(params.get("inline_images", True))
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = _flag(params, "omit_messages"), _flag(params, "eager_build")
 
@@ -564,7 +565,7 @@ class _Resume:
         return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
 
     def messages(self, display: list) -> list:
-        return [] if self.omit_messages else _history_to_messages(display)
+        return [] if self.omit_messages else _history_to_messages(display, inline_images=self.inline_images)
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
@@ -715,6 +716,7 @@ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
         return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
+                                    inline_images=ctx.inline_images,
                                     transport=current_transport() or _stdio_transport)
     payload["resumed"] = ctx.target
     if ctx.defer_history:
@@ -906,6 +908,40 @@ def _(rid, params: dict) -> dict:
         if ctx.owns_db and ctx.db is not None:
             with contextlib.suppress(Exception):
                 ctx.db.close()
+
+
+@method("session.access")
+def _(rid, params: dict) -> dict:
+    """Read cross-process ownership and current-process run state without activating the session."""
+    if not (target := _str_param(params, "session_id")):
+        return _err(rid, 4006, "session_id required")
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5000)
+        try:
+            resolved = db.resolve_resume_session_id(target)
+            if not resolved or not db.get_session(resolved):
+                return _err(rid, 4007, "session not found")
+        except Exception as exc:
+            return _err(rid, 5000, f"session access failed: {exc}")
+    with _sessions_lock:
+        local = next((
+            (sid, session) for sid, session in list(_sessions.items())
+            if str(session.get("session_key") or "") == resolved
+            and (session.get("profile_home") or None) == (str(profile_home) if profile_home is not None else None)
+        ), None)
+    from hermes_cli.active_sessions import inspect_active_session
+    access = inspect_active_session(
+        resolved, requester_live_session_id=_str_param(params, "live_session_id") or None,
+        registry_home=profile_home,
+    )
+    access.update(
+        session_key=resolved,
+        running=bool(local[1].get("running")) if local is not None else None,
+    )
+    return _ok(rid, access)
 
 
 # ── cwd / workspace / live-session bookkeeping ───────────────────────

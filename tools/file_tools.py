@@ -40,9 +40,9 @@ from tools.file_tools_read_tracking import (
     _check_not_found_cache, _known_full_content_sha256,
     _file_metadata, _file_version, _in_spans,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
-    _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
-    _record_patch_failure, _record_seen_span, _reset_patch_failures, _returned_line_span,
-    _task_data, _unchanged_seen_spans, _update_read_timestamp)
+    _patch_failure_tracker, _programmatic_read, _read_tracker, _read_tracker_lock,
+    _record_not_found, _record_patch_failure, _record_seen_span, _reset_patch_failures,
+    _returned_line_span, _task_data, _unchanged_seen_spans, _update_read_timestamp)
 
 logger = logging.getLogger(__name__)
 
@@ -561,58 +561,70 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, overla
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
-                            returned_span: tuple | None = None,
+                            returned_span: tuple | None = None, programmatic: bool = False,
                             redacted: bool = False, end_line: int | None = None,
                             total_lines=None, version_before=None, snapshot=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
-    Per-task tracker under the lock (stub counter, history, consecutive count,
-    mtime for dedup + staleness, lines actually returned, page coverage, and the
-    write_file baseline once the task has seen every line UNREDACTED — in one
-    page or by paging contiguously through a file too big for one; a redacted
-    page returned a non-round-trippable ``«redacted:…»`` sentinel, so it must
-    not bless an overwrite that would persist the sentinel into a credential
-    file). Then OUTSIDE our lock (no nested locking): the cross-agent registry,
-    and the background-review read-mark (a FULL read of a skill file counts
-    like skill_view so a follow-up skill_manage(patch) is accepted).
-    """
-    version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
-    stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
-    complete = False
-    with _read_tracker_lock:
-        task_data["dedup_hits"].pop(dedup_key, None)
-        task_data["dedup_hits"].pop((resolved_str, "seen_lines"), None)
-        task_data["dedup_generation_reads"].add(dedup_key)
-        task_data["read_history"].add((path, offset, limit))
-        count = _bump_consecutive(task_data, ("read", path, offset, limit))
-        try:
-            task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
-            if returned_span:
-                _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
-        except OSError:
-            pass
-        baselines = task_data["full_write_baselines"]
-        if stable and version is not None and count < 4:
-            task_data["dedup"][dedup_key] = version_before
-            # A narrower view does not undo knowledge of these same bytes. Do
-            # not revive a baseline after a partial read of a different version.
-            complete = baselines.get(resolved_str) == version
-            if not complete:
-                complete = not partial
-                if partial and end_line is not None:
-                    complete, redacted = _note_read_coverage(
-                        task_data, resolved_str, version, offset, end_line, total_lines, redacted)
-                complete = complete and not redacted
-            if complete:
-                baselines[resolved_str] = version
-                task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
-        if not complete:
-            baselines.pop(resolved_str, None)
-        if not stable or count >= 4:
-            task_data["dedup"].pop(dedup_key, None)
-            task_data["dedup_generation_reads"].discard(dedup_key)
-        _cap_read_tracker_data(task_data)
+    Programmatic (in-cell execute_code) reads skip ALL of this: conversational
+    counters, dedup state, and the write_file baseline -- their content never
+    entered the transcript, so recording it here would tell the model's own
+    later reads they "already have" content only a cell saw.
 
+    For a real (non-programmatic) read: per-task tracker under the lock (stub
+    counter, history, consecutive count, mtime for dedup + staleness, lines
+    actually returned, page coverage, and the write_file baseline once the
+    task has seen every line UNREDACTED -- in one page or by paging
+    contiguously through a file too big for one; a redacted page returned a
+    non-round-trippable ``«redacted:…»`` sentinel, so it must not bless an
+    overwrite that would persist the sentinel into a credential file). Then
+    OUTSIDE our lock (no nested locking, and unconditionally, programmatic or
+    not): the cross-agent registry, and the background-review read-mark (a
+    FULL read of a skill file counts like skill_view so a follow-up
+    skill_manage(patch) is accepted).
+    """
+    count = 0
+    complete = False
+    if not programmatic:
+        version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
+        stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
+        with _read_tracker_lock:
+            task_data["dedup_hits"].pop(dedup_key, None)
+            task_data["dedup_hits"].pop((resolved_str, "seen_lines"), None)
+            task_data["dedup_generation_reads"].add(dedup_key)
+            task_data["read_history"].add((path, offset, limit))
+            count = _bump_consecutive(task_data, ("read", path, offset, limit))
+            try:
+                task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
+                if returned_span:
+                    _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
+            except OSError:
+                pass
+            baselines = task_data["full_write_baselines"]
+            if stable and version is not None and count < 4:
+                task_data["dedup"][dedup_key] = version_before
+                # A narrower view does not undo knowledge of these same bytes. Do
+                # not revive a baseline after a partial read of a different version.
+                complete = baselines.get(resolved_str) == version
+                if not complete:
+                    complete = not partial
+                    if partial and end_line is not None:
+                        complete, redacted = _note_read_coverage(
+                            task_data, resolved_str, version, offset, end_line, total_lines, redacted)
+                    complete = complete and not redacted
+                if complete:
+                    baselines[resolved_str] = version
+                    task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
+            if not complete:
+                baselines.pop(resolved_str, None)
+            if not stable or count >= 4:
+                task_data["dedup"].pop(dedup_key, None)
+                task_data["dedup_generation_reads"].discard(dedup_key)
+            _cap_read_tracker_data(task_data)
+
+    # OUTSIDE our lock (no nested locking): the cross-agent registry and the
+    # background-review read mark. A full skill read counts like skill_view so
+    # a follow-up skill_manage(patch) is accepted on either read path.
     try:
         file_state.record_read(task_id, resolved_str, partial=not complete)
     except Exception:
@@ -705,17 +717,22 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
+        programmatic = _programmatic_read.get()
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
+        # An in-cell (programmatic) read needs the same real-read guarantee -- its content never
+        # entered the transcript, so the model's own later read must not be told it "already has"
+        # content only a cell saw.
         file_ops = _get_file_ops(task_id)
         version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
-        if (cached_version is not None and not is_background_review()
+        if (cached_version is not None and not programmatic and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
         # A different window over lines already returned (file unchanged) only
-        # gets its unseen lines; see _omit_seen_lines. Same review-fork exemption as
-        # the exact-key stub above: is_background_review() must always see a real read.
-        seen_spans = [] if is_background_review() else _unchanged_seen_spans(task_data, resolved_str)
+        # gets its unseen lines; see _omit_seen_lines. Same programmatic/review-fork exemption
+        # as the exact-key stub above: neither must ever see anything but a real read.
+        seen_spans = ([] if (programmatic or is_background_review())
+                      else _unchanged_seen_spans(task_data, resolved_str))
 
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
@@ -782,7 +799,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 end_line = min(end_line, total_lines)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        returned_span=returned_span,
+                                        returned_span=returned_span, programmatic=programmatic,
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,

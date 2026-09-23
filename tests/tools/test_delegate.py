@@ -25,7 +25,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
-    _resolve_delegation_credentials,
+    _resolve_delegation_credentials,    _build_child_progress_callback,
 )
 from hermes_state import SessionDB
 

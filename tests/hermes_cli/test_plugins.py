@@ -1394,6 +1394,32 @@ class TestForceReloadSymmetry:
         assert route["model"] == "configured-model"
         assert seen_by_noop == ([route] if followed_by_noop else [])
 
+    def test_successful_turn_route_middleware_callbacks_chain(self, monkeypatch):
+        """Each successful route decision is the next callback's input."""
+        route = {"model": "configured-model", "provider": "configured-provider", "runtime": {}}
+        seen_by_second = []
+
+        def select_intermediate(route, **_kwargs):
+            route["model"] = "intermediate-model"
+            return {"route": route}
+
+        def refine_route(route, **_kwargs):
+            seen_by_second.append(route.copy())
+            route["model"] = "final-model"
+            return {"route": route}
+
+        manager = PluginManager()
+        manager._middleware["turn_route"] = [select_intermediate, refine_route]
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_turn_route_middleware(route)
+
+        assert seen_by_second == [{**route, "model": "intermediate-model"}]
+        assert result.payload["model"] == "final-model"
+        assert result.changed is True
+        assert result.trace == [{"source": "plugin"}, {"source": "plugin"}]
+        assert route["model"] == "configured-model"
+
     def test_hung_callback_suppresses_repeat_fires(self, monkeypatch):
         """A still-running timed-out callback must not spawn another worker."""
         import time

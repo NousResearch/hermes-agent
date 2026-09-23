@@ -1,3 +1,5 @@
+import type { ChatMessage } from '@/lib/chat-messages'
+
 import type { ClientSessionState, PersistedDisplayTranscriptProvenance } from '../../../types'
 
 export type TranscriptProvenanceScope =
@@ -60,10 +62,56 @@ export function invalidatePersistedDisplayTranscriptAuthority(state: ClientSessi
   }
 }
 
-export function suppressTranscriptForView(state: ClientSessionState, suppress: boolean): ClientSessionState {
-  if (!suppress || state.messages.length === 0) {
+export interface TranscriptViewCutoff {
+  cutoffIds: ReadonlySet<string>
+  // Content fingerprints of the arm-time rows (optional). Compaction
+  // re-sequences the cached tail with FRESH row ids mid-hold
+  // (archive_and_compact: "consumers that reference durable row ids
+  // re-resolve by content"), so an id-only cutoff would pass the whole
+  // re-sequenced cached prefix as if it were live and paint the exact
+  // compressed tail the hold exists to hide (#73646 via #117867).
+  cutoffKeys?: ReadonlySet<string>
+}
+
+// Volatile-free content fingerprint: role + text of text parts, JSON of the
+// rest. Deliberately ignores row ids and per-row timestamps so a re-sequenced
+// copy of the same content fingerprints identically. Ceiling: a genuinely new
+// row whose content is byte-identical to an arm-time row stays hidden until
+// the hold releases (bounded by the REST window).
+export function transcriptRowContentKey(message: ChatMessage): string {
+  return `${message.role}:${
+    (message.parts ?? [])
+      .map(part =>
+        'text' in part && typeof part.text === 'string' ? `${part.type}:${part.text}` : JSON.stringify(part)
+      )
+      .join('|')
+  }`
+}
+
+export function suppressTranscriptForView(
+  state: ClientSessionState,
+  cutoff: TranscriptViewCutoff | null
+): ClientSessionState {
+  if (cutoff === null) {
     return state
   }
 
-  return { ...state, messages: [] }
+  if (cutoff.cutoffIds.size === 0) {
+    // Fail-closed: the gate was armed before any cached row existed, so there
+    // is no unproven prefix to hide selectively — everything stays off the
+    // view until REST authority lands (#73646).
+    return { ...state, messages: [] }
+  }
+
+  const messages = state.messages.filter(
+    message =>
+      !cutoff.cutoffIds.has(message.id) &&
+      !(cutoff.cutoffKeys?.has(transcriptRowContentKey(message)) ?? false)
+  )
+
+  if (messages.length === state.messages.length) {
+    return state
+  }
+
+  return { ...state, messages }
 }

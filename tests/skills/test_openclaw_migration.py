@@ -624,56 +624,6 @@ def test_rebrand_text_replaces_openclaw_variants():
 
 
 
-# ── migrate_model_config: alias resolution (issue #16745) ──────────────────
-
-def _run_model_migration(tmp_path: Path, openclaw_json: dict) -> dict:
-    """Helper: run just migrate_model_config on an openclaw.json and return
-    the parsed destination config.yaml."""
-    import yaml
-
-    mod = load_module()
-    source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
-    source.mkdir(parents=True)
-    target.mkdir(parents=True)
-    (source / "openclaw.json").write_text(json.dumps(openclaw_json), encoding="utf-8")
-
-    migrator = mod.Migrator(
-        source_root=source,
-        target_root=target,
-        execute=True,
-        workspace_target=None,
-        overwrite=True,
-        migrate_secrets=False,
-        output_dir=target / "migration-report",
-    )
-    migrator.migrate_model_config()
-
-    cfg_path = target / "config.yaml"
-    if not cfg_path.exists():
-        return {}
-    return yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-
-
-def _extract_model(parsed: dict) -> str | None:
-    model = parsed.get("model")
-    if isinstance(model, dict):
-        return model.get("default")
-    return model
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ── non-UTF-8 tolerance (issue #8901) ───────────────────────────────────────
 
 

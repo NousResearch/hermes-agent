@@ -5,10 +5,8 @@ so each gateway user gets their own memory bucket instead of sharing a static on
 """
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
@@ -304,23 +302,4 @@ class TestHonchoUserIdScoping:
 # ---------------------------------------------------------------------------
 
 
-class TestAIAgentUserIdPropagation:
-    """Verify AIAgent stores user_id and passes it to memory init kwargs."""
-
-    def test_user_id_stored_on_agent(self):
-        """AIAgent should store user_id as instance attribute."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            # Manually set the attribute as __init__ does
-            agent._user_id = "test_user_42"
-            assert agent._user_id == "test_user_42"
-
-    def test_user_id_none_by_default(self):
-        """AIAgent should have None user_id when not provided (CLI mode)."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            agent._user_id = None
-            assert agent._user_id is None
 

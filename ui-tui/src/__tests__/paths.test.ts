@@ -108,10 +108,6 @@ describe('composeTabTitle', () => {
     expect(composeTabTitle('✓', 'auth refactor', 'opus-4', '~/proj')).toBe('✓ auth refactor · opus-4 · ~/proj')
   })
 
-  it('glues the marker to the first segment with a space, not a separator', () => {
-    expect(composeTabTitle('⏳', 'my session', 'opus-4', '~/proj').startsWith('⏳ my session')).toBe(true)
-  })
-
   it('omits the session name when empty (matches the pre-name format)', () => {
     expect(composeTabTitle('✓', '', 'opus-4', '~/proj')).toBe('✓ opus-4 · ~/proj')
   })

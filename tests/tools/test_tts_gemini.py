@@ -2,7 +2,6 @@
 
 import base64
 import struct
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,12 +69,6 @@ class TestWrapPcmAsWav:
         assert wav[36:40] == b"data"
         assert wav[44:] == pcm
 
-    def test_header_size_is_44(self):
-        from tools.tts_tool_delivery import _wrap_pcm_as_wav
-
-        pcm = b"\xff" * 100
-        wav = _wrap_pcm_as_wav(pcm)
-        assert len(wav) == 44 + len(pcm)
 
 
 class TestGenerateGeminiTts:

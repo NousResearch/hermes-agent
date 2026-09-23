@@ -167,3 +167,18 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     pc.fetch_live_catalog(force=True)  # the failed write is swallowed like any other fetch failure
     assert cache.read_text() == previous
     assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either
+
+
+def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path, monkeypatch):
+    """The docs build stamps generated_at at build time, so a doc rebuilt from an older catalog is "newer"
+    than a checkout that just added `onboarding`. At the same pin, a curated field the doc does not carry
+    comes from the checkout; a doc that carries it (even false) decides, and a different pin never merges."""
+    live = [_entry("same"), {**_entry("says-no"), "onboarding": False}, _entry("repinned", sha="b" * 40)]
+    _fresh_cache(tmp_path, monkeypatch, {"generated_at": "2026-09-22T10:00:00Z", "entries": live, "removed": []})
+    tree = [pc.entry_from_mapping({**_entry(n), "onboarding": True, "title": "T"}, n) for n in ("same", "says-no", "repinned")]
+    monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: tree)
+    monkeypatch.setattr(pc, "in_tree_catalog_time", lambda: 0.0)  # checkout older than the doc
+    by_name = {e.name: e for e in pc.load_catalog_live()}
+    assert (by_name["same"].onboarding, by_name["same"].title) == (True, "T")
+    assert by_name["says-no"].onboarding is False and by_name["says-no"].title == "T"
+    assert by_name["repinned"].onboarding is False and by_name["repinned"].sha == "b" * 40

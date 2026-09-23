@@ -723,10 +723,13 @@ PLATFORM_HINTS = {
         "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
     ),
     "bluebubbles": (
-        "You are chatting via iMessage (BlueBubbles). iMessage does not render markdown formatting — use "
-        "plain text. Keep responses concise as they appear as text messages. You can send media files "
-        "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .heic) appear "
-        "as photos and other files arrive as attachments."
+        # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
+        "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
+        "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
+        "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
+        "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
+        "can be copied. Write links as bare URLs (iMessage auto-links them). "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
     ),
     "mattermost": (
         "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "

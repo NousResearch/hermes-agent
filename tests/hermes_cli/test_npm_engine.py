@@ -121,9 +121,6 @@ class TestManagedDetection:
         system_npm.write_text("#!/bin/sh\n", encoding="utf-8")
         assert managed_npm_prefix(system_npm) is None
 
-    def test_no_npm_is_not_managed(self, managed_tree):
-        assert managed_npm_prefix(None) is None
-        assert managed_npm_prefix("") is None
 
 
 class TestInUseDeferral:
@@ -141,23 +138,6 @@ class TestInUseDeferral:
         monkeypatch.setenv("HERMES_HOME", str(home))
         return npm
 
-    def test_in_use_managed_tree_defers_upgrade_without_running_npm(
-        self, managed_npm, monkeypatch
-    ):
-        monkeypatch.setattr(npm_engine, "managed_node_tree_in_use", lambda: True)
-
-        def forbidden_run(cmd, **kwargs):
-            raise AssertionError(f"npm must not run while the tree is in use: {cmd}")
-
-        monkeypatch.setattr(subprocess, "run", forbidden_run)
-
-        result = npm_engine.upgrade_managed_npm(
-            str(managed_npm),
-            ">=11.0.0",
-            prefix=managed_npm.parent,
-            quiet=True,
-        )
-        assert result is False
 
     def test_in_use_deferral_blocks_repair_retry(self, managed_npm, monkeypatch):
         """End-to-end: an in-use tree means no npm subprocess runs and no

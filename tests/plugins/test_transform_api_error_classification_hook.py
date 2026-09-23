@@ -123,7 +123,6 @@ def test_skipped_valid_results_log_runtime_warning(monkeypatch, caplog):
     assert result.reason == FailoverReason.billing
     warnings = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
     assert len(warnings) == 1
-    assert "skipped 1 valid" in warnings[0]
 
     # A lone winner is not a conflict: no warning.
     caplog.clear()

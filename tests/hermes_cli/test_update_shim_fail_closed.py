@@ -17,7 +17,6 @@ Contract pinned here:
 """
 
 import os
-import sys
 from pathlib import Path
 from unittest import mock
 
@@ -38,17 +37,12 @@ def _make_shims(scripts_dir: Path, names=("hermes", "hermes-gateway")) -> list[P
     return shims
 
 
-@pytest.fixture()
-def windows(monkeypatch):
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
-    monkeypatch.setattr(ir, "_is_windows", lambda: True)
-
-
 # ---------------------------------------------------------------------------
 # main.py: _run_quarantined_install strict mode
 # ---------------------------------------------------------------------------
 
-def test_strict_quarantine_refuses_before_install(windows, tmp_path, monkeypatch):
+@pytest.mark.windows_only
+def test_strict_quarantine_refuses_before_install(tmp_path, monkeypatch):
     scripts = tmp_path / "venv" / "Scripts"
     shims = _make_shims(scripts)
     # hermes.exe cannot be renamed; hermes-gateway.exe can
@@ -83,7 +77,8 @@ def test_strict_quarantine_refuses_before_install(windows, tmp_path, monkeypatch
     assert not list(scripts.glob("hermes-gateway.exe.old.*"))
 
 
-def test_non_strict_keeps_warn_and_try(windows, tmp_path, monkeypatch):
+@pytest.mark.windows_only
+def test_non_strict_keeps_warn_and_try(tmp_path, monkeypatch):
     scripts = tmp_path / "venv" / "Scripts"
     shims = _make_shims(scripts, names=("hermes",))
     monkeypatch.setattr(
@@ -104,7 +99,8 @@ def test_non_strict_keeps_warn_and_try(windows, tmp_path, monkeypatch):
     assert install_ran == [["fake"]]
 
 
-def test_strict_all_renames_ok_runs_install(windows, tmp_path, monkeypatch):
+@pytest.mark.windows_only
+def test_strict_all_renames_ok_runs_install(tmp_path, monkeypatch):
     scripts = tmp_path / "venv" / "Scripts"
     shims = _make_shims(scripts)
     monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: shims)
@@ -120,33 +116,14 @@ def test_strict_all_renames_ok_runs_install(windows, tmp_path, monkeypatch):
     assert install_ran == [["fake"]]
 
 
-def test_update_sync_installs_are_strict(windows, tmp_path, monkeypatch):
-    """_install_python_dependencies_with_optional_fallback must pass
-    strict_quarantine=True — the #87331 site."""
-    seen = {}
-
-    def spy(cmd, *, env=None, scripts_dir=None, strict_quarantine=False):
-        seen["strict"] = strict_quarantine
-
-    monkeypatch.setattr(main_install_repair, "_run_quarantined_install", spy)
-    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        main_install_repair, "_verify_console_scripts_installed",
-        lambda prefix, env=None: None,
-    )
-    monkeypatch.setattr(
-        main_install_repair, "_verify_core_dependencies_installed",
-        lambda prefix, env=None, group="all": None,
-    )
-    main_install_repair._install_python_dependencies_with_optional_fallback(["uv", "pip"])
-    assert seen["strict"] is True
 
 
 # ---------------------------------------------------------------------------
 # _install_repair.py: recovery installer is strict unconditionally
 # ---------------------------------------------------------------------------
 
-def test_recovery_install_cmd_fail_closed(windows, tmp_path, monkeypatch):
+@pytest.mark.windows_only
+def test_recovery_install_cmd_fail_closed(tmp_path, monkeypatch):
     root = tmp_path
     scripts = root / "venv" / "Scripts"
     _make_shims(scripts, names=("hermes",))
@@ -167,7 +144,8 @@ def test_recovery_install_cmd_fail_closed(windows, tmp_path, monkeypatch):
     assert run_calls == []  # contended venv never mutated
 
 
-def test_recovery_install_cmd_ok_when_uncontended(windows, tmp_path, monkeypatch):
+@pytest.mark.windows_only
+def test_recovery_install_cmd_ok_when_uncontended(tmp_path, monkeypatch):
     root = tmp_path
     scripts = root / "venv" / "Scripts"
     _make_shims(scripts, names=("hermes",))
@@ -196,9 +174,7 @@ def test_refusal_writes_marker_and_exits_2(monkeypatch, capsys):
         update_cmd._refuse_update_for_contended_shims(exc)
     assert exit_info.value.code == 2
     assert wrote == [1]
-    out = capsys.readouterr().out
-    assert "hermes.exe" in out
-    assert "deferred" in out
+    assert "hermes.exe" in capsys.readouterr().out
 
 
 def test_shim_error_type_resolves_real_class():

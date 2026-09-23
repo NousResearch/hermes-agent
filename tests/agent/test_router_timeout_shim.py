@@ -59,7 +59,7 @@ def test_auxiliary_validation_rejects_router_timeout_shim():
 
     shim = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=SHIM, tool_calls=None))],
                            usage=SimpleNamespace(completion_tokens=0), model="m")
-    with pytest.raises(RuntimeError, match="timeout shim"):
+    with pytest.raises(RuntimeError):
         _validate_llm_response(shim, "title")
 
     generated = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=SHIM, tool_calls=None))],

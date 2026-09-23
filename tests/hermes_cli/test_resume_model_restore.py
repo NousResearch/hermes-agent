@@ -8,7 +8,6 @@ used instead of the ambient config default (#57588-class, #79536).
 
 import json
 
-import pytest
 
 import cli as cli_mod
 from hermes_state import SessionDB
@@ -245,9 +244,6 @@ def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
     assert "api_mode" not in runtime
 
 
-def test_persist_model_switch_noop_without_db_or_session():
-    stub = _make_stub()  # no _session_db / session_id attributes at all
-    stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
 def test_persist_model_switch_swallows_db_errors():

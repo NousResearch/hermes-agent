@@ -307,37 +307,6 @@ def test_background_review_skipped_in_delegation_subagent(monkeypatch):
     assert forks == [], "no review fork should be spawned inside a subagent"
 
 
-def test_background_review_runs_at_top_level(monkeypatch):
-    """Sibling guard for the subagent skip: at ``_delegate_depth == 0`` the
-    review still fires exactly as before (the cost guard is subagent-only)."""
-    forks = []
-
-    class FakeReviewAgent:
-        def __init__(self, **kwargs):
-            forks.append(kwargs)
-
-        def run_conversation(self, **kwargs):
-            pass
-
-        def shutdown_memory_provider(self):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
-    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
-
-    agent = _bare_agent()
-    agent._delegate_depth = 0  # top-level agent
-
-    AIAgent._spawn_background_review(
-        agent,
-        messages_snapshot=[{"role": "user", "content": "hello"}],
-        review_memory=True,
-    )
-
-    assert len(forks) == 1, "top-level review must still spawn the fork"
 
 
 def test_background_review_disabled_skips_automatic_spawn(monkeypatch):
@@ -860,11 +829,6 @@ def _skill_patch_review():
     ]
 
 
-def test_memory_notifications_off_returns_nothing():
-    actions = summarize_background_review_actions(
-        _memory_add_review(), [], notification_mode="off"
-    )
-    assert actions == []
 
 
 

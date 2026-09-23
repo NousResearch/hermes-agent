@@ -227,9 +227,10 @@ def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
 def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypatch):
     """`gateway restart` for a served profile restarts the multiplexer (a `-p X` child only exits 78 into
     the action log); `start`/`stop` refuse; a profile with its own gateway is managed normally."""
-    from hermes_cli import profiles as profiles_mod
+    from hermes_cli import web_server_gateway
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
+    # No stub: a served profile's liveness answers "running" on the MULTIPLEXER's pid, and that must
+    # not read as a gateway of its own (stubbing it False hid exactly that).
     # This process's own HERMES_HOME is coder's; the restart child must still run under the DEFAULT
     # home (the multiplexer's) — a bare `gateway restart` here would inherit coder's home and exit 78.
     restart = _gateway_subcommand("coder", "restart")
@@ -239,7 +240,7 @@ def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypat
     assert _gateway_subcommand("other", "restart") == ["-p", "other", "gateway", "restart"]
     assert multiplexed_profile_refusal("other", "stop") is None
     # coder started its own gateway with --force: it is that gateway the verbs address.
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: True)
+    monkeypatch.setattr(web_server_gateway, "_has_own_gateway", lambda profile_dir: True)
     assert _gateway_subcommand("coder", "restart") == ["-p", "coder", "gateway", "restart"]
     assert multiplexed_profile_refusal("coder", "stop") is None
 
@@ -251,3 +252,37 @@ def test_cli_stop_refuses_for_a_served_profile_without_its_own_gateway(served_ro
     with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
         gw._cmd_stop(argparse.Namespace(system=False, all=False))
     assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+
+def test_the_multiplexer_restart_names_the_root_even_under_a_sticky_active_profile(served_root, monkeypatch):
+    """From a dashboard whose own home is the DEFAULT one, restarting a served profile must still address
+    the multiplexer. A bare `gateway restart` child re-reads the sticky active_profile (the root home is
+    not trusted as-is, #22502) and restarts that profile instead, which the multiplexer serves: the
+    action log says restarted and the multiplexer never was."""
+    from pathlib import Path
+
+    from hermes_cli.main import _apply_profile_override
+    from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment
+    monkeypatch.setenv("HERMES_HOME", str(served_root))  # the dashboard runs as the default profile
+    (served_root / "active_profile").write_text("coder")
+    monkeypatch.setattr(Path, "home", lambda: served_root.parent)
+    restart = _gateway_subcommand("coder", "restart")
+    for var, value in _profile_action_environment(restart).items():
+        if var == "HERMES_HOME":
+            monkeypatch.setenv(var, value)
+    for var in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD", "INVOCATION_ID",
+                "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("sys.argv", ["hermes", *restart])
+    _apply_profile_override()  # what the spawned child does first
+    assert os.environ["HERMES_HOME"] == str(served_root)
+
+
+def test_the_topology_lists_a_served_profile_under_the_multiplexer_not_as_its_own_gateway(served_root, monkeypatch):
+    """`/api/status` topology: a served profile's liveness is the multiplexer's, so it is one gateway
+    serving both, not a second gateway entry for `coder` beside it."""
+    from hermes_cli.web_server_gateway import _collect_profile_gateway_topology
+    monkeypatch.setenv("HERMES_HOME", str(served_root))
+    topology = _collect_profile_gateway_topology()
+    assert [g["profile"] for g in topology["gateways"]] == ["default"]
+    assert "coder" in topology["gateways"][0]["served_profiles"]

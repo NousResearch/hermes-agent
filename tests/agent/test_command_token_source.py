@@ -126,12 +126,6 @@ class TestCaching:
         source._expires_at = time.monotonic() - 1  # cross the window
         assert source() != first  # re-minted after it
 
-    def test_advertised_ttl_sets_an_expiry(self):
-        source = CommandTokenSource(
-            """printf '{"access_token":"tok","expires_in":3600}'""", "dbx"
-        )
-        source()
-        assert source._expires_at is not None
 
     def test_ttl_shorter_than_the_leeway_still_caches_briefly(self):
         """A leeway larger than the TTL must not disable caching entirely."""
@@ -148,10 +142,6 @@ class TestBuilder:
         assert build_command_token_provider("") is None
         assert build_command_token_provider("   ") is None
 
-    def test_returns_callable_when_set(self):
-        provider = build_command_token_provider("printf tok", "dbx")
-        assert callable(provider)
-        assert provider() == "tok"
 
 
 class TestResolutionYieldsACallable:

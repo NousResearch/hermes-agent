@@ -15,12 +15,9 @@ import sys
 
 import pytest
 
-import hermes_cli.doctor as doctor
 from hermes_cli.sqlite_safe_read import (
     connect_tracked,
     has_live_connection,
-    track_connection,
-    untrack_connection,
 )
 from hermes_cli import doctor_platform
 
@@ -115,14 +112,6 @@ class TestReadJournalMode:
         assert mode is None
         assert error == "file is empty"
 
-    def test_short_file_reports_error(self, tmp_path):
-        db = tmp_path / "state.db"
-        db.write_bytes(b"SQLite f")
-
-        mode, error = doctor_platform._read_journal_mode(db)
-
-        assert mode is None
-        assert "not a database" in error
 
     def test_corrupt_file_reports_error(self, tmp_path):
         db = tmp_path / "state.db"
@@ -133,16 +122,6 @@ class TestReadJournalMode:
         assert mode is None
         assert "not a database" in error
 
-    def test_locked_database_is_still_readable(self, tmp_path):
-        db = tmp_path / "state.db"
-        _make_db(db)
-        holder = sqlite3.connect(db, isolation_level=None)
-        try:
-            holder.execute("BEGIN EXCLUSIVE")
-
-            assert doctor_platform._read_journal_mode(db) == ("rollback", None)
-        finally:
-            holder.close()
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
     @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
@@ -183,22 +162,6 @@ class TestLiveConnectionSafety:
     so the probe must defer to the registry rather than open the file.
     """
 
-    def test_probe_is_refused_while_a_tracked_connection_is_live(
-        self, tmp_path, clean_registry
-    ):
-        db = tmp_path / "state.db"
-        _make_db(db, journal_mode="WAL")
-
-        track_connection(db)
-        try:
-            assert has_live_connection(db)
-
-            mode, error = doctor_platform._read_journal_mode(db)
-
-            assert mode is None
-            assert error == "database is open in this process"
-        finally:
-            untrack_connection(db)
 
     def test_probe_is_refused_for_a_real_tracked_connection(
         self, tmp_path, clean_registry

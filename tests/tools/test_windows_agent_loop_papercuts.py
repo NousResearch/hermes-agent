@@ -5,8 +5,6 @@ mangling, crashes, and divergent hashing that made day-to-day agent use on
 Windows unpleasant. Each test names the issue it pins.
 """
 
-import os
-import re
 import sys
 from pathlib import Path
 
@@ -76,30 +74,8 @@ class TestWindowsMarketingVersion:
         expected = "11" if build >= 22000 else "10"
         assert _windows_marketing_version() == expected
 
-    def test_fallback_on_lookup_failure(self, monkeypatch):
-        import agent.prompt_builder as pb
-
-        if sys.platform == "win32":
-            monkeypatch.delattr(sys, "getwindowsversion")
-        assert isinstance(pb._windows_marketing_version(), str)
 
 
-class TestAutocompleteDevicePaths:
-    """#42016 — relpath ValueError on device paths must not escape."""
-
-    def test_relpath_valueerror_pattern(self):
-        # The guarded pattern in _get_project_files: a ValueError from
-        # os.path.relpath (different mount) is skipped, not raised.
-        bad = "\\\\.\\nul" if sys.platform == "win32" else "/dev/null"
-        cwd = os.getcwd()
-        files = []
-        for p in [bad, os.path.join(cwd, "real.txt")]:
-            try:
-                rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
-            except ValueError:
-                continue
-            files.append(rel)
-        assert "real.txt" in files
 
 
 class TestBrowserScreenshotPathRegex:

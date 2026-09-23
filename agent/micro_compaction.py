@@ -352,8 +352,17 @@ class MicroCompactionMixin:
         if not session_db or not session_id:
             return
         try:
-            # Every row except the marker is a carried-forward original: archive rewind-style.
-            session_db.archive_and_compact(session_id, compacted_messages, tail_count=max(0, len(compacted_messages) - 1))
+            # Micro-compaction is prefix + marker + suffix, not a contiguous tail. Identify the exact
+            # byte-identical originals by their persistence marker; the state transaction resolves each
+            # one by row id or durable identity+timestamp. In-place mutations deliberately pop
+            # _DB_PERSISTED_MARKER, and the fresh summary marker never has one. A positional tail_count
+            # can otherwise classify the summarized assistant/tool rows as rewind-only (#118481).
+            carried_messages = [
+                message for message in compacted_messages
+                if isinstance(message, dict) and message.get(_cc()._DB_PERSISTED_MARKER)
+            ]
+            session_db.archive_and_compact(
+                session_id, compacted_messages, carried_messages=carried_messages)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)

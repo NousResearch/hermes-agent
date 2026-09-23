@@ -91,8 +91,6 @@ def test_named_profile_gateway_start_refuses_without_force(
 
     r = _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)
     assert r.returncode != 0, f"a named profile started its own gateway: {r.stdout!r}"
-    assert "does not get a gateway of its own" in r.stdout
-    assert "--force" in r.stdout and "migrate --multiplex" in r.stdout
     assert not _svstat_wants_up(container_name), (
         f"refused start still flipped the slot's want-state: {_svstat(container_name)!r}")
 

@@ -88,8 +88,9 @@ def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int)
         del store[next(iter(store))]
 
 
-# Markdown-stripping rules, applied in order: bold, italic, bold/italic underscore,
-# code fence markers, inline code, headings, links, then newline squeeze.
+# Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
+# underscore, code fence markers, inline code, headings. Links and the newline
+# squeeze run after these, in that order (see ``strip_markdown``).
 _STRIP_RULES = (
     (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), r"\1"),
     (re.compile(r"\*(.+?)\*", re.DOTALL), r"\1"),
@@ -98,16 +99,36 @@ _STRIP_RULES = (
     (re.compile(r"```[a-zA-Z0-9_+-]*\n?"), ""),
     (re.compile(r"`(.+?)`"), r"\1"),
     (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),
-    (re.compile(r"\[([^\]]+)\]\([^\)]+\)"), r"\1"),
-    (re.compile(r"\n{3,}"), "\n\n"),
 )
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
+_HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
+_NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
 
 
-def strip_markdown(text: str) -> str:
-    """Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.)."""
+def _keep_link_target(match: "re.Match[str]") -> str:
+    r"""``[label](https://url)`` -> ``label\nurl``.
+
+    The bare URL is the only thing a platform with its own data detection
+    (iMessage) can turn back into a tap target, so dropping it makes the link
+    unreachable rather than merely unformatted. Non-http targets (``mailto:``,
+    relative paths) are not auto-linked, so they keep the label-only behaviour.
+    """
+    label, target = match.group(1).strip(), match.group(2).strip()
+    if not _HTTP_TARGET_RE.match(target):
+        return match.group(1)
+    return target if label == target else f"{label}\n{target}"
+
+
+def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
+    r"""Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.).
+
+    ``keep_link_targets`` rewrites ``[label](https://url)`` as ``label\nurl``
+    instead of discarding the URL; pass it on platforms that auto-link bare URLs.
+    """
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
-    return text.strip()
+    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
+    return _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
 
 
 class ThreadParticipationTracker:

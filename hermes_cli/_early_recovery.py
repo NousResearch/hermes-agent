@@ -238,30 +238,44 @@ def interrupted_pull_marker(root: Path) -> Path:
 
 
 def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str], list[str]] | None:
-    """Paths the killed git already moved to ``target``: (restore from HEAD, delete as added).
+    """Paths the killed git already touched on the way to ``target``: (restore from HEAD, delete as added).
 
-    Only a path whose content is exactly ``target``'s blob (or, for a deletion, that is gone) counts;
-    anything else is the user's own edit — e.g. a re-applied stash — and is left alone.
+    Git rewrites a file as unlink, create, write, so a kill leaves it missing, empty or cut short:
+    all of those count as git's, like the full ``target`` blob. Content that matches neither side and
+    is not the start of the target is the user's own edit (e.g. a re-applied stash) and is left
+    alone. ``None``: git no longer knows ``target``.
     """
     diff = git("diff", "--raw", "-z", "--no-renames", "--no-abbrev", pre, target)
     if diff.returncode != 0:
         return None
     parts = diff.stdout.split("\0")
-    entries = []  # (status, path, target blob)
+    entries = []  # (status, path, pre mode, pre blob, target blob)
     for meta, path in zip(parts[::2], parts[1::2]):
-        old_mode, new_mode, _old_blob, new_blob, status = meta.lstrip(":").split()
+        old_mode, new_mode, old_blob, new_blob, status = meta.lstrip(":").split()
         if status == "D" and old_mode in _REGULAR_FILE_MODES:
-            entries.append((status, path, None))
+            entries.append((status, path, old_mode, old_blob, None))
         elif status != "D" and new_mode in _REGULAR_FILE_MODES:
-            entries.append((status, path, new_blob))
-    present = [path for _s, path, blob in entries if blob and (root / path).is_file()]
+            entries.append((status, path, old_mode, old_blob, new_blob))
+    present = [path for _s, path, _m, _o, blob in entries if blob and (root / path).is_file()]
     hashed = git("hash-object", "--stdin-paths", stdin="\n".join(present) + "\n") if present else None
     if hashed is not None and hashed.returncode != 0:
-        return None
+        raise subprocess.SubprocessError(hashed.stderr.strip())
     worktree_blob = dict(zip(present, hashed.stdout.split() if hashed else ()))
     restore, added = [], []
-    for status, path, blob in entries:
-        written = (not (root / path).exists()) if blob is None else worktree_blob.get(path) == blob
+    for status, path, old_mode, old_blob, blob in entries:
+        file = root / path
+        if blob is None:
+            written = not file.exists()
+        elif path not in worktree_blob:
+            written = status != "A"  # unlinked, not yet recreated
+        elif worktree_blob[path] not in (old_blob, blob):  # git's own file, cut short, starts the target
+            smudged = subprocess.run(["git", "-C", str(root), "cat-file", "--filters", f"--path={path}", blob],
+                                     capture_output=True, check=True, timeout=120, stdin=subprocess.DEVNULL)
+            written = smudged.stdout.startswith(file.read_bytes())
+        elif old_blob == blob:  # mode-only: only the exec bit tells whether git got here
+            written = sys.platform != "win32" and bool(file.stat().st_mode & 0o100) != (old_mode == "100755")
+        else:
+            written = worktree_blob[path] == blob
         if written:
             (added if status == "A" else restore).append(path)
     return restore, added
@@ -274,10 +288,10 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
     half-written ones, so the caller must relaunch (``relaunch_after_restore``).
 
     Fast path (no marker) is one or two ``stat`` calls. Acts only when the marker's owner is gone,
-    HEAD is still the pre-pull commit and no merge/rebase is in progress; then every path whose
-    content is the pull target's returns to HEAD (the commit the venv was built for), so the install is
-    whole again and ``hermes update`` redoes the update from the start. Local edits are never touched;
-    the updater's autostash (if any) stays in ``git stash list``.
+    HEAD is still the pre-pull commit and no merge/rebase is in progress; then every path git wrote
+    (the target's content, or torn on the way there) returns to HEAD (the commit the venv was built
+    for), so the install is whole again and ``hermes update`` redoes the update from the start. Local
+    edits are never touched; the updater's autostash (if any) stays in ``git stash list``.
     """
     try:
         root = _project_root() if project_root is None else project_root
@@ -308,7 +322,9 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
             marker.unlink()  # git finished (HEAD moved) or the marker is unusable
             return False
         written = _paths_git_wrote(git, root, pre, target)
-        if written is None:
+        if written is None:  # after a gc or re-clone: nothing left to compare against
+            marker.unlink()
+            print(f"⚠ Ignoring a stale interrupted-update marker: commit {target[:10]} is gone.", file=sys.stderr)
             return False
         restore, added = written
         if not restore and not added:

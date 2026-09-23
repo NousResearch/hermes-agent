@@ -1044,6 +1044,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const webview = document.createElement('webview') as PreviewWebview
     webview.className = 'flex h-full w-full flex-1 bg-transparent'
     webview.setAttribute('partition', 'persist:hermes-preview')
+    // Sites such as WhatsApp Web refuse Electron's default user agent
+    // ("WhatsApp works with Google Chrome 100+"). Present the guest as the
+    // plain Chrome build it actually is by dropping the app/Electron tokens.
+    webview.setAttribute('useragent', navigator.userAgent.replace(/ ?(?:Hermes|Electron)\/\S+/g, ''))
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 

@@ -112,6 +112,7 @@ export const zh = defineLocale({
   },
 
   fileMenu: {
+    openFile: '打开文件',
     revealFinder: '在访达中显示',
     revealExplorer: '在文件资源管理器中显示',
     revealFileManager: '打开所在文件夹',

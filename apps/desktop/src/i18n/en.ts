@@ -357,6 +357,7 @@ export const en: Translations = {
   },
 
   fileMenu: {
+    openFile: 'Open file',
     revealFinder: 'Reveal in Finder',
     revealExplorer: 'Reveal in File Explorer',
     revealFileManager: 'Open containing folder',

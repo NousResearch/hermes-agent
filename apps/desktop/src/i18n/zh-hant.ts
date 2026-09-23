@@ -80,6 +80,7 @@ export const zhHant = defineLocale({
   },
 
   fileMenu: {
+    openFile: '開啟檔案',
     revealFinder: '在 Finder 中顯示',
     revealExplorer: '在檔案總管中顯示',
     revealFileManager: '開啟所在資料夾',

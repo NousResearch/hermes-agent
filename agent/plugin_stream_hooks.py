@@ -34,6 +34,7 @@ class _ConsumerDispatcher:
     callback: Callable[..., Any]
     events: "queue.Queue[_QueuedObserverEvent | object]"
     thread: threading.Thread | None = None
+    retired: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,11 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                 return
             if not isinstance(item, _QueuedObserverEvent):
                 continue
+            # Retirement and this gate share a lock. Work that passed the gate is
+            # already in flight; queued work not yet admitted is never invoked.
+            with _dispatcher_lock:
+                if dispatcher.retired:
+                    continue
             payload = dict(item.payload)
             payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
             try:
@@ -132,14 +138,13 @@ def _registered_dispatch_scope(hook_name: str):
     """
     manager = _active_plugin_manager()
     scope_key = _active_manager_scope(manager)
-    manager_callbacks = None
-    manager_hooks = getattr(manager, "_hooks", None)
-    if isinstance(manager_hooks, dict):
-        manager_callbacks = tuple(manager_hooks.get(hook_name, ()))
+    try:
+        from hermes_cli.plugins import PluginManager
+
+        is_plugin_manager = isinstance(manager, PluginManager)
+    except Exception:
+        is_plugin_manager = False
     callbacks = _registered_callbacks(hook_name)
-    callbacks_from_manager = manager_callbacks is not None and _same_callbacks(
-        callbacks, manager_callbacks
-    )
     manager_lock = getattr(manager, "_discovery_lock", None)
     if manager_lock is None:
         yield scope_key, callbacks, True
@@ -152,7 +157,7 @@ def _registered_dispatch_scope(hook_name: str):
         return
     try:
         still_current = _active_manager_scope(manager) is scope_key
-        if callbacks_from_manager:
+        if is_plugin_manager:
             current_hooks = getattr(manager, "_hooks", {})
             still_current = still_current and _same_callbacks(
                 callbacks, tuple(current_hooks.get(hook_name, ()))
@@ -202,7 +207,9 @@ def _dispatchers_for_scope(
                 and key_hook_name == hook_name
                 and callback_id not in callback_ids
             ):
-                stale.append(_dispatchers.pop(key))
+                dispatcher = _dispatchers.pop(key)
+                dispatcher.retired = True
+                stale.append(dispatcher)
 
         for callback in callbacks:
             key = (scope_key, hook_name, id(callback))
@@ -296,7 +303,9 @@ def retire_plugin_observer_dispatchers(
 
     Unload-all rotates the opaque lifetime token so an enqueue that captured the old generation
     cannot attach to a reloaded manager. Targeted unload only retires callbacks no longer present.
-    This touches only the selected manager's scope; cached sibling profiles remain active.
+    Retirement is marked before releasing the discovery lock; a worker that already passed its
+    retirement gate may finish, but queued work cannot begin after that boundary. Queue discard
+    and bounded joining happen after the manager lock is released. Cached sibling profiles remain active.
     """
     scope_key = _active_manager_scope(manager)
     manager_hooks = getattr(manager, "_hooks", {})
@@ -314,7 +323,9 @@ def retire_plugin_observer_dispatchers(
             if key_scope is not scope_key:
                 continue
             if unload_all or callback_id not in live_callback_ids.get(hook_name, set()):
-                stale.append(_dispatchers.pop(key))
+                dispatcher = _dispatchers.pop(key)
+                dispatcher.retired = True
+                stale.append(dispatcher)
     return stale
 
 

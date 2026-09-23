@@ -5625,12 +5625,15 @@ class TelegramAdapter(BasePlatformAdapter):
         text = re.sub(r'(```(?:[^\n]*\n)?[\s\S]*?```)', _protect_fenced, text)
         # 2) Protect inline code; escape \ inside it per MarkdownV2 spec.
         text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0).replace('\\', '\\\\')), text)
-        # 3) Links: escape display text; inside the URL only ')' and '\' need escaping.
+        # 3) Links: escape display text; inside the URL only ')' and '\' need escaping. A leading '!'
+        # survives only for ``![emoji](tg://emoji?id=N)`` (MarkdownV2 custom emoji); elsewhere it is
+        # plain text and gets escaped with the rest.
         def _convert_link(m):
-            url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
-            return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
+            url = m.group(3).replace('\\', '\\\\').replace(')', '\\)')
+            bang = '!' if m.group(1) and url.startswith('tg://emoji?id=') else _escape_mdv2(m.group(1))
+            return _ph(f'{bang}[{_escape_mdv2(m.group(2))}]({url})')
 
-        text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
+        text = re.sub(r'(!?)\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
         # 4) Headers (## Title) → bold *Title*, stripping redundant ** inside the header
         def _convert_header(m):
             inner = re.sub(r'\*\*(.+?)\*\*', r'\1', m.group(1).strip())

@@ -207,6 +207,18 @@ class TestFormatMessageLinks:
         # The ) in URL should be escaped
         assert "\\)" in result
 
+    def test_custom_emoji_link_keeps_bang(self, adapter):
+        # MarkdownV2 custom emoji is ``![emoji](tg://emoji?id=N)``; an escaped ``\!`` turns it into a
+        # plain text_link, so the ``!`` must reach Telegram unescaped.
+        result = adapter.format_message("Done.\n\n![🎭](tg://emoji?id=5302992173296300813)")
+        assert result.endswith("![🎭](tg://emoji?id=5302992173296300813)")
+        assert "\\![" not in result
+
+    def test_image_link_bang_still_escaped(self, adapter):
+        # Only tg://emoji gets the exemption; ``![alt](https://...)`` has no MarkdownV2 meaning.
+        result = adapter.format_message("![alt](https://example.com/a.png)")
+        assert result.startswith("\\![alt](")
+
 
 # =========================================================================
 # format_message - BUG: italic regex spans newlines

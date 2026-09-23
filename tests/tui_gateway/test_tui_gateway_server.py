@@ -16468,7 +16468,7 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: object())
         monkeypatch.setattr(server, "reset_hermes_home_override", lambda _token: order.append("reset_home"))
-        monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda _session: contextlib.nullcontext())
+        monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda _session, **_kw: contextlib.nullcontext())
         monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _trim)
 
         resp = server.handle_request(

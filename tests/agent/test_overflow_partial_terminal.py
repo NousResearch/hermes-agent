@@ -145,6 +145,7 @@ class TestRecoverFromTruncationOverflowTerminal:
             api_call_count=0, effective_task_id=None, current_turn_user_idx=None,
             length_continue_retries=0, truncated_response_parts=[],
             truncated_tool_call_retries=0, retry_count=0, compression_attempts=0,
+            codex_ack_continuations=0,
         )
 
         assert verdict.action == "return"

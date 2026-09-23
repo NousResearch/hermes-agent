@@ -38,6 +38,7 @@ class ResponseCheckVerdict:
     length_continue_retries: Any
     truncated_response_parts: Any
     truncated_tool_call_retries: Any
+    codex_ack_continuations: Any
     _preflight_compression_blocked: Any
     _last_preflight_pressure: Any
     api_duration: Any
@@ -94,7 +95,7 @@ def check_api_response(
     api_messages: Any, api_kwargs: Any, active_system_prompt: Any, conversation_history: Any,
     finish_reason: Any, retry_count: Any, max_retries: Any, compression_attempts: Any,
     max_compression_attempts: Any, length_continue_retries: Any, truncated_response_parts: Any,
-    truncated_tool_call_retries: Any, current_turn_user_idx: Any, api_call_count: Any,
+    truncated_tool_call_retries: Any, codex_ack_continuations: Any, current_turn_user_idx: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
     _preflight_compression_blocked: Any, _last_preflight_pressure: Any,
 ) -> ResponseCheckVerdict:
@@ -111,6 +112,7 @@ def check_api_response(
             length_continue_retries=length_continue_retries,
             truncated_response_parts=truncated_response_parts,
             truncated_tool_call_retries=truncated_tool_call_retries,
+            codex_ack_continuations=codex_ack_continuations,
             _preflight_compression_blocked=_preflight_compression_blocked,
             _last_preflight_pressure=_last_preflight_pressure, api_duration=api_duration,
             result=result,
@@ -178,6 +180,7 @@ def check_api_response(
             truncated_response_parts=truncated_response_parts,
             truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
             compression_attempts=compression_attempts,
+            codex_ack_continuations=codex_ack_continuations,
         )
         messages = _tv.messages
         length_continue_retries = _tv.length_continue_retries
@@ -185,6 +188,7 @@ def check_api_response(
         truncated_tool_call_retries = _tv.truncated_tool_call_retries
         retry_count = _tv.retry_count
         compression_attempts = _tv.compression_attempts
+        codex_ack_continuations = _tv.codex_ack_continuations
         if _tv.action in ("return", "break", "continue"):
             return _verdict(_tv.action, _tv.result)
 

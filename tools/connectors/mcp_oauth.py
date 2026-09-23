@@ -33,8 +33,12 @@ def probe_with_rollback(
     manager = get_manager()
     storage = HermesTokenStorage(server_name)
     # An attempt that replaced a still-running one starts from that one's half-written files, so
-    # it carries the older attempt's snapshot: the state from before either of them.
-    backup = getattr(flow, "inherited_backup", None) or storage.snapshot()
+    # it carries the older attempt's snapshot: the state from before either of them. An empty
+    # snapshot is a real baseline (no token files existed), so absence is tested with is None:
+    # a truthiness check would re-snapshot the older attempt's partial files and "restore" them.
+    backup = getattr(flow, "inherited_backup", None)
+    if backup is None:
+        backup = storage.snapshot()
     if flow is not None:
         flow.backup = backup
     previous_entry = None

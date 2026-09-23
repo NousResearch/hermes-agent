@@ -373,3 +373,104 @@ def test_a_desktop_session_with_no_callback_gets_the_link_at_once_and_opens_no_o
     assert out["status"] == "initiated"
     assert out["targets"][0]["connect_url"] == "https://auth.example/paper/1"
     assert live.current("s1") is None
+
+
+# ---------------------------------------------------------------------------
+# a retry's inherited rollback baseline: {} is a real snapshot, not an absence
+# ---------------------------------------------------------------------------
+
+def test_empty_inherited_backup_rolls_back_to_no_tokens(tmp_path, monkeypatch):
+    """An attempt that replaced a still-running one inherits the older attempt's snapshot, which
+    is legitimately {} when no token files existed before either attempt. A truthiness fallback
+    re-snapshots the older attempt's half-written files instead, so undo restores partial state
+    rather than deleting it."""
+    from tools.connectors import mcp_oauth
+
+    home = tmp_path / "home"
+    home.mkdir()
+    token_dir = home / "mcp-tokens"
+    token_dir.mkdir()
+    # What the still-running first attempt managed to write before the retry replaced it:
+    # a DCR client registration, but no grant.
+    (token_dir / "linear.client.json").write_text('{"client_id": "half-registered"}')
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    flow = SimpleNamespace(inherited_backup={}, cancelled=False, committed=False)
+    with patch("hermes_cli.mcp_config._probe_single_server", side_effect=RuntimeError("probe died")):
+        with pytest.raises(RuntimeError, match="probe died"):
+            mcp_oauth.probe_with_rollback("linear", {"url": "https://x"}, str(home), flow, False)
+
+    assert flow.backup == {}
+    assert not (token_dir / "linear.client.json").exists()
+    assert not (token_dir / "linear.json").exists()
+
+
+def test_missing_inherited_backup_snapshots_and_restores_prior_tokens(tmp_path, monkeypatch):
+    """Control: a fresh attempt (no inherited snapshot) still captures and restores the
+    pre-attempt token files on rollback."""
+    from tools.connectors import mcp_oauth
+
+    home = tmp_path / "home"
+    home.mkdir()
+    token_dir = home / "mcp-tokens"
+    token_dir.mkdir()
+    (token_dir / "linear.json").write_text('{"grant": "old"}')
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    flow = SimpleNamespace(cancelled=False, committed=False)
+    with patch("hermes_cli.mcp_config._probe_single_server", side_effect=RuntimeError("probe died")):
+        with pytest.raises(RuntimeError, match="probe died"):
+            mcp_oauth.probe_with_rollback("linear", {"url": "https://x"}, str(home), flow, False)
+
+    assert flow.backup == {"linear.json": b'{"grant": "old"}'}
+    assert (token_dir / "linear.json").read_text() == '{"grant": "old"}'
+
+
+def test_e2e_retried_attempt_inherits_empty_baseline_and_cleans_partial_state(tmp_path, monkeypatch):
+    """The production path end to end: start() attempt A runs with no token files (backup {}),
+    its probe writes half of the OAuth state (a DCR client registration, no grant) and stays
+    running. A retry start() replaces A and inherits A's {} baseline; when B's probe fails, undo
+    must delete the partial files, not restore them."""
+    import tools.connectors.mcp_oauth as mcp_oauth
+    from tui_gateway import mcp_oauth_sessions
+
+    home = tmp_path / "home"
+    home.mkdir()
+    token_dir = home / "mcp-tokens"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    a_ready = threading.Event()
+    a_release = threading.Event()
+    calls = []
+
+    def fake_probe(name, cfg, **kw):
+        calls.append(name)
+        if len(calls) == 1:
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "linear.client.json").write_text('{"client_id": "half-registered"}')
+            a_ready.set()
+            a_release.wait(timeout=10)
+            raise RuntimeError("attempt A was replaced")
+        raise RuntimeError("attempt B probe failed")
+
+    try:
+        with patch("tools.connectors.mcp_oauth.choose_callback_receiver", return_value=None), \
+             patch("hermes_cli.mcp_config._probe_single_server", side_effect=fake_probe):
+            with pytest.raises(TimeoutError):
+                mcp_oauth.start("linear", url_timeout=0.5, cfg={"url": "https://x"})
+            assert a_ready.wait(timeout=10)
+            assert (token_dir / "linear.client.json").exists()
+
+            with pytest.raises(RuntimeError):
+                mcp_oauth.start("linear", url_timeout=5, cfg={"url": "https://x"})
+    finally:
+        a_release.set()
+
+    flows = sorted(
+        (rec["flow"] for rec in mcp_oauth_sessions._sessions.values()
+         if rec["server_name"] == "linear" and rec["hermes_home"] == str(home.resolve())),
+        key=lambda flow: flow.created_at)
+    assert len(flows) == 2
+    assert flows[1].backup == {}
+    assert not (token_dir / "linear.client.json").exists()
+    assert not (token_dir / "linear.json").exists()

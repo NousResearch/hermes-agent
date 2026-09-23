@@ -14,6 +14,7 @@ relay adds to message_agent:
 
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -191,7 +192,8 @@ def test_waiter_is_a_runner_entrypoint_the_approval_gate_lets_through(root):
     assert detect_dangerous_command(cmd)[0] is False, cmd
     assert parts[1].endswith("bot_mode_dm.py") and parts[2] == "--wait-reply"
     assert parts[3] == str(bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{'b' * 32}.json")
-    assert parts[4:] == ["@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS)]
+    assert parts[4:] == ["@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS),
+                         str(bot_relay._envelope_ttl_seconds())]
 
 
 def test_waiter_outlives_the_desktop_deliver_deadline():
@@ -239,6 +241,35 @@ def test_waiter_prints_the_completion_notification_the_sender_wakes_on(root, cap
     assert code == expected_code
     assert all(token in out for token in expected_tokens), out
     assert bot_mode_dm._delivery_main(["--wait-reply", str(reply_path)]) == 2
+
+
+@pytest.mark.parametrize(("where", "age", "ttl", "withdrawn"), [
+    ("outbox", 1000, "900", True),
+    ("claimed", 1000, "900", False),
+    ("outbox", 1000, "0", False),
+    ("outbox", 10, "900", False),
+], ids=["unclaimed-expired", "claimed", "never-expires", "within-ttl"])
+def test_waiter_gives_up_honestly_about_an_envelope_no_desktop_took(root, capsys, where, age, ttl, withdrawn):
+    """With no Desktop draining this gateway, the envelope sits in the outbox past its TTL by the time the waiter
+    gives up, and the next drain only refuses it: "may still be delivered; do not resend" told the sender to drop
+    a message that was lost. The waiter now takes such an envelope out itself and says it was NOT delivered. A
+    claimed one may still be answered, and one that may still be picked up is left alone."""
+    from tools import bot_mode_dm
+
+    env = {"id": "e" * 32, "created_at": int(time.time()) - age}
+    base = bot_relay.relay_root(root)
+    for sub in (bot_relay.OUTBOX_DIR, bot_relay.CLAIMED_DIR, bot_relay.REPLIES_DIR):
+        (base / sub).mkdir(parents=True, exist_ok=True)
+    envelope_file = base / (bot_relay.OUTBOX_DIR if where == "outbox" else bot_relay.CLAIMED_DIR) / f"{env['id']}.json"
+    envelope_file.write_text(json.dumps(env), encoding="utf-8")
+    reply_path = base / bot_relay.REPLIES_DIR / f"{env['id']}.json"
+
+    code = bot_mode_dm._delivery_main(["--wait-reply", str(reply_path), "@researcher on ssh-vps", "0.2", ttl])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert ("NOT delivered" in out) is withdrawn and ("do not resend blindly" in out) is not withdrawn, out
+    assert envelope_file.exists() is not withdrawn
 
 
 

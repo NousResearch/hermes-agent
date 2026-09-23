@@ -86,3 +86,64 @@ it('reconciles only the represented failed tail, retaining its structured error 
   expect(merged.map(message => message.id)).toEqual(stored.map(message => message.id))
   expect(merged.at(-1)).toMatchObject({ error: failed.error, errorSurface: failed.errorSurface })
 })
+
+
+it('does not re-append a stale local user row whose durable row hydration already carries', () => {
+  const hydrated = [
+    row('hydrated-user', 'user', 'rewritten @image:durable.png', { rowId: 10 }),
+    row('hydrated-assistant', 'assistant', 'reply', { rowId: 11 })
+  ]
+  const local = [
+    row('local-user', 'user', 'original prompt', { rowId: 10, attachmentRefs: ['local.png'] }),
+    row('local-assistant', 'assistant', 'reply', { rowId: 11, error: 'stream failed' })
+  ]
+
+  const merged = preserveLocalAssistantErrors(hydrated, local)
+
+  expect(merged.map(message => message.id)).toEqual(['hydrated-user', 'hydrated-assistant'])
+  expect(merged[1]).toMatchObject({ rowId: 11, error: 'stream failed', pending: false })
+})
+
+it('moves a local error onto the durable row it already represents', () => {
+  const hydrated = [
+    row('server-user', 'user', 'server text', { rowId: 40 }),
+    row('server-assistant', 'assistant', 'durable response', { rowId: 41 })
+  ]
+  const local = [
+    row('local-user', 'user', 'optimistic text', { rowId: 40 }),
+    row('runtime-assistant', 'assistant', 'different live rendering', {
+      rowId: 41,
+      error: 'connection lost',
+      errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true }
+    })
+  ]
+
+  const merged = preserveLocalAssistantErrors(hydrated, local)
+
+  expect(merged).toHaveLength(2)
+  expect(merged[1]).toMatchObject({
+    id: 'server-assistant',
+    rowId: 41,
+    error: 'connection lost',
+    errorSurface: local[1].errorSurface,
+    pending: false
+  })
+})
+
+it('re-inserts a preserved older row at its durable position instead of the tail', () => {
+  const hydrated = [
+    row('server-20', 'user', 'older hydrated', { rowId: 20 }),
+    row('server-30', 'user', 'newest prompt', { rowId: 30 }),
+    row('server-31', 'assistant', 'newest reply', { rowId: 31 })
+  ]
+  const local = [
+    row('local-25', 'user', 'older optimistic prompt', { rowId: 25 }),
+    row('local-26', 'assistant', 'older failed reply', { rowId: 26, error: 'old failure' })
+  ]
+
+  const merged = preserveLocalAssistantErrors(hydrated, local)
+
+  expect(merged.map(message => message.rowId)).toEqual([20, 25, 26, 30, 31])
+  expect(merged.find(message => message.rowId === 26)).toMatchObject({ error: 'old failure', pending: false })
+  expect(merged.at(-1)?.id).toBe('server-31')
+})

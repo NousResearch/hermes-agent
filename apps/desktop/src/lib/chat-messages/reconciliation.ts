@@ -204,6 +204,32 @@ export function preserveLocalAssistantErrors(
   })
 
   const existingIds = new Set(mergedNextMessages.map(message => message.id))
+  const hydratedByRowId = new Map<number, number>()
+  mergedNextMessages.forEach((message, index) => {
+    if (message.rowId !== undefined) {
+      hydratedByRowId.set(message.rowId, index)
+    }
+  })
+
+  // Renderer ids are ephemeral; rowId is the durable identity once the backend
+  // has flushed the turn. Carry a local failure onto that durable occurrence
+  // even when hydration regenerated a different renderer id or rewrote content.
+  for (const local of currentMessages) {
+    if (local.role !== 'assistant' || !local.error || local.hidden || local.rowId === undefined) {
+      continue
+    }
+    const durableIndex = hydratedByRowId.get(local.rowId)
+    if (durableIndex === undefined || mergedNextMessages[durableIndex].role !== 'assistant') {
+      continue
+    }
+    mergedNextMessages[durableIndex] = {
+      ...mergedNextMessages[durableIndex],
+      error: local.error,
+      ...(local.errorSurface ? { errorSurface: local.errorSurface } : {}),
+      pending: false
+    }
+  }
+
   const preserveIds = new Set<string>()
   const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
   const tailUserInNext = [...mergedNextMessages].reverse().find(message => message.role === 'user' && !message.hidden)
@@ -219,6 +245,13 @@ export function preserveLocalAssistantErrors(
     const message = currentMessages[index]
 
     if (message.role !== 'assistant' || !message.error || message.hidden || existingIds.has(message.id)) {
+      continue
+    }
+
+    // Hydration may have regenerated the renderer id/text while still carrying
+    // the exact durable row. The error was already merged above; never append a
+    // second copy of that row to the transcript tail.
+    if (message.rowId !== undefined && hydratedByRowId.has(message.rowId)) {
       continue
     }
 
@@ -244,7 +277,12 @@ export function preserveLocalAssistantErrors(
         continue
       }
 
-      if (candidate.role === 'user' && !existingIds.has(candidate.id) && !matchesTailUserInNext(candidate)) {
+      if (
+        candidate.role === 'user' &&
+        !existingIds.has(candidate.id) &&
+        !(candidate.rowId !== undefined && hydratedByRowId.has(candidate.rowId)) &&
+        !matchesTailUserInNext(candidate)
+      ) {
         preserveIds.add(candidate.id)
       }
 
@@ -260,7 +298,32 @@ export function preserveLocalAssistantErrors(
     .filter(message => preserveIds.has(message.id))
     .map(message => ({ ...message, pending: false }))
 
-  return [...mergedNextMessages, ...preserved]
+  // Older local rows can be outside the hydrated page. A durable rowId still
+  // tells us where they belong, so splice those rows back into timeline order
+  // rather than painting them below the newest turn. Truly local rows without a
+  // rowId keep the historical append behavior.
+  const durablePreserved = preserved
+    .filter((message): message is ChatMessage & { rowId: number } => message.rowId !== undefined)
+    .sort((a, b) => a.rowId - b.rowId)
+  const localTail = preserved.filter(message => message.rowId === undefined)
+  const merged = [...mergedNextMessages]
+
+  for (const message of durablePreserved) {
+    if (merged.some(candidate => candidate.rowId === message.rowId)) {
+      continue
+    }
+    const nextDurableIndex = merged.findIndex(
+      candidate => candidate.rowId !== undefined && candidate.rowId > message.rowId
+    )
+    if (nextDurableIndex !== -1) {
+      merged.splice(nextDurableIndex, 0, message)
+      continue
+    }
+    const lastDurableIndex = merged.findLastIndex(candidate => candidate.rowId !== undefined)
+    merged.splice(lastDurableIndex === -1 ? merged.length : lastDurableIndex + 1, 0, message)
+  }
+
+  return [...merged, ...localTail]
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

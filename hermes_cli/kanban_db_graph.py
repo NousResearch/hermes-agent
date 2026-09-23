@@ -25,11 +25,13 @@ def inherit_creator_origin(
 def initial_task_state(
     conn: sqlite3.Connection, parents: tuple[str, ...], initial_status: str,
     triage: bool, tenant: Optional[str],
+    creator_task_id: Optional[str] = None,
 ) -> tuple[str, Optional[str]]:
     """Resolve state and tenant under the creator's write transaction.
 
     Parent order breaks ties in this soft namespace; explicit tenant wins.
     Validate parents even for parked tasks so links never dangle.
+    ``creator_task_id`` is provenance only and does not gate readiness (#106994).
     """
     rows = {}
     if parents:
@@ -46,7 +48,11 @@ def initial_task_state(
         return "blocked", tenant
     if triage:
         return "triage", tenant
-    if any(row["status"] != "done" for row in rows.values()):
+    if any(
+        row["status"] != "done"
+        for pid, row in rows.items()
+        if not creator_task_id or pid != creator_task_id
+    ):
         return "todo", tenant
     return "ready", tenant
 

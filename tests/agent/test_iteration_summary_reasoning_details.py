@@ -42,3 +42,14 @@ def test_strict_chat_route_summary_wire_drops_reasoning_details(make_agent):
     api_messages = _iteration_summary_api_messages(agent, [dict(m) for m in _HISTORY])
     kwargs = _build_api_kwargs_for_mode(agent, api_messages)
     assert all("reasoning_details" not in m for m in kwargs["messages"])
+
+
+def test_gemini_summary_messages_inject_thought_signature_sentinel(make_agent):
+    """Mirror transport sentinel injection for max-iterations summary path (#66587)."""
+    agent = make_agent("https://api.example.com/openai/v1", "custom")
+    agent.model = "google/gemini-3-pro-preview"
+    assert agent.api_mode == "chat_completions"
+    api_messages = _iteration_summary_api_messages(agent, [dict(m) for m in _HISTORY])
+    assistant = next(m for m in api_messages if m.get("role") == "assistant")
+    tc = assistant["tool_calls"][0]
+    assert tc["extra_content"] == {"google": {"thought_signature": "skip_thought_signature_validator"}}

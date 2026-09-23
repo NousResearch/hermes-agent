@@ -2170,6 +2170,17 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         substitute_api_content(api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
+            from agent.transports.chat_completions import (
+                _model_consumes_thought_signature,
+                _sentinel_extra_content,
+                _tool_call_has_signature,
+            )
+            if _model_consumes_thought_signature(sanitize_model):
+                for tc in api_msg.get("tool_calls") or ():
+                    if isinstance(tc, dict) and not _tool_call_has_signature(tc):
+                        sentinel = _sentinel_extra_content(tc.get("extra_content", {}))
+                        if sentinel is not None:
+                            tc["extra_content"] = sentinel
         api_messages.append(api_msg)
 
     effective_system = agent._cached_system_prompt or ""
@@ -2647,6 +2658,11 @@ class _ToolCallAccumulator:
         """Join buffered argument deltas into each entry's ``arguments``; idempotent. Returns ``acc``."""
         for idx, parts in self._argument_parts.items():
             self.acc[idx]["function"]["arguments"] = "".join(parts)
+        shared_extra = next((entry["extra_content"] for entry in self.acc.values() if entry.get("extra_content")), None)
+        if shared_extra:
+            for entry in self.acc.values():
+                if not entry.get("extra_content"):
+                    entry["extra_content"] = dict(shared_extra) if isinstance(shared_extra, dict) else shared_extra
         return self.acc
 
     def feed(self, tc_delta) -> Optional[str]:
@@ -2685,6 +2701,13 @@ class _ToolCallAccumulator:
             extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
         if extra is not None:
             entry["extra_content"] = _dump_if_model(extra)
+            for sibling in self.acc.values():
+                if not sibling.get("extra_content"):
+                    sibling["extra_content"] = dict(entry["extra_content"]) if isinstance(entry["extra_content"], dict) else entry["extra_content"]
+        elif entry.get("extra_content") is None:
+            shared = next((e["extra_content"] for e in self.acc.values() if e.get("extra_content")), None)
+            if shared:
+                entry["extra_content"] = dict(shared) if isinstance(shared, dict) else shared
         name = entry["function"]["name"]
         if name and idx not in self._notified:
             self._notified.add(idx)

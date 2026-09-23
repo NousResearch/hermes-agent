@@ -99,6 +99,12 @@ hermes config set --force agent.host_identity_guidance false  # drop "You run on
 hermes config set --force display.allow_silent_replies true   # it may ignore a message
 hermes config set memory.memory_char_limit 8000     # MEMORY.md: room for a journal (default 2200)
 hermes config set --force display.agent_name Wintermute  # "Wintermute is restarting", not "Hermes"
+# Telegram shows only what Wintermute says: no tool-progress lines, no reasoning drafts.
+hermes config set display.platforms.telegram.tool_progress off
+hermes config set display.platforms.telegram.show_reasoning false
+# No background "self-improvement review": a second model call after conversations that
+# writes skills on its own (Hermes' mechanism, not Wintermute's decision; ~30k tokens each).
+hermes config set auxiliary.background_review.enabled false
 
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"

@@ -8,11 +8,8 @@ import json
 import re
 from typing import Any, Dict, Optional
 
+from agent.errors import is_provider_stream_parse_error
 from agent.redact import redact_sensitive_text
-
-# Substrings of the plain ``ValueError`` the Anthropic SDK raises for a malformed event-stream
-# frame (wire trouble, not local validation). Read by ``AIAgent._is_provider_stream_parse_error``.
-PROVIDER_STREAM_PARSE_MARKERS = ("expected ident at line", "expected value at line")
 
 
 # Offline DNS failures are wrapped in a generic "Connection error" by SDKs — inspect the chain.
@@ -147,7 +144,7 @@ class ApiErrorSummaryMixin:
                 )
             current = current.__cause__ or current.__context__
 
-        if isinstance(error, ValueError) and any(marker in raw.lower() for marker in PROVIDER_STREAM_PARSE_MARKERS):
+        if is_provider_stream_parse_error(error):
             return f"Malformed provider streaming response: {raw[:300]}"
 
         prefix = _http_prefix(error)

@@ -3356,7 +3356,10 @@ class _StreamingCall(StreamingWaitMonitor):
         OpenAI primary is replaced lazily."""
         self.agent._emit_stream_drop(
             error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
-        if self.agent._is_provider_stream_parse_error(e):
+        if self.agent.api_mode == "anthropic_messages" and self.agent._is_provider_stream_parse_error(e):
+            # Anthropic-wire only: the predicate is about the parser (both SDKs use jiter),
+            # but ``eager_input_streaming`` is an Anthropic tool-schema field — adding it to an
+            # OpenAI-shaped request would be an unknown parameter.
             from agent.anthropic_adapter import buffer_anthropic_tool_input
             buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
         self._cancel_current_stream_attempt(reason)

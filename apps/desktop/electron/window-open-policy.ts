@@ -2,7 +2,8 @@
  * Window-open policy for every BrowserWindow's webContents.
  *
  * Every external URL the desktop opens on purpose goes through the audited
- * `hermes:openExternal` IPC channel (`openExternalUrl` in main.ts: http/https/
+ * `hermes:openExternal` IPC channel (`openExternalUrl` in
+ * desktop-external-open-runtime.ts: http/https/
  * mailto allowlist, guarded file:). The `window.open` / `target=_blank` path
  * that reaches `setWindowOpenHandler` is therefore only ever driven by content
  * we did NOT initiate — most dangerously untrusted HTML in sandboxed

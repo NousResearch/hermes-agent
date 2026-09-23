@@ -7,6 +7,7 @@ exception-swallowing so a failure inside receipts can never break an update.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import logging
 import os
 import sys
@@ -54,20 +55,84 @@ def _str_records(entries: Any, keys: tuple[str, ...], *, pid: bool = False) -> l
 class UpdateReceipt:
     """Collects the observable facts of one ``hermes update`` run."""
 
-    def __init__(self) -> None:
+    def __init__(self, intent: dict[str, Any] | None = None) -> None:
+        self._handoff_ack_path: Optional[Path] = None
         self.data: dict[str, Any] = {
             "schema": 1, "started_at": _utc_now_iso(), "finished_at": None,
             "argv": list(sys.argv), "pid": os.getpid(),
-            "outcome": "running",  # running | success | partial | failed
+            "outcome": "running",  # running | success | partial | failed | refused
             "pre_update": _code_identity(), "post_update": {},
             "steps": [], "skips": [], "gateway_restart": {}, "fleet": [],
+            "failure_reasons": [],
         }
+        if intent is not None:
+            self.set_intent(intent)
+
+    def set_intent(self, intent: dict[str, Any]) -> None:
+        """Persist a complete pinned identity as a detached, immutable receipt copy."""
+        if not isinstance(intent, dict):
+            raise TypeError("update intent must be an object")
+        frozen = deepcopy(intent)
+        # The pinned path uses the five-field contract. Keep the historical
+        # additive fallback for older receipt producers, but never silently
+        # fill or normalize a partial pinned intent.
+        if {"target", "install_id", "correlation_id", "prior_sha", "branch"}.issubset(frozen):
+            from hermes_cli.update_target import validate_update_intent
+            frozen = validate_update_intent(frozen)
+        self.data["update_intent"] = frozen
+        self.data["target_intent"] = deepcopy(frozen)
+        target = frozen.get("target", frozen.get("revision"))
+        prior = frozen.get("prior_sha", frozen.get("current_sha"))
+        self.data.update({
+            "requested_sha": target,
+            "install_id": frozen.get("install_id"),
+            "correlation_id": frozen.get("correlation_id"),
+            "pre_sha": prior,
+            "prior_sha": prior,
+        })
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
         self.data["steps"].append({"name": name, "ok": bool(ok), "detail": detail, "at": _utc_now_iso()})
+        # The exact apply step is a useful compatibility receipt for callers
+        # that finalize immediately after handoff; later post-swap verification
+        # may replace these fields with its stronger proof.
+        if name == "pinned_apply" and ok and detail.startswith("post_sha="):
+            self.data["post_sha"] = detail.partition("=")[2].split()[0]
 
     def skip(self, name: str, reason: str) -> None:
         self.data["skips"].append({"name": name, "reason": reason, "at": _utc_now_iso()})
+
+    def record_failure(self, reason: str) -> None:
+        if not isinstance(reason, str) or not reason:
+            return
+        reasons = self.data.setdefault("failure_reasons", [])
+        if reason not in reasons:
+            reasons.append(reason)
+
+    def record_refusal(self, reason: str) -> None:
+        if not isinstance(reason, str) or not reason:
+            return
+        reasons = self.data.setdefault("refusal_reasons", [])
+        if reason not in reasons:
+            reasons.append(reason)
+
+    def record_pinned_post_swap(
+        self, *, post_sha: str, post_install_id: str, verified: bool,
+    ) -> None:
+        expected_sha = self.data.get("requested_sha")
+        expected_install_id = self.data.get("install_id")
+        matches_intent = (
+            isinstance(expected_sha, str) and post_sha == expected_sha
+            and isinstance(expected_install_id, str) and post_install_id == expected_install_id
+        )
+        proof_valid = bool(verified and matches_intent)
+        self.data["post_sha"] = post_sha
+        self.data["post_install_id"] = post_install_id
+        self.data["pinned_post_verified"] = proof_valid
+        if not verified:
+            self.record_failure("post-swap-identity-unverified")
+        elif not matches_intent:
+            self.record_failure("post-swap-proof-mismatch")
 
     def gateway_restart_result(
         self, *, restarted_services: list | None = None, relaunched_profiles: list | None = None,
@@ -111,6 +176,17 @@ class UpdateReceipt:
         self.data["gateway_restart"] = result
 
     def finalize(self, outcome: str) -> None:
+        # A failed dependency/restart/import path records a failure before the
+        # command-boundary safety net runs. Never let a caller turn that record
+        # into a success by supplying a stale outcome.
+        if outcome == "success" and self.data.get("failure_reasons"):
+            outcome = "failed"
+        elif outcome == "success" and self.data.get("refusal_reasons"):
+            outcome = "refused"
+        elif outcome in {"success", "partial"} and self.data.get("update_intent") is not None:
+            if self.data.get("pinned_post_verified") is not True:
+                self.record_failure("post-swap-proof-missing")
+                outcome = "failed"
         self.data["outcome"] = outcome
         self.data["finished_at"] = _utc_now_iso()
         self.data["post_update"] = _code_identity(refresh=True)
@@ -125,11 +201,11 @@ def _receipt_dir() -> Path:
     return get_hermes_home() / "logs" / "update_receipts"
 
 
-def begin_update_receipt() -> None:
+def begin_update_receipt(intent: dict[str, Any] | None = None) -> None:
     """Start recording a new update receipt. Never raises."""
     global _current
     try:
-        _current = UpdateReceipt()
+        _current = UpdateReceipt(intent=intent)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         _current = None
@@ -143,16 +219,24 @@ def detach_update_receipt() -> Optional[dict[str, Any]]:
     """
     global _current
     receipt, _current = _current, None
-    return None if receipt is None else receipt.data
+    return None if receipt is None else deepcopy(receipt.data)
 
 
-def resume_update_receipt(data: dict[str, Any]) -> None:
-    """Continue a receipt detached by the pre-swap interpreter (``started_at``, ``pre_update``,
-    ``argv``, steps and plan intact); records this process as the one that finished it."""
+def resume_update_receipt(
+    data: dict[str, Any], *, handoff_ack_path: str | Path | None = None
+) -> None:
+    """Continue a receipt detached by the pre-swap interpreter without aliasing its input."""
     global _current
+    if not isinstance(data, dict):
+        raise TypeError("detached update receipt must be an object")
     receipt = UpdateReceipt()
-    receipt.data = data
+    receipt.data = deepcopy(data)
+    receipt.data.setdefault("failure_reasons", [])
+    if receipt.data.get("update_intent") is not None:
+        receipt.set_intent(receipt.data["update_intent"])
     receipt.data["post_swap_pid"] = os.getpid()
+    if handoff_ack_path:
+        receipt._handoff_ack_path = Path(handoff_ack_path)
     _current = receipt
 
 
@@ -168,6 +252,24 @@ def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
 def record_step(name: str, ok: bool, detail: str = "") -> None:
     """Record one update step outcome. No-op when no receipt is active."""
     _record("step", f"update step {name}", name, ok, detail)
+
+
+def record_failure(reason: str) -> None:
+    """Record a terminal failure that command-boundary finalization cannot erase."""
+    _record("record_failure", "update failure", reason)
+
+
+def record_refusal(reason: str) -> None:
+    """Record a contract refusal that must remain distinguishable from failure."""
+    _record("record_refusal", "update refusal", reason)
+
+
+def record_pinned_post_swap(*, post_sha: str, post_install_id: str, verified: bool) -> None:
+    """Record exact post-swap identity evidence for a pinned receipt."""
+    _record(
+        "record_pinned_post_swap", "pinned post-swap identity",
+        post_sha=post_sha, post_install_id=post_install_id, verified=verified,
+    )
 
 
 def record_skip(name: str, reason: str) -> None:
@@ -209,6 +311,7 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         with suppress(OSError):  # stable pointer for the dashboard/desktop
             (directory / "latest.json").write_text(body, encoding="utf-8")
         _prune_old_receipts(directory)
+        _write_handoff_ack(receipt._handoff_ack_path, receipt.data, path)
         return path
     except Exception as exc:
         # Visible, not debug: a run that pulled code and left no receipt is exactly the run
@@ -216,6 +319,127 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         logger.warning("Could not write update receipt (%s): %s", outcome, exc)
         print(f"  ⚠ Update receipt not written: {exc}")
         return None
+
+
+def _write_handoff_ack(ack_path: Path | None, receipt: dict[str, Any], receipt_path: Path) -> None:
+    """Publish child finalization after the receipt is durable, without raising."""
+    if ack_path is None:
+        return
+    try:
+        payload = {
+            "schema": 1,
+            "correlation_id": receipt.get("correlation_id"),
+            "outcome": receipt.get("outcome"),
+            "finished_at": receipt.get("finished_at"),
+            "receipt_path": str(receipt_path),
+        }
+        temporary = ack_path.with_suffix(ack_path.suffix + ".tmp")
+        ack_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temporary.replace(ack_path)
+    except Exception as exc:
+        logger.warning("Could not write post-swap handoff acknowledgement: %s", exc)
+
+
+def _terminal_receipt_matches(
+    receipt: object, *, correlation_id: str | None,
+    expected_intent: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(receipt, dict):
+        return False
+    if receipt.get("outcome") not in {"success", "partial", "failed", "refused"}:
+        return False
+    if correlation_id is not None and receipt.get("correlation_id") != correlation_id:
+        return False
+    if expected_intent is not None:
+        try:
+            from hermes_cli.update_target import validate_update_intent
+            expected = validate_update_intent(expected_intent)
+            recorded = validate_update_intent(receipt.get("update_intent"))
+        except ValueError:
+            return False
+        if recorded != expected or receipt.get("requested_sha") != expected["target"]:
+            return False
+        if receipt.get("install_id") != expected["install_id"]:
+            return False
+        if receipt.get("pre_sha") != expected["prior_sha"]:
+            return False
+        if receipt.get("outcome") in {"success", "partial"} and (
+            receipt.get("pinned_post_verified") is not True
+            or receipt.get("post_sha") != expected["target"]
+            or receipt.get("post_install_id") != expected["install_id"]
+        ):
+            return False
+    return True
+
+
+def read_handoff_ack(
+    path: str | Path | None, *, correlation_id: str | None = None,
+    expected_intent: dict[str, Any] | None = None,
+) -> Optional[dict[str, Any]]:
+    """Read a child finalization acknowledgement only when it matches the receipt."""
+    if not path:
+        return None
+    with suppress(Exception):
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema") != 1:
+            return None
+        if correlation_id is not None and payload.get("correlation_id") != correlation_id:
+            return None
+        if payload.get("outcome") not in {"success", "partial", "failed", "refused"}:
+            return None
+        receipt_path = Path(payload["receipt_path"]).resolve(strict=True)
+        if (
+            receipt_path.parent != _receipt_dir().resolve()
+            or not receipt_path.name.startswith("update_")
+            or receipt_path.suffix != ".json"
+        ):
+            return None
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if (
+            not _terminal_receipt_matches(
+                receipt, correlation_id=payload.get("correlation_id"),
+                expected_intent=expected_intent,
+            )
+            or receipt.get("outcome") != payload.get("outcome")
+            or receipt.get("finished_at") != payload.get("finished_at")
+        ):
+            return None
+        return payload
+    return None
+
+
+def read_finalized_receipt(
+    correlation_id: str | None, *, expected_intent: dict[str, Any] | None = None,
+) -> Optional[dict[str, Any]]:
+    """Find a durable terminal receipt for one pinned correlation id."""
+    if not correlation_id:
+        return None
+    with suppress(Exception):
+        def readable_mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return -1.0
+
+        paths = sorted(
+            _receipt_dir().glob("update_*.json"),
+            key=readable_mtime,
+            reverse=True,
+        )
+        for path in paths:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if _terminal_receipt_matches(
+                payload, correlation_id=correlation_id,
+                expected_intent=expected_intent,
+            ):
+                return payload
+    return None
 
 
 def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason: str = "") -> Optional[Path]:
@@ -308,12 +532,14 @@ def _profile_homes() -> list[tuple[str, Path]]:
     return homes
 
 
-def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
+def _socket_identity(
+    home: Path, *, require_complete: bool = False,
+) -> Optional[tuple[int, dict]]:
     """``(pid, identity)`` declared by the gateway owning ``home``'s control socket, else None.
 
     A live ``identify`` answer is authoritative — no PID-reuse or stale-file heuristics. Callers
     fall back to ``gateway_state.json`` for gateways that predate the socket or whose socket
-    didn't bind.
+    didn't bind. Required probes raise on observation errors so inventory cannot claim completion.
     """
     try:
         # Prefer the gateway-owned control socket (#92091): identity declared by the process itself,
@@ -322,9 +548,12 @@ def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
         # PID-reuse or stale-file heuristics.
         from gateway.control_socket import identify_gateway
 
-        identity = identify_gateway(home)
+        identity = (identify_gateway(home, require_complete=True)
+                    if require_complete else identify_gateway(home))
         return (int(identity.get("pid")), identity) if identity else None
-    except Exception:  # probe failure, no gateway, or an unparseable pid
+    except Exception:  # legacy callers fall back to the state-file/scan layer
+        if require_complete:
+            raise
         return None
 
 

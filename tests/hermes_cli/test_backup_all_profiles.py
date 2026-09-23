@@ -56,6 +56,22 @@ class TestSiblingEnumeration:
         monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", _boom)
         assert backup._sibling_profile_homes(tmp_path) == []
 
+        with pytest.raises(RuntimeError, match="no profiles module"):
+            backup._sibling_profile_homes(tmp_path, require_complete=True)
+
+    def test_required_enumeration_refuses_unreadable_profile_root(self, profiles, monkeypatch):
+        root = profiles["default"] / "profiles"
+        original_stat = Path.stat
+
+        def unreadable_root(path, *args, **kwargs):
+            if path == root:
+                raise PermissionError("profiles unavailable")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", unreadable_root)
+        with pytest.raises(PermissionError, match="profiles unavailable"):
+            backup._sibling_profile_homes(profiles["default"], require_complete=True)
+
 
 class TestAllProfileSnapshots:
     def test_each_sibling_snapshotted_into_own_home(self, profiles):

@@ -138,7 +138,7 @@ def _ledger_path() -> Path:
         return Path(get_hermes_home()) / LEDGER_FILENAME
 
 
-def _read_ledger(path: Path) -> Optional[list[dict]]:
+def _read_ledger(path: Path, *, require_complete: bool = False) -> Optional[list[dict]]:
     """Entries list, ``[]`` for empty/missing, ``None`` for CORRUPT (never silently an empty roster).
 
     Mirrors the #89298 contract: corrupt is a distinct state that must never be silently treated as an empty
@@ -151,12 +151,16 @@ def _read_ledger(path: Path) -> Optional[list[dict]]:
     except OSError:
         return None
     if not text.strip():
-        return []
+        return None if require_complete else []
     try:
         parsed = json.loads(text)
     except (ValueError, TypeError):
         return None
-    return [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else None
+    if not isinstance(parsed, list):
+        return None
+    if require_complete and any(not isinstance(entry, dict) for entry in parsed):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
 
 
 def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
@@ -322,8 +326,13 @@ def register_child(pid: int, purpose: str, *, project_root: Optional[Path] = Non
     return _append_entry(entry)
 
 
-def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
-    """Live-verified ledger entries for THIS install (a corrupt ledger is quarantined, read as empty).
+def ledger_entries(
+    *, project_root: Optional[Path] = None, require_complete: bool = False,
+) -> list[dict]:
+    """Live-verified ledger entries for THIS install.
+
+    Legacy callers quarantine a corrupt ledger and read it as empty. Required probes raise on
+    corrupt ledger or unverified process identity without mutating the ledger.
 
     Entries whose ``(pid, create_time)`` no longer matches a live process are excluded (PID reuse reads as
     dead, thanks to the create-time pair). A corrupt ledger is quarantined and read as empty — identical
@@ -332,15 +341,23 @@ def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
     """
     want_install = install_id(project_root)
     with _LEDGER_LOCK:
-        entries = _read_ledger_or_quarantine(_ledger_path())
+        path = _ledger_path()
+        entries = (_read_ledger(path, require_complete=True)
+                   if require_complete else _read_ledger_or_quarantine(path))
     if entries is None:
+        if require_complete:
+            raise RuntimeError("spawn ledger unreadable")
         return []
-    return [
-        e for e in entries
-        if e.get("install") == want_install
-        and isinstance(e.get("pid"), int)
-        and _pid_alive_matches(e["pid"], e.get("create_time")) is not False
-    ]
+    live = []
+    for entry in entries:
+        if entry.get("install") != want_install or not isinstance(entry.get("pid"), int):
+            continue
+        alive = _pid_alive_matches(entry["pid"], entry.get("create_time"))
+        if alive is None and require_complete:
+            raise RuntimeError("spawn ledger process identity unverified")
+        if alive is not False:
+            live.append(entry)
+    return live
 
 
 def spawner_is_dead(entry: dict) -> Optional[bool]:

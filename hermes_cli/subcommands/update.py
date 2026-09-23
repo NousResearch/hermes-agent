@@ -3,14 +3,34 @@
 from __future__ import annotations
 
 import argparse
+from types import MethodType
 from typing import Callable
+
+from hermes_cli.update_target import parse_reviewed_source, validate_target_request
 
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     """Attach the ``update`` subcommand to ``subparsers``."""
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies")
+        description="Pull the latest changes from git and reinstall dependencies",
+    )
+    update_parser.add_argument(
+        "--revision", default=None, metavar="HEX",
+        help="Pinned target revision (40 lowercase hexadecimal characters). "
+            "Must be supplied with --expected-install-id and --expected-current-sha.")
+    update_parser.add_argument(
+        "--expected-install-id", default=None, metavar="HEX",
+        help="Pinned installation identity (32 lowercase hexadecimal characters). "
+            "Must be supplied with --revision and --expected-current-sha.")
+    update_parser.add_argument(
+        "--expected-current-sha", default=None, metavar="HEX",
+        help="Pinned current checkout SHA (40 lowercase hexadecimal characters). "
+            "Must be supplied with --revision and --expected-install-id.")
+    update_parser.add_argument(
+        "--reviewed-source", default=None, metavar="BASE64URL",
+        help="Reviewed repository, origin, ref, target and applicable assurance binding "
+             "as a base64url JSON record. Required for a pinned update.")
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
@@ -85,4 +105,62 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         # Internal: the pre-pull interpreter re-executes itself here after the code swap so the
         # rest of the update runs on the pulled code (hermes_cli/update_handoff.py).
     )
+    # ``argparse`` routes a parent parser through the subparser's
+    # ``parse_known_args`` method, so validate at that boundary rather than in
+    # the mutating handler.  This makes --check/--plan fail before any
+    # collaborator can be reached while preserving the normal handler seam.
+    _parse_known_args = update_parser.parse_known_args
+    _pinned_options = {
+        "--revision",
+        "--expected-install-id",
+        "--expected-current-sha",
+        "--reviewed-source",
+    }
+
+    # Reject only abbreviations of the new flags, at argparse's option
+    # resolution boundary. Let argparse own values, '--', sys.argv and legacy
+    # abbreviations rather than pre-scanning tokens with different semantics.
+    _get_option_tuples = update_parser._get_option_tuples
+
+    def _get_update_option_tuples(parser, option_string):
+        matches = _get_option_tuples(option_string)
+        if any(option in _pinned_options for _, option, *_ in matches):
+            parser.error(
+                f"unrecognized arguments: {option_string}; use exact pinned options: "
+                "--revision, --expected-install-id, --expected-current-sha, --reviewed-source"
+            )
+        return matches
+
+    update_parser._get_option_tuples = MethodType(
+        _get_update_option_tuples, update_parser
+    )
+
+    def _parse_update_known_args(parser, args=None, namespace=None):
+        parsed, remainder = _parse_known_args(args, namespace)
+        try:
+            source = (
+                parse_reviewed_source(parsed.reviewed_source)
+                if parsed.reviewed_source is not None else None
+            )
+            parsed.target_request = validate_target_request(
+                parsed.revision,
+                parsed.expected_install_id,
+                parsed.expected_current_sha,
+                source,
+            )
+            if parsed.target_request is not None and source is None:
+                raise ValueError("source-binding-required")
+            if parsed.target_request is None and source is not None:
+                raise ValueError("reviewed-source-without-target")
+            if parsed.target_request is not None and source.target_sha != parsed.target_request.revision:
+                raise ValueError("reviewed-target-mismatch")
+        except ValueError as exc:
+            parser.error(
+                f"{exc}; supply --revision, --expected-install-id and "
+                "--expected-current-sha together as 40/32/40 lowercase hexadecimal "
+                "characters respectively, or omit all three for a legacy update"
+            )
+        return parsed, remainder
+
+    update_parser.parse_known_args = MethodType(_parse_update_known_args, update_parser)
     update_parser.set_defaults(func=cmd_update)

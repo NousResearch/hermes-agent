@@ -262,3 +262,38 @@ class TestGetServicePidsAllProfiles:
             pids = gateway_mod._get_service_pids(all_profiles=True)
 
         assert pids == {123}
+
+    def test_required_systemd_enumeration_rejects_failed_list(self):
+        with (
+            patch("hermes_cli.gateway.is_macos", return_value=False),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="unavailable")),
+        ):
+            assert gateway_mod._get_service_pids(all_profiles=True) == set()
+            with pytest.raises(RuntimeError, match="systemd gateway inventory failed"):
+                gateway_mod._get_service_pids(all_profiles=True, require_complete=True)
+
+    def test_required_systemd_enumeration_rejects_failed_pid_lookup(self):
+        def run(argv, **_kwargs):
+            if "list-units" in argv:
+                return MagicMock(returncode=0, stdout="hermes-gateway.service loaded active running\n")
+            return MagicMock(returncode=1, stdout="", stderr="unavailable")
+
+        with (
+            patch("hermes_cli.gateway.is_macos", return_value=False),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("subprocess.run", side_effect=run),
+        ):
+            with pytest.raises(RuntimeError, match="systemd gateway PID inspection failed"):
+                gateway_mod._get_service_pids(all_profiles=True, require_complete=True)
+
+    def test_required_launchd_print_distinguishes_absent_from_failed(self):
+        with patch("subprocess.run", return_value=MagicMock(returncode=113, stdout="")):
+            assert gateway_mod._launchd_print_service_pid(
+                "gui/501", "ai.hermes.gateway", require_complete=True,
+            ) == (False, None)
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
+            with pytest.raises(RuntimeError, match="launchd gateway service inspection failed"):
+                gateway_mod._launchd_print_service_pid(
+                    "gui/501", "ai.hermes.gateway", require_complete=True,
+                )

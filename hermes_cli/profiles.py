@@ -1081,6 +1081,82 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
             os.chmod(str(dst), 0o600)
 
 
+def _clone_memory_provider_config(source_dir: Path, profile_dir: Path) -> List[str]:
+    """Copy the configured memory provider's in-profile state for a light clone.
+
+    ``--clone`` copies ``config.yaml`` (including ``memory.provider``) but knew nothing
+    about the provider's own directory (``$HERMES_HOME/<provider>/``, e.g.
+    ``hindsight/config.json``): the clone booted naming a provider whose config it never
+    had (#120115). Primary source is the provider's declared paths (``backup_paths()``
+    entries that live inside the source profile); the ``<provider>/`` conventional dir
+    is the fallback so catalog providers that declare nothing still clone. Core
+    sentinels (builtin/none/...) and traversal-shaped names copy nothing. Best-effort:
+    never raises, so a flaky plugin cannot fail profile creation.
+    """
+    try:
+        cfg = _load_yaml_dict(source_dir / "config.yaml") or {}
+    except Exception:
+        return []
+    memory = cfg.get("memory")
+    provider = memory.get("provider") if isinstance(memory, dict) else None
+    provider = str(provider or "").strip().lower()
+    if not provider or not _PROFILE_ID_RE.match(provider):
+        return []
+    try:
+        from agent.memory_provider import is_core_memory_provider
+        if is_core_memory_provider(provider):
+            return []
+    except Exception:
+        if provider in {"", "default", "builtin", "built-in", "none"}:
+            return []
+    copied: List[str] = []
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(str(source_dir))
+        try:
+            from plugins.memory import load_memory_provider
+            instance = load_memory_provider(provider, register_skills=False)
+            declared = instance.backup_paths() if instance is not None else []
+        except Exception as exc:
+            logger.debug("clone: backup_paths() failed for memory provider %r: %s", provider, exc)
+            declared = []
+        finally:
+            reset_hermes_home_override(token)
+        for entry in declared or []:
+            try:
+                src = Path(entry)
+                if not src.exists():
+                    continue
+                try:
+                    rel = src.resolve().relative_to(source_dir.resolve())
+                except ValueError:
+                    continue  # external state (e.g. ~/.honcho) — backup's domain, not clone's
+                if ".." in rel.parts:
+                    continue
+                dst = profile_dir / rel
+                if src.is_dir():
+                    _copytree_keep_junctions(src, dst, _non_exportable_entries, dirs_exist_ok=True)
+                else:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                copied.append(rel.as_posix())
+            except Exception as exc:
+                logger.warning("clone: skipped memory-provider path %s (%s)", entry, exc)
+    except Exception as exc:
+        logger.debug("clone: provider-declared paths failed for %r: %s", provider, exc)
+    if provider not in {c.split("/")[0] for c in copied}:
+        src_dir = source_dir / provider
+        if src_dir.is_dir() and not (profile_dir / provider).exists():
+            try:
+                _copytree_keep_junctions(src_dir, profile_dir / provider, _non_exportable_entries)
+                copied.append(provider + "/")
+            except Exception as exc:
+                logger.warning("clone: skipped memory-provider dir %s/ (%s)", provider, exc)
+    if copied:
+        logger.info("profile clone: carried memory-provider state %s", copied)
+    return copied
+
+
 # Files a clone edits in place after copying. A ``--clone-all`` copy preserves symlinks
 # (``symlinks=True``), so a symlinked source ``.env`` would otherwise be edited THROUGH the link and
 # the channel stripping would mutate the SOURCE profile. These are materialized as real files first.
@@ -1196,6 +1272,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    _clone_memory_provider_config(source_dir, profile_dir)
     if sync_imports:
         from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME  # lazy: keeps yaml/utils off the hot startup path
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)

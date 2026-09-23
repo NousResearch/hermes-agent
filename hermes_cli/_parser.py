@@ -322,6 +322,20 @@ class HermesArgumentParser(argparse.ArgumentParser):
         super()._check_value(action, value)
 
 
+class _CommandHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Sort command help rows without changing registration or dispatch order."""
+
+    def _iter_indented_subactions(self, action):
+        if not isinstance(action, argparse._SubParsersAction):
+            yield from super()._iter_indented_subactions(action)
+            return
+        self._indent()
+        try:
+            yield from sorted(action._get_subactions(), key=lambda item: item.dest)
+        finally:
+            self._dedent()
+
+
 def build_top_level_parser():
     """Build the top-level parser, the subparsers action, and the ``chat`` subparser.
 
@@ -331,7 +345,7 @@ def build_top_level_parser():
     """
     parser = HermesArgumentParser(
         prog="hermes", description="Hermes Agent - AI assistant with tool-calling capabilities",
-        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=_EPILOGUE)
+        formatter_class=_CommandHelpFormatter, epilog=_EPILOGUE)
     _add_top_level_flags(parser)
     # metavar keeps the usage line to ``hermes [...] <command>`` instead of the brace list of
     # every subcommand name; ``hermes --help`` still lists each command with its help row.

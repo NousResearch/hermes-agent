@@ -199,6 +199,26 @@ def _ipc_shutdown(runtime_dir: Path, stem: str) -> Tuple[bool, Optional[int]]:
     return bool(resp and resp.get("ok") is True), daemon_pid
 
 
+def _is_harness_daemon_cmdline(cmdline: Optional[List[str]]) -> bool:
+    """True only for a genuine ``python -m browser_harness.daemon`` invocation.
+
+    Never a substring test on the joined command line — that also matches a process
+    whose argv merely MENTIONS the text (a ``-c`` script literal, a config value, a
+    log path) without actually running the module (the exact bug class root
+    ``AGENTS.md`` calls out: "Never infer process identity from argv substrings").
+    Matches the ``-m <module>`` token pair exactly, or a direct script invocation
+    whose last argv element is a path ending in ``browser_harness/daemon.py``.
+    """
+    if not cmdline:
+        return False
+    tokens = list(cmdline)
+    for i, tok in enumerate(tokens[:-1]):
+        if tok == "-m" and tokens[i + 1] == "browser_harness.daemon":
+            return True
+    last = tokens[-1].replace("\\", "/")
+    return last == "browser_harness/daemon.py" or last.endswith("/browser_harness/daemon.py")
+
+
 def _verified_daemon_pid(pid: int) -> bool:
     """Whether ``pid`` is a live ``browser_harness.daemon`` owned by this user (fail-closed)."""
     try:
@@ -207,7 +227,7 @@ def _verified_daemon_pid(pid: int) -> bool:
         return False
     try:
         proc = psutil.Process(pid)
-        cmdline = " ".join(proc.cmdline() or [])
+        cmdline = proc.cmdline() or []
         same_user = proc.uids().real == os.getuid() if hasattr(os, "getuid") else True
     except psutil.NoSuchProcess:
         return False
@@ -216,7 +236,7 @@ def _verified_daemon_pid(pid: int) -> bool:
         return False
     if not same_user:
         return False
-    if "browser_harness.daemon" not in cmdline:
+    if not _is_harness_daemon_cmdline(cmdline):
         _bt.logger.warning("Refusing to signal PID %d: not a browser_harness daemon", pid)
         return False
     return True
@@ -375,7 +395,7 @@ def _sweep_unindexed() -> int:
             pid = info["pid"]
             if pid in indexed or pid == os.getpid():
                 continue
-            if "browser_harness.daemon" not in " ".join(info.get("cmdline") or []):
+            if not _is_harness_daemon_cmdline(info.get("cmdline")):
                 continue
             if uid is not None and info.get("uids") and info["uids"].real != uid:
                 continue

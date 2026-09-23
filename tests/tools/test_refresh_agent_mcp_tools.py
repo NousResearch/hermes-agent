@@ -336,6 +336,45 @@ def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
     assert rebuilt.valid_tool_names == set(saved)
 
 
+def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, tmp_path):
+    """One durable session hops gateway -> ``-q --resume``: the new process derives different
+    bytes for the SAME tools (tool_search's per-surface deferred catalog, a dynamic schema
+    override, the one-shot footprint pruning skill_manage). tools[] heads every request, so
+    the pin must hand back exactly what the session already sent, or every hop re-prefills."""
+    from hermes_state import SessionDB
+    from tools import registry as registry_mod
+
+    def _described(name, description):
+        tool = _tool(name)
+        tool["function"]["description"] = description
+        return tool
+
+    sent = _agent([])
+    sent.tools = [_tool("read_file"), _described("skill_manage", "lands in /home/u/.hermes/skills"),
+                  _described("tool_search", "Search 6 additional tools.")]
+    static = {"skill_manage": _described("skill_manage", "lands in the profile's skills dir")["function"]}
+    monkeypatch.setattr(registry_mod.registry, "get_all_entries",
+                        lambda: [types.SimpleNamespace(name=n) for n in ("read_file", "skill_manage")], raising=False)
+    monkeypatch.setattr(registry_mod.registry, "get_entry",
+                        lambda name, **kw: types.SimpleNamespace(name=name, schema=static[name]), raising=False)
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        sent._session_db = db
+        for sid in ("s1", "s2"):
+            db.create_session(sid, source="tui")
+            sent.session_id = sid
+            _mcp_agent.persist_agent_tool_names(sent)
+        # Stored once, like the system prompt: a ~50KB array per session row would bloat state.db.
+        stored = db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+
+        resumed = _agent([])
+        resumed.tools = [_tool("read_file"), _described("tool_search", "Search 5 additional tools.")]
+        _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(db.get_session("s1")["tool_names"]))
+
+    assert json.dumps(resumed.tools) == json.dumps(sent.tools)
+    assert resumed.valid_tool_names == {"read_file", "skill_manage", "tool_search"}
+    assert stored == 1
+
+
 def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
     """/reload-mcp is the explicit hatch: a cached False must be re-probed."""
     from tools import registry as registry_mod

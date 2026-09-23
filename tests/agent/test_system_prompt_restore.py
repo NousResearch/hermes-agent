@@ -15,7 +15,9 @@ instead of rebuilding).  Covers:
 
 from __future__ import annotations
 
+import json
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -272,6 +274,37 @@ class TestStoredPromptReuse:
             agent.session_id, agent._cached_system_prompt
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
+
+
+    def test_rebuilding_an_existing_sessions_prompt_keeps_its_pinned_tools(self, tmp_path):
+        """A continuing session whose stored prompt goes stale (model switch, cwd drift) is rebuilt
+        by whichever surface resumes it — ``-q --resume`` builds without skill_manage. tools[] sits
+        ahead of the prompt and only /new, /reload-mcp and compaction may re-derive it, so the
+        rebuild keeps the pinned array and never persists its own surface's build over the pin."""
+        from unittest.mock import patch as _patch
+
+        from hermes_state import SessionDB
+
+        def _tool(name):
+            return {"type": "function", "function": {"name": name, "description": f"{name} v1", "parameters": {}}}
+
+        pinned = [_tool("read_file"), _tool("skill_manage"), _tool("terminal")]
+        with SessionDB(db_path=tmp_path / "state.db") as db:
+            db.create_session("test-session-id", source="tui")
+            db.update_system_prompt("test-session-id", "Model: old-model\nProvider: openrouter")
+            db.update_session_tool_names("test-session-id", pinned)
+            agent = _make_agent(session_db=db)
+            agent.side_agent = False
+            agent._bot_mode_protocol = False
+            agent.tools = [_tool("read_file"), _tool("terminal")]  # the -q footprint pruned skill_manage
+            registered = [SimpleNamespace(name=t["function"]["name"]) for t in pinned]
+            with _patch("tools.registry.registry.get_all_entries", return_value=registered):
+                _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+            agent._build_system_prompt.assert_called_once()
+            assert agent.tools == pinned
+            assert "skill_manage" in agent.valid_tool_names
+            assert json.loads(db.get_session("test-session-id")["tool_names"]) == pinned
 
 
 # ---------------------------------------------------------------------------

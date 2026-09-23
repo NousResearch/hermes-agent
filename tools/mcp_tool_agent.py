@@ -149,47 +149,55 @@ def reprobe_tool_availability() -> None:
 
 
 def persist_agent_tool_names(agent) -> None:
-    """Best-effort: write ``agent.tools`` names to the session row (freeze pin)."""
+    """Best-effort: write ``agent.tools`` to the session row (freeze pin). The full definitions,
+    not just names: another process or surface derives different bytes for the same tool."""
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not db or not session_id:
         return
     try:
-        db.update_session_tool_names(session_id, [_def_name(t) for t in _agent_tool_defs(agent)])
+        db.update_session_tool_names(session_id, _agent_tool_defs(agent))
     except Exception:  # noqa: BLE001
         logger.debug("tool_names persist skipped", exc_info=True)
 
 
-def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
-    """Fold a freshly built agent's ``tools`` onto the session's saved order; True if changed.
-    After agent-cache eviction the gateway rebuilds a NEW AIAgent with no predecessor to
-    preserve, so the saved name list stands in (``_merge_preserving_prefix`` rule; a saved
-    tool still registered but failing its probe is carried forward from the registry schema)."""
-    if not saved_names:
+def restore_agent_tool_prefix(agent, saved: list) -> bool:
+    """Fold a freshly built agent's ``tools`` onto the session's pinned array; True if changed.
+    A fresh AIAgent (gateway cache eviction, ``--resume`` in a new process, a surface hop) has no
+    predecessor to preserve, so the pin stands in. A pinned tool still available here (built
+    fresh, or registered but failing its probe) keeps its pinned BYTES: this process derives
+    others for it (tool_search's per-surface catalog, dynamic schema overrides, the ``-q``
+    footprint) and tools[] heads every request. Deregistered tools drop, tools new to this
+    process append at the tail. Legacy name-only pins take the fresh/registry schema once."""
+    if not saved:
         return False
     from tools.registry import registry
     fresh_defs = _agent_tool_defs(agent)
     fresh = {_def_name(t): t for t in fresh_defs}
+    registered_names = {entry.name for entry in registry.get_all_entries()}
 
-    def _saved_def(name):
-        if name in fresh:
-            return fresh[name]
-        entry = registry.get_entry(name)
+    def _pinned_def(item):
+        if isinstance(item, dict):
+            return item
+        if item in fresh:
+            return fresh[item]
+        entry = registry.get_entry(item)
         return None if entry is None else {"type": "function", "function": {**entry.schema, "name": entry.name}}
 
-    saved_defs = [d for d in map(_saved_def, saved_names) if d is not None]
-    registered_names = {entry.name for entry in registry.get_all_entries()}
-    merged, merged_names = _merge_preserving_prefix(saved_defs, fresh_defs, registered_names)
+    merged = [d for d in map(_pinned_def, saved) if d and (_def_name(d) in fresh or _def_name(d) in registered_names)]
+    pinned_names = {_def_name(d) for d in merged}
+    merged.extend(t for t in fresh_defs if _def_name(t) not in pinned_names)
+    merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_side_agent_tools(agent, merged, merged_names)
-    with _agent_tools_lock:
-        if merged == fresh_defs:
-            return False
-        agent.tools = merged
-        agent.valid_tool_names = merged_names
-    if [_def_name(t) for t in merged] != list(saved_names):
+    changed = merged != fresh_defs
+    if changed:
+        with _agent_tools_lock:
+            agent.tools = merged
+            agent.valid_tool_names = merged_names
+    if merged != list(saved):
         persist_agent_tool_names(agent)
-    return True
+    return changed
 
 
 def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:

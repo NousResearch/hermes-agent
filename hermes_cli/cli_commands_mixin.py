@@ -2411,10 +2411,16 @@ class CLICommandsMixin:
                 if initial_text:
                     fh.write(initial_text)
             try:
-                subprocess.call([*shlex.split(editor), path])
-            except Exception:
-                # Fall back to a bare invocation (editor value may not be argv-splittable everywhere).
-                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+                editor_argv = [*shlex.split(editor), path]
+            except ValueError:
+                return ""
+            try:
+                status = subprocess.call(editor_argv)
+            except OSError:
+                return ""
+            # A failed editor may leave seeded or abandoned text in the buffer.
+            if status != 0:
+                return ""
             with open(path, "r", encoding="utf-8") as fh:
                 raw = fh.read()
         finally:

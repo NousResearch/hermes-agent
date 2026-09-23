@@ -1650,8 +1650,32 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return urlparse(str(source)).scheme in {"http", "https"}
 
     def _guess_chat_type(self, chat_id: str) -> str:
-        """Determine chat type from stored inbound metadata, fallback to 'c2c'."""
-        return self._chat_type_map.get(chat_id, "c2c")
+        """Determine chat type from stored inbound metadata, then the persisted
+        channel directory (which survives restarts), fallback to 'c2c'."""
+        chat_type = self._chat_type_map.get(chat_id)
+        if chat_type:
+            return chat_type
+        directory_type = self._directory_chat_type(chat_id)
+        if directory_type:
+            # Cache so per-chunk send paths don't re-read the directory file.
+            self._chat_type_map[chat_id] = directory_type
+            return directory_type
+        return "c2c"
+
+    # Channel-directory session types ("dm"/"group" from session origins, plus
+    # defensive aliases) mapped onto this adapter's chat-type vocabulary. "dm"
+    # entries (C2C user openids, guild DMs) are absent and keep the c2c fallback.
+    _DIRECTORY_CHAT_TYPES = {"group": "group", "guild": "guild", "channel": "group"}
+
+    @staticmethod
+    def _directory_chat_type(chat_id: str) -> Optional[str]:
+        """Chat type for *chat_id* from the persisted channel directory, or None
+        when unknown. Fail-open: a directory problem never surfaces in send paths."""
+        try:
+            from gateway.channel_directory import lookup_channel_type
+            return QQAdapter._DIRECTORY_CHAT_TYPES.get(lookup_channel_type("qqbot", chat_id))
+        except Exception:
+            return None
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:

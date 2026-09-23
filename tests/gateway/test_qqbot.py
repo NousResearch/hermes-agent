@@ -1417,3 +1417,62 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+class TestGuessChatTypeDirectory:
+    """Regression (#119805): after a gateway restart _chat_type_map is empty,
+    so a group target must be resolved from the persisted channel directory
+    instead of defaulting to c2c (wrong /v2/users/<id>/messages endpoint → 400)."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_group_resolved_from_directory_after_restart(self):
+        adapter = self._make_adapter()
+        with mock.patch(
+            "gateway.channel_directory.lookup_channel_type", return_value="group"
+        ) as lookup:
+            assert adapter._guess_chat_type("29A8BED") == "group"
+        lookup.assert_called_once_with("qqbot", "29A8BED")
+
+    def test_directory_hit_is_cached_for_chunked_sends(self):
+        adapter = self._make_adapter()
+        with mock.patch(
+            "gateway.channel_directory.lookup_channel_type", return_value="group"
+        ) as lookup:
+            assert adapter._guess_chat_type("29A8BED") == "group"
+            assert adapter._guess_chat_type("29A8BED") == "group"
+        lookup.assert_called_once()
+
+    def test_dm_entry_keeps_c2c_fallback(self):
+        adapter = self._make_adapter()
+        with mock.patch(
+            "gateway.channel_directory.lookup_channel_type", return_value="dm"
+        ):
+            assert adapter._guess_chat_type("user_openid") == "c2c"
+
+    def test_unknown_id_falls_back_to_c2c(self):
+        adapter = self._make_adapter()
+        with mock.patch(
+            "gateway.channel_directory.lookup_channel_type", return_value=None
+        ) as lookup:
+            assert adapter._guess_chat_type("nobody") == "c2c"
+        lookup.assert_called_once()
+
+    def test_directory_error_fails_open_to_c2c(self):
+        adapter = self._make_adapter()
+        with mock.patch(
+            "gateway.channel_directory.lookup_channel_type",
+            side_effect=OSError("directory unreadable"),
+        ):
+            assert adapter._guess_chat_type("29A8BED") == "c2c"
+
+    def test_inbound_metadata_wins_over_directory(self):
+        adapter = self._make_adapter()
+        adapter._chat_type_map["29A8BED"] = "group"
+        with mock.patch(
+            "gateway.channel_directory.lookup_channel_type", return_value="dm"
+        ) as lookup:
+            assert adapter._guess_chat_type("29A8BED") == "group"
+        lookup.assert_not_called()
+

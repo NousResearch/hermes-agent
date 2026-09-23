@@ -486,7 +486,8 @@ def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: A
 
 def _publish_runtime_main(agent: Any) -> None:
     """Tell auxiliary_client the live main provider/model for this turn (after primary
-    restoration settled the runtime). Never raises: failure loses only the scope."""
+    restoration settled the runtime), and expose the live agent to explicitly
+    turn-bound plugin calls. Never raises: failure loses only the scope."""
     with suppress(Exception):
         from agent.auxiliary_client import set_runtime_main
         from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
@@ -506,6 +507,10 @@ def _publish_runtime_main(agent: Any) -> None:
             )},
             cache_scope=_cache_scope,
         )
+    with suppress(Exception):
+        from agent.plugin_llm_turn import set_turn_invocation_agent
+
+        set_turn_invocation_agent(agent)
 
 
 def _refresh_mcp_tools_between_turns(agent: Any) -> None:

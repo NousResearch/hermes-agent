@@ -871,13 +871,15 @@ def _memory_turn_start_and_prefetch(
     with suppress(Exception):
         if not is_trivial_prompt(_query):
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
-    # Deterministic recall indicator via _emit_status so the model can't silently
-    # drop injected memory.
+    # Preserve the CLI indicator, but name its kind so GUI surfaces can show
+    # memory recall without also displaying unrelated lifecycle diagnostics.
     if ext_prefetch_cache:
         with suppress(Exception):
             _recall_indicator = agent._memory_manager.describe_recall()
             if _recall_indicator:
-                agent._emit_status(_recall_indicator)
+                agent._emit_status_kind(
+                    "memory_recall", _recall_indicator, origin="_memory_turn_start_and_prefetch",
+                )
     return ext_prefetch_cache
 
 

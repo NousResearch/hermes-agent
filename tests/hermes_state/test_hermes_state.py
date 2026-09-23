@@ -4642,6 +4642,36 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_demote_stages_only_exact_shadow_tables(self, db):
+        """Pre-fix: the demote selection matched an unescaped LIKE prefix, so unrelated
+        tables reachable through the ``_`` wildcard (``messagesXfts_probe``) or the
+        over-broad prefix (``messages_fts_other``) were renamed into the trash family
+        and silently dropped by teardown — data loss with ok=True and a green
+        integrity_check (#109748)."""
+        conn = db._conn
+        for name in ("messagesXfts_probe", "messages_fts_other"):
+            conn.execute(f"CREATE TABLE {name} (id INTEGER PRIMARY KEY, v TEXT)")
+            conn.execute(f"INSERT INTO {name} VALUES (1, 'survivor')")
+        conn.commit()
+
+        db._demote_legacy_fts_to_trash()
+
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()}
+        # Unrelated tables survive, data intact.
+        assert "messagesXfts_probe" in tables
+        assert "messages_fts_other" in tables
+        assert conn.execute("SELECT v FROM messagesXfts_probe").fetchone()[0] == "survivor"
+        assert conn.execute("SELECT v FROM messages_fts_other").fetchone()[0] == "survivor"
+        # Everything staged under the trash prefix is an exact shadow name.
+        staged = [t for t in tables if t.startswith("fts_v22_trash_")]
+        assert staged, "expected the demoted shadow family to be staged for teardown"
+        shadow_re = re.compile(
+            r"^fts_v22_trash_messages_fts(_trigram)?_(content|data|docsize|idx|config)$"
+        )
+        assert all(shadow_re.match(t) for t in staged), staged
+
     def test_optimize_settle_refuses_pending_backfill(self, tmp_path):
         """Settle must not stamp while high_water markers remain."""
         db = SessionDB(db_path=tmp_path / "fresh.db")

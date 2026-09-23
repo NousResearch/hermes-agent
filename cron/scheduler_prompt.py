@@ -161,16 +161,17 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
-    from agent.skill_commands import _inject_skill_config
+    from agent.skill_commands import _inject_skill_config, _skill_payload_is_not_found
     from agent.skill_utils import normalize_skill_lookup_name
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
     parts: list[str] = []
-    skipped: list[str] = []
+    skipped_missing: list[str] = []
+    skipped_failed: list[tuple[str, str]] = []
 
-    def _skip(msg: str, *args) -> None:
-        logger.warning("Cron job '%s': " + msg, job_label, *args)
-        skipped.append(skill_name)
+    def _skip_failed(msg: str, error: str | None = None) -> None:
+        logger.warning("Cron job '%s': " + msg, job_label, skill_name)
+        skipped_failed.append((skill_name, error or "Skill failed to load."))
 
     for skill_name in skill_names:
         # Bundles shadow same-slug skills, mirroring the CLI/gateway slash-command path.
@@ -183,18 +184,22 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
                     parts.append("")
                 parts.append(bundle_payload[0])
             else:
-                _skip("bundle '%s' could not load any skills, skipping", skill_name)
+                _skip_failed("bundle '%s' could not load any skills, skipping", "Bundle could not load any member skills.")
             continue
 
         try:
             loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
         except (json.JSONDecodeError, TypeError):
-            _skip("skill '%s' returned invalid JSON, skipping", skill_name)
+            _skip_failed("skill '%s' returned invalid JSON, skipping", "Skill returned invalid JSON.")
             continue
         if not loaded.get("success"):
-            _skip(
-                "skill not found, skipping — %s",
-                loaded.get("error") or f"Failed to load skill '{skill_name}'")
+            error = str(loaded.get("error") or f"Failed to load skill '{skill_name}'")
+            if _skill_payload_is_not_found(loaded):
+                logger.warning("Cron job '%s': skill not found, skipping — %s", job_label, error)
+                skipped_missing.append(skill_name)
+            else:
+                logger.warning("Cron job '%s': skill failed to load, skipping — %s", job_label, error)
+                skipped_failed.append((skill_name, error))
             continue
 
         try:
@@ -210,12 +215,19 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             str(loaded.get("content") or "").strip()])
         _inject_skill_config(loaded, parts)
 
-    if skipped:
+    if skipped_missing:
         parts.insert(0, (
             f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
-            f"and were skipped: {', '.join(skipped)}. "
+            f"and were skipped: {', '.join(skipped_missing)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
-            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped_missing)}']"
+        ))
+    if skipped_failed:
+        failures = "; ".join(f"{name}: {error}" for name, error in skipped_failed)
+        parts.insert(0, (
+            "[IMPORTANT: The following skill(s) failed to load and were skipped: "
+            f"{failures}. Start your response with a brief notice so the user "
+            "sees the real load failure rather than a missing-skill message.]"
         ))
     return parts
 

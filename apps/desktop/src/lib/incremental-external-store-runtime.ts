@@ -35,6 +35,15 @@ const shallowEqual = (a: object, b: object): boolean => {
 
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
+function isVisibleLiveAssistant(message: ThreadMessage): boolean {
+  return (
+    message.role === 'assistant' &&
+    message.id.startsWith('assistant-stream-') &&
+    message.status.type === 'running' &&
+    message.content.some(part => part.type === 'text' && part.text.trim().length > 0)
+  )
+}
+
 /**
  * Write only the items whose (message, parentId) pair actually moved.
  *
@@ -91,6 +100,17 @@ export function syncRepositoryIncrementally(
   // to preserve: clear the tree first (leaves→root), then rebuild clean.
   const incomingIds = new Set(incoming.map(({ message }) => message.id))
   const disjoint = existing.length > 0 && !existing.some(({ message }) => incomingIds.has(message.id))
+  // A backend rewrite can briefly omit the current streamed reply while it
+  // reports tool activity. Keep only a visible, running stream tail: settled
+  // rows remain subject to authoritative deletion, and a disjoint thread swap
+  // still rebuilds from the incoming transcript.
+  const liveTail = existing.at(-1)?.message
+
+  const preservedLiveAssistantId = disjoint
+    ? null
+    : liveTail && isVisibleLiveAssistant(liveTail) && !incomingIds.has(liveTail.id)
+      ? liveTail.id
+      : null
 
   // Steady-state streaming: same message set, one item changed. Skip the
   // whole-transcript rewrite, the prune scan, and the second export. resetHead
@@ -114,12 +134,12 @@ export function syncRepositoryIncrementally(
   }
 
   for (const { message } of repository.export().messages) {
-    if (!incomingIds.has(message.id)) {
+    if (!incomingIds.has(message.id) && message.id !== preservedLiveAssistantId) {
       repository.deleteMessage(message.id)
     }
   }
 
-  repository.resetHead(headId)
+  repository.resetHead(preservedLiveAssistantId ?? headId)
 
   return repository.getMessages()
 }

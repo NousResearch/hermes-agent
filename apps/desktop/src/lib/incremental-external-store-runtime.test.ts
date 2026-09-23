@@ -96,6 +96,22 @@ describe('syncRepositoryIncrementally', () => {
     expect(result.map(item => item.id)).toEqual(['a', 'b'])
   })
 
+  it('keeps a visible live assistant row when a rewrite transiently omits it', () => {
+    const prompt = message('user-1', 'question')
+
+    const live = fromThreadMessageLike(
+      { role: 'assistant', content: [{ type: 'text', text: 'Working through the tools…' }] },
+      'assistant-stream-1',
+      { type: 'running' }
+    )
+
+    const runtime = runtimeWith(chain([prompt, live]))
+
+    const result = syncRepositoryIncrementally(runtime, exported(chain([prompt])))
+
+    expect(result.map(item => item.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+
   it('rebuilds cleanly when a disjoint transcript is swapped in', () => {
     const runtime = runtimeWith(chain([message('old-1', 'one'), message('old-2', 'two')]))
 

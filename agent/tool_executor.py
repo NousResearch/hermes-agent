@@ -406,9 +406,9 @@ def _unwrap_tool_search_call(
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
             return function_name, function_args, None
-        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
-            # Both executors retain the wrapper: scope/probe/hooks run per entry
-            # in the batch dispatcher, not against a synthetic registry name.
+        if underlying in {_ts.CONNECTOR_BATCH_SENTINEL, _ts.LOCAL_BATCH_SENTINEL}:
+            # Both executors retain batch wrappers: scope/probe/hooks run per
+            # entry in the ordered dispatcher, not against a synthetic name.
             return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
             return function_name, function_args, (

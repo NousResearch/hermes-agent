@@ -35,9 +35,10 @@ def test_local_batches_execute_every_entry_in_order(monkeypatch, mixed):
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: schemas)
     monkeypatch.setattr(model_tools, "_select_tool_names", lambda *a, **kw: {
         "manage_connections", *local_names})
+    monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda name, defer_tools: name in local_names)
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda tool_name, args, **kw: (
         invoked.append((tool_name, args)) or json.dumps({"tool": tool_name, "value": args.get("value")})))
-    monkeypatch.setattr("tools.connectors.dispatch.dispatch_connector_call", lambda name, arguments, tool_call_id: (
+    monkeypatch.setattr("tools.connectors.dispatch_connector_call", lambda name, arguments, tool_call_id: (
         invoked.append((name, arguments)) or json.dumps({"response": {"tool": name, "value": arguments.get("value")}})))
     result = json.loads(model_tools.handle_function_call(
         "tool_call", {"calls": calls}, enabled_toolsets=["connections"]))

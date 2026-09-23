@@ -358,7 +358,13 @@ def attach_pending_delivery_context(agent, user_message, metadata):
     """
     import json
 
-    pending = agent._session_db.pending_deliveries(agent.session_id)
+    # No session store (or one without the delivery ledger) means nothing can be pending;
+    # a storage error from a real ledger still propagates so admission fails closed.
+    db = getattr(agent, "_session_db", None)
+    sid = getattr(agent, "session_id", None)
+    if not sid or not callable(getattr(type(db), "pending_deliveries", None)):
+        return user_message, metadata
+    pending = db.pending_deliveries(sid)
     if not pending:
         return user_message, metadata
     selected, references, remaining = [], [], 32000

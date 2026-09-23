@@ -120,6 +120,33 @@ def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
         )
 
 
+def test_huggingface_hub_override_caps_below_1_0_in_pyproject():
+    """The voice stack (transformers/outetts/coqui) hard-requires
+    huggingface-hub<1.0 at import time, but the hub edge from tokenizers /
+    faster-whisper is otherwise unbounded — `hermes update` resolved 1.24.0
+    and silently killed every TTS attempt (#114464). The [tool.uv] override
+    must keep the ceiling below 1.0."""
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    overrides = data["tool"]["uv"].get("override-dependencies", [])
+    specs = [s for s in overrides if _canonical(s.split("=", 1)[0].split(">", 1)[0].split("<", 1)[0].strip()) == "huggingface-hub"]
+    assert specs, "missing huggingface-hub override in [tool.uv]override-dependencies (#114464)"
+    assert any("<1" in s for s in specs), f"override must cap below 1.0, got {specs!r}"
+
+
+def test_locked_huggingface_hub_below_1_0():
+    """The committed uv.lock must resolve huggingface-hub below 1.0: the lock
+    is what `hermes update` installs, and 1.x breaks transformers/outetts
+    imports at voice-use time (#114464)."""
+    versions = _locked_versions("huggingface-hub")
+    assert versions, "huggingface-hub not found in uv.lock"
+    for ver in versions:
+        assert _version_tuple(ver) < (1,), (
+            f"uv.lock resolves huggingface-hub=={ver} — regenerate the lockfile "
+            f"after capping the override (#114464)"
+        )
+
+
 def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
     """The committed uv.lock must resolve starlette to a patched version.
 

@@ -448,6 +448,12 @@ override-dependencies = [
   # requests with RSA and AES, and that API did not break in 49 or 50.
   # Remove this line when alibabacloud-tea-openapi lifts the cap.
   "cryptography>=50,<51",
+  # transformers/outetts/coqui-tts (voice extras, same venv) hard-require
+  # huggingface-hub<1.0 at import time, but the hub edge from tokenizers /
+  # faster-whisper is otherwise unbounded: `hermes update` resolved 1.24.0 and
+  # silently broke every TTS attempt (#114464). Remove when the voice stack
+  # supports hub 1.x.
+  "huggingface-hub>=0.30,<1.0",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,

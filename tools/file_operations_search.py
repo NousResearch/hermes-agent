@@ -343,6 +343,10 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+        # start_new_session=True makes rg its own group leader, so pgid == pid. Record it now:
+        # macOS answers getpgid() on an exited-but-unreaped rg with ESRCH, and the early-stop kill
+        # below would otherwise surface "[Errno 3] No such process" instead of the drained matches.
+        proc._hermes_pgid = proc.pid
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

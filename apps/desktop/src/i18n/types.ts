@@ -1081,6 +1081,17 @@ export interface Translations {
       justNowSuffix: string
       automaticUpdates: string
       automaticUpdatesDesc: string
+      unattendedTitle: string
+      unattendedDesc: string
+      unattendedEnabled: string
+      unattendedHourLabel: string
+      unattendedMinuteLabel: string
+      unattendedWindowsOnly: string
+      unattendedSaved: string
+      unattendedTaskInstalled: (clock: string) => string
+      unattendedTaskAbsent: string
+      unattendedTaskForeign: string
+      unattendedTaskError: string
       branchCommit: (branch: string, commit: string) => string
       never: string
       justNow: string

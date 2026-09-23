@@ -19,6 +19,7 @@ import {
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { UnattendedUpdateSettings } from './unattended-update-settings'
 import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
@@ -245,6 +246,8 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
           hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
           title={a.automaticUpdates}
         />
+
+<UnattendedUpdateSettings />
 
         {includeUninstall && <UninstallSection />}
       </div>

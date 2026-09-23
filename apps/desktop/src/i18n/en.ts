@@ -1298,6 +1298,19 @@ export const en: Translations = {
       automaticUpdates: 'Automatic updates',
       automaticUpdatesDesc:
         'Hermes checks for updates automatically in the background and lets you know when one is ready.',
+      unattendedTitle: 'Nightly update',
+      unattendedDesc:
+        'On the Windows desktop build, automatically update Hermes to the latest version at a local time you choose, while you\u2019re away. Off by default.',
+      unattendedEnabled: 'Enable timed automatic update',
+      unattendedHourLabel: 'Hour',
+      unattendedMinuteLabel: 'Minute',
+      unattendedWindowsOnly: 'Available only on the Windows desktop build.',
+      unattendedSaved: 'Schedule saved',
+      unattendedTaskInstalled: clock =>
+        `Windows scheduled task installed — updates will run at ${clock} even when Hermes is closed.`,
+      unattendedTaskAbsent: 'Windows scheduled task not installed — automatic updates only run while the app is open.',
+      unattendedTaskForeign: 'A different program holds this scheduled task name — it will not be touched.',
+      unattendedTaskError: 'Could not manage the Windows scheduled task.',
       branchCommit: (branch, commit) => `Branch ${branch} · Commit ${commit}`,
       never: 'never',
       justNow: 'just now',

@@ -642,3 +642,42 @@ class TestManagedFalSyncClientSubmit:
         client._add_timeout_header.assert_called_once()
         headers = client._maybe_retry_request.call_args[1]["headers"]
         assert headers["X-Custom"] == "val"
+
+
+class TestManagedFalBillingErrorExtra:
+    def test_unsupported_pricing_meter_payload(self):
+        from tools.fal_common import _managed_fal_billing_error
+        exc = MagicMock()
+        exc.response = MagicMock()
+        exc.response.json.return_value = {
+            "code": "BILLING_ERROR",
+            "message": "Unsupported resolver usage meter",
+            "details": {
+                "chargeIntentErrorCode": "unsupported_pricing_meter",
+                "upstreamPayload": {
+                    "code": "unsupported_pricing_meter",
+                    "error": "Unsupported resolver usage meter"
+                }
+            }
+        }
+        err = _managed_fal_billing_error(exc, "model")
+        assert err is not None
+        assert "Unsupported resolver usage meter" in err
+        assert "unsupported_pricing_meter" in err
+
+    def test_root_error_string_billing_error(self):
+        from tools.fal_common import _managed_fal_billing_error
+        exc = MagicMock()
+        exc.response = MagicMock()
+        exc.response.json.return_value = {
+            "error": "BILLING_ERROR",
+            "message": "Unsupported pricing meter",
+            "details": {
+                "chargeIntentErrorCode": "unsupported_pricing_meter"
+            }
+        }
+        err = _managed_fal_billing_error(exc, "endpoint")
+        assert err is not None
+        assert "Unsupported pricing meter" in err
+        assert "unsupported_pricing_meter" in err
+

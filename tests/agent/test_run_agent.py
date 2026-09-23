@@ -1193,6 +1193,12 @@ class TestTaskCompletionGuidance:
 
 
 
+    def test_guidance_rejects_unrelated_substitute_tool_calls(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+
+        assert "If NONE of the tools you actually have can perform the requested action" in TASK_COMPLETION_GUIDANCE
+        assert "Do NOT call an unrelated tool with a made-up command or payload" in TASK_COMPLETION_GUIDANCE
+
     def test_no_tools_no_injection(self):
         """Same gate as tool_use_enforcement — no tools means no guidance.
         The guidance refers to ``tool calls`` and ``tool output``; without

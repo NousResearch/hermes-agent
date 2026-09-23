@@ -386,7 +386,10 @@ TASK_COMPLETION_GUIDANCE = (
     "If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative "
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
-    "produce. Reporting a blocker honestly is always better than inventing a result."
+    "produce. Reporting a blocker honestly is always better than inventing a result.\n"
+    "If NONE of the tools you actually have can perform the requested action, say that directly. Do NOT call an "
+    "unrelated tool with a made-up command or payload just to look like you acted. A tool call that cannot genuinely "
+    "perform the request is fabricated output in another form, not a valid attempt."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls

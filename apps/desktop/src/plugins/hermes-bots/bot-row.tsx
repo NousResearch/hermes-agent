@@ -333,7 +333,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 void saveBotMeta(bot, { screenAutoOpen: next })
                 host.notify({
                   kind: 'info',
-                  message: next ? b.screen.autoOpenOnToast(displayName(bot, current)) : b.screen.autoOpenOffToast(displayName(bot, current))
+                  message: next
+                    ? b.screen.autoOpenOnToast(displayName(bot, current))
+                    : b.screen.autoOpenOffToast(displayName(bot, current))
                 })
               })
               .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))

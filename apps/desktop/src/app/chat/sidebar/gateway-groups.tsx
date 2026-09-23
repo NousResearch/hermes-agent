@@ -298,7 +298,9 @@ function GatewayProfileGroup({
       {open && (
         <>
           {children}
-          {group.profile ? <ProfileGroupHeaderSlot connectionId={group.connectionId ?? null} profile={group.profile} /> : null}
+          {group.profile ? (
+            <ProfileGroupHeaderSlot connectionId={group.connectionId ?? null} profile={group.profile} />
+          ) : null}
           {renderRows(sessions.slice(0, visibleCount))}
           {hiddenCount > 0 && (
             <WorkspaceShowMoreButton

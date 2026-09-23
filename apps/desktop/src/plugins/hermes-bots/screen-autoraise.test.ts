@@ -30,7 +30,10 @@ vi.mock('./screen-open', () => ({
   screenPaneId: (bot: RosterRow) => `screen:${bot.name}`
 }))
 
-const roster = [{ name: 'parker', sourceScoped: true }, { name: 'alfred', sourceScoped: true }] as RosterRow[]
+const roster = [
+  { name: 'parker', sourceScoped: true },
+  { name: 'alfred', sourceScoped: true }
+] as RosterRow[]
 
 const toolStart = (profile: string, name: string, connectionId?: string) =>
   ({ type: 'tool.start', profile, connectionId, session_id: 's1', payload: { tool_id: 't', name } }) as never
@@ -48,9 +51,8 @@ describe('screen auto-raise', () => {
   })
 
   it('raises once per burst for an opted-in bot, and a Close holds until the burst is over', async () => {
-    const { AUTO_RAISE_COOLDOWN_MS, handleScreenToolStart, noteScreenTabClosed, noteScreenTabOpened } = await import(
-      './screen-autoraise'
-    )
+    const { AUTO_RAISE_COOLDOWN_MS, handleScreenToolStart, noteScreenTabClosed, noteScreenTabOpened } =
+      await import('./screen-autoraise')
 
     const t0 = 1_000_000
 

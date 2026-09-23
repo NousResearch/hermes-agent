@@ -87,7 +87,12 @@ afterEach(() => {
 it('applies lease events only from the owning host even when profile paths match', () => {
   setScreenStatus(botA, status)
   const view = renderHook(() => useScreenPortalState(botA))
-  const human = { ...status.lease, holder: 'human' as const, viewer_hash: 'e0f9a555d558', epoch: status.lease.epoch + 1 }
+  const human = {
+    ...status.lease,
+    holder: 'human' as const,
+    viewer_hash: 'e0f9a555d558',
+    epoch: status.lease.epoch + 1
+  }
 
   const emit = (connectionId: string, profileKey = status.profile_key) =>
     act(() =>
@@ -185,7 +190,9 @@ it('captions a suppressed thumbnail as hidden-while-controlled and never ages it
 })
 
 it('settles on an older backend without display.*: portal tone is unavailable and the hero renders nothing', async () => {
-  vi.mocked(host.requestProfile).mockRejectedValue(Object.assign(new Error('Method not found: display.status'), { code: -32601 }))
+  vi.mocked(host.requestProfile).mockRejectedValue(
+    Object.assign(new Error('Method not found: display.status'), { code: -32601 })
+  )
   const hook = renderHook(() => useScreenPortalState(botA))
   await act(async () => {})
   expect(hook.result.current.tone).toBe('unavailable')

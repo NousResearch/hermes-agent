@@ -120,6 +120,8 @@ class PlatformRegistry:
         self._inflight_loaders: dict[_LoadKey, _Loader] = {}
         self._inflight_owners: dict[_LoadKey, int] = {}
         self._cancelled_inflight: set[_LoadKey] = set()
+        # Enablement env-key metadata (see ``declare_env_keys``): (scope, name) → declared vars.
+        self._env_keys: dict[tuple[Optional[str], str], frozenset] = {}
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
@@ -251,6 +253,24 @@ class PlatformRegistry:
         """Whether ownership teardown cancelled an in-flight loader."""
         with self._lock:
             return (scope, name) in self._cancelled_inflight
+
+    # -- enablement env-key metadata (declared in plugin.yaml, read pre-import) ---------------
+    # ``requires_env``/``optional_env`` name the env vars a platform's enablement path
+    # (``env_enablement_fn``/``is_connected``) may consult. The config enablement pass uses
+    # them to skip importing plugins whose credentials cannot be present; a platform that
+    # enables while reading an undeclared var breaks the skip's exactness (and ``hermes
+    # setup``'s prompts), so undeclared means "no declared keys" means the skip is off.
+
+    def declare_env_keys(self, name: str, keys, *, scope: Optional[str] = None) -> None:
+        """Declare the env vars a deferred platform's enablement consults (manifest data)."""
+        with self._lock:
+            self._env_keys[(scope, name)] = frozenset(keys or ())
+
+    def env_keys(self, name: str) -> frozenset:
+        """Declared enablement env vars for *name* (current scope AND process-global). Empty = undeclared."""
+        with self._lock:
+            keys = self._env_keys.get((self.current_scope_key(), name), self._env_keys.get((None, name)))
+            return keys or frozenset()
 
     def _resolve_all(self) -> None:
         """Run every pending deferred loader (only ``all_entries``/``plugin_entries`` call this;

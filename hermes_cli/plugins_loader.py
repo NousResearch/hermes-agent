@@ -16,7 +16,7 @@ import re
 import sys
 import threading
 import types
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress as _contextlib_suppress
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
@@ -78,6 +78,22 @@ def _dist_installed(req: str) -> Optional[bool]:
         return None
 
 
+def _manifest_env_keys(manifest: PluginManifest) -> list:
+    """Env var names a manifest's ``requires_env``/``optional_env`` entries declare.
+
+    Entries are either plain strings or ``{name: ...}`` mappings (the ``hermes setup`` schema);
+    other keys in a mapping entry (description/prompt/url/password) are ignored. Data-only —
+    used to let the config enablement pass skip importing plugins whose credentials cannot be
+    present; never gates loading.
+    """
+    keys: list = []
+    for entry in (*getattr(manifest, "requires_env", ()), *getattr(manifest, "optional_env", ())):
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and name.strip():
+            keys.append(name.strip())
+    return keys
+
+
 class PluginLoaderMixin:
     @staticmethod
     def _platform_name_from_manifest(manifest: PluginManifest) -> str:
@@ -112,6 +128,13 @@ class PluginLoaderMixin:
 
             previous = platform_registry.snapshot_registration(platform_name, scope=scope)
             platform_registry.register_deferred(platform_name, _loader, scope=scope)
+            with _contextlib_suppress(Exception):
+                # Manifest-declared env vars the enablement path may consult (see
+                # ``platform_registry.declare_env_keys``): lets the config enablement pass skip
+                # importing plugins whose credentials cannot be present. Data-only; never gates
+                # load, and a failed lookup here simply means one extra import later.
+                platform_registry.declare_env_keys(
+                    platform_name, _manifest_env_keys(manifest), scope=scope)
             current = platform_registry.snapshot_registration(platform_name, scope=scope)
             if current[0] is None and current[1] is _loader:
                 self._plugin_platform_names.add(platform_name)

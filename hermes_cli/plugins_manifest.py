@@ -327,6 +327,7 @@ class PluginManifest:
     description: str = ""
     author: str = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
+    optional_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "bundled", "user", "project", or "entrypoint"
@@ -473,6 +474,7 @@ def parse_manifest_file(
             name=name, version=str(data.get("version", "")),
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
+            optional_env=data.get("optional_env", []),
             provides_tools=data.get("provides_tools", []),
             provides_hooks=data.get("provides_hooks", []), source=source, path=str(plugin_dir),
             kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),

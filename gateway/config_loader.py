@@ -243,11 +243,16 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_blo
 
 
 def shared_loop_targets(registry) -> list:
-    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging)."""
+    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging).
+
+    Name-only: iterates ``registered_names()`` (concrete AND deferred, zero adapter imports) rather
+    than ``plugin_entries()`` — the full-set iteration materializes every platform plugin (~2s of
+    adapter imports) on every ``load_gateway_config()``, including CLI reads that never connect.
+    """
     targets: list = list(Platform)
-    for entry in registry.plugin_entries() if registry is not None else ():
+    for name in registry.registered_names() if registry is not None else ():
         with contextlib.suppress(ValueError, KeyError):
-            if (plat := Platform(entry.name)) not in targets:
+            if (plat := Platform(name)) not in targets:
                 targets.append(plat)
     return targets
 
@@ -289,17 +294,34 @@ def bridge_platform_shared_keys(
         extra.update(bridged)
 
 
+def plugin_sections_present(yaml_cfg: dict, gateway_platforms: Any) -> set:
+    """Platform names with a config.yaml section (top-level, ``gateway.platforms``, or ``platforms``)."""
+    present: set = set()
+    for source in (gateway_platforms, yaml_cfg.get("platforms")):
+        if isinstance(source, dict):
+            present.update(k for k, v in source.items() if isinstance(v, dict))
+    if isinstance(yaml_cfg, dict):
+        present.update(k for k, v in yaml_cfg.items() if isinstance(v, dict) and _is_platform_name(k))
+    return present
+
+
 def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry) -> None:
     """Plugin-owned YAML→env config bridges (``PlatformEntry.apply_yaml_config_fn``). Order: shared-key
-    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``."""
+    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``.
+
+    A hook can only act on a platform that has a YAML section, so the loop resolves only those
+    platforms' entries (one deferred import each) instead of materializing the full registry —
+    the set of ``(entry, platform_cfg)`` hook applications is unchanged.
+    """
     if registry is None:
         return
-    for entry in registry.all_entries():
-        # Plugin-owned YAML→env config bridges (#24836). See ``PlatformEntry.apply_yaml_config_fn`` for the
-        # hook contract. Order: shared-key loop (above) → this dispatch → legacy hardcoded blocks (below;
-        # no-op when a hook already set their env var) → ``_apply_env_overrides()`` after
-        # ``GatewayConfig.from_dict``.
-        if entry.apply_yaml_config_fn is None:
+    for name in sorted(plugin_sections_present(yaml_cfg, gateway_platforms)):
+        entry = registry.get(name)
+        if entry is None or entry.apply_yaml_config_fn is None:
+            # Plugin-owned YAML→env config bridges (#24836). See ``PlatformEntry.apply_yaml_config_fn`` for the
+            # hook contract. Order: shared-key loop (above) → this dispatch → legacy hardcoded blocks (below;
+            # no-op when a hook already set their env var) → ``_apply_env_overrides()`` after
+            # ``GatewayConfig.from_dict``.
             continue
         platform_cfg, _ = platform_section(yaml_cfg, entry.name, gateway_platforms)
         if not isinstance(platform_cfg, dict):

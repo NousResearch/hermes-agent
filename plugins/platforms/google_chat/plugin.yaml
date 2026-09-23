@@ -37,6 +37,8 @@ optional_env:
     url: "https://console.cloud.google.com/"
     password: false
   - name: GOOGLE_CHAT_SUBSCRIPTION_NAME
+  - name: GOOGLE_CHAT_SUBSCRIPTION
+  - name: GOOGLE_CLOUD_PROJECT
     description: "Optional Pub/Sub subscription path for pull-mode inbound events."
     prompt: "Pub/Sub subscription name"
     password: false

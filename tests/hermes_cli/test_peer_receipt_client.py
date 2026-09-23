@@ -277,8 +277,13 @@ def test_stop_404_keeps_todays_failure_semantics(peer_env, monkeypatch, capsys):
 # ── D3: a read timeout on an accepted delivery is not "unreachable" ──────────
 
 
-def _timeout() -> urllib.error.URLError:
-    return urllib.error.URLError(TimeoutError("timed out"))
+def _timeout() -> TimeoutError:
+    # A read timeout on an *accepted* delivery POST. The real urllib stack
+    # surfaces a response-phase timeout from ``resp.read()`` as a bare
+    # ``socket.timeout`` (== ``TimeoutError`` on Python 3.10+); the
+    # ``URLError`` wrapper is what a connect/send failure gets. ``_is_read_timeout``
+    # accepts only the bare shape, so the D3 fixtures script that shape.
+    return TimeoutError("timed out")
 
 
 def test_dm_read_timeout_replays_the_same_key_and_reports_the_envelope(peer_env, monkeypatch, capsys):

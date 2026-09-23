@@ -107,13 +107,30 @@ def _sources_rows(home):
     return {row["name"]: row for row in out["sources"]}
 
 
+def _detect_only(monkeypatch, detected: str | None):
+    """Pin discovery to one detected manager.
+
+    ``vault.sources`` reads ``agent.vault_backends.base.probe`` (one discovery answer per source,
+    carrying host + status); ``is_installed`` is a thin wrapper over it, so patching the probe
+    covers every caller — patch where production reads.
+    """
+    from agent.vault_backends.base import SourceProbe, SourceStatus
+
+    def probe(name):
+        if name == detected:
+            return SourceProbe(name=name, installed=True, status=SourceStatus.auth_required,
+                               host="test-host", reason=f"{name} is locked on test-host")
+        return SourceProbe(name=name, installed=False, status=SourceStatus.not_installed,
+                           host="test-host", reason=f"the {name} CLI was not found on test-host")
+
+    monkeypatch.setattr("agent.vault_backends.base.probe", probe)
+
+
 def test_enabling_a_detected_manager_reports_it_enabled(home, monkeypatch):
     """The Settings toggle and `hermes vault sources --enable` both clear the opt-out override;
     the shipped default must then agree with `is_enabled()`'s zero-config contract — an installed
     manager becomes a login source instead of silently staying off (#109546)."""
-    monkeypatch.setattr(
-        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
-    )
+    _detect_only(monkeypatch, "bitwarden")
     _result(
         srv._methods["vault.source.set"](80, {"name": "bitwarden", "enabled": True})
     )
@@ -123,9 +140,7 @@ def test_enabling_a_detected_manager_reports_it_enabled(home, monkeypatch):
 
 
 def test_disabling_a_manager_persists_the_opt_out(home, monkeypatch):
-    monkeypatch.setattr(
-        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
-    )
+    _detect_only(monkeypatch, "bitwarden")
     _result(
         srv._methods["vault.source.set"](81, {"name": "bitwarden", "enabled": False})
     )
@@ -135,7 +150,7 @@ def test_disabling_a_manager_persists_the_opt_out(home, monkeypatch):
 
 
 def test_undetected_manager_stays_off(home, monkeypatch):
-    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: False)
+    _detect_only(monkeypatch, None)
     rows = _sources_rows(home)
     assert rows["bitwarden"]["installed"] is False
 
@@ -145,9 +160,7 @@ def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
     Credential Vault source toggle: the malformed section is coerced to a dict
     before the opt-out is written (same YAML-shape hazard class _voice_cfg_dict
     documents for voice.*, #19835)."""
-    monkeypatch.setattr(
-        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
-    )
+    _detect_only(monkeypatch, "bitwarden")
     (home / "config.yaml").write_text("vault: true\n")
     _result(
         srv._methods["vault.source.set"](82, {"name": "bitwarden", "enabled": False})
@@ -173,8 +186,16 @@ def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home
     launch profile's vault.* calls (Desktop sends no ``profile`` for it) must still bind the launch
     secret scope — otherwise every enabled manager's token read raises UnscopedSecretError and the
     Passwords & Logins panel shows "Could not load vault items" until the gateway restarts."""
+    from pathlib import Path
+
     from agent.secret_scope import set_multiplex_active
 
-    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
+    # Patch only binary DISCOVERY, so the real probe still constructs the backend — which is what
+    # reads the profile's service-account token and would raise UnscopedSecretError if unscoped.
+    monkeypatch.setattr("agent.vault_backends.base.find_manager_binary",
+                        lambda name: Path("/fake/op") if name == "onepassword" else None)
     set_multiplex_active(True)  # conftest resets the latch per test
-    assert _sources_rows(home)["onepassword"]["enabled"] is True
+    rows = _sources_rows(home)
+    assert rows["onepassword"]["enabled"] is True
+    assert rows["onepassword"]["status"] in {"available", "auth_required"}, (
+        "a scope failure would surface as disconnected")

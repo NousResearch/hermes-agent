@@ -141,7 +141,7 @@ def _cmd_list(args) -> None:
 def _cmd_sources(args) -> None:
     """Show the detected password managers; `--disable`/`--enable` flip the opt-out (`vault.<name>.enabled`)."""
     from agent.vault_backends import enabled_backends
-    from agent.vault_backends.base import external_backend_classes, is_installed
+    from agent.vault_backends.base import SourceStatus, external_backend_classes, probe
     from hermes_cli.config import _ensure_dict, load_config, save_config
 
     c = _console()
@@ -162,12 +162,15 @@ def _cmd_sources(args) -> None:
         return
     enabled = {b.name for b in enabled_backends()}
     for name, cls in classes.items():
-        if name in enabled:
-            status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
-        elif is_installed(name):
+        result = probe(name)
+        if name in enabled and result.status is SourceStatus.available:
+            status = f"[green]detected[/] on {result.host} · ready"
+        elif name in enabled:
+            status = f"[yellow]{result.status.value}[/] · {result.reason}"
+        elif result.installed:
             status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
         else:
-            status = "[dim]not installed[/]"
+            status = f"[dim]not installed[/] · {result.reason}"
         c.print(f"  {cls.display_name:<10} {status}")
     c.print("[dim]Managers are picked up automatically when their CLI is installed and signed in.[/]")
 

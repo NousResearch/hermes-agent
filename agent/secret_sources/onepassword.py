@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from agent.secret_sources._cache import CachedFetch, SecretCache, fingerprint as _fingerprint
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
-    get_source_environment, is_valid_env_name, run_cli,
+    get_source_environment, is_valid_env_name, resolve_cli_binary, run_cli,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,11 +113,11 @@ def _refs_fingerprint(references: Dict[str, str]) -> str:
 
 def find_op(binary_path: str = "") -> Optional[Path]:
     """Resolve a usable ``op`` binary, or None. A pinned ``binary_path`` is used
-    verbatim — pinned-but-missing returns None rather than falling back to PATH."""
-    found = binary_path or shutil.which("op")
-    if not found or (binary_path and not os.access(binary_path, os.X_OK)):
-        return None
-    return Path(found)
+    verbatim — pinned-but-missing returns None rather than falling back to PATH.
+    An unpinned lookup also checks the common install prefixes a service PATH omits
+    (``resolve_cli_binary``), so a gateway started by launchd/systemd detects the same
+    ``op`` a login shell does."""
+    return resolve_cli_binary("op", binary_path)
 
 
 def _scrub(text: str) -> str:

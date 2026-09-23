@@ -1871,7 +1871,12 @@ export interface VaultSource {
   needs_unlock: boolean
   unlocked: boolean
   installed: boolean
+  status?: VaultSourceStatus
+  host?: string
+  reason?: string
 }
+/** Why a login source is or is not usable, kept distinct so the surface can say which and where. ``disconnected``/``auth_required`` both mean "installed", so a client must read ``status``, not ``installed``, to decide what to offer. */
+export type VaultSourceStatus = 'not_installed' | 'disconnected' | 'auth_required' | 'available'
 export interface VaultSourceSetParams {
   profile?: string | null
   name?: string | null

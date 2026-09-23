@@ -60,18 +60,40 @@ def _(rid, params: dict) -> dict:
 @method("vault.sources")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
-    from agent.vault_backends import enabled_backends
-    from agent.vault_backends.base import external_backend_classes, is_installed
+    """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked,
+    installed, host, status, reason}.
 
-    enabled = {b.name: b for b in enabled_backends()}
+    ``status`` keeps not_installed / disconnected / auth_required / available distinct and
+    ``host`` names the machine the manager lives on, so the Desktop can say what is wrong and
+    where to fix it instead of collapsing every state into "Not detected". Re-calling this
+    method IS the reconnect: each call re-probes exactly once per source.
+
+    Metadata only, like ``vault.list`` — no secret value, vault item or token is read here.
+    One backend that raises is reported as ``disconnected`` instead of failing the whole RPC.
+    """
+    from agent.vault_backends.base import (
+        SourceStatus, external_backend_classes, is_opted_out, owning_host, probe,
+    )
+
+    host = owning_host()
     rows = [{"name": "local", "display_name": "Hermes vault", "enabled": True, "needs_unlock": False,
-             "unlocked": True, "installed": True}]
+             "unlocked": True, "installed": True, "host": host,
+             "status": SourceStatus.available.value, "reason": ""}]
     for cls in external_backend_classes():
-        live = enabled.get(cls.name)
-        rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
-                     "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
-                     "installed": is_installed(cls.name)})
+        try:
+            opted_out, result = is_opted_out(cls.name), probe(cls.name)
+        except Exception as e:
+            rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": False,
+                         "needs_unlock": True, "unlocked": False, "installed": False, "host": host,
+                         "status": SourceStatus.disconnected.value,
+                         "reason": f"{cls.display_name} could not be probed on {host}: {str(e)[:200]}"})
+            continue
+        # Same zero-config contract as ``is_enabled``: a detected manager is a login source
+        # unless the user opted out. Derived from this one probe so enabled/installed/status
+        # can never disagree within a response.
+        rows.append({"name": cls.name, "display_name": cls.display_name,
+                     "enabled": result.installed and not opted_out, "needs_unlock": True,
+                     "unlocked": result.status is SourceStatus.available, **result.to_dict()})
     return _ok(rid, {"sources": rows})
 
 

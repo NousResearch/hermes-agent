@@ -434,6 +434,17 @@ method("vault.list", params=ProfileParams, result=VaultListResult,
        doc="Metadata-only listing across the local vault and every unlocked password manager.")
 
 
+class VaultSourceStatus(WireEnum):
+    """Why a login source is or is not usable, kept distinct so the surface can say which and
+    where. ``disconnected``/``auth_required`` both mean "installed", so a client must read
+    ``status``, not ``installed``, to decide what to offer."""
+
+    not_installed = "not_installed"
+    disconnected = "disconnected"
+    auth_required = "auth_required"
+    available = "available"
+
+
 class VaultSource(Result):
     name: str
     display_name: str
@@ -441,6 +452,12 @@ class VaultSource(Result):
     needs_unlock: bool
     unlocked: bool
     installed: bool
+    # Defaulted: an older backend that has not been restarted still answers the six booleans.
+    # ``host`` is the machine the manager CLI lives on (metadata, never a credential);
+    # ``reason`` is a human-readable explanation naming that host, never a secret value.
+    status: VaultSourceStatus = VaultSourceStatus.not_installed
+    host: str = ""
+    reason: str = ""
 
 
 class VaultSourcesResult(Result):

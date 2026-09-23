@@ -34534,6 +34534,20 @@
           "installed": {
             "title": "Installed",
             "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VaultSourceStatus",
+            "default": "not_installed"
+          },
+          "host": {
+            "default": "",
+            "title": "Host",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           }
         },
         "required": [
@@ -34608,6 +34622,17 @@
         ],
         "title": "VaultSourceSetResult",
         "type": "object"
+      },
+      "VaultSourceStatus": {
+        "description": "Why a login source is or is not usable, kept distinct so the surface can say which and\nwhere. ``disconnected``/``auth_required`` both mean \"installed\", so a client must read\n``status``, not ``installed``, to decide what to offer.",
+        "enum": [
+          "not_installed",
+          "disconnected",
+          "auth_required",
+          "available"
+        ],
+        "title": "VaultSourceStatus",
+        "type": "string"
       },
       "VaultSourcesResult": {
         "additionalProperties": false,

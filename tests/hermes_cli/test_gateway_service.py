@@ -762,6 +762,26 @@ class TestLaunchdServiceRecovery:
 
     # ── Probe requires PID ───────────────────────────────────────────────
 
+    def test_launchd_running_probe_checks_user_domain_after_gui_miss(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("plist", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway-finance")
+        monkeypatch.setattr(os, "getuid", lambda: 501)
+        calls = []
+
+        def fake_print(domain, label):
+            calls.append((domain, label))
+            return (True, 4242) if domain == "user/501" else (False, None)
+
+        monkeypatch.setattr(gateway_cli, "_launchd_print_service_pid", fake_print)
+
+        assert gateway_cli._probe_launchd_service_running() is True
+        assert calls == [
+            ("gui/501", "ai.hermes.gateway-finance"),
+            ("user/501", "ai.hermes.gateway-finance"),
+        ]
+
 
     # ── Unsupport marker lifecycle ───────────────────────────────────────
 
@@ -774,15 +794,11 @@ class TestLaunchdServiceRecovery:
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
-        def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
-            if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout='{\n    "Label" = "ai.hermes.gateway";\n    "OnDemand" = true;\n}',
-                    stderr="",
-                )
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_locate_launchd_gateway_service",
+            lambda _label: ("user/501", None),
+        )
         monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 88888)
         # Pre-seed the unsupported marker
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
@@ -795,6 +811,25 @@ class TestLaunchdServiceRecovery:
         assert "Detached fallback process is running" in out
         assert "PID 88888" in out
         assert "NOT available" in out
+
+    def test_launchd_status_reports_user_domain_service_as_supervised(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_locate_launchd_gateway_service",
+            lambda _label: ("user/501", 4242),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 4242)
+        monkeypatch.setattr(gateway_cli, "_launchd_unsupported_marker_exists", lambda: False)
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "supervised by launchd (PID 4242)" in out
+        assert "service is not loaded" not in out
 
 
 class TestLaunchdDomainDetection:

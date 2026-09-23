@@ -825,15 +825,13 @@ def launchd_status(deep: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT)
-        service_listed = result.returncode == 0
-        list_output = result.stdout
-    except subprocess.TimeoutExpired:
+        launchd_domain, launchd_pid = _gw()._locate_launchd_gateway_service(label)
+        service_listed = launchd_domain is not None
+        list_output = f"Loaded in {launchd_domain}" if launchd_domain else ""
+    except (subprocess.TimeoutExpired, OSError):
         service_listed = False
+        launchd_pid = None
         list_output = ""
-
-    # `launchctl list` exits 0 for any registered definition (even `state = not running`); only a PID proves a process.
-    launchd_pid = _gw()._parse_launchd_pid_from_list_output(list_output) if service_listed else None
 
     # Hermes PID may be a detached fallback process; when launchd IS supervising both PIDs match — don't double-count.
     from gateway.status import get_running_pid

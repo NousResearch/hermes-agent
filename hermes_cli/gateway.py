@@ -1442,8 +1442,14 @@ def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]
 
 
 def _probe_launchd_service_running() -> bool:
-    """True when the plist exists AND launchd is running a process for the current label."""
-    return get_launchd_plist_path().exists() and _launchctl_label_supervising_process(get_launchd_label())
+    """True when the plist exists and either launchd domain runs the current label."""
+    if not get_launchd_plist_path().exists():
+        return False
+    try:
+        _domain, pid = _locate_launchd_gateway_service(get_launchd_label())
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return pid is not None
 
 
 def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapshot | None:

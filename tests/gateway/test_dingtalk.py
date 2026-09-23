@@ -163,9 +163,79 @@ class TestSend:
         call_args = mock_client.post.call_args
         assert call_args[0][0] == "https://dingtalk.example/webhook"
         payload = call_args[1]["json"]
+        # Plain text (no markdown) is sent as a text message, not a card.
+        assert payload["msgtype"] == "text"
+        assert payload["text"]["content"] == "Hello!"
+
+    @pytest.mark.asyncio
+    async def test_send_markdown_uses_markdown_card_with_derived_title(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "**Important** update",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"}
+        )
+        assert result.success is True
+        payload = mock_client.post.call_args[1]["json"]
         assert payload["msgtype"] == "markdown"
-        assert payload["markdown"]["title"] == "Hermes"
-        assert payload["markdown"]["text"] == "Hello!"
+        assert payload["markdown"]["title"] == "**Important** update"
+        assert payload["markdown"]["text"] == "**Important** update"
+
+    @pytest.mark.asyncio
+    async def test_send_table_only_markdown_uses_markdown_card(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        table = "| Name | Score |\n|------|-------|\n| A    | 10    |"
+        result = await adapter.send(
+            "chat-123", table,
+            metadata={"session_webhook": "https://dingtalk.example/webhook"}
+        )
+        assert result.success is True
+        payload = mock_client.post.call_args[1]["json"]
+        # Pipe tables must be detected as markdown, not sent as plain text.
+        assert payload["msgtype"] == "markdown"
+        assert payload["markdown"]["text"] == table
+
+    @pytest.mark.asyncio
+    async def test_send_markdown_title_truncated_to_first_line(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        content = "First line here\n\nSome **bold** body text below."
+        result = await adapter.send(
+            "chat-123", content,
+            metadata={"session_webhook": "https://dingtalk.example/webhook"}
+        )
+        assert result.success is True
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["msgtype"] == "markdown"
+        assert payload["markdown"]["title"] == "First line here"
 
 
     @pytest.mark.asyncio

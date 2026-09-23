@@ -1,14 +1,14 @@
 name: pebble-ring-handoff
 title: Pebble Ring handoff
 repo: https://github.com/potalora/pebble-ring-handoff
-sha: bb62ade99d7733762542fffc60072971b164aec1
+sha: fc15cdeb21204184ea20d2e53cf7cf08be43ea3e
 subdir: package
 description: Receive Pebble Ring captures and require one Discord approval before a Hermes turn.
 maintainer: potalora
 tier: community
 category: voice
 requires_hermes: ">=0.21.2"
-version: "3.0.3"
+version: "3.0.4"
 platforms: [linux]
 readme: true
 capabilities:

@@ -1563,6 +1563,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _run_post_swap_phase(args, gateway_mode)
         return
 
+    if getattr(args, "run_restart_catch_up", False):
+        # S8 entry point. An armed obligation must be self-firing (design §3.3 #5): this is what a
+        # launchd one-shot / watchdog hook / cron calls. It never touches the checkout and exits 0
+        # when nothing is due, so it is safe to fire on every tick.
+        from hermes_cli.update_restart_orchestrator import run_due_catch_up
+
+        print(run_due_catch_up())
+        return
+
     print("☤ Updating Hermes Agent...")
     print()
 

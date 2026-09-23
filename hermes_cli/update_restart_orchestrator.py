@@ -971,8 +971,12 @@ def due_catch_up(*, now: Optional[float] = None) -> Optional[CatchUpPlan]:
 def run_due_catch_up(*, runner: Optional[Callable[[], bool]] = None, now: Optional[float] = None) -> str:
     """Run the scheduled catch-up once it is due (S8 self-firing entry point).
 
-    Returns ``not-due`` · ``no-obligation`` · ``ran`` · ``failed`` · ``exhausted``. No timer calls
-    this yet — whether the watchdog may act on staleness or only alert is §5 item 2, unanswered.
+    Returns ``not-due`` · ``no-obligation`` · ``ran`` · ``failed`` · ``exhausted``.
+
+    Reachable without a human: ``hermes update --run-restart-catch-up`` (safe on any tick — it
+    exits 0 and never touches the checkout). *Installing* the trigger (launchd one-shot or a
+    ``gateway_watchdog.sh`` hook) is a host change and stays with §5 item 2, which is unanswered:
+    whether the watchdog may act on staleness or only alert.
     """
     plan = due_catch_up(now=now)
     if plan is None:

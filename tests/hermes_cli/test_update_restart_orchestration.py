@@ -488,6 +488,48 @@ class TestHealthPredicateIncludesTheCodeGeneration:
         assert orch.served_code_sha(home) is None
 
 
+class TestS8CatchUpIsSelfFiring:
+    """§3.3 #5 — an armed obligation must be consumable without a human."""
+
+    def test_cli_flag_reaches_the_entry_point_and_never_touches_the_checkout(
+            self, monkeypatch, capsys):
+        from hermes_cli.main import _build_cli_parser
+        from hermes_cli import update_cmd
+
+        parser, _ = _build_cli_parser()
+        args = parser.parse_args(["update", "--run-restart-catch-up"])
+        assert args.run_restart_catch_up is True
+        assert getattr(args, "post_swap", None) is None
+
+        calls: list = []
+        monkeypatch.setattr(orch, "run_due_catch_up", lambda **kw: calls.append(kw) or "no-obligation")
+        monkeypatch.setattr(update_cmd, "_run_post_swap_phase",
+                            lambda *a, **k: pytest.fail("the catch-up flag must not run an update"))
+
+        update_cmd._cmd_update_impl(args, gateway_mode=False)
+
+        assert calls == [{}], "the flag must call the catch-up entry point exactly once"
+        out = capsys.readouterr().out
+        assert "no-obligation" in out
+        assert "Updating Hermes Agent" not in out, "no update may start on the catch-up path"
+
+    def test_not_due_is_distinguishable_from_nothing_armed(self):
+        """A foreign-versioned record reads as absent (`read_host_obligation`), so the entry point
+        must never claim a catch-up is pending for a file it cannot honour."""
+        from hermes_cli.update_host_obligation import write_host_obligation
+
+        assert orch.run_due_catch_up(runner=lambda: True) == "no-obligation"
+
+        obligation_path().write_text(json.dumps({"version": 99, "expected_sha": "b" * 40}),
+                                     encoding="utf-8")
+        assert orch.run_due_catch_up(runner=lambda: True) == "no-obligation"
+
+        assert write_host_obligation(expected_sha="b" * 40, runtimes=[{"profile": "default"}])
+        assert orch.run_due_catch_up(runner=lambda: True) == "not-due", (
+            "an armed obligation with no schedule yet is not-due, not nothing-to-do"
+        )
+
+
 class TestReceiptCarriesOneVerdict:
     """G3 — receipt B carried ``incomplete=false`` beside a ``stale`` fleet row."""
 

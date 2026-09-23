@@ -117,6 +117,11 @@ def _redact_enabled() -> bool:
         from agent.secret_scope import current_secret_scope
         scope = current_secret_scope()
         raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+        if raw is None and scope is None:
+            # No live scope (the log listener thread formats routed records): read the profile's own .env, as
+            # its scope would, or a first call there would cache a config-only answer for the whole process.
+            from hermes_cli.config import load_env
+            raw = load_env().get("HERMES_REDACT_SECRETS")
         if raw is None:
             from hermes_cli.config import load_config_readonly
             cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")

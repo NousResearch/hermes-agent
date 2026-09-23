@@ -855,9 +855,58 @@ class SessionMessagesMixin:
         raw keystrokes, and the turn must not append a second row for the same input."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
-        return self._write_rowcount(
+        updated = self._write_rowcount(
             "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
             (self._encode_content(content), row_id, session_id))
+        if updated:
+            # The content rewrite fires messages_display_identity_update, which clears display_identity
+            # and display_order for this row (and its identity peers). Nothing else reassigns them before
+            # the next display read, so an attachment turn -- the only prompt shape the prologue rewrites --
+            # would otherwise be left with a NULL sort key and collapse into the NULL page group.
+            try:
+                self._ensure_display_order(session_id)
+            except Exception:
+                logger.debug("display order backfill after user content rewrite failed", exc_info=True)
+        return updated
+
+    @classmethod
+    def _dedupe_stable_tool_calls(cls, tool_calls):
+        """``tool_calls`` reduced to the identity the compressor cannot rewrite.
+
+        The compressor shrinks long tool-call ``arguments`` in place and the compacted
+        transcript is persisted, so one logical assistant turn can be stored once
+        verbatim and again with its arguments truncated. Those rows are the SAME
+        message, so the display identity must ignore the difference -- otherwise each
+        generation keys separately and the turn renders once per compaction.
+
+        Keyed on each call's ``id``/``call_id`` and function name, which the compressor
+        never touches and which are already unique per call; arguments are dropped
+        rather than normalized because the marker carries per-instance character counts
+        (two truncations of one call at different budgets differ textually) and the
+        marker itself is stored JSON-escaped, so no textual scrub is reliable.
+        Unparseable payloads fall back to the raw string.
+        """
+        if not tool_calls:
+            return tool_calls
+        try:
+            calls = json.loads(tool_calls)
+        except (TypeError, ValueError):
+            return tool_calls
+        if not isinstance(calls, list):
+            return tool_calls
+        identity = []
+        for call in calls:
+            if not isinstance(call, dict):
+                return tool_calls
+            function = call.get("function")
+            identity.append((
+                call.get("id") or call.get("call_id"),
+                function.get("name") if isinstance(function, dict) else None))
+        # A call with neither id nor name carries no stable identity: keying on that
+        # would merge unrelated turns, which is worse than rendering one twice.
+        if any(call_id is None and name is None for call_id, name in identity):
+            return tool_calls
+        return repr(identity)
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
@@ -870,7 +919,7 @@ class SessionMessagesMixin:
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
         return (row["role"], dedupe_content, row["timestamp"],
-                row["tool_call_id"], row["tool_calls"], row["tool_name"])
+                row["tool_call_id"], self._dedupe_stable_tool_calls(row["tool_calls"]), row["tool_name"])
 
     @staticmethod
     def _display_identity(key: Tuple[Any, ...]) -> bytes:
@@ -1030,7 +1079,7 @@ class SessionMessagesMixin:
                 JOIN messages AS chosen ON chosen.id = (
                     SELECT candidate.id FROM messages AS candidate
                     WHERE candidate.session_id = ?
-                      AND candidate.display_order = page.display_order
+                      AND candidate.display_order IS page.display_order
                       AND (candidate.active = 1 OR candidate.compacted = 1)
                     ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                 )

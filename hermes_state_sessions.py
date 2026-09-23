@@ -1294,16 +1294,44 @@ class SessionSessionsMixin:
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
+            # A recent compression continuation is not listable itself, but it must first map back to its
+            # logical root.  Seed with the non-child filters, then apply the full root filters outside.
+            candidate_where = _where_sql(where_clauses[2:] if not include_children else where_clauses)
             candidate_limit = -1 if (id_query or search_query or limit < 0) else limit + offset
             query = f"""
                 WITH RECURSIVE recent_candidates(id) AS MATERIALIZED (
-                    SELECT s.id FROM sessions s {where_sql}
+                    SELECT s.id FROM sessions s {candidate_where}
                     ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC,
                              s.started_at DESC, s.id DESC
                     LIMIT ?
                 ),
-                chain(root_id, cur_id) AS (
+                ancestors(candidate_id, cur_id) AS (
                     SELECT id, id FROM recent_candidates
+                    UNION
+                    SELECT a.candidate_id, parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.cur_id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                      AND COALESCE(child.source, '') != 'tool'
+                ),
+                candidate_roots(root_id) AS (
+                    SELECT DISTINCT a.cur_id FROM ancestors a
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM sessions child
+                        JOIN sessions parent ON parent.id = child.parent_session_id
+                        WHERE child.id = a.cur_id AND parent.end_reason = 'compression'
+                          AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                          AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                          AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                          AND COALESCE(child.source, '') != 'tool'
+                    )
+                ),
+                chain(root_id, cur_id) AS (
+                    SELECT root_id, root_id FROM candidate_roots
                     UNION ALL
                     SELECT c.root_id, child.id
                     FROM chain c
@@ -1325,7 +1353,7 @@ class SessionSessionsMixin:
                 {select_head}{_sql_session_last_active("s")} AS last_active,
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
                 FROM sessions s
-                JOIN recent_candidates rc ON rc.id = s.id
+                JOIN candidate_roots cr ON cr.root_id = s.id
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
                 {outer_where}

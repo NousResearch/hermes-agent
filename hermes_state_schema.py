@@ -1056,6 +1056,24 @@ class SessionSchemaMixin:
             # v30: delegate-child transcripts too (FTS_TRIGRAM_EXCLUDED_SOURCES + _delegate_from).
             # Rebuild once so rows indexed by older view/trigger definitions do not linger.
             fts_migrations_complete = self._migrate_trigram_cron_exclusion(cursor)
+        if current_version < 31:
+            # v31: activity stamps predate message persistence.  Group once over the indexed
+            # (session_id, timestamp) path, preserving later heartbeat observations and their labels.
+            cursor.execute("""
+                WITH message_activity AS (
+                    SELECT session_id, MAX(timestamp) AS latest_timestamp
+                    FROM messages
+                    GROUP BY session_id
+                )
+                UPDATE sessions
+                SET last_activity_at = (
+                    SELECT latest_timestamp FROM message_activity WHERE session_id = sessions.id
+                )
+                WHERE id IN (SELECT session_id FROM message_activity)
+                  AND (last_activity_at IS NULL OR last_activity_at < (
+                      SELECT latest_timestamp FROM message_activity WHERE session_id = sessions.id
+                  ))
+            """)
 
         # Stamp the FTS layout version (fresh/optimized DBs); a legacy DB keeps its absent/0
         # marker until optimize-storage runs. An INTERRUPTED optimize (markers, trash, or an

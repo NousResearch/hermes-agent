@@ -294,6 +294,19 @@ class SessionMessagesMixin:
             conn.execute(
                 f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
 
+    @staticmethod
+    def _advance_session_activity_for_message(conn, session_id: str, timestamp: float) -> None:
+        """Advance indexed recency in the transaction that made a message durable.
+
+        Labels describe heartbeats and must not be overwritten by transcript persistence.  The timestamp is
+        the already-coerced value bound into ``messages``, never a fresh wall-clock reading.
+        """
+        conn.execute(
+            "UPDATE sessions SET last_activity_at = ? WHERE id = ? "
+            "AND (last_activity_at IS NULL OR last_activity_at < ?)",
+            (timestamp, session_id, timestamp),
+        )
+
     def append_message(
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
@@ -317,6 +330,7 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            self._advance_session_activity_for_message(conn, session_id, message_timestamp)
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
@@ -335,7 +349,8 @@ class SessionMessagesMixin:
         msg = {"content": content,
                "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
                "display_metadata": metadata}
-        params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
+        message_timestamp = time.time()
+        params = self._message_row_params(session_id, "user", msg, None, message_timestamp, keep_reasoning=True)
 
         def _do(conn):
             existing = conn.execute(
@@ -352,6 +367,7 @@ class SessionMessagesMixin:
                 return existing[0]
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            self._advance_session_activity_for_message(conn, session_id, message_timestamp)
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id
 
@@ -513,6 +529,7 @@ class SessionMessagesMixin:
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
         now_ts = time.time()
         inserted = tool_calls_total = 0
+        latest_timestamp = None
         for msg in messages:
             role = msg.get("role", "unknown")
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
@@ -528,7 +545,10 @@ class SessionMessagesMixin:
                 msg["_row_id"] = cur.lastrowid
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
+            latest_timestamp = message_timestamp if latest_timestamp is None else max(latest_timestamp, message_timestamp)
             now_ts = max(now_ts, message_timestamp) + 1e-6
+        if latest_timestamp is not None:
+            self._advance_session_activity_for_message(conn, session_id, latest_timestamp)
         carrier = _newest_checkpoint_carrier(messages, "codex_reasoning_items")
         if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
             self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])

@@ -244,15 +244,14 @@ class TestParseSchedule:
         """A naive ISO timestamp must be interpreted in the CONFIGURED Hermes
         timezone, NOT the server's local timezone (#51021).
 
-        Regression: when the configured zone differs from the server's local
-        zone (common on cloud hosts running UTC), parse_schedule used
-        ``dt.astimezone()`` (server-local), baking in the wrong offset. The
-        due-check compares against ``_hermes_now()`` (configured zone), so the
-        stored instant landed hours off the user's wall-clock intent — far
-        enough that one-shots never became due. This asserts the parsed offset
-        matches the configured-now offset, the invariant that keeps the stored
-        instant on the same clock the scheduler checks against.
+        Regression: when the configured zone differs from the server's local zone (common on cloud
+        hosts running UTC), parse_schedule used ``dt.astimezone()`` (server-local), baking in the
+        wrong offset. The due-check compares against ``_hermes_now()`` (configured zone), so the
+        stored instant landed hours off the user's wall-clock intent — far enough that one-shots
+        never became due. This asserts the parsed offset matches the configured-now offset, the
+        invariant that keeps the stored instant on the same clock the scheduler checks against.
         """
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Kolkata")
         configured_now = datetime(2026, 6, 22, 20, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: configured_now)
 
@@ -276,8 +275,9 @@ class TestNaiveScheduleTimezoneDivergence:
     server-local, so the job never fired."""
 
     def test_recent_past_oneshot_is_due_under_diverging_tz(self, tmp_cron_dir, monkeypatch):
-        # Configured zone: a fixed +05:30 offset. The server's actual local
+        # Configured zone: Asia/Kolkata, a fixed +05:30 offset. The server's actual local
         # zone is irrelevant to the parse now — that is the whole point.
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Kolkata")
         configured = timezone(timedelta(hours=5, minutes=30))
         now = datetime(2026, 6, 22, 20, 7, 30, tzinfo=configured)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

@@ -25,6 +25,8 @@ export interface SidebarRowLabels {
 export interface ProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   profile: string
   targetProfile: string
 }

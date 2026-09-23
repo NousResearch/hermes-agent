@@ -203,6 +203,8 @@ const $focusedSessionProfile = computed(
 export interface PluginProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   /** Desktop profile used to select the connection route. */
   profile: string
   /** Backend Hermes profile served by that route. */

@@ -54,6 +54,37 @@ describe('TextInput Vim command reducer', () => {
     expect(pending.pending).toBe('d')
     expect(applyVimCommand(pending, 'd', key())).toMatchObject({ cursor: 4, pending: '', value: 'one\nthree' })
   })
+
+  it('keeps the normal-mode cursor off the newline separator', () => {
+    // "ab\ncd": l from the last character of a line must not step onto index 2.
+    expect(applyVimCommand(normal('ab\ncd', 1), 'l', key()).cursor).toBe(1)
+    // Leaving insert mode at the line break clamps back onto the character.
+    expect(
+      applyVimCommand({ cursor: 2, mode: 'insert', pending: '', value: 'ab\ncd' }, '', key(true)).cursor
+    ).toBe(1)
+    // So neither x nor D can join two logical lines.
+    expect(applyVimCommand(normal('ab\ncd', 1), 'x', key()).value).toBe('a\ncd')
+    expect(applyVimCommand(normal('ab\ncd', 1), 'D', key()).value).toBe('a\ncd')
+  })
+
+  it('treats x and D on an empty line as no-ops', () => {
+    // "ab\n\ncd": index 3 is the empty line; its only position IS the newline,
+    // so deleting there would join lines rather than remove a character.
+    expect(applyVimCommand(normal('ab\n\ncd', 3), 'x', key()).value).toBe('ab\n\ncd')
+    expect(applyVimCommand(normal('ab\n\ncd', 3), 'D', key()).value).toBe('ab\n\ncd')
+    expect(applyVimCommand(normal('ab\n\ncd', 3), 'l', key()).cursor).toBe(3)
+  })
+
+  it('cancels a pending d when a special key falls through', () => {
+    const pending = applyVimCommand(normal('one\ntwo\nthree', 5), 'd', key())
+    expect(pending.pending).toBe('d')
+
+    // An arrow / Enter arrives: no input string and not Escape. The composer
+    // still owns the key (handled: false), but the operator is cancelled so a
+    // later `d` cannot pair with it and delete an unrelated line.
+    const special = applyVimCommand(pending, '', key())
+    expect(special).toMatchObject({ handled: false, pending: '' })
+  })
 })
 
 describe('TextInput Vim integration', () => {

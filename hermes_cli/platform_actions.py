@@ -71,11 +71,11 @@ _VERBS = {
 
 
 class PlatformActions:
-    """Per-plugin facade over the live gateway adapter registry.
+    """Per-plugin facade over the turn's exact live ingress adapter.
 
-    Instances are cheap and hold only the owning plugin id; the gateway runner and adapters are
-    resolved at call time so a facade created before the gateway starts (plugin ``register()`` runs
-    first) still works once adapters connect.
+    Instances are cheap and hold only the owning plugin id. The adapter is resolved from turn-local
+    ingress provenance at call time, so a facade created during plugin registration is safe to reuse
+    and calls outside a live inbound turn fail closed.
     """
 
     def __init__(self, plugin_id: str):
@@ -96,46 +96,19 @@ class PlatformActions:
     def _resolve_adapter(self, platform: str):
         """Return ``(adapter, error_dict)``; exactly one is non-None."""
         try:
-            from gateway.run import _gateway_runner_ref
-
-            runner = _gateway_runner_ref()
-        except Exception:
-            runner = None
-        if runner is None:
-            return None, _err("gateway_unavailable", "no gateway runner is active in this process")
-        try:
             from gateway.config import Platform
 
             platform_enum = Platform(str(platform).strip().lower())
         except Exception:
             return None, _err("unknown_platform", f"unknown platform {platform!r}")
-        # Multiplex/Team-Gateway: a secondary profile's adapters live in runner._profile_adapters,
-        # not runner.adapters. Every adapter-resolution path goes through the same profile-aware,
-        # fail-closed lookup so a plugin scoped to one profile can never act through another
-        # profile's bot identity. The bare default-profile lookup is only for a runner predating
-        # _authorization_adapter (defensive, not expected).
-        resolve_fn = getattr(runner, "_authorization_adapter", None)
-        if callable(resolve_fn):
-            try:
-                from hermes_cli.profiles import get_active_profile_name
+        from gateway.ingress_context import current_ingress_adapter
 
-                profile_name = get_active_profile_name()
-            except Exception:
-                # Fail closed: an unresolvable profile must not degrade to the default profile's bot.
-                logger.debug(
-                    "platform_actions: profile resolution failed for %s",
-                    self._plugin_id, exc_info=True,
-                )
-                return None, _err(
-                    "adapter_not_registered",
-                    f"no {platform_enum.value} adapter is registered "
-                    "(active profile could not be resolved)",
-                )
-            adapter = resolve_fn(platform_enum, profile_name)
-        else:
-            adapter = getattr(runner, "adapters", {}).get(platform_enum)
+        adapter = current_ingress_adapter(platform_enum.value)
         if adapter is None:
-            return None, _err("adapter_not_registered", f"no {platform_enum.value} adapter is registered")
+            return None, _err(
+                "adapter_not_registered",
+                f"no live inbound {platform_enum.value} adapter is bound to this turn",
+            )
         try:
             connected = bool(adapter.is_connected)
         except Exception:
@@ -171,8 +144,8 @@ class PlatformActions:
             except Exception as exc:
                 result = _err("action_failed", str(exc)[:512])
         else:
-            result = error or _err("gateway_unavailable")
-        self._audit(verb, platform, result)
+            result = error or _err("adapter_not_registered")
+        self._audit(verb, platform, required.get("chat_id"), result)
         return result
 
     # -- v1 verbs -----------------------------------------------------------
@@ -191,13 +164,21 @@ class PlatformActions:
             chat_id=chat_id, thread_id=thread_id, title=title,
         )
 
-    def _audit(self, verb: str, platform: str, result: Dict[str, Any]) -> None:
+    def _audit(
+        self, verb: str, platform: str, target_chat_id: Any, result: Dict[str, Any]
+    ) -> None:
         """Every platform action is logged (the #64176 'all actions logged' rule)."""
+        from gateway.ingress_context import current_ingress_binding
+
+        binding = current_ingress_binding(platform)
         logger.info(
-            "platform_action plugin=%s verb=%s platform=%s ok=%s%s",
+            "platform_action plugin=%s verb=%s platform=%s transport_profile=%s "
+            "target_chat_id=%s ok=%s%s",
             self._plugin_id,
             verb,
             platform,
+            binding.transport_profile if binding is not None else None,
+            target_chat_id,
             result.get("ok"),
             "" if result.get("ok") else f" error={result.get('error')}",
         )

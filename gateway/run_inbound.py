@@ -1347,29 +1347,36 @@ class GatewayInboundMixin:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            try:
-                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
-            except TurnLeaseTimeoutError as exc:
-                # A rejected message, not a completed turn: return before the /goal judge so it
-                # cannot consume the resend notice and enqueue a synthetic continuation loop.
-                logger.error(
-                    "Rejecting turn for routing key %s on session %s after "
-                    "turn-lease timeout; transcript load was not started and "
-                    "the user must resend",
-                    _quick_key, exc.session_id,
-                )
-                return (
-                    "⏳ Another turn is still running on this session. To "
-                    "protect the transcript, this message was not processed. "
-                    "Wait for the active turn to finish, then resend it."
-                )
-            try:
-                await self._run_post_turn_hooks(
-                    agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
-                )
-            except Exception as _goal_exc:
-                logger.debug("post-turn hook failed: %s", _goal_exc)
-            return _agent_result
+            from gateway.ingress_context import bind_ingress_adapter
+
+            async with self._async_profile_scope_for_source(source):
+                with bind_ingress_adapter(source):
+                    try:
+                        _agent_result = await self._handle_message_with_agent(
+                            event, source, _quick_key, _run_generation
+                        )
+                    except TurnLeaseTimeoutError as exc:
+                        # A rejected message, not a completed turn: return before the /goal judge so it
+                        # cannot consume the resend notice and enqueue a synthetic continuation loop.
+                        logger.error(
+                            "Rejecting turn for routing key %s on session %s after "
+                            "turn-lease timeout; transcript load was not started and "
+                            "the user must resend",
+                            _quick_key, exc.session_id,
+                        )
+                        return (
+                            "⏳ Another turn is still running on this session. To "
+                            "protect the transcript, this message was not processed. "
+                            "Wait for the active turn to finish, then resend it."
+                        )
+                    try:
+                        await self._run_post_turn_hooks(
+                            agent_result=_agent_result, source=source,
+                            is_internal=is_internal, event=event,
+                        )
+                    except Exception as _goal_exc:
+                        logger.debug("post-turn hook failed: %s", _goal_exc)
+                    return _agent_result
         finally:
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.

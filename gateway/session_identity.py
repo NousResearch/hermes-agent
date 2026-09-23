@@ -29,7 +29,13 @@ logger = logging.getLogger(__name__)
 
 _IDENTITY_ATTR = "_identity"
 # Wire-invisible provenance copied alongside the identity when a source is duplicated.
-_PROVENANCE_ATTRS = ("_transport_adapter_ref", "_authorization_profile_home", _IDENTITY_ATTR)
+_PROVENANCE_ATTRS = (
+    "_transport_adapter_ref",
+    "_authorization_profile_home",
+    "profile_route_rejected",
+    "_profile_route_response_policy",
+    _IDENTITY_ATTR,
+)
 
 
 class IdentityUnresolved(RuntimeError):
@@ -62,6 +68,8 @@ class RoutingIdentity:
     # pre-column source. Delivery may still fall back to the runtime profile's unique adapter for
     # these; an identity whose transport is KNOWN (live or restored) never does.
     transport_inferred: bool = field(default=False, compare=False, hash=False)
+    # Delivery policy selected by the matched profile route. It is turn metadata, never prompt text.
+    response_policy: str = "normal"
 
     @property
     def namespace(self) -> str:
@@ -97,7 +105,12 @@ def clear_identity(source: Any) -> None:
     guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
     per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
     short-circuits the route and the new speaker runs as the old one."""
-    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home"):
+    for attr in (
+        _IDENTITY_ATTR,
+        "profile_route_rejected",
+        "_authorization_profile_home",
+        "_profile_route_response_policy",
+    ):
         with suppress(AttributeError):
             delattr(source, attr)
     with suppress(AttributeError):
@@ -109,6 +122,13 @@ def transport_profile_of(source: Any) -> Optional[str]:
     None outside multiplexing or when nothing resolved the source (an unknown transport is never guessed)."""
     identity = identity_of(source)
     return identity.transport_profile if identity is not None and identity.multiplexed else None
+
+
+def response_policy_of(source: Any) -> str:
+    """Normalized response policy pinned at ingress (``normal`` for legacy/synthetic sources)."""
+    identity = identity_of(source)
+    policy = getattr(identity, "response_policy", "normal") if identity is not None else "normal"
+    return policy if policy in {"normal", "silent"} else "normal"
 
 
 def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
@@ -179,11 +199,26 @@ def restore_identity(
     runtime_home = (
         authorization_home if runtime_name == transport_name
         else Path(runner._resolve_profile_home_for_source(source)))
+    response_policy = "normal"
+    try:
+        adapter_profile = None if transport_name == primary_profile else transport_name
+        if adapter_profile is None:
+            runner._profile_name_for_source(source)
+        else:
+            runner._profile_name_for_source(source, adapter_profile=adapter_profile)
+        response_policy = getattr(source, "_profile_route_response_policy", "normal")
+    except Exception:
+        if getattr(getattr(runner, "config", None), "profile_routes", None):
+            response_policy = "silent"
+            logger.warning(
+                "Restored source route policy could not be resolved; failing closed to silent",
+                exc_info=True,
+            )
     source._authorization_profile_home = authorization_home
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,
-        multiplexed=True, transport=None)
+        multiplexed=True, transport=None, response_policy=response_policy)
     setattr(source, _IDENTITY_ATTR, identity)
     return identity
 
@@ -268,6 +303,8 @@ def resolve_identity(
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,
-        multiplexed=True, transport=transport_ref, transport_inferred=transport_inferred)
+        multiplexed=True, transport=transport_ref, transport_inferred=transport_inferred,
+        response_policy=getattr(source, "_profile_route_response_policy", "normal"),
+    )
     setattr(source, _IDENTITY_ATTR, identity)
     return identity

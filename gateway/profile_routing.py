@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Baileys and Cloud share phone/JID/LID identity rules; other platforms compare exactly.
 _WHATSAPP_IDENTITY_PLATFORMS = {"whatsapp", "whatsapp_cloud"}
 _WHATSAPP_NON_USER_SUFFIXES = ("@g.us", "@broadcast", "@newsletter")
+_RESPONSE_POLICIES = {"normal", "silent"}
 
 
 def _is_whatsapp_non_user_chat(chat_id: Optional[str]) -> bool:
@@ -65,6 +66,7 @@ class ProfileRoute:
     enabled: bool = True
     bot_profile: Optional[str] = None  # None = the default profile's bot
     user_id: Optional[str] = None
+    response_policy: str = "normal"
 
     @property
     def specificity(self) -> int:
@@ -157,6 +159,13 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
         if has_user_id and (user_id is None or isinstance(user_id, str) and not user_id.strip()):
             logger.warning("Skipping profile route %s: user_id cannot be null or empty", name)
             continue
+        response_policy = str(entry.get("response_policy", "normal")).strip().lower()
+        if response_policy not in _RESPONSE_POLICIES:
+            logger.warning(
+                "Profile route %s has invalid response_policy %r; failing closed to silent",
+                name, entry.get("response_policy"),
+            )
+            response_policy = "silent"
         routes.append(ProfileRoute(
             name=name, platform=platform, profile=profile,
             guild_id=_coerce_route_id(entry.get("guild_id")),
@@ -165,6 +174,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             user_id=_coerce_route_id(user_id),
             enabled=entry.get("enabled", True),
             bot_profile=_bot_profile_key(entry.get("bot_profile")),
+            response_policy=response_policy,
         ))
     routes.sort(key=lambda r: r.specificity, reverse=True)
     logger.debug("Loaded %d profile routes (most-specific-first)", len(routes))

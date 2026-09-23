@@ -1072,7 +1072,10 @@ class CLIStatusBarMixin:
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")
-            add_count("compressions", "compressions", "🗜️", self._compression_count_style)
+            # U+1F5DC defaults to text presentation and prompt_toolkit measures it as one
+            # cell.  Do not append VS16: terminals that honor it draw the emoji two cells
+            # wide, which desynchronizes prompt_toolkit's diff redraw.
+            add_count("compressions", "compressions", "🗜", self._compression_count_style)
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")
             add_count("bg_subagents", "active_background_subagents", "⛓")

@@ -242,6 +242,17 @@ class ActionJournal:
             next_cursor=next_cursor,
         )
 
+    def get(self, source_event_key: UUID | str) -> MutationEvent | None:
+        """Return one event for observer replay/idempotency checks."""
+        row = self._connection.execute(
+            """
+            SELECT * FROM mutation_journal
+            WHERE profile_key = ? AND source_event_key = ?
+            """,
+            (self.profile_key, str(source_event_key)),
+        ).fetchone()
+        return None if row is None else self._event_from_row(row)
+
     def _encode_cursor(self, sequence: int) -> str:
         profile_digest = hashlib.sha256(self.profile_key.encode("utf-8")).hexdigest()[:16]
         raw = json.dumps(

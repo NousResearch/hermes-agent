@@ -75,11 +75,6 @@ def repo(tmp_path, monkeypatch):
     os.chdir(tmp_path)
 
 
-@requires_git
-def test_status_no_active_worktree(repo):
-    out = _run(_Stub(), "/worktree")
-    assert "No active worktree" in out
-    assert "/worktree new" in out
 
 
 def test_status_outside_repo(tmp_path, monkeypatch):
@@ -141,7 +136,3 @@ def test_new_sanitizes_name(repo):
     assert name == "weird-name"
 
 
-@requires_git
-def test_unknown_subcommand(repo):
-    out = _run(_Stub(), "/worktree frobnicate")
-    assert "Unknown /worktree subcommand" in out

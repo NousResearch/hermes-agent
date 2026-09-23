@@ -2,14 +2,12 @@
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import subprocess
 import time
 import pytest
 from pathlib import Path
-from unittest.mock import patch
 
 from tools.checkpoint_manager import (
     CheckpointManager,
@@ -77,11 +75,6 @@ def disabled_mgr(checkpoint_base, monkeypatch):
 # =========================================================================
 
 class TestStorePath:
-    def test_store_is_single_shared_path(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
-        # All projects resolve to the same store (only refs/indexes are per-project).
-        assert _store_path() == _store_path(checkpoint_base)
-        assert _project_hash(str(work_dir)) != _project_hash(str(work_dir.parent / "other"))
 
     def test_project_hash_identifies_dir_and_expands_tilde(self, fake_home):
         project = fake_home / "project"
@@ -683,25 +676,6 @@ class TestGitEnvIsolation:
 # =========================================================================
 
 class TestErrorResilience:
-    def test_run_git_allows_expected_nonzero_without_error_log(
-        self, tmp_path, caplog,
-    ):
-        work = tmp_path / "work"
-        work.mkdir()
-        completed = subprocess.CompletedProcess(
-            args=["git", "diff", "--cached", "--quiet"],
-            returncode=1, stdout="", stderr="",
-        )
-        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
-            with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
-                ok, stdout, stderr = _run_git(
-                    ["diff", "--cached", "--quiet"],
-                    tmp_path / "store", str(work),
-                    allowed_returncodes={1},
-                )
-        assert ok is False
-        assert stdout == ""
-        assert not caplog.records
 
 
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):

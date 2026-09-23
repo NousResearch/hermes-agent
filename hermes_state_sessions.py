@@ -667,15 +667,20 @@ class SessionSessionsMixin:
         payload = json.dumps(list(tool_names)) if tool_names is not None else None
         self._write_sql("UPDATE sessions SET tool_names = ? WHERE id = ?", (payload, session_id))
 
-    def update_session_model(self, session_id: str, model: str, provider: Optional[str] = None) -> None:
+    def update_session_model(
+        self, session_id: str, model: str, provider: Optional[str] = None, *,
+        base_url: Optional[str] = None, api_mode: Optional[str] = None,
+    ) -> None:
         """Set the model after a mid-session /model switch (unconditionally), null system_prompt so
         stale Model:/Provider: footers rebuild, and drop any Browser runtime lock (lineage markers
-        survive). *provider* is merged into model_config so resume recombines model and provider.
+        survive).
 
-        When *provider* is given, it is merged into ``model_config`` alongside the model (``$.model`` /
-        ``$.provider``) so a later resume recombines the persisted model with the provider that actually
-        serves it instead of the config.yaml primary provider (#79536). Callers without provider knowledge
-        leave any stored provider untouched.
+        When *provider* is given the whole route is written, in both shapes resume reads (top-level
+        keys for the TUI/Desktop, ``gateway_runtime`` for the CLI), so a later resume recombines the
+        model with the provider that serves it (#79536). ``base_url``/``api_mode`` are always
+        replaced then (``None`` deletes): the previous provider's endpoint must not survive a switch,
+        or resume sends the new provider's model to the old host. Callers without provider knowledge
+        leave the stored route untouched.
         """
         # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
         # first_accounted_route overwrite and resurrect the old route.
@@ -684,7 +689,8 @@ class SessionSessionsMixin:
         if model:
             patch["model"] = model
         if provider:
-            patch["provider"] = provider
+            route = {"provider": provider, "base_url": base_url or None, "api_mode": api_mode or None}
+            patch.update(route, gateway_runtime=route)
         self._write_model_config_patch(
             session_id, patch, "UPDATE sessions SET model = ?, model_config = ?, "
             "system_prompt = NULL, system_prompt_hash = NULL WHERE id = ?",

@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -64,10 +64,6 @@ def _connect_cooldown_active(server_name: str) -> bool:
     profile's failing ``x`` must not shadow another profile's healthy ``x``)."""
     deadline = _core._server_connect_retry_after.get(_server_key(server_name))
     return deadline is not None and time.monotonic() < deadline
-
-
-def _enabled(cfg: dict) -> bool:
-    return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
 def _owner_scope_home() -> Optional[Path]:
@@ -335,9 +331,9 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             k: v for k, v in servers.items()
             if keys[k] not in _core._servers and keys[k] not in _core._server_connecting
             and keys[k] not in _core._lazy_server_configs
-            and _enabled(v) and not _connect_cooldown_active(k)}
+            and mcp_server_enabled(v) and not _connect_cooldown_active(k)}
         stale_cached = [_core._servers[keys[k]] for k, v in servers.items()
-                        if keys[k] in _core._servers and _enabled(v)
+                        if keys[k] in _core._servers and mcp_server_enabled(v)
                         and getattr(_core._servers[keys[k]], "session", None) is None]
         for srv_name in new_servers:
             _core._server_connecting.add(keys[srv_name])
@@ -587,7 +583,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             keys = {name: _resolve_server_key(name) for name in servers}
             new_server_names = [name for name, cfg in servers.items()
                                 if keys[name] not in _core._servers and keys[name] not in _core._server_connecting
-                                and _enabled(cfg)]
+                                and mcp_server_enabled(cfg)]
             prior_lazy = set(_core._lazy_server_configs)
         tool_names = register_mcp_servers(servers)
         if new_server_names:
@@ -619,7 +615,7 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed."""
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
-    wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
+    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
     scope = _core._mcp_registry_scope()
     with _core._lock:
         owned = [key for key, owner in _core._server_scope_keys.items() if owner == scope]
@@ -708,7 +704,7 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
 
     result: List[dict] = []
     for name, cfg in configured.items():
-        enabled = _enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
+        enabled = mcp_server_enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
         # An in-flight or failed first-use connect outranks "lazy": that server is no longer
@@ -754,7 +750,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     if not _core._ensure_mcp_sdk():
         return {}
     with _owner_secret_scope():
-        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if _enabled(v)}
+        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if mcp_server_enabled(v)}
     if not enabled:
         return {}
     _loop._ensure_mcp_loop()

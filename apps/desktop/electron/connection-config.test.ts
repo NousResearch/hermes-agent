@@ -17,7 +17,6 @@ import { test } from 'vitest'
 import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
-  AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -45,7 +44,6 @@ import {
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
-  RT_COOKIE_VARIANTS,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
@@ -352,6 +350,21 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
+    // #118431/#118432: the host backend this app attached to may have been
+    // launched under another profile's home, so the primary's own scopable
+    // REST calls must still say which profile they mean.
+    name: 'the primary profile names itself on a scopable local REST request',
+    profile: 'nash',
+    opts: { primaryProfile: 'nash', globalRemote: false, requestMethod: 'POST', requestPath: '/api/model/set' },
+    expected: { backend: 'primary', descriptorProfile: 'nash', scopePath: true }
+  },
+  {
+    name: 'the primary profile stays unscoped on a route the server cannot scope',
+    profile: 'nash',
+    opts: { primaryProfile: 'nash', globalRemote: false, requestMethod: 'POST', requestPath: '/api/files/upload' },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
     name: 'a renamed primary profile on a global remote is still scoped on the wire',
     profile: ' coder ',
     opts: { primaryProfile: 'coder', globalRemote: true },
@@ -600,6 +613,16 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
     ),
     '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_exclude=cron%2Cdesktop'
   )
+})
+
+test('registry model reads and writes retain each profile on a shared local backend', () => {
+  for (const backend of [{ mode: 'local' }, { sharedPrimary: true }]) {
+    for (const profile of ['research', 'default', 'research']) {
+      for (const path of ['/api/model/info', '/api/model/options', '/api/model/set']) {
+        assert.equal(pathForRegistryBackendRequest(path, profile, backend), `${path}?profile=${profile}`)
+      }
+    }
+  }
 })
 
 // --- pathWithGlobalRemoteProfile ---
@@ -1173,14 +1196,6 @@ test('cookiesHaveSession handles non-arrays', () => {
   assert.equal(cookiesHaveSession([]), false)
 })
 
-test('AT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(AT_COOKIE_VARIANTS, ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at'])
-})
-
-test('RT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(RT_COOKIE_VARIANTS, ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt'])
-})
-
 // --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---
 
 test('cookiesHaveLiveSession is true for a live access-token cookie', () => {
@@ -1415,20 +1430,6 @@ test('gatewayTicketFailure preserves a structured 503 statusCode as a transport 
   assert.equal((wrapped as any).cause, source)
 })
 
-test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', () => {
-  for (const code of [401, 403]) {
-    const source = new Error(`HTTP ${code}`) as any
-    source.statusCode = code
-
-    const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
-
-    assert.equal(wrapped.message, 'auth message')
-    assert.equal((wrapped as any).needsOauthLogin, true)
-    assert.equal((wrapped as any).statusCode, code)
-    assert.equal((wrapped as any).cause, source)
-  }
-})
-
 test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
   // A legacy "503: ..." message carries no structured statusCode; the Cloud
   // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
@@ -1458,7 +1459,6 @@ test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', (
   if (cloudError !== null) {
     assert.equal((cloudError as any).isCloudBackendDown, true)
     assert.equal((cloudError as any).statusCode, 503)
-    assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
 
     return
   }

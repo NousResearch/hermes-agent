@@ -20,12 +20,6 @@ from unittest.mock import patch
 # their `patch("os.write")` context.
 from hermes_cli.main import _suppress_mouse_residue_early
 
-EXPECTED = (
-    b"\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l\x1b[?9l"
-    b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?2029l"
-)
-
-
 class TestEarlyMouseDisable:
 
 

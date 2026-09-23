@@ -1022,6 +1022,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if grace <= 0:
             return
         _wait_for_exit(targets)
+        # A parent that ignored SIGTERM (the interactive ``bash -lic`` wrapper does) keeps
+        # running its script through both grace windows and can spawn children the first
+        # snapshot never saw. Re-snapshot while it is still alive: once it is SIGKILLed
+        # they reparent to init and nothing can find them again.
+        with suppress(gone):
+            if cls._proc_alive(parent):
+                known = {proc.pid for proc in targets}
+                targets.extend(p for p in parent.children(recursive=True) if p.pid not in known)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
@@ -1328,7 +1336,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
         poll()/wait() remains the safety net. See #68915, #8340.
         """
-        first_chunk = True
+        # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
+        # reader can wake between them; strip leading noise from every chunk until the
+        # process has produced real output, not just from the first read.
+        head_noise = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -1339,10 +1350,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # same treatment the foreground path already has in
         # ``tools/environments/base.py::_wait_for_process``. (Ported from openclaw/openclaw#112325.)
         def _append_chunk(chunk: str):
-            nonlocal first_chunk
-            if first_chunk:
+            nonlocal head_noise
+            if head_noise:
                 chunk = self._clean_shell_noise(chunk)
-                first_chunk = False
+                head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
         try:
             proc = session.process
@@ -2488,11 +2499,22 @@ PROCESS_SCHEMA = {
 }
 
 
+def transform_process_output(output: str, *, command: str, returncode: Optional[int], task_id: str = "") -> str:
+    """``transform_terminal_output`` seam for background-process output — the poll/wait/log/kill
+    results and the completion/heartbeat/watch notifications — so a plugin that rewrites terminal
+    output sees the same command output whether it ran in the foreground or not (#70760).
+    Same helper as the foreground path; callers redact AFTER it, never before, so a replacement
+    the plugin returns is still masked. ``returncode`` is None while the process is running and
+    ``env_type`` is not recorded per process, so it is passed empty."""
+    from tools.terminal_tool_result import _apply_output_transform_hook
+    return _apply_output_transform_hook(command, output, returncode, task_id or "", "")
+
+
 def _redact_process_result(result: dict) -> dict:
-    """Redact secrets from background-process output before it reaches the model,
-    session.db and CLI, mirroring the foreground ``terminal`` redaction so the two
-    surfaces can't diverge. Respects ``security.redact_secrets``; ``redact_terminal_output``
-    picks ``code_file`` from the recorded command. The command itself is redacted too.
+    """Transform, then redact secrets from background-process output before it reaches the
+    model, session.db and CLI, mirroring the foreground ``terminal`` pipeline (hook first,
+    redaction after) so the two surfaces can't diverge. Respects ``security.redact_secrets``;
+    ``redact_terminal_output`` picks ``code_file`` from the recorded command.
 
     The command string itself is also redacted in case it carried an inline credential. See #43025.
     """
@@ -2501,8 +2523,13 @@ def _redact_process_result(result: dict) -> dict:
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
+    # The hook's task_id is the process OWNER's (poll/log/wait results carry only session_id).
+    task_id = str(result.get("task_id") or "")
+    if not task_id and (session := process_registry.get(str(result.get("session_id") or ""))) is not None:
+        task_id = str(getattr(session, "task_id", "") or "")
     for key in ("output", "output_preview"):
         if isinstance(value := result.get(key), str) and value:
+            value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
             result[key] = redact_terminal_output(value, command)
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)

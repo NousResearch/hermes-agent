@@ -374,6 +374,77 @@ async function flushAsync() {
   })
 }
 
+it('loads and tracks saved gateways without mounting the statusbar or Settings', async () => {
+  const desktop = fakeDesktop()
+  const bootFetch = deferred<void>()
+  type Listener = Parameters<NonNullable<Window['hermesDesktop']['connections']['onChanged']>>[0]
+  const listeners = new Set<Listener>()
+
+  let registry: DesktopConnectionsRegistry = {
+    version: 2,
+    primary: primaryConn.connectionId,
+    secureTokenStorage: true,
+    connections: [
+      { id: primaryConn.connectionId, kind: 'remote', label: 'Primary', tokenPreview: null, tokenSet: false },
+      { id: coderConn.connectionId, kind: 'remote', label: 'Coder', tokenPreview: null, tokenSet: false }
+    ]
+  }
+
+  const list = vi.fn(async () => registry)
+  const setLastUsed = vi.fn(async () => ({ ok: true, registry }))
+
+  Object.assign(desktop, {
+    connections: {
+      list,
+      setLastUsed,
+      onChanged: (callback: Listener) => {
+        listeners.add(callback)
+
+        return () => listeners.delete(callback)
+      }
+    }
+  })
+  ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+  // Only the real gateway lifecycle mounts; no optional UI can load the cache.
+  const view = render(<Harness refreshSessions={() => bootFetch.promise} />)
+  await flushAsync()
+
+  expect($connectionsRegistry.get()).toEqual(registry)
+  expect($desktopBoot.get().running).toBe(true)
+  expect(setLastUsed).not.toHaveBeenCalled()
+
+  bootFetch.resolve()
+  await flushAsync()
+  expect($desktopBoot.get().running).toBe(false)
+  expect(setLastUsed).toHaveBeenCalledExactlyOnceWith(primaryConn.connectionId)
+
+  const activeConnection = $connection.get()
+  registry = {
+    ...registry,
+    connections: registry.connections.map(entry => ({ ...entry, label: `${entry.label} renamed` }))
+  }
+  await act(async () => {
+    for (const callback of listeners) {
+      callback({ connectionId: coderConn.connectionId, reason: 'saved' })
+    }
+  })
+  expect($connectionsRegistry.get()).toEqual(registry)
+
+  registry = { ...registry, connections: registry.connections.slice(0, 1) }
+  await act(async () => {
+    for (const callback of listeners) {
+      callback({ connectionId: coderConn.connectionId, reason: 'removed' })
+    }
+  })
+  expect($connectionsRegistry.get()).toEqual(registry)
+  expect($connection.get()).toBe(activeConnection)
+  expect(setLastUsed).toHaveBeenCalledTimes(1)
+
+  view.unmount()
+  expect(listeners.size).toBe(0)
+})
+
 // Drive the exponential backoff forward by its full cap so the next scheduled
 // reconnect attempt actually runs (1s,2s,4s,8s,15s,15s…). Returns after the
 // attempt's async work settles.
@@ -384,6 +455,38 @@ async function advanceBackoff() {
 }
 
 describe('default-route profile adoption', () => {
+  it('keeps a peer primary on its registered gateway across boot, reconnect and soft switch', async () => {
+    const originalUrl = window.location.href
+    window.history.replaceState(null, '', '/?peer=1&profile=coder&connectionId=coder-remote')
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+      getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+      getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    try {
+      render(<Harness />)
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+      FakeWebSocket.instances.at(-1)!.drop()
+      await advanceBackoff()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+      act(() => connectionApplied?.())
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+      expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'coder-remote', profile: 'coder' })
+      expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+    } finally {
+      window.history.replaceState(null, '', originalUrl)
+    }
+  })
+
   it.each([null, 'coder-remote'])(
     'dials the saved startup route before an ambient sender can replace it (%s)',
     async connectionId => {

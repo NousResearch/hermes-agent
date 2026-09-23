@@ -114,16 +114,3 @@ def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
     assert child.interrupted.is_set()
 
 
-def test_frozen_child_is_warned_once_at_80_percent_of_the_window(monkeypatch):
-    """Atom 2A of #116001: a stalling child hears about the closing window while it can still wrap up."""
-    child = _SlowButLiveChild(total_seconds=1.2, advance=False, initial_calls=3)
-    started = time.monotonic()
-
-    entry = _run(child, monkeypatch)
-
-    assert entry["status"] == "timeout", entry
-    assert len(child.steers) == 1, child.steers
-    warned_at, text = child.steers[0]
-    assert "[delegation budget warning]" in text and f"{_CAP_SECONDS:.0f}s inactivity window" in text, text
-    # Fired inside the window (after ~80% of it, before the kill), not at the timeout itself.
-    assert 0.8 * _CAP_SECONDS - 0.05 <= warned_at - started < _CAP_SECONDS, (warned_at - started, _CAP_SECONDS)

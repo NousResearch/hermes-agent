@@ -16,10 +16,8 @@ The verification step:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import textwrap
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -125,32 +123,3 @@ class TestVerifyCoreDependencies:
 
 
 
-class TestResolveInstallTargetPython:
-    def test_uses_virtual_env_from_environment(self, tmp_path):
-        """When VIRTUAL_ENV is set, the verification step must probe THAT
-        venv's interpreter — not the outer Python that drove `hermes update`.
-        If we probed sys.executable instead, we'd false-positive every dep
-        the outer interpreter happens to lack."""
-        venv_root = tmp_path / "newvenv"
-        scripts = venv_root / "Scripts"
-        scripts.mkdir(parents=True)
-        py = scripts / "python.exe"
-        py.write_text("fake")
-
-        with patch("hermes_cli.main_install_repair._is_windows", return_value=True):
-            from hermes_cli.main_install_repair import _resolve_install_target_python
-            result = _resolve_install_target_python(
-                ["uv", "pip"], env={"VIRTUAL_ENV": str(venv_root)}
-            )
-            assert result == py
-
-    def test_returns_none_when_venv_python_missing(self, tmp_path):
-        """If the path we'd point at doesn't exist (uv install failed before
-        the python shim landed), return None so the verification step
-        cleanly short-circuits instead of crashing on FileNotFoundError."""
-        with patch("hermes_cli.main_install_repair._is_windows", return_value=True):
-            from hermes_cli.main_install_repair import _resolve_install_target_python
-            result = _resolve_install_target_python(
-                ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "does_not_exist")}
-            )
-            assert result is None

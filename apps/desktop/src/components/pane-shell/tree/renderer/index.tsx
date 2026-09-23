@@ -31,6 +31,7 @@ import { ZoneEditor } from '../zone-editor'
 
 import { TreeEditBar } from './edit-bar'
 import { FloatingPanes } from './floating-panes'
+import { KeepAlivePanes } from './keep-alive-panes'
 import { NarrowOverlays } from './narrow-overlays'
 import { TreeNode } from './tree-node'
 
@@ -45,10 +46,6 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
   // Publish --workspace-left/right so chrome (titlebar title) aligns to the
   // main pane's geometry in plain CSS.
   useEffect(publishWorkspaceGeometry, [])
-
-  if (!tree) {
-    return null
-  }
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -72,20 +69,28 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
           display: none;
         }
       `}</style>
-      <TreeNode
-        leftEdge={titlebar}
-        node={tree}
-        rightEdge={titlebar}
-        root
-        rootRow={tree.type === 'split' && tree.orientation === 'row'}
-        topEdge={titlebar}
-      />
-      <NarrowOverlays />
-      {/* Non-tiling panes: fixed cards above the tree, outside every zone. */}
-      <FloatingPanes />
-      <TreeEditBar />
-      <ZoneEditor />
-      {children}
+      <KeepAlivePanes>
+        {tree && (
+          <TreeNode
+            leftEdge={titlebar}
+            node={tree}
+            rightEdge={titlebar}
+            root
+            rootRow={tree.type === 'split' && tree.orientation === 'row'}
+            topEdge={titlebar}
+          />
+        )}
+        {tree && <NarrowOverlays />}
+      </KeepAlivePanes>
+      {tree && (
+        <>
+          {/* Non-tiling panes: fixed cards above the tree, outside every zone. */}
+          <FloatingPanes />
+          <TreeEditBar />
+          <ZoneEditor />
+          {children}
+        </>
+      )}
     </div>
   )
 }

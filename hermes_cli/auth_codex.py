@@ -609,8 +609,9 @@ def resolve_codex_runtime_credentials(
         if pool_rate_limit:
             # Before surfacing the persisted cooldown, ask the usage endpoint whether the quota
             # reset early (banked reset redeemed, plan upgraded): ``last_error_reset_at`` can be
-            # days in the future while the account is already usable again.
-            if _probe_codex_pool_entry_quota_restored(pool_rate_limit):
+            # days in the future while the account is already usable again. Never from a
+            # read-only caller: the picker fingerprint resolves on every cache-only read.
+            if not read_only and _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
                 clear_codex_pool_quota_cooldowns()
                 pool_token = _pool_codex_access_token()

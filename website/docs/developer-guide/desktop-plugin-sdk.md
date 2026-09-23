@@ -177,6 +177,12 @@ interface PluginContext {
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
   onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
+  /** Any other cleanup to run on unload/reload/disable (store subscriptions, injected DOM). */
+  onDispose: (fn: () => void) => void
+  /** Scoped timers and DOM listeners — cleared with the plugin. Each returns a disposer. */
+  setTimeout: (fn: () => void, ms: number) => () => void
+  setInterval: (fn: () => void, ms: number) => () => void
+  addEventListener: (target: EventTarget, type: string, listener: EventListener, options?: AddEventListenerOptions | boolean) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -897,16 +903,23 @@ companion repo.
 
 A loaded plugin is evaluated as ESM in the renderer realm with **full app
 authority** — the React singleton, the whole SDK (`host.request` gateway RPC,
-`ctx.rest`, storage, `navigate`). The isolation the loader provides is **error
+`ctx.rest`, storage, `navigate`) and the `window.hermesDesktop` native bridge
+(files, git, terminal, installs). The isolation the loader provides is **error
 isolation only**: a plugin can't crash the app (contributions are error-bounded,
-listeners isolated), but it can do anything the app can.
+listeners isolated, a throwing `register()` is rolled back and reported on the
+plugin's row), but it can do anything the app can. Plugin storage namespaces
+are a convention, not a wall.
 
 This is acceptable for **local** sources — a disk file can already run code on
 your machine — which is why the disk door only loads local files you (or your
-agent) wrote. The optional `integrity` (`sha256-…`) check only proves the bytes
-match a hash; it does **not** sandbox. A future remote-source door will need a
-real boundary (iframe/worker + CSP + capability gating) before it can land; do
-not treat this pipeline as a trust boundary.
+agent) wrote. For [catalog](../user-guide/features/plugin-catalog.md#trust-model)
+installs the trust comes from admission — a human reviewed the exact pinned
+commit — backed by two tripwires: the `desktop surface` lint at admission and
+the loader's import allowlist (`@hermes/plugin-sdk` and `react*` only; a static
+or dynamic `import` of anything else, including `https:` URLs, fails the load).
+Neither is a sandbox. A future remote-source door will need a real boundary
+(iframe/worker + CSP + capability gating) before it can land; do not treat this
+pipeline as a trust boundary.
 
 ## Pitfalls
 
@@ -927,6 +940,17 @@ not treat this pipeline as a trust boundary.
   the canvas (width/height attributes, not just CSS) — panes resize constantly.
 - **Don't poll faster than a few seconds** with `host.request`; prefer
   `host.onEvent` / `ctx.socket` and let React Query dedupe.
+- **Bare globals are not tracked.** `window.setInterval`, `window.addEventListener`,
+  a `<style>` you append — the host never sees them, so they survive disable and
+  every hot-reload (ES modules can't be unloaded; a hot-edit loop stacks live
+  copies). Use `ctx.setTimeout` / `ctx.setInterval` / `ctx.addEventListener`, and
+  wire anything else to `ctx.onDispose`. Module-scope state is yours to reset.
+- **Module evaluation has a 10 s deadline.** A top-level `await` that never
+  settles (waiting for a gateway that isn't up) fails the load as `import timed
+  out` instead of stalling the plugin scan; do the waiting inside `register()`.
+- **One id, one file.** Two folders exporting the same `id` (a standalone install
+  beside a unified-package copy) load first-wins in folder-name order; the later
+  one shows `duplicate id` on its own row in Capabilities ▸ Plugins.
 - **`ctx.socket` is a no-op on OAuth remotes.** Always have a polling fallback.
 
 ## Reference

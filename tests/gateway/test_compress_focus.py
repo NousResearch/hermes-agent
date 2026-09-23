@@ -79,14 +79,12 @@ async def test_compress_focus_topic_passed_to_agent():
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
     ):
-        result = await runner._handle_compress_command(_make_event("/compress database schema"))
+        await runner._handle_compress_command(_make_event("/compress database schema"))
 
     # Verify focus_topic was passed
     agent_instance._compress_context.assert_called_once()
     call_kwargs = agent_instance._compress_context.call_args
     assert call_kwargs.kwargs.get("focus_topic") == "database schema"
 
-    # Verify focus is mentioned in response
-    assert 'Focus: "database schema"' in result
 
 

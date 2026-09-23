@@ -604,7 +604,10 @@ export class JsonRpcGatewayClient {
   }
 
   private dispatchEvent(event: GatewayEvent): void {
-    this.events.dispatch(event)
+    // Tag the frame with the process epoch this socket adopted so a consumer
+    // holding several sockets to one backend can recognise the same event
+    // arriving on each of them; the epoch is per process, not per socket.
+    this.events.dispatch(this.replayEpoch ? { ...event, replayEpoch: this.replayEpoch } : event)
   }
 
   private setState(state: ConnectionState): void {

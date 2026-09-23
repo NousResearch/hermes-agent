@@ -462,6 +462,20 @@ export const api = {
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
+  /**
+   * Directories a FRESH dashboard chat may start in: the profile's explicit
+   * projects plus discovered git repos (session-derived + scanned). ``scan``
+   * asks the host to rescan its discovery roots first (headless installs have
+   * no Desktop to populate the cache).
+   */
+  getChatWorkspaces: (profile = getManagementProfile(), scan = false) =>
+    fetchJSON<ChatWorkspacesResponse>(
+      appendQueryParam(
+        appendProfileParam("/api/chat/workspaces", profile),
+        "scan",
+        scan ? "1" : undefined,
+      ),
+    ),
   getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
       appendProfileParam(
@@ -1056,21 +1070,33 @@ export const api = {
     }),
 
   enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/enable`, {
+      method: "POST",
+    }),
 
   disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/disable`, {
+      method: "POST",
+    }),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+      },
     ),
 
   removeAgentPlugin: (name: string) =>
@@ -2026,6 +2052,31 @@ export interface DiskPressureStatus {
   used_percent?: number | null;
 }
 
+export interface ChatWorkspaceProject {
+  id: string;
+  slug: string;
+  name: string;
+  primary_path: string | null;
+  archived: boolean;
+  folders: Array<{ path: string; label: string | null; is_primary: boolean }>;
+}
+
+export interface ChatWorkspaceRepo {
+  root: string;
+  label: string;
+  sessions: number;
+  last_active: number;
+}
+
+export interface ChatWorkspacesResponse {
+  projects: ChatWorkspaceProject[];
+  repos: ChatWorkspaceRepo[];
+  /** Where a fresh chat lands when no workspace is picked. */
+  default_cwd: string;
+  home: string;
+  scan_enabled: boolean;
+}
+
 export interface SessionInfo {
   id: string;
   source: string | null;
@@ -2785,6 +2836,11 @@ export interface AgentPluginUpdateResponse {
   output?: string;
   unchanged?: boolean;
   error?: string;
+  /** The new catalog pin widens the plugin; nothing changed until the client
+   *  retries with `accept_capabilities`. */
+  consent_required?: boolean;
+  sha?: string;
+  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

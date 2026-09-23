@@ -541,6 +541,9 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         extra = self.config.extra
         self._app: Optional[Application] = None
+        self._seen_update_ids: dict = {}
+        self._inflight_update_ids: dict = {}
+        self._update_admission = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
@@ -602,7 +605,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # began, and when the last successful getUpdates round-trip completed.
         self._polling_generation_started_monotonic: Optional[float] = None
         self._polling_last_progress_monotonic: Optional[float] = None
-        # Ingress accounting (#102260): received (getUpdates wire) vs dispatched (PTB group-99 catch-all).
+        # Ingress accounting (#102260): received (getUpdates wire) vs dispatched (PTB admission).
         self._updates_received_total: int = 0
         self._updates_dispatched_total: int = 0
         self._ingress_dispatched_seen: int = 0
@@ -778,6 +781,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning(
                 "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)", max_n, len(getattr(dropped, "text", None) or ""))
         held.append(event)
+        self._accept_update()
         logger.warning(
             "[Telegram] Holding inbound (%s, %d chars, queue=%d)%s", where, len(getattr(event, "text", None) or ""), len(held),
             " - will redispatch on reconnect" if self._should_drop_delayed_delivery() else (" - scheduling redispatch" if schedule else ""))
@@ -1516,11 +1520,13 @@ class TelegramAdapter(BasePlatformAdapter):
             retryable=(self._looks_like_connect_timeout(exc) or not self._is_timed_out(exc)), retry_after=retry_after)
 
     @staticmethod
-    def _record_rich_sent(chat_id: Any, message_id: Any, content: str) -> None:
-        """Index rich content we sent: Telegram won't echo it back in reply_to_message."""
+    async def _record_rich_sent(chat_id: Any, message_id: Any, content: str) -> None:
+        """Index rich content we sent: Telegram won't echo it back in reply_to_message.
+
+        Awaited so the store's read-modify-write + ``os.replace`` runs off the loop."""
         try:
             from gateway import rich_sent_store
-            rich_sent_store.record(str(chat_id), str(message_id), content)
+            await rich_sent_store.record_async(str(chat_id), str(message_id), content)
         except Exception:
             pass
 
@@ -1563,7 +1569,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             message_id = getattr(msg, "message_id", None)
         if message_id is not None:
-            self._record_rich_sent(chat_id, message_id, content)
+            await self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
 
     def _rich_payload_base(self, chat_id: str, content: str) -> Dict[str, Any]:
@@ -1602,7 +1608,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return None
             return self._rich_transient_result(exc, "rich editMessageText")
         # Mirror the fresh-send index: a streamed final finalized via edit is otherwise never recorded.
-        self._record_rich_sent(chat_id, message_id, content)
+        await self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -2658,7 +2664,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 dm_topics.append({"chat_id": chat_id, "topics": [{"name": topic_name, "thread_id": thread_id}]})
                 changed = True
             if changed:
-                atomic_config_write(config_path, config, default_flow_style=False, sort_keys=False)
+                atomic_config_write(config_path, config)
                 logger.info("[%s] Persisted thread_id=%s for topic '%s' in config.yaml", self.name, thread_id, topic_name)
         except Exception as e:
             logger.warning("[%s] Failed to persist thread_id to config: %s", self.name, e, exc_info=True)
@@ -2771,9 +2777,11 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _on_platform_update(self, update, context) -> None:
         """Catch-all PTB handler (group 99) firing ``gateway_platform_event`` per inbound update with a
         stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
-        # Last handler group PTB runs: stamp before any early return so the dispatch counter covers
-        # gateways without the plugin hook (#102260).
-        self._updates_dispatched_total = getattr(self, "_updates_dispatched_total", 0) + 1
+        # Admission counts dispatch before any preparation can stop this group. Retain
+        # accounting for callers outside that Application boundary (#102260).
+        admission = getattr(self, "_update_admission", None)
+        if admission is None or admission.get() is None:
+            self._updates_dispatched_total = getattr(self, "_updates_dispatched_total", 0) + 1
         handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = getattr(self, "_platform_event_handler", None)
         if handler is None:
             return
@@ -2783,6 +2791,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             event = self._normalize_platform_event(update)
         except Exception:
+            self._fail_update_preparation()
             logger.debug("[%s] gateway_platform_event normalize error", self.name, exc_info=True)
             return
         if event is None:
@@ -2790,8 +2799,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # The gateway-owned boundary runs the full profile-scoped auth chain before plugin dispatch.
         try:
             source = self._source_for_platform_event_auth(update)
+            self._accept_update()
             await handler(event, source)
         except Exception:
+            self._fail_update_preparation()
             logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
 
     def _source_for_platform_event_auth(self, update):
@@ -2885,8 +2896,28 @@ class TelegramAdapter(BasePlatformAdapter):
                 "text": text[:8192] if text is not None else None, "edited_at": edited_at},
         }
 
+    def _accept_update(self) -> None:
+        """Handoff is irreversible for replay purposes, even if later work raises/cancels."""
+        admission = getattr(self, "_update_admission", None)
+        claim = admission.get() if admission is not None else None
+        if claim is not None:
+            claim.accepted = True
+
+    def _fail_update_preparation(self) -> None:
+        """A caught preparation error is not a successful no-op or an auth refusal."""
+        admission = getattr(self, "_update_admission", None)
+        claim = admission.get() if admission is not None else None
+        if claim is not None:
+            claim.failed = True
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        self._accept_update()
+        await super().handle_message(event)
+
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
+        table = getattr(app, "handlers", None)
+        core_before = {g: len(hs) for g, hs in table.items()} if isinstance(table, dict) else {}
         app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(
@@ -2899,6 +2930,30 @@ class TelegramAdapter(BasePlatformAdapter):
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
+        # Everything appended above is core; a late plugin re-wire must land BEFORE these (#87770).
+        if isinstance(table, dict):
+            self._core_handler_ids = {id(h) for g, hs in table.items() for h in hs[core_before.get(g, 0):]}
+
+    def _wire_plugin_handlers(self, native: Any = None) -> None:
+        """PTB dispatches the FIRST matching handler per group and core registers catch-alls
+        (``filters.COMMAND``, ``CallbackQueryHandler``), so a plugin handler appended after connect
+        would never fire. Move whatever a late factory added ahead of the first core handler of its
+        group, keeping the plugin handlers' own relative order."""
+        handlers = getattr(native, "handlers", None)
+        core_ids = getattr(self, "_core_handler_ids", None)
+        if not isinstance(handlers, dict) or not core_ids:
+            super()._wire_plugin_handlers(native)  # first wire runs before core registers: nothing to hoist
+            return
+        before = {g: list(hs) for g, hs in handlers.items()}
+        super()._wire_plugin_handlers(native)
+        for group, current in handlers.items():
+            prior = before.get(group, [])
+            prior_ids = {id(h) for h in prior}
+            added = [h for h in current if id(h) not in prior_ids]
+            first_core = next((i for i, h in enumerate(prior) if id(h) in core_ids), None)
+            if not added or first_core is None:
+                continue
+            current[:] = prior[:first_core] + added + prior[first_core:]
 
     async def _build_ptb_requests(self) -> tuple:
         """Build the (general, getUpdates) HTTPXRequest pair: fallback-IP transport, explicit proxy, or
@@ -3050,7 +3105,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     old_app = self._app
                     self._app = builder.build()
                     self._bot = self._app.bot
-                    self._register_handlers(self._app)  # keep core and observer handlers in lockstep
+                    # Same order as connect(): plugin handlers first (the wired-set is keyed per app, so
+                    # the rebuilt app gets them again), then core and the observer in lockstep.
+                    self._wire_plugin_handlers(self._app)
+                    self._register_handlers(self._app)
                     with contextlib.suppress(Exception):
                         await _shutdown_abandoned_app(old_app)
 
@@ -3149,7 +3207,9 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
+            from plugins.platforms.telegram.update_admission import TelegramApplication
             builder = Application.builder().token(self.config.token)
+            builder.application_class(TelegramApplication, {"adapter": self})
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
                 builder = builder.base_url(custom_base_url)
@@ -4573,8 +4633,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not authorized:
             try:
                 from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _deny_cache
+                self._accept_update()
                 await inline_query.answer([], cache_time=_deny_cache, is_personal=True)
             except Exception:
+                self._fail_update_preparation()
                 logger.debug("[%s] inline picker empty answer failed", self.name, exc_info=True)
             return
         try:
@@ -4591,8 +4653,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 for r in results
            ]
             # is_personal: catalogs differ per user (auth, disabled skills) — never share cached pages.
+            self._accept_update()
             await inline_query.answer(articles, cache_time=_CACHE, is_personal=True, next_offset=next_offset)
         except Exception:
+            self._fail_update_preparation()
             logger.debug("[%s] inline picker answer failed", self.name, exc_info=True)
 
     @staticmethod
@@ -4619,6 +4683,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query = update.callback_query
         if not query or not query.data:
             return
+        self._accept_update()
         data = query.data
         cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
@@ -6210,6 +6275,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"\u26a0\ufe0f Couldn't download your {kind}{named} ({exc.__class__.__name__}). Please try sending it again.")
             if notice:
                 try:
+                    self._accept_update()
                     await msg.reply_text(notice)
                 except Exception as reply_err:
                     logger.warning("[Telegram] Failed to notify user about %s cache failure: %s", kind, reply_err, exc_info=True)
@@ -6235,11 +6301,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(), "observed": True}
             if event.message_id:
                 entry["message_id"] = str(event.message_id)
+            self._accept_update()
             store.append_to_transcript(session_entry.session_id, entry)
             logger.info(
                 "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s", adapter_name,
                 getattr(getattr(message, "chat", None), "id", "unknown"), event.source.user_id or "unknown")
         except Exception as exc:
+            self._fail_update_preparation()
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
     def _is_own_message(self, message: Message) -> bool:
@@ -6429,6 +6497,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._hold_inbound_event(event, where="text-enqueue")
             return
         super()._enqueue_text_event(event)
+        self._accept_update()
 
     async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
         """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
@@ -6514,6 +6583,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._hold_inbound_event(event, where="photo-enqueue")
             return
         self._merge_into_pending(self._pending_photo_batches, batch_key, event)
+        self._accept_update()
         prior_task = self._pending_photo_batch_tasks.get(batch_key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
@@ -6726,6 +6796,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._hold_inbound_event(event, where="media-group-enqueue")
             return
         self._merge_into_pending(self._media_group_events, media_group_id, event)
+        self._accept_update()
         prior_task = self._media_group_tasks.get(media_group_id)
         if prior_task:
             prior_task.cancel()
@@ -6738,7 +6809,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """Describe a sticker via vision, cached by file_unique_id; animated/video stickers get an emoji placeholder."""
         from gateway.sticker_cache import (
-            get_cached_description, cache_sticker_description, build_sticker_injection,
+            get_cached_description, cache_sticker_description_async, build_sticker_injection,
             build_animated_sticker_injection, STICKER_VISION_PROMPT)
         sticker = msg.sticker
         emoji = sticker.emoji or ""
@@ -6758,10 +6829,11 @@ class TelegramAdapter(BasePlatformAdapter):
             cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=".webp")
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
             from tools.vision_tools import vision_analyze_tool
+            self._accept_update()  # Cancellation cannot undo an already submitted auxiliary LLM request.
             result = json.loads(await vision_analyze_tool(image_url=cached_path, user_prompt=STICKER_VISION_PROMPT))
             if result.get("success"):
                 description = result.get("analysis", "a sticker")
-                cache_sticker_description(sticker.file_unique_id, description, emoji, set_name)
+                await cache_sticker_description_async(sticker.file_unique_id, description, emoji, set_name)
                 event.text = build_sticker_injection(description, emoji, set_name)
             else:
                 event.text = build_sticker_injection(fallback, emoji, set_name)

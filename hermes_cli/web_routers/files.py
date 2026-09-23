@@ -75,7 +75,11 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # match). The browser can descend into subdirs, so a basename-only guard would
 # still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
 # trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# vault/ (vault.key + vault.json.enc — key and ciphertext side by side, so the
+# whole dir is one credential) and browser-profile/ (copied real-profile
+# cookies/logins) mirror agent.file_safety._READ_DENIED_DIRS; this list must
+# not lag behind that canonical set.
+_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing", "vault", "browser-profile"})
 
 
 def _is_sensitive_filename(name: str) -> bool:

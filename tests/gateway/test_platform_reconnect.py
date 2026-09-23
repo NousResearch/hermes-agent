@@ -8,6 +8,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.run import GatewayRunner
 
 
@@ -386,6 +387,30 @@ class TestRuntimeDisconnectQueuing:
         runner.stop.assert_not_called()
         assert runner._exit_with_failure is False
         assert Platform.TELEGRAM in runner._failed_platforms
+
+
+class TestReconnectKeepsInboundDedup:
+    @pytest.mark.asyncio
+    async def test_replayed_inbound_id_after_runner_reconnect_is_dropped(self):
+        """The watcher builds a NEW adapter; an inbound ID the old one already admitted must still
+        read as a duplicate there, or a platform replay after the reconnect is answered twice."""
+        runner = _make_runner()
+        runner.stop = AsyncMock()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        old, new = StubAdapter(), StubAdapter()
+        for a in (old, new):
+            a._dedup = MessageDeduplicator()
+        runner.adapters[Platform.TELEGRAM] = old
+        assert old._dedup.is_duplicate("m1") is False  # handled before the drop
+
+        old._set_fatal_error("network_error", "socket closed", retryable=True)
+        await runner._handle_adapter_fatal_error(old)
+        with patch.object(runner, "_create_adapter", return_value=new):
+            await runner._reconnect_failed_platform(Platform.TELEGRAM, time.monotonic() + 1)
+
+        assert runner.adapters[Platform.TELEGRAM] is new
+        assert new._dedup.is_duplicate("m1") is True
+        assert new._dedup.is_duplicate("m2") is False
 
 
 # --- Pause / resume circuit breaker ---

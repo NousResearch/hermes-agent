@@ -360,7 +360,11 @@ export async function transcribeAudioClientDirect(
 
 /** Resolve the profile's TTS config when it is client-callable, else null. */
 export async function directTtsConfig(owner?: OwnerScope): Promise<DirectTtsConfig | null> {
-  const config = await fetchVoiceClientConfig(owner)
+  const scope: VoiceClientScope | undefined =
+    owner?.connectionId && owner?.profile
+      ? { connectionId: owner.connectionId, profile: owner.profile }
+      : undefined
+  const config = await fetchVoiceClientConfig(scope)
 
   return config?.tts && config.tts.mode === 'direct' ? config.tts : null
 }

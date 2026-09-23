@@ -4697,6 +4697,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
+            ("dr:", self._handle_dreaming_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
@@ -4949,6 +4950,66 @@ class TelegramAdapter(BasePlatformAdapter):
         # Sticky state verbs keep the keyboard so further actions can stack; one-shots strip it (can't fire twice).
         with contextlib.suppress(Exception):
             await query.edit_message_text(text=appended, **({} if is_state_verb else {"reply_markup": None}))
+
+    # Maps `dr:<verb>` -> (script-name, success-label). Scripts live in
+    # <hermes_home>/scripts/dreaming/. `rec_id` from the callback data is
+    # always passed as the sole positional arg. One-shot actions (a
+    # recommendation can only be accepted or rejected once); keyboard is
+    # always stripped on success, mirroring the gt: pattern above.
+    _DR_VERB_DISPATCH = {
+        "accept": ("accept.sh", "✅ Accepted"),
+        "reject": ("reject.sh", "❌ Rejected")}
+
+    async def _handle_dreaming_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """Dispatch a dreaming-engine inline-button callback (dr:verb:rec_id)."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid dreaming-engine data.")
+            return
+        verb, rec_id = parts[1], parts[2]
+        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
+            return
+        entry = self._DR_VERB_DISPATCH.get(verb)
+        if not entry:
+            await query.answer(text=f"Unknown verb: {verb}")
+            return
+        script_name, success_label = entry
+        from hermes_constants import get_hermes_home
+        script_path = get_hermes_home() / "scripts" / "dreaming" / script_name
+        if not script_path.exists():
+            await query.answer(text=f"❌ {script_name} missing")
+            logger.error("[%s] dreaming-engine script missing: %s", self.name, script_path)
+            return
+        success = False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(script_path), rec_id, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            _stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode == 0:
+                label = success_label
+                success = True
+                logger.info("[%s] dreaming-engine callback ok: verb=%s rec_id=%s", self.name, verb, rec_id)
+            else:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                last_line = stderr_text.splitlines()[-1] if stderr_text else f"exit {proc.returncode}"
+                label = f"❌ {verb} failed: {last_line[:80]}"
+                logger.error(
+                    "[%s] dreaming-engine callback failed: verb=%s rec_id=%s rc=%s stderr=%s",
+                    self.name, verb, rec_id, proc.returncode, stderr_text)
+        except asyncio.TimeoutError:
+            label = f"❌ {verb} timed out"
+            logger.error("[%s] dreaming-engine callback timed out: verb=%s rec_id=%s", self.name, verb, rec_id)
+        except Exception as exc:
+            label = f"❌ {verb} error: {exc}"
+            logger.error(
+                "[%s] dreaming-engine callback exception: verb=%s rec_id=%s err=%s", self.name, verb, rec_id, exc, exc_info=True)
+        await query.answer(text=label)
+        if not success:
+            return
+        original_text = (query.message.text or "") if query.message else ""
+        appended = f"{original_text}\n— {label} by {getattr(query.from_user, 'first_name', 'User')}"
+        with contextlib.suppress(Exception):
+            await query.edit_message_text(text=appended, reply_markup=None)
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """File-not-found error for MEDIA delivery; /workspace-style paths often exist only in the sandbox."""

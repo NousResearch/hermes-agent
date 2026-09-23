@@ -2218,6 +2218,16 @@ DEFAULT_CONFIG = {
         # Telegram only: when >0, if the preview was visible at least this many seconds the final
         # edit is sent as a fresh message so the timestamp reflects completion.
         "fresh_final_after_seconds": 0.0,
+        # When true, once the turn-final answer has been confirmed delivered,
+        # best-effort delete every earlier segment message from this turn
+        # (tool-call / commentary bubbles that were sent as their own
+        # messages) so only the clean final answer remains visible. This is
+        # NOT the fresh-final path above (no re-send, so it can't trigger the
+        # "two copies flash on screen" problem that path was disabled for)
+        # — it only removes messages a later, distinct message already
+        # superseded. Telegram only; other platforms ignore it. Default False
+        # (legacy behavior: interim bubbles stay visible).
+        "cleanup_interim_segments": False,
     },
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.

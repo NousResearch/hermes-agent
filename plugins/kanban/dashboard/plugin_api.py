@@ -1241,10 +1241,17 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 
 
 @router.post("/dispatch")
-def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
-    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
+def dispatch(dry_run: bool = Query(False), max_n: Optional[int] = Query(None, alias="max"), board: Optional[str] = Query(None)):
+    """Nudge dispatch within configured caps; explicit ?max= overrides max_spawn only."""
+    caps = kbd.resolve_dispatch_caps(max_n)
     with _board_conn(board) as (board, conn):
-        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
+        result = kbd.dispatch_once(
+            conn, dry_run=dry_run, board=board,
+            max_spawn=caps["max_spawn"],
+            max_in_progress=caps["max_in_progress"],
+            max_in_progress_per_profile=caps["max_in_progress_per_profile"],
+            default_assignee=caps["default_assignee"],
+        )
         try:
             return asdict(result)  # DispatchResult is a dataclass
         except TypeError:

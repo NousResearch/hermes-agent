@@ -152,8 +152,8 @@ export function mergeDelegateRows(
   }
 
   const matchingLive = delegationId
-    ? live.filter(c => !c.delegationId || c.delegationId === delegationId)
-    : live
+    ? live.filter(c => c.delegationId === delegationId)
+    : live.filter(c => !c.delegationId)
 
   if (matchingLive.length === 0) {
     return [...rows]

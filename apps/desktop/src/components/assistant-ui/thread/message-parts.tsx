@@ -17,6 +17,7 @@ import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
+import { delegateRowsFromCall } from '@/components/assistant-ui/tool/delegate-model'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -62,7 +63,8 @@ const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
 const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   // A call that failed outright dispatched nothing — there are no children to
   // list, only an error. The generic row extracts and expands it properly.
-  if (props.isError || Boolean(extractToolErrorMessage(props.result)) || settledWithoutResult(props)) {
+  const rows = delegateRowsFromCall(props.args, props.result, props.toolCallId)
+  if (rows.length === 0 && (props.isError || Boolean(extractToolErrorMessage(props.result)) || settledWithoutResult(props))) {
     return <ToolFallback {...props} />
   }
 

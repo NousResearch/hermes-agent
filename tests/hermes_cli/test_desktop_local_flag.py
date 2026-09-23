@@ -37,3 +37,14 @@ def test_local_flag_composes_with_build_flags():
 
     assert args.local is True
     assert args.force_build is True
+
+def test_ignore_existing_flag_parses():
+    args = _parser().parse_args(["desktop", "--ignore-existing"])
+
+    assert args.ignore_existing is True
+
+
+def test_ignore_existing_flag_defaults_off():
+    args = _parser().parse_args(["desktop"])
+
+    assert args.ignore_existing is False

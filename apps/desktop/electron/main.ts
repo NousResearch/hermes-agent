@@ -33,6 +33,12 @@ import {
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import {
+  canActiveBackendResolve,
+  shouldIgnoreDiscoveredLocalRuntimes,
+  shouldUseActiveBackend,
+  shouldUseSystemPythonBackend
+} from './backend-resolution'
+import {
   destroyKeepaliveAgents,
   downloadAgentFor,
   htmlResponseError,
@@ -5302,50 +5308,61 @@ async function resolveHermesBackend(backendArgs) {
   //    builds could leave a healthy install behind without the marker. If the
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
-  const activeRuntime = await activeRuntimeState()
-
-  if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
-    if (!activeRuntime.hasValidMarker) {
-      rememberLog(
-        `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
-      )
-    }
-
-    return createActiveBackend(backendArgs)
-  }
-
   if (bootstrapRepairRequested) {
     rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
+  } else if (canActiveBackendResolve({ bootstrapRepairRequested, env: process.env })) {
+    const activeRuntime = await activeRuntimeState()
+
+    if (
+      shouldUseActiveBackend({
+        activeRuntimeUsable: activeRuntime.shouldUseActiveRuntime,
+        bootstrapRepairRequested,
+        env: process.env
+      })
+    ) {
+      if (!activeRuntime.hasValidMarker) {
+        rememberLog(
+          `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
+        )
+      }
+
+      return createActiveBackend(backendArgs)
+    }
   }
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
   //    a previous tool-only setup, or pip-installed system-wide. Use it but
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
-  //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
-    let hermesCommand = null
-    const hermesOverride = process.env.HERMES_DESKTOP_HERMES
+  //    HERMES_DESKTOP_IGNORE_EXISTING=1 skips local discovery and forces the
+  //    bootstrap path for testing or desktop-only thin-client launches.
+  if (shouldIgnoreDiscoveredLocalRuntimes(process.env)) {
+    rememberLog(
+      '[bootstrap] HERMES_DESKTOP_IGNORE_EXISTING=1: skipping the active runtime, `hermes` on PATH and the system-python module; no discovered local backend will be started.'
+    )
+  }
 
-    if (hermesOverride) {
-      const resolvedOverride = findOnPath(hermesOverride)
+  let hermesCommand = null
+  const hermesOverride = process.env.HERMES_DESKTOP_HERMES
 
-      if (resolvedOverride) {
-        hermesCommand = resolvedOverride
-      } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
-        hermesCommand = hermesOverride
-      } else {
-        rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
-      }
+  if (hermesOverride) {
+    const resolvedOverride = findOnPath(hermesOverride)
+
+    if (resolvedOverride) {
+      hermesCommand = resolvedOverride
+    } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
+      hermesCommand = hermesOverride
     } else {
-      hermesCommand = findOnPath('hermes')
+      rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
     }
+  } else if (!shouldIgnoreDiscoveredLocalRuntimes(process.env)) {
+    hermesCommand = findOnPath('hermes')
+  }
 
-    if (hermesCommand) {
-      if (looksLikeDesktopAppBinary(hermesCommand)) {
-        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
-        hermesCommand = null
-      }
+  if (hermesCommand) {
+    if (looksLikeDesktopAppBinary(hermesCommand)) {
+      rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
+      hermesCommand = null
     }
 
     if (hermesCommand) {
@@ -5396,7 +5413,24 @@ async function resolveHermesBackend(backendArgs) {
 
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
-  //    take ownership.
+  //    take ownership. Skipped under HERMES_DESKTOP_IGNORE_EXISTING=1 like
+  //    every other discovered runtime.
+  if (!shouldUseSystemPythonBackend(process.env)) {
+    return {
+      kind: 'bootstrap-needed',
+      label: 'Local runtimes ignored (HERMES_DESKTOP_IGNORE_EXISTING=1); connect to a gateway or bootstrap a fresh install',
+      command: null,
+      args: backendArgs,
+      bootstrap: true,
+      env: {},
+      shell: false,
+      activeRoot: ACTIVE_HERMES_ROOT,
+      installStamp: INSTALL_STAMP,
+      isPackaged: IS_PACKAGED,
+      platform: process.platform
+    }
+  }
+
   const python = await findSystemPython()
 
   if (python) {

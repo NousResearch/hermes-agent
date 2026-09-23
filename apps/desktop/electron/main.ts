@@ -119,9 +119,9 @@ import { createDesktopOauthSessionRuntime } from './desktop-oauth-session-runtim
 import { registerDesktopPageInteractionIpc } from './desktop-page-interaction-ipc'
 import { createDesktopPetOverlayRuntime } from './desktop-pet-overlay-runtime'
 import { createDesktopPluginCompatNoticeRuntime } from './desktop-plugin-compat-notice-runtime'
-import { createDesktopPowerRuntime } from './desktop-power-runtime'
 import { createDesktopPoolBackendRuntime } from './desktop-pool-backend-runtime'
 import { createDesktopPoolPolicyRuntime } from './desktop-pool-policy-runtime'
+import { createDesktopPowerRuntime } from './desktop-power-runtime'
 import { createDesktopPrimaryBackendRuntime } from './desktop-primary-backend-runtime'
 import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
 import {
@@ -231,7 +231,6 @@ import {
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
-import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
 import { createPreviewTargetRuntime, registerPreviewTargetIpc } from './preview-target-runtime'
 import {

@@ -6,6 +6,7 @@ Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor).
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import logging
@@ -551,6 +552,18 @@ def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
         logger.info("shell hook auto-approved via --accept-hooks / env / config: %s -> %s", event, command)
         return True
     if not sys.stdin.isatty():
+        return False
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        logger.warning(
+            "shell hook for %s (%s) not allowlisted — skipping interactive approval on the asyncio event-loop thread. "
+            "Use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve from a non-async TTY.",
+            event,
+            command,
+        )
         return False
     print(
         f"\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n"

@@ -7,6 +7,7 @@ hooks_auto_accept: config key).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,26 @@ def _write_hook_script(tmp_path: Path) -> Path:
 
 
 class TestTTYPromptFlow:
+    def test_running_event_loop_skips_interactive_prompt(self, tmp_path):
+        """Startup registration must not block the gateway's event-loop thread."""
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+
+        async def register_on_event_loop():
+            with patch("sys.stdin") as mock_stdin, patch(
+                "builtins.input", side_effect=AssertionError("must not block the event loop"),
+            ):
+                mock_stdin.isatty.return_value = True
+                return shell_hooks.register_from_config(
+                    {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                    accept_hooks=False,
+                )
+
+        assert asyncio.run(register_on_event_loop()) == []
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
+
     def test_first_use_prompts_and_approves(self, tmp_path):
         from hermes_cli import plugins
 
@@ -220,5 +241,4 @@ class TestHooksAutoAcceptParsing:
         assert shell_hooks._resolve_effective_accept(
             {"hooks_auto_accept": 1}, accept_hooks_arg=False,
         ) is False
-
 

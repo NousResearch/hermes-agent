@@ -403,6 +403,42 @@ def _load_config() -> dict:
     except Exception:
         return {}
 
+
+def _get_backends() -> Dict[str, Dict[str, Any]]:
+    """Named backend definitions from ``delegation.backends``. Each entry maps a friendly name to a dict with at
+    minimum ``base_url`` and ``model``; optional ``provider``, ``api_key``, ``api_mode`` follow the same shape as
+    the top-level model config. Returns an empty dict when no backends are declared."""
+    cfg = _load_config()
+    raw = cfg.get("backends")
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, spec in raw.items():
+        if not isinstance(spec, dict) or not spec.get("base_url"):
+            logger.warning("delegation.backends[%s] missing 'base_url'; skipping", name)
+            continue
+        out[name] = spec
+    return out
+
+
+def _resolve_backend(backend_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Resolve a named backend to override credentials for one child task. Returns None (inherit parent) when the
+    name is absent/empty or not registered."""
+    if not backend_name:
+        return None
+    backends = _get_backends()
+    spec = backends.get(backend_name)
+    if spec is None:
+        logger.warning("delegation backend '%s' not registered; child will inherit parent credentials", backend_name)
+        return None
+    return {
+        "override_provider": spec.get("provider") or "custom",
+        "override_base_url": spec["base_url"],
+        "override_api_key": spec.get("api_key"),
+        "override_api_mode": spec.get("api_mode"),
+        "model": spec.get("model"),
+    }
+
 # OpenRouter routing filters: inherited from the parent, but reset to these defaults under a pinned provider — parent
 # filters (e.g. only=["Anthropic"]) would silently force the child back onto the parent's provider.
 # openrouter_min_coding_score stays inherited: model-gated, no-op elsewhere.

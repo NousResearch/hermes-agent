@@ -368,6 +368,7 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
+    from tools.delegate_tool_config import _resolve_backend
     overrides = {
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
@@ -382,12 +383,22 @@ def _build_children(
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        # Per-task backend routing: resolve named backend and merge overrides
+        _backend_overrides = dict(overrides)  # start with parent defaults
+        _model = creds["model"]
+        resolved = _resolve_backend(t.get("backend"))
+        if resolved is not None:
+            # Merge override_* keys; 'model' is passed as a separate arg
+            for k, v in resolved.items():
+                if v is not None and k != "model":
+                    _backend_overrides[k] = v
+            _model = resolved.get("model") or creds["model"]
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_model, max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_backend_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -564,7 +575,9 @@ _DESCRIPTION_HEAD = (
     "succeeded.\n"
 )
 _DESCRIPTION_TAIL = (
-    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml.\n"
+    "- Per-task `backend` routes a child to a named backend from delegation.backends in config.yaml, "
+    "letting you spread work across multiple Ollama instances or providers."
 )
 
 def _build_tasks_param_description() -> str:
@@ -643,6 +656,12 @@ DELEGATE_TASK_SCHEMA = {
                             "child up front; parent validates with one bounded correction retry; result gains "
                             "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
                             "as summary, never discarded). Keep it forgiving — require only fields you will read.",
+                        ),
+                        "backend": _p(
+                            "string",
+                            "Optional named backend from delegation.backends in config.yaml to route this task to. "
+                            "When set, the child subagent uses that backend's base_url and model instead of inheriting "
+                            "the parent's. Lets you spread work across multiple Ollama instances or providers.",
                         ),
                         "images": _p(
                             "array",

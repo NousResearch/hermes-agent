@@ -9,16 +9,29 @@ volume when a runtime install is unavoidable.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
 
 import plugins.platforms.photon.sidecar_paths as sidecar_paths
 
+# Every file the shipped sidecar tree holds that the resolver must mirror.
+# Pinned explicitly (not derived from the live tree) so a new sidecar file
+# that the mirror set would drop shows up here as a failing diff.
+_SEED_FILES = (
+    "index.mjs",
+    "package.json",
+    "package-lock.json",
+    "patch-spectrum-mixed-attachments.mjs",
+    "send-format.mjs",
+    "stream-staleness.mjs",
+)
+
 
 def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:
     source.mkdir(parents=True, exist_ok=True)
-    for name in sidecar_paths._MIRROR_FILES:
+    for name in _SEED_FILES:
         (source / name).write_text(f"// {name}\n", encoding="utf-8")
     if with_node_modules:
         (source / "node_modules").mkdir()
@@ -86,6 +99,52 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     assert resolved == mirror
     assert (mirror / "index.mjs").read_text(encoding="utf-8") == "// index.mjs v2\n"
     assert (mirror / "node_modules" / "installed.txt").exists()
+
+
+def test_mirror_set_covers_every_module_index_imports() -> None:
+    """Regression for #100031: the mirror set is derived from the source
+    tree, so every relative module ``index.mjs`` imports must be in it. The
+    old hardcoded list forgot send-format.mjs/stream-staleness.mjs and the
+    mirrored sidecar crash-looped with ERR_MODULE_NOT_FOUND on read-only
+    installs.
+    """
+    source = sidecar_paths.SOURCE_SIDECAR_DIR
+    mirrored = sidecar_paths._mirror_files(source)
+    index_src = (source / "index.mjs").read_text(encoding="utf-8")
+    imported = set(re.findall(r'from\s+"\./([^"]+\.mjs)"', index_src))
+    imported |= set(re.findall(r'import\("\./([^"]+\.mjs)"\)', index_src))
+    assert imported, "no relative imports found — import parser drifted?"
+    for name in imported:
+        assert name in mirrored, f"index.mjs imports {name} but it is not mirrored"
+    for name in ("package.json", "package-lock.json"):
+        assert name in mirrored, f"{name} must be mirrored for npm ci self-heal"
+
+
+def test_mirror_picks_up_sidecar_module_added_after_first_mirror(
+    tmp_path, monkeypatch
+) -> None:
+    """The other half of #100031: a module introduced after the mirror
+    already exists is copied on the next resolve (the hardcoded list never
+    refreshed unlisted files, silently skewing versions after image
+    updates).
+    """
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    source = tmp_path / "src"
+    _seed_source(source)
+    _freeze_writability(monkeypatch, writable=False)
+
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+    assert not (mirror / "extra-helper.mjs").exists()
+
+    # Image update ships a new sidecar module the older install never had.
+    (source / "extra-helper.mjs").write_text("// extra-helper v1\n", encoding="utf-8")
+
+    resolved = sidecar_paths.resolve_sidecar_dir(source)
+    assert resolved == mirror
+    assert (mirror / "extra-helper.mjs").read_text(encoding="utf-8") == (
+        "// extra-helper v1\n"
+    )
 
 
 def test_dir_writable_probe(tmp_path) -> None:

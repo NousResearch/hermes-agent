@@ -110,7 +110,9 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
         assert cfg["cwd"] == str(b_cwd)
         assert cfg["docker_volumes"] == []
         assert cfg["docker_shared_container_key"] == ""
-        assert tt._resolve_container_task_id(None) == "default"
+        # Session-less (cron) work for routed B keys B's own environment, never the launch
+        # profile's shared "default" one (which carries A's env and terminal policy).
+        assert tt._resolve_container_task_id(None) == f"home:{os.path.realpath(home)}"
         assert gbase._parse_docker_volume_mounts() == []
         assert not any(
             "alpha-shared" in c for c in gbase._docker_sandbox_dir_candidates("agent:bee:x")

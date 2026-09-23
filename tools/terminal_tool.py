@@ -430,6 +430,25 @@ def _docker_session_isolation_enabled() -> bool:
     return _session_scope().docker_session_isolated
 
 
+def _routed_home_task_key() -> Optional[str]:
+    """Key for a session-less task serving a routed (non-launch) profile home, else None.
+
+    A multiplexed host runs every profile's cron jobs without a session key; collapsing them all onto
+    ``"default"`` made profile B's cron tool calls reuse the environment the launch profile's job
+    created (its ``.env`` residue, its bridged ``TERMINAL_*``, its shell), so B ran with A's settings.
+    """
+    from hermes_constants import get_hermes_home_override
+    from tools.environments.local import _is_routed_home
+
+    override = get_hermes_home_override()
+    if not override or not _is_routed_home(override):
+        return None
+    try:
+        return f"home:{os.path.realpath(override)}"
+    except OSError:
+        return f"home:{override}"
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """Map a tool-call ``task_id`` to the ``_active_environments`` key. Order matters —
     earlier branches are authoritative where they apply:
@@ -470,7 +489,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
         return f"shared:{shared}"
     if not session_key:
-        return "default"
+        return _routed_home_task_key() or "default"
     if not scope.docker_profile_scoped:
         return f"session:{session_key}"
     profile = _current_session_profile() or "default"

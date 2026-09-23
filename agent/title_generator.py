@@ -180,7 +180,8 @@ def _model_title_upgrade_enabled() -> bool:
 def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
-    A ``custom`` main route (llama.cpp, Ollama, vLLM, LM Studio…) whose ``auxiliary.title_generation``
+    A ``custom`` (including ``custom:<name>``) main route (llama.cpp, Ollama, vLLM, LM Studio…)
+    whose ``auxiliary.title_generation``
     is not pinned elsewhere shares one local server between the streaming main request and the
     concurrent ``response_format: json_schema`` title request. Single-slot servers then serve the
     title grammar/completion into the main turn: the user's reply arrives as ``{"title": ...}``, is
@@ -189,7 +190,7 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     Hosted providers multiplex requests independently and keep the turn-start timing.
     """
     provider = str((main_runtime or {}).get("provider") or "").strip().lower()
-    if provider != "custom":
+    if provider != "custom" and not provider.startswith("custom:"):
         return False
     try:
         cfg = _title_config()

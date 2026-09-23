@@ -391,6 +391,7 @@ class TestMaybeAutoTitle:
         "main_runtime, title_cfg, deferred",
         [
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {}, True),
+            ({"provider": "custom:gptoss-local", "base_url": "http://127.0.0.1:8080/v1"}, {}, True),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://127.0.0.1:8080/v1/"}, True),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"provider": "openrouter"}, False),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://10.0.0.2:8080/v1"}, False),

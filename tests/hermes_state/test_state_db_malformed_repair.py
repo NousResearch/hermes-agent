@@ -292,6 +292,37 @@ def test_fts_write_corruption_detected_by_write_probe(tmp_path):
     assert reason is not None
 
 
+class _LegacyFtsFlushConnection:
+    """Emulate the pre-3.44 FTS5 command surface around a real connection."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, parameters=()):
+        if "VALUES('flush')" in sql:
+            raise sqlite3.OperationalError("SQL logic error")
+        return self._conn.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_write_probe_skips_flush_when_legacy_fts5_does_not_support_it(tmp_path, monkeypatch):
+    """A healthy DB stays clean when SQLite's FTS5 predates the flush command."""
+    from hermes_state_repair import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 43, 0))
+    monkeypatch.setattr(
+        hermes_state_repair,
+        "_connect_repair_durable",
+        lambda _path: _LegacyFtsFlushConnection(sqlite3.connect(str(db_path))),
+    )
+
+    assert _db_opens_cleanly(db_path) is None
+
+
 def test_fts_write_corruption_repaired_in_place(tmp_path):
     """repair_state_db_schema rebuilds the FTS index; reads + writes resume."""
     from hermes_state_repair import _db_opens_cleanly

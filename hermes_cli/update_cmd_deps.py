@@ -172,19 +172,28 @@ def _critical_module_import_failures(
            report_runtime_errors, marker))
     try:
         interpreter = sys.executable
+        argv = [interpreter, "-c", probe]
         with suppress(Exception):
             venv_dir = project_venv_dir(root) or Path(root) / "venv"
             venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
             if venv_python.exists():
                 interpreter = str(venv_python)
+                argv = [interpreter, "-c", probe]
+                # ``-c`` puts the cwd (the checkout) at sys.path[0], which masks the installed
+                # editable finder — the exact thing a gateway started from ``/`` imports through.
+                # A stale finder MAPPING (new top-level package since the install) then reports
+                # green here and crash-loops the gateway (#119466). ``-P`` makes the probe see what
+                # the venv sees; only when an editable install exists, so a bare dev checkout that
+                # is importable through its cwd alone keeps its advisory verdict.
+                if _editable_finder_files(venv_dir):
+                    argv = [interpreter, "-P", "-c", probe]
         # The candidate stays importable through the probe's cwd and its editable install;
         # the scrub only removes paths the guard never meant to vouch for.
         probe_env = dict(os.environ)
         for denied_key in _PROBE_ENV_DENYLIST:
             probe_env.pop(denied_key, None)
         result = bounded_probe_run(
-            [interpreter, "-c", probe], timeout=120, cwd=str(root), raise_on_spawn_failure=True,
-            env=probe_env,
+            argv, timeout=120, cwd=str(root), raise_on_spawn_failure=True, env=probe_env,
         )
     except (OSError, subprocess.SubprocessError):
         # Keep this guard advisory: a probe we could not even spawn (unreadable venv

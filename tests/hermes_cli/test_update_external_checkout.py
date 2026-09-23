@@ -189,27 +189,48 @@ def test_unknown_gateway_checkout_remains_restart_debt(tmp_path, monkeypatch):
 
 
 def test_external_gateway_is_not_a_manual_restart_target(tmp_path, monkeypatch):
+    import json
     import subprocess
     import sys
 
     import hermes_cli.gateway as gateway
+    from gateway import status
 
     external_root = _checkout(tmp_path, "external")
     external_home = tmp_path / "external-home"
     external_home.mkdir()
-    profiles = tmp_path / "root-home" / "profiles"
+    root_home = tmp_path / "root-home"
+    profiles = root_home / "profiles"
     profiles.mkdir(parents=True)
-    (profiles / "work").symlink_to(external_home, target_is_directory=True)
+    work_link = profiles / "work"
+    work_link.symlink_to(external_home, target_is_directory=True)
     own_root = update_receipt._updater_code_root()
     assert own_root is not None
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        monkeypatch.setattr(update_receipt, "_profile_homes", lambda: [("work", profiles / "work")])
-        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda _home: process.pid)
-        monkeypatch.setattr(update_receipt, "_gateway_code_root", lambda _pid, _home: external_root.resolve())
-        plan = update_inventory.UpdatePlan(runtimes=[update_inventory._runtime(
-            "gateway", "work", process.pid, "manual", detail={"code_root": str(external_root.resolve())},
-        )])
+        (external_home / "gateway_state.json").write_text(json.dumps({
+            "pid": process.pid, "kind": "hermes-gateway", "gateway_state": "running",
+            "hermes_home": str(external_home.resolve()),
+            "argv": [str(external_root / "hermes_cli" / "main.py"), "gateway", "run"],
+        }), encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: root_home)
+        monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: profiles)
+        # The child supplies a real live PID; only its command is substituted,
+        # since this test doesn't launch a messaging platform.
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: (
+            f"HERMES_HOME={external_home} hermes gateway run" if pid == process.pid else None
+        ))
+        monkeypatch.setattr(update_receipt, "_socket_identity", lambda home: (
+            (process.pid, {"supervisor": "manual"}) if home == work_link else None
+        ))
+        monkeypatch.setattr(update_inventory, "_supervisor_classifier", lambda: lambda _pid: "manual")
+        monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **_kw: [])
+        plan = update_inventory.collect_runtime_inventory()
+        foreign = [r for r in plan.runtimes if r.profile == "work"]
+        assert len(foreign) == 1
+        assert foreign[0].detail["code_root"] == str(external_root.resolve())
+        assert status.live_gateway_pid_for_home(work_link) is None
+        assert status.live_gateway_pid_for_home(external_home.resolve()) == process.pid
         external_pids = update_cmd_fleet._verified_external_gateway_pids(plan)
         assert external_pids == {process.pid}
         monkeypatch.setattr(gateway, "_get_service_pids", lambda **_kw: set())
@@ -222,6 +243,11 @@ def test_external_gateway_is_not_a_manual_restart_target(tmp_path, monkeypatch):
         update_cmd_fleet._restart_manual_gateways(outcome, 0, external_pids=external_pids)
         assert process.poll() is None
         assert outcome.killed_pids == set()
+        outcomes = update_inventory.match_runtime_outcomes(
+            plan, restarted_services=[], relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=outcome.killed_pids, failed_units=[],
+        )
+        assert [(row["profile"], row["outcome"]) for row in outcomes] == [("work", "external")]
         # A missing ownership proof must not exempt this process from the restart sweep.
         monkeypatch.setattr(update_receipt, "_gateway_code_root", lambda _pid, _home: None)
         assert update_cmd_fleet._verified_external_gateway_pids(plan) == set()

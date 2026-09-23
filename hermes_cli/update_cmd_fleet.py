@@ -1435,9 +1435,12 @@ def _verified_external_gateway_pids(plan) -> set[int]:
         if home is None or not isinstance(runtime.pid, int):
             continue
         try:
-            if live_gateway_pid_for_home(home) != runtime.pid:
+            # The gateway publishes its canonical home; a named profile may be a
+            # symlink to that home, and the identity guard compares home paths.
+            canonical_home = home.resolve()
+            if live_gateway_pid_for_home(canonical_home) != runtime.pid:
                 continue
-            root = _gateway_code_root(runtime.pid, home)
+            root = _gateway_code_root(runtime.pid, canonical_home)
             if root is not None and root != expected and str(root) == runtime.detail["code_root"]:
                 external.add(runtime.pid)
         except (OSError, ValueError):

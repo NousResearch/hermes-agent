@@ -84,6 +84,8 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
+import { LoadErrorNotice } from "@/components/LoadErrorNotice";
+import { en } from "@/i18n/en";
 
 
 /** Render an FTS5 snippet with highlighted matches.
@@ -748,6 +750,9 @@ export default function SessionsPage() {
     SessionSearchResult[] | null
   >(null);
   const [searching, setSearching] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchAttempt, setSearchAttempt] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
@@ -979,8 +984,14 @@ export default function SessionsPage() {
         if (requestId !== sessionsRequestRef.current) return;
         setSessions(resp.sessions);
         setTotal(resp.total);
+        setLoadError(null);
       })
-      .catch(() => {})
+      .catch((err) => {
+        // A background refresh keeps the list it has; a real load says it failed instead of
+        // showing "No sessions yet" (the backend's 503 exists so clients never read a busy store as empty).
+        if (requestId !== sessionsRequestRef.current || silent) return;
+        setLoadError(errorMessage(err));
+      })
       .finally(() => {
         if (requestId !== sessionsRequestRef.current) return;
         if (!silent) setLoading(false);
@@ -1179,6 +1190,7 @@ export default function SessionsPage() {
     if (!search.trim()) {
       debounceRef.current = setTimeout(() => {
         setSearchResults(null);
+        setSearchError(null);
         setSearching(false);
       }, 0);
       return;
@@ -1187,17 +1199,19 @@ export default function SessionsPage() {
     debounceRef.current = setTimeout(() => {
       setSearching(true);
       setSearchResults(null);
+      setSearchError(null);
       api
         .searchSessions(search.trim(), sessionQueryOptions)
         .then((resp) => setSearchResults(resp.results))
-        .catch(() => setSearchResults(null))
+        // A failed search is not the unfiltered page: say so instead of listing every session as a match.
+        .catch((err) => setSearchError(errorMessage(err)))
         .finally(() => setSearching(false));
     }, 300);
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [search, sessionQueryOptions]);
+  }, [search, sessionQueryOptions, searchAttempt]);
 
   // The profile a listed row was read from — the store that owns it. Every
   // per-row request (delete, rename, export, messages) must go there, not to
@@ -1486,6 +1500,7 @@ export default function SessionsPage() {
   }
 
   const filtered = searchResults ?? sessions;
+  const listError = search.trim() ? searchError : loadError;
 
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
@@ -2012,7 +2027,15 @@ export default function SessionsPage() {
       )}
 
       {showList ? (
-        filtered.length === 0 ? (
+        listError ? (
+          <LoadErrorNotice
+            what={search.trim()
+              ? (t.sessions.searchWhat ?? en.sessions.searchWhat!)
+              : (t.sessions.loadWhat ?? en.sessions.loadWhat!)}
+            detail={listError}
+            onRetry={() => (search.trim() ? setSearchAttempt((n) => n + 1) : loadSessions(page))}
+          />
+        ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Clock className="h-8 w-8 mb-3 opacity-40" />
             <p className="text-sm font-medium">

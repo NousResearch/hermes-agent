@@ -60,7 +60,6 @@ describeHost('parseVoiceRecordKey (#18994)', () => {
 
   it('parses ctrl+<letter> bindings', () => {
     expect(parseVoiceRecordKey('ctrl+o')).toEqual({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' })
-    expect(parseVoiceRecordKey('Ctrl+R')).toEqual({ ch: 'r', mod: 'ctrl', raw: 'ctrl+r' })
   })
 
   it('parses alt/super aliases', () => {

@@ -433,6 +433,11 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
+    try:  # optional LLM spoken-prose rewrite (tts.rewrite.enabled; fail-open, before chunking)
+        from tools.tts_rewrite import rewrite_text_for_speech
+        text = rewrite_text_for_speech(text)
+    except Exception as e:
+        logger.warning("TTS rewrite step skipped: %s", e)
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)

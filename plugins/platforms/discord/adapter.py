@@ -1058,6 +1058,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_mode_getter: Optional[Callable] = None  # set by run.py
         # Continuous voice mixer per guild (ambient bed + ducked speech) so acks/TTS/thinking overlap.
         self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
+        self._stream_tts_tasks: Dict[int, Any] = {}  # guild_id -> asyncio pump task
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
@@ -3339,6 +3340,79 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
+    def _wants_auto_tts(self, event: MessageEvent, session_key, interrupt_event,
+                        text_content: str, media_files: list) -> bool:
+        """Discord override: a voice-input final carrying MEDIA still auto-TTSes.
+
+        The base gate requires ``not media_files``, which silently dropped the spoken
+        reply whenever the turn produced a file (e.g. a steered voice turn finishing
+        with a generated PDF). Here the streaming path speaks the text into the VC and
+        the base loop delivers the attachment separately - the lanes do not conflict.
+        Every other base reason for declining (typed input, unbound chat, explicit
+        /voice off, already-streamed turn) still wins unchanged.
+
+        Args:
+            event: Final message event.
+            session_key: Session the turn ran in.
+            interrupt_event: Turn interrupt event.
+            text_content: Final reply text.
+            media_files: Media attachments produced by the turn.
+
+        Returns:
+            True when the reply should be auto-TTSed.
+        """
+        base_decision = BasePlatformAdapter._wants_auto_tts(
+            self, event, session_key, interrupt_event, text_content, media_files)
+        if base_decision or not media_files or not self._stream_tts_enabled():
+            return base_decision
+        generation = getattr(interrupt_event, "_hermes_run_generation", None)
+        return bool(
+            text_content and text_content.strip()
+            and event is not None
+            and event.message_type == MessageType.VOICE
+            and self._should_auto_tts_for_chat(event.source.chat_id)
+            and not self._streaming_tts_turn_completed(session_key, generation, event=event)
+            and any(str(ch) == str(event.source.chat_id) and self.is_in_voice_channel(gid)
+                    for gid, ch in self._voice_text_channels.items()))
+
+    async def _synthesize_auto_tts(self, text_content: str, *, event=None) -> Tuple[List[str], Optional[str]]:
+        """Discord override: stream the audio into the VC live instead of file synthesis.
+
+        When ``discord.voice_fx.stream_replies.enabled`` is set and the reply's chat maps
+        to a joined voice channel, audio streams piece-by-piece as generated; the base
+        loop then skips file playback/cleanup and just sends the text. Any failure falls
+        back to the standard file-based path.
+
+        Args:
+            text_content: Reply text to synthesize.
+            event: Triggering message event.
+
+        Returns:
+            ``(existing_paths, requested_path)``; empty paths when streamed into the VC.
+        """
+        if event is not None and self._stream_tts_enabled() and text_content and text_content.strip():
+            try:
+                for gid, text_ch_id in self._voice_text_channels.items():
+                    if str(text_ch_id) == str(event.source.chat_id) and self.is_in_voice_channel(gid):
+                        streamed = await self.play_reply_streaming_in_voice(gid, text_content)
+                        if streamed:
+                            logger.info("[%s] Streaming TTS reply into voice channel (guild=%d)",
+                                        self.name, gid)
+                            return [], None
+                        break
+                else:
+                    if self._voice_text_channels:
+                        logger.info(
+                            "[%s] Streaming TTS skipped: chat %s not bound to a voice session "
+                            "(bound: %s)", self.name, event.source.chat_id,
+                            self._voice_text_channels)
+                    else:
+                        logger.info("[%s] Streaming TTS skipped: no voice session bound "
+                                    "(_voice_text_channels empty)", self.name)
+            except Exception as e:
+                logger.warning("Streaming TTS pre-empt failed (%s); falling back to file synthesis", e)
+        return await super()._synthesize_auto_tts(text_content, event=event)
+
 
     # --- Voice channel methods (join / leave / play) ---
 
@@ -3358,6 +3432,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "Let me look into that.", "One moment.", "Checking on that now.", "Give me a sec.",
                 "On it.",
             ],
+            # Streaming TTS replies into the VC (piece-by-piece generation; disabled by default).
+            # Synthesis routes through the user's configured ``tts.provider`` via
+            # ``text_to_speech_tool`` - the adapter does not know or care which engine
+            # backs it (local command provider, cloud API, ...).
+            "stream_replies": {
+                "enabled": False,       # master switch for the streaming path
+                "piece_chars": 250,     # target sentence-piece size (80..600)
+                "piece_pause_ms": 60,   # inserted silence between pieces (0..1000)
+                "piece_timeout_s": 120, # per-piece synthesis timeout (30..600)
+                "rewrite_min_chars": 400,  # replies at/above this get the spoken-prose rewrite first
+                "speak_interims": False,   # speak mid-turn commentary between tool calls in the VC
+                "interim_max_chars": 300,  # skip interim segments longer than this (0 = no cap)
+                "interim_rewrite": True,   # speed-first rewrite of interim commentary (interim prompt)
+            },
         }
         try:
             from hermes_cli.config import read_raw_config
@@ -3492,8 +3580,48 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return b""
         return b"\x00" * (_voice_mixer_module().BYTES_PER_MS * lead_ms)
 
+    # Prebaked-ack cache: ack phrases render ONCE into ~/.hermes/voice_cache/ack/
+    # (keyed by phrase hash) and afterwards replay from disk, so the first tool
+    # call of a turn pays no server latency once the cache is warm.
+    _ACK_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".hermes", "voice_cache", "ack")
+
+    def _ack_cache_path(self, phrase: str) -> str:
+        digest = hashlib.sha256(phrase.encode("utf-8")).hexdigest()[:16]
+        return os.path.join(self._ACK_CACHE_DIR, f"ack_{digest}.wav")
+
+    async def _ack_cached_pcm(self, phrase: str) -> Optional[bytes]:
+        """Load a prebaked ack clip for `phrase`, rendering+storing it if absent."""
+        import uuid as _uuid
+        path = self._ack_cache_path(phrase)
+        try:
+            if not os.path.isfile(path):
+                os.makedirs(self._ACK_CACHE_DIR, exist_ok=True)
+                tmp_path = os.path.join(
+                    tempfile.gettempdir(), "hermes_voice", f"ack_bake_{_uuid.uuid4().hex[:12]}.wav",
+                )
+                os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+                from tools.tts_tool import text_to_speech_tool
+                result = json.loads(await asyncio.to_thread(
+                    text_to_speech_tool, text=phrase, output_path=tmp_path
+                ))
+                actual = result.get("file_path", tmp_path)
+                if not result.get("success") or not os.path.isfile(actual):
+                    return None
+                os.replace(actual, path)  # atomic-ish promote into the cache
+            decode_to_pcm = _voice_mixer_module().decode_to_pcm
+            pcm = await asyncio.to_thread(decode_to_pcm, path)
+            return pcm or None
+        except Exception as e:
+            logger.warning("ack cache load/render failed (%s); will fall back to per-call synth", e)
+            return None
+
     async def play_ack_in_voice(self, guild_id: int, phrase: Optional[str] = None) -> bool:
-        """Speak a short ack over the ambient bed (first tool call of a turn); no-op without mixer/acks."""
+        """Speak a short ack over the ambient bed (first tool call of a turn); no-op without mixer/acks.
+
+        Phrases are prebaked: the clip is rendered once into ~/.hermes/voice_cache/ack/
+        (keyed by phrase hash) and replayed from disk afterwards, so the first tool call
+        of a turn pays no server latency once the cache is warm.
+        """
         if not self._voice_fx_cfg.get("ack_enabled"):
             return False
         mixer = self._voice_mixers.get(guild_id)
@@ -3503,40 +3631,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             import random
             phrases = self._voice_fx_cfg.get("ack_phrases") or ["One moment."]
             phrase = random.choice(phrases)
-        import uuid as _uuid
-        audio_path = os.path.join(
-            tempfile.gettempdir(), "hermes_voice", f"ack_{_uuid.uuid4().hex[:12]}.mp3",
-        )
-        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-        try:
-            from tools.tts_tool import text_to_speech_tool
-            result_json = await asyncio.to_thread(
-                text_to_speech_tool, text=phrase, output_path=audio_path
-            )
-            result = json.loads(result_json)
-            actual = result.get("file_path", audio_path)
-            if not result.get("success") or not os.path.isfile(actual):
-                return False
-            decode_to_pcm = _voice_mixer_module().decode_to_pcm
-            pcm = await asyncio.to_thread(decode_to_pcm, actual)
-            if not pcm:
-                return False
-            mixer.play_speech(
-                self._lead_silence_bytes() + pcm,
-                gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
-            )
-            self._reset_voice_timeout(guild_id)
-            return True
-        except Exception as e:
-            logger.debug("play_ack_in_voice failed: %s", e)
+        pcm = await self._ack_cached_pcm(phrase)
+        if not pcm:
             return False
-        finally:
-            for p in {audio_path, locals().get("actual")}:
-                if p and os.path.isfile(p):
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
+        mixer.play_speech(
+            self._lead_silence_bytes() + pcm,
+            gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
+        )
+        self._reset_voice_timeout(guild_id)
+        return True
 
     def voice_mixer_active(self, guild_id: int) -> bool:
         """True when a continuous mixer is installed for this guild."""
@@ -3597,7 +3700,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             for user_id, pcm_data in pending_inputs:
                 if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
                     await self._process_voice_input(guild_id, user_id, pcm_data)
-            # Tear down the mixer (stops the continuous outgoing stream).
+            # Tear down the mixer (stops the continuous outgoing stream) and any
+            # in-flight streaming-TTS pump feeding it.
+            pump_task = self._stream_tts_tasks.pop(guild_id, None) if getattr(self, "_stream_tts_tasks", None) else None
+            if pump_task:
+                pump_task.cancel()
             if getattr(self, "_voice_mixers", None) is not None:
                 self._voice_mixers.pop(guild_id, None)
             vc = self._voice_clients.pop(guild_id, None)
@@ -3687,6 +3794,219 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         finally:
             self._reset_voice_timeout(guild_id)
 
+    # --- Streaming TTS replies into the voice channel (Option C) -------------
+    # Synthesis routes through the user's configured ``tts.provider`` via
+    # ``text_to_speech_tool`` (one call PER sentence piece so speech starts after
+    # the FIRST piece instead of after the full reply). Crossfades are not
+    # possible across separate provider calls, so inter-piece joins get a fixed
+    # pause (config: stream_replies.piece_pause_ms).
+
+    _STREAM_PIECE_CHARS_DEFAULT = 250
+
+    def _stream_tts_cfg(self) -> Dict[str, Any]:
+        cfg = getattr(self, "_voice_fx_cfg", None) or {}
+        return cfg.get("stream_replies") if isinstance(cfg.get("stream_replies"), dict) else {}
+
+    def _stream_tts_piece_chars(self) -> int:
+        try:
+            return max(80, min(600, int(self._stream_tts_cfg().get("piece_chars", self._STREAM_PIECE_CHARS_DEFAULT))))
+        except (TypeError, ValueError):
+            return self._STREAM_PIECE_CHARS_DEFAULT
+
+    def _stream_tts_piece_pause_s(self) -> float:
+        try:
+            return max(0.0, min(1000.0, float(self._stream_tts_cfg().get("piece_pause_ms", 60)))) / 1000.0
+        except (TypeError, ValueError):
+            return 0.06
+
+    def _stream_tts_enabled(self) -> bool:
+        return bool(self._stream_tts_cfg().get("enabled"))
+
+    async def _synthesize_piece(self, piece: str, timeout_s: float) -> Optional[bytes]:
+        """Render one sentence piece to 48 kHz stereo PCM via the configured TTS provider.
+
+        Goes through ``text_to_speech_tool`` (the same dispatch the file-TTS path and the
+        ack cache use), so the voice is whatever ``tts.provider`` is configured - the
+        adapter never talks to a speech server directly. ``decode_to_pcm`` handles any
+        provider output format.
+
+        Args:
+            piece: Sentence piece to synthesize.
+            timeout_s: Synthesis timeout in seconds.
+
+        Returns:
+            PCM bytes, or None on failure (caller stops the stream).
+        """
+        with tempfile.TemporaryDirectory(prefix="hermes_stream_tts_") as tmp_dir:
+            from tools.tts_tool import text_to_speech_tool
+            audio_path = os.path.join(tmp_dir, "piece.wav")
+            try:
+                result = json.loads(await asyncio.wait_for(
+                    asyncio.to_thread(text_to_speech_tool, text=piece, output_path=audio_path),
+                    timeout=timeout_s))
+            except Exception as e:
+                logger.warning("Streaming TTS piece failed (%s)", e)
+                return None
+            actual = result.get("file_path", audio_path)
+            if not result.get("success") or not os.path.isfile(actual):
+                logger.warning("Streaming TTS piece failed: provider returned no audio")
+                return None
+            decode = _voice_mixer_module().decode_to_pcm
+            return await asyncio.to_thread(decode, actual)
+
+    async def play_reply_streaming_in_voice(self, guild_id: int, text: str) -> bool:
+        """Stream a reply into the VC piece-by-piece as each piece is generated.
+
+        Args:
+            guild_id: Guild whose bound mixer receives the audio.
+            text: Reply text to speak.
+
+        Returns:
+            True when the stream took ownership (playback started); False when streaming
+            is off / no mixer / empty text, leaving the normal path intact.
+        """
+        cfg = self._stream_tts_cfg()
+        if not (self._stream_tts_enabled() and text and text.strip()):
+            return False
+        mixer = self._voice_mixers.get(guild_id)
+        if mixer is None:
+            return False
+        # Same spoken-script prep the file-TTS path gets (base.prepare_tts_text): strips
+        # /reasoning-show reasoning blocks, the file-mutation verifier footer, and flattens
+        # markdown. Without it the VC heard the visible reasoning block verbatim.
+        try:
+            text = self.prepare_tts_text(text) or ""
+        except Exception as e:
+            logger.warning("Streaming TTS spoken-text prep failed (%s); using raw text", e)
+        if not text.strip():
+            return False
+        # Spoken-prose rewrite (auxiliary LLM via tts.rewrite) for long replies: without it the VC hears the raw
+        # reply - full markdown-free length, no paralinguistic tags. Short replies skip the
+        # ~5-10 s rewrite to stay snappy; a failure keeps the original text (fail-open).
+        rewrite_min = int(cfg.get("rewrite_min_chars", 400))
+        if len(text) >= rewrite_min:
+            try:
+                from tools.tts_rewrite import rewrite_text_for_speech
+                rewritten = await asyncio.to_thread(rewrite_text_for_speech, text)
+                if rewritten and rewritten.strip():
+                    text = rewritten
+            except Exception as e:
+                logger.warning("Streaming TTS pre-rewrite failed (%s); using raw text", e)
+        from tools.tts_tool_delivery import _split_text_for_tts
+        pieces = _split_text_for_tts(text, self._stream_tts_piece_chars())
+        if not pieces:
+            return False
+        return await self._pump_pieces_into_mixer(guild_id, pieces, label="reply")
+
+    async def _pump_pieces_into_mixer(self, guild_id: int, pieces: list, *,
+                                      label: str = "reply") -> bool:
+        """Render ``pieces`` through the TTS provider and stream the PCM into the mixer.
+
+        Returns as soon as playback has STARTED (the pump task is created) - never waits
+        for synthesis or playback to finish - so the caller's text send lands while the
+        audio is still streaming. The mixer queues a second stream behind the live one,
+        so concurrent streams never overlap.
+
+        Args:
+            guild_id: Guild whose mixer receives the audio.
+            pieces: Sentence pieces to synthesize in order.
+            label: ``"reply"`` registers in ``_stream_tts_tasks`` so voice-leave teardown
+                cancels it; ``"interim"`` stays unregistered.
+
+        Returns:
+            True once the pump task started; False without a mixer or pieces.
+        """
+        cfg = self._stream_tts_cfg()
+        mixer = self._voice_mixers.get(guild_id)
+        if mixer is None:
+            return False
+
+        async def _pump() -> None:
+            pause_s = self._stream_tts_piece_pause_s()
+            timeout_s = max(30.0, min(600.0, float(cfg.get("piece_timeout_s", 120))))
+            pcm_total = 0
+            try:
+                for index, piece in enumerate(pieces):
+                    pcm = await self._synthesize_piece(piece, timeout_s)
+                    if not pcm:
+                        break
+                    vm_mod = _voice_mixer_module()
+                    if index == 0:
+                        pcm = self._lead_silence_bytes() + pcm
+                    elif pause_s > 0:
+                        pcm = (b"\x00" * (vm_mod.BYTES_PER_MS * int(pause_s * 1000))) + pcm
+                    pcm_total += len(pcm)
+                    child.push(pcm)
+                child.end()
+                vm_mod = _voice_mixer_module()
+                logger.info("Streaming TTS %s done (guild=%d, pieces=%d, pcm=%.1fs)",
+                            label, guild_id, len(pieces), pcm_total / (vm_mod.BYTES_PER_MS * 1000))
+            except Exception:
+                child.end()
+                logger.error("Streaming TTS %s crashed (guild=%d)", label, guild_id, exc_info=True)
+
+        child = mixer.play_speech_streaming(gain=float(cfg.get("speech_gain", 1.0)))
+        self._reset_voice_timeout(guild_id)
+        task = asyncio.get_running_loop().create_task(_pump())
+        if label == "reply":
+            # Only reply pumps register for voice-leave teardown; interim pumps are
+            # deliberately fire-and-forget. The slot pops itself when the pump ends,
+            # guarded so a newer pump's registration is never clobbered by a stale pop.
+            def _pop_teardown_task(done_task: "asyncio.Task", *, _gid: int = guild_id) -> None:
+                if self._stream_tts_tasks.get(_gid) is done_task:
+                    self._stream_tts_tasks.pop(_gid, None)
+            self._stream_tts_tasks[guild_id] = task
+            task.add_done_callback(_pop_teardown_task)
+        return True
+
+    async def play_interim_in_voice(self, guild_id: int, text: str) -> bool:
+        """Speak one mid-turn commentary segment into the bound voice channel.
+
+        Reuses the reply streaming pump without the rewrite (commentary is already short
+        spoken prose; the 1-3 s rewrite would eat the gap this is meant to fill). Audio
+        queues behind anything playing, never overlaps.
+
+        Args:
+            guild_id: Guild whose bound mixer receives the audio.
+            text: Commentary segment to speak.
+
+        Returns:
+            True when the stream was started; False when speak_interims is off / no
+            mixer / text out of bounds.
+        """
+        cfg = self._stream_tts_cfg()
+        if not (self._stream_tts_enabled() and bool(cfg.get("speak_interims")) and text and text.strip()):
+            return False
+        max_chars = int(cfg.get("interim_max_chars", 300) or 0)
+        if max_chars and len(text) > max_chars:
+            logger.info("Interim VC speech skipped: %d chars exceeds interim_max_chars %d",
+                        len(text), max_chars)
+            return False
+        try:
+            text = self.prepare_tts_text(text) or ""
+        except Exception as e:
+            logger.warning("Interim VC speech spoken-text prep failed (%s); using raw text", e)
+        if not text.strip():
+            return False
+        # Optional speed-first rewrite for interim commentary: same rewrite model, but the
+        # interim prompt targets half length (the main latency lever, since generation
+        # length drives server time) and takes a single attempt with a short timeout.
+        # Fail-open: a slow/failed rewrite keeps the raw commentary rather than delaying
+        # the spoken gap this feature exists to fill.
+        if bool(cfg.get("interim_rewrite", True)):
+            try:
+                from tools.tts_rewrite import rewrite_text_for_speech
+                rewritten = await asyncio.to_thread(rewrite_text_for_speech, text, interim=True)
+                if rewritten and rewritten.strip() and rewritten != text:
+                    text = rewritten
+            except Exception as e:
+                logger.warning("Interim VC speech rewrite failed (%s); using raw text", e)
+        from tools.tts_tool_delivery import _split_text_for_tts
+        pieces = _split_text_for_tts(text, self._stream_tts_piece_chars())
+        if not pieces:
+            return False
+        return await self._pump_pieces_into_mixer(guild_id, pieces, label="interim")
+
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""
         if not self._client:
@@ -3715,25 +4035,66 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._voice_timeout_handler(guild_id, timeout)
         )
 
+    def _alone_in_voice_channel(self, guild_id: int) -> bool:
+        """True when no human members remain in the bot's voice channel.
+
+        Args:
+            guild_id: Guild to inspect.
+
+        Returns:
+            True when alone, also fail-safe on any error (test mocks, stale voice
+            client) so the inactivity timeout can still fire.
+        """
+        try:
+            info = self.get_voice_channel_info(guild_id)
+        except Exception:
+            return True
+        if not info:
+            return True
+        humans = [m for m in info.get("members", []) if not m.get("is_bot")]
+        return not humans
+
+    def _voice_inactivity_requires_alone(self) -> bool:
+        """Read ``discord.voice_channel_inactivity_requires_alone`` (default True)."""
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            val = (cfg.get("discord") or {}).get("voice_channel_inactivity_requires_alone")
+            return True if val is None else bool(val)
+        except Exception:
+            return True
+
     async def _voice_timeout_handler(self, guild_id: int, timeout: Optional[int] = None) -> None:
-        """Auto-disconnect after the configured inactivity timeout."""
+        """Auto-disconnect after the configured inactivity timeout.
+
+        With ``discord.voice_channel_inactivity_requires_alone`` (default True) the bot
+        stays while any human remains in the channel: each expiry re-arms the wait and
+        only an expiry that finds the bot ALONE triggers the leave."""
         timeout = self._voice_timeout_limit() if timeout is None else int(timeout)
         if timeout <= 0:
             return
-        try:
-            await asyncio.sleep(timeout)
-        except asyncio.CancelledError:
-            return
-        text_ch_id = self._voice_text_channels.get(guild_id)
-        # ``/voice off`` keeps the bot in the channel; only the bot's own audio counts as
-        # activity, so the timer would fire every VOICE_TIMEOUT and spam "Left voice channel".
-        _mode_getter = getattr(self, "_voice_mode_getter", None)
-        if text_ch_id is not None and _mode_getter is not None:
+        while True:
             try:
-                if _mode_getter(str(text_ch_id)) == "off":
-                    return
-            except Exception:
-                pass
+                await asyncio.sleep(timeout)
+            except asyncio.CancelledError:
+                return
+            text_ch_id = self._voice_text_channels.get(guild_id)
+            # ``/voice off`` keeps the bot in the channel; only the bot's own audio counts as
+            # activity, so the timer would fire every VOICE_TIMEOUT and spam "Left voice channel".
+            _mode_getter = getattr(self, "_voice_mode_getter", None)
+            if text_ch_id is not None and _mode_getter is not None:
+                try:
+                    if _mode_getter(str(text_ch_id)) == "off":
+                        return
+                except Exception:
+                    pass
+            if self._voice_inactivity_requires_alone() and not self._alone_in_voice_channel(guild_id):
+                logger.debug(
+                    "Voice inactivity timeout: humans still in channel (guild=%d); staying",
+                    guild_id,
+                )
+                continue
+            break
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:

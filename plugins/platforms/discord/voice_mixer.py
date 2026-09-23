@@ -7,7 +7,7 @@ discord.py's sender thread while children change on the asyncio loop, hence the 
 
 import logging
 import threading
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import discord
 
@@ -75,6 +75,81 @@ class MixerChild:
         return samples
 
 
+class StreamingMixerChild:
+    """Queue-fed sibling of :class:`MixerChild` for streaming-TTS playback.
+
+    PCM chunks are pushed in by a producer while ``read_frame`` drains 20 ms frames on
+    discord.py's sender thread. A starved queue yields silence instead of blocking (the
+    mixer must never stall its 20 ms cadence), so mid-generation gaps play as quiet,
+    not dead air. Call :meth:`end` to let the child drain and finish naturally."""
+
+    __slots__ = ("_queue", "gain", "fade_frames", "_fade_done", "_ended", "_finished", "_tail")
+
+    def __init__(self, *, gain: float = 1.0, fade_in_ms: int = 40, queue_depth: int = 64):
+        import queue as _queue  # noqa: PLC0415 - mirrors the lazy-import style of numpy
+        self._queue = _queue.Queue(maxsize=queue_depth)
+        self.gain = float(gain)
+        self.fade_frames = max(0, fade_in_ms // FRAME_LENGTH_MS)
+        self._fade_done = 0
+        self._ended = False
+        self._finished = False
+        self._tail = b""
+
+    def push(self, pcm: bytes) -> bool:
+        """Enqueue one PCM chunk.
+
+        Args:
+            pcm: Raw PCM bytes to enqueue.
+
+        Returns:
+            False when the child is ended; drops the chunk (never blocks the producer)
+            when the queue is full.
+        """
+        if self._ended or not pcm:
+            return False
+        try:
+            self._queue.put_nowait(pcm)
+            return True
+        except Exception:  # queue.Full - producer outpaced the 20 ms drain; drop
+            logger.debug("StreamingMixerChild queue full; dropping %d bytes", len(pcm))
+            return False
+
+    def end(self) -> None:
+        """Signal end-of-stream: queued bytes drain, then the child finishes."""
+        self._ended = True
+
+    def read_frame(self) -> "Optional[np.ndarray]":
+        """Next 20 ms frame as float32 ndarray, or None once ended AND fully drained."""
+        if self._finished:
+            return None
+        np = _require_numpy()
+        chunk = self._tail
+        self._tail = b""
+        while len(chunk) < FRAME_SIZE:
+            try:
+                chunk += self._queue.get_nowait()
+            except Exception:  # queue.Empty
+                break
+        if len(chunk) < FRAME_SIZE:
+            if not self._ended:
+                # Underrun: silence this frame, keep the partial bytes for the next one.
+                self._tail = chunk
+                return np.zeros(SAMPLES_PER_FRAME * CHANNELS, dtype=np.float32)
+            if not chunk:
+                self._finished = True
+                return None
+            chunk = chunk + b"\x00" * (FRAME_SIZE - len(chunk))
+        samples = np.frombuffer(chunk[:FRAME_SIZE], dtype=np.int16).astype(np.float32)
+        self._tail = chunk[FRAME_SIZE:]  # keep the remainder - chunks may span many frames
+        gain = self.gain
+        if self.fade_frames and self._fade_done < self.fade_frames:
+            self._fade_done += 1
+            gain *= self._fade_done / self.fade_frames
+        if gain != 1.0:
+            samples = samples * gain
+        return samples
+
+
 class VoiceMixer(discord.AudioSource):
     """Continuous ``discord.AudioSource`` mixing N children: :meth:`set_ambient` installs the
     looping idle bed, :meth:`play_speech` layers a one-shot clip over it (ducking the bed).
@@ -87,7 +162,8 @@ class VoiceMixer(discord.AudioSource):
                  duck_release_ms: int = 400):
         self._lock = threading.Lock()
         self._ambient: Optional[MixerChild] = None
-        self._speech: List[MixerChild] = []
+        # Children are MixerChild or StreamingMixerChild (same read_frame contract).
+        self._speech: List[Any] = []
         self._ambient_gain, self._duck_gain, self._speech_gain = float(ambient_gain), float(duck_gain), float(speech_gain)
         # When speech ends, ramp the ambient back up over this many frames instead of jumping.
         self._duck_release_frames = max(1, duck_release_ms // FRAME_LENGTH_MS)
@@ -117,6 +193,30 @@ class VoiceMixer(discord.AudioSource):
             self._duck_release_left = 0
             if self._ambient is not None:
                 self._ambient.gain = self._duck_gain
+
+    def play_speech_streaming(self, *, gain: Optional[float] = None, fade_in_ms: int = 40) -> "StreamingMixerChild":
+        """Layer a streaming speech child over the ambient bed (ducks it, same as
+        :meth:`play_speech`). The caller pushes PCM chunks and must call ``end()``.
+        A second streaming child while one is live appends AFTER it (queued behind),
+        never overlapping - replies must not interleave.
+
+        Args:
+            gain: Speech loudness (defaults to the configured voice_fx speech gain).
+            fade_in_ms: Fade-in duration for the child.
+
+        Returns:
+            The new :class:`StreamingMixerChild` to feed.
+        """
+        with self._lock:
+            child = StreamingMixerChild(
+                gain=self._speech_gain if gain is None else float(gain), fade_in_ms=fade_in_ms,
+            )
+            self._speech.append(child)
+            self._speech_active = True
+            self._duck_release_left = 0
+            if self._ambient is not None:
+                self._ambient.gain = self._duck_gain
+            return child
 
     @property
     def speech_active(self) -> bool:

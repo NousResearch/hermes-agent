@@ -975,6 +975,25 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            # VC-only mid-turn commentary speech (additive; fire-and-forget). When the chat
+            # is bound to a joined voice channel the segment is also spoken there, queued
+            # behind any playing reply. play_interim_in_voice gates on the adapter's
+            # speak_interims config and no-ops on other platforms / unbound chats; the text
+            # paths below keep their existing behaviour unconditionally.
+            if not already_streamed and str(text or "").strip():
+                adapter = self._runner._delivery_adapter_for(ctx.source)
+                voice_play = getattr(adapter, "play_interim_in_voice", None)
+                if voice_play is not None:
+                    try:
+                        for gid, text_ch_id in adapter._voice_text_channels.items():
+                            if str(text_ch_id) == str(ctx.source.chat_id) and adapter.is_in_voice_channel(gid):
+                                self._schedule(
+                                    voice_play(gid, str(text)),
+                                    "interim VC speech scheduling error",
+                                )
+                                break
+                    except Exception:
+                        logger.debug("interim VC speech scheduling failed", exc_info=True)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
                 stts.on_delta(None)

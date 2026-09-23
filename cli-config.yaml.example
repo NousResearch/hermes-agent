@@ -890,6 +890,14 @@ prompt_caching:
 #     model: ""
 #     timeout: 30
 #
+#   # Spoken-prose TTS rewrite (tts.rewrite.enabled). Routes the final-reply
+#   # rewrite when tts.rewrite.model is NOT pinned (a pin bypasses this block).
+#   # Interim rewrites always use the main model, and the rewrite passes its own
+#   # tts.rewrite timeout, so only provider/model are live here.
+#   tts_rewrite:
+#     provider: "auto"       # empty model = your main chat model
+#     model: ""
+#
 #   # Automatic session title generation after the first exchange
 #   title_generation:
 #     enabled: true          # set false to disable auto-title generation
@@ -1441,6 +1449,28 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#
+#   Voice-channel reply streaming (requires the bot joined via /voice join; the
+#   spoken voice is whatever tts.provider is configured - synthesis goes through
+#   the same text_to_speech dispatch as the file-TTS path):
+#   voice_fx:
+#     stream_replies:
+#       enabled: false            # Stream spoken replies into the VC piece-by-piece (default: false)
+#       piece_chars: 250          # Target sentence-piece size (80..600)
+#       piece_pause_ms: 60        # Silence inserted between pieces (0..1000)
+#       piece_timeout_s: 120      # Per-piece synthesis timeout (30..600)
+#       speech_gain: 1.0          # Streaming speech loudness (0..1+; 1.0 = full)
+#       rewrite_min_chars: 400    # Replies at/above this length get the spoken-prose rewrite first
+#       speak_interims: false     # Speak mid-turn commentary between tool calls (default: false)
+#       interim_max_chars: 300    # Skip interim segments longer than this (0 = no cap)
+#       interim_rewrite: true     # Speed-first rewrite of interim commentary
+#
+#   Voice-channel inactivity auto-disconnect (bot leaves when silent):
+#   voice_channel_inactivity_timeout_seconds: 300  # 0 disables (default: 300)
+#   voice_channel_inactivity_requires_alone: true  # Leave only when the bot is
+#     # alone in the channel (default: true). Set false for the legacy behavior
+#     # that leaves even with humans present. Playback counts as activity, and
+#     # the timer re-arms while anyone is talking.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -1596,6 +1626,27 @@ platform_toolsets:
 #     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
 #     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
 #     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
+#
+#   # Spoken-prose rewrite before synthesis: an auxiliary LLM converts the
+#   # reply into natural speech (bullets become prose, symbols spelled out).
+#   # Fail-open: on any error the original text is spoken unchanged.
+#   rewrite:
+#     enabled: false            # Master switch (default: off)
+#     # model: ""               # Pin the rewrite model (any configured provider,
+#     #                         # e.g. an Ollama cloud model). Empty = auto-route
+#     #                         # via auxiliary.tts_rewrite, else main model.
+#     # base_url: ""            # Only read together with model (OpenAI-compatible)
+#     # api_key_env: ""         # Env var name holding the pinned model's API key
+#     min_chars: 200            # Skip rewriting replies shorter than this
+#     timeout: 45               # Final-reply rewrite timeout (seconds)
+#     # interim_min_chars: 200  # Same gate for mid-turn commentary rewrites
+#     # interim_timeout: 15     # Interim rewrite timeout (speed-first path)
+#     # system_prompt: ""       # Inline prompt override; else prompt_file, else
+#     # prompt_file: ""         # ~/.hermes/tts_rewrite_prompt.txt, else a
+#     #                         # generic built-in (no persona, no audio tags)
+#     # interim_system_prompt: ""
+#     #                         # Same ladder for the speed-first interim rewrite
+#     # interim_prompt_file: ""
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

@@ -579,9 +579,17 @@ class GatewayBusySessionMixin:
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
         )
+        # A VC transcript arrives as MessageType.VOICE with the transcript already in event.text
+        # and no media payload (run_voice.py synthetic event) - as steerable as typed text;
+        # otherwise a spoken mid-turn input silently queues even in steer mode.
+        vc_transcript = (
+            event.message_type == MessageType.VOICE
+            and not event.media_urls and not event.media_types
+            and bool((event.text or "").strip())
+        )
         if effective_mode == "steer":
             steer_text = await self._prepare_busy_steer_text(event)
-            # Steerable: plain text, OR every attachment is voice media folded into steer_text.
+            # Steerable: plain text, a VC transcript, OR every attachment is voice media folded into steer_text.
             # A follow-up qualifies for steering when it is plain text, OR when every attachment is
             # STT-eligible voice media whose transcript was just folded into steer_text — otherwise a voice
             # note in steer mode silently degrades to queue mode (#58780).
@@ -589,7 +597,7 @@ class GatewayBusySessionMixin:
             _steer_all_voice = bool(_steer_media_urls) and (
                 len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
             )
-            if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
+            if steer_text and (plain_text or vc_transcript or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )

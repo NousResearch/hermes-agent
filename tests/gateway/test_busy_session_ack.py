@@ -268,6 +268,73 @@ class TestBusySessionAck:
         assert "Steered" in content
         assert "Queued" not in content
 
+    def test_steer_mode_vc_transcript_steers_not_queued(self, monkeypatch):
+        """A VC transcript arrives as MessageType.VOICE with the transcript already in
+        event.text and no media payload (run_voice.py synthetic event). It must steer
+        the running agent like typed text, not fall back to queue."""
+        import asyncio
+
+        async def _run():
+            import gateway.run as _gr
+
+            monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+            monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+            runner, _sentinel = _make_runner()
+            runner._busy_input_mode = "steer"
+            adapter = _make_adapter()
+
+            event = _make_event(text="focus on the PR review first")
+            event.message_type = MessageType.VOICE
+            event.media_urls = []
+            event.media_types = []
+            sk = build_session_key(event.source)
+            runner.adapters[event.source.platform] = adapter
+
+            agent = MagicMock()
+            agent.steer = MagicMock(return_value=True)
+            runner._running_agents[sk] = agent
+
+            with patch("gateway.platforms.base.merge_pending_message_event") as mock_merge:
+                await runner._handle_active_session_busy_message(event, sk)
+
+            agent.steer.assert_called_once()
+            injected = agent.steer.call_args.args[0]
+            assert injected.endswith("focus on the PR review first")
+            agent.interrupt.assert_not_called()
+            mock_merge.assert_not_called()
+            content = adapter._send_with_retry.call_args.kwargs["content"]
+            assert "Steered" in content
+            assert "Queued" not in content
+
+        asyncio.run(_run())
+
+    def test_steer_mode_vc_transcript_empty_text_falls_back_to_queue(self):
+        """A VOICE event with no transcript text has nothing to steer with - queue it."""
+        import asyncio
+
+        async def _run():
+            runner, _sentinel = _make_runner()
+            runner._busy_input_mode = "steer"
+            adapter = _make_adapter()
+
+            event = _make_event(text="")
+            event.message_type = MessageType.VOICE
+            event.media_urls = []
+            event.media_types = []
+            sk = build_session_key(event.source)
+            runner.adapters[event.source.platform] = adapter
+
+            agent = MagicMock()
+            agent.steer = MagicMock(return_value=True)
+            runner._running_agents[sk] = agent
+
+            await runner._handle_active_session_busy_message(event, sk)
+
+            agent.steer.assert_not_called()
+            assert adapter._pending_messages.get(sk) is event
+
+        asyncio.run(_run())
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
@@ -450,7 +517,7 @@ class TestBusySessionOnboardingHint:
 
         # The flag is now persisted to tmp_path/config.yaml
         import yaml
-        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
 

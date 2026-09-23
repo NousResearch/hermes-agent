@@ -337,6 +337,11 @@ class CLIInitMixin:
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
             failure = describe_storage_failure(e)
+            # Keep a stable reference for the closure below: Python clears the
+            # ``except`` binding when the block exits, so ``storage_failure_details(e)``
+            # inside ``_present_store_warning`` raised NameError on exactly the
+            # diagnostic path it is meant to render.
+            _exc = e
             def _present_store_warning():
                 try:
                     Console(stderr=True).print(
@@ -345,7 +350,7 @@ class CLIInitMixin:
                         "Searching past sessions is also disabled.\n"
                         f"  Reason: {failure.gloss}.\n"
                         f"  {failure.action}\n"
-                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
+                        f"  [dim]Details: {storage_failure_details(_exc)}[/dim]"
                     )
                 except Exception:
                     print(

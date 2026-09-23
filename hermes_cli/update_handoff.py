@@ -288,7 +288,15 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
         return 0
 
     try:
-        child = subprocess.Popen(cmd, env=env, stdin=sys.stdin, cwd=cwd)
+        # A caller may supply a pseudo-stdin without a real OS handle (for
+        # example an embedding host or a test runner). The post-swap child does
+        # not read input, so detach it from that unusable stream.
+        try:
+            sys.stdin.fileno()
+            child_stdin = sys.stdin
+        except (AttributeError, OSError, ValueError):
+            child_stdin = subprocess.DEVNULL
+        child = subprocess.Popen(cmd, env=env, stdin=child_stdin, cwd=cwd)
     except OSError as exc:
         _print_manual_continuation(cmd, exc)
         return None

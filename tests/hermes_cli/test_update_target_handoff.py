@@ -533,6 +533,7 @@ def test_real_subprocess_handoff_imports_target_tree_and_preserves_intent(
     monkeypatch.setenv("CHILD_MARKER", str(marker))
     monkeypatch.setattr(update_handoff, "_running_from_windows_shim", lambda: False)
     monkeypatch.setattr(update_handoff, "post_swap_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(update_handoff, "_post_swap_cwd", lambda: str(target))
     intent = {
         "target": "a" * 40,
         "install_id": INSTALL_ID,

@@ -35,7 +35,7 @@ describe('host.state focused-session atoms', () => {
   it('exposes readonly atoms for the focused session (runtime id, stored id, usage)', async () => {
     const { host } = await setup()
 
-    for (const key of ['focusedSessionId', 'focusedStoredSessionId', 'focusedUsage'] as const) {
+    for (const key of ['focusedSessionId', 'focusedStoredSessionId', 'focusedUsage', 'focusedTurnId'] as const) {
       const store = host.state[key]
       expect(store, key).toBeDefined()
       expect(typeof store.get, key).toBe('function')

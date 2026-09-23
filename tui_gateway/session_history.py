@@ -3,10 +3,13 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 
 from __future__ import annotations
 
+import itertools
 import re
 
 from .method_ctx import bind_module
 from agent.prompt_builder import STEER_DISPLAY_KIND
+
+_TURN_ID_GENERATOR = itertools.count(1)
 
 # Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
 # ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
@@ -289,6 +292,7 @@ def _start_inflight_turn(
     now = time.time()
     turn = {
         "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
+        "turn_id": next(_TURN_ID_GENERATOR),
         "user": _inflight_text(text),
     }
     if display_kind:

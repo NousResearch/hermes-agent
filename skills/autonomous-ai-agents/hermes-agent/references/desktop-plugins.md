@@ -66,7 +66,9 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `profile` for per-bot/profile readouts; `profile` is the gateway socket's
   home, which does not move with tab focus), and
   `focusedUsage` (live streamed `UsageStats` of the focused session, no RPC
-  needed). `busy` is true while the focused chat is working after a send
+  needed), and `focusedTurnId` (monotonic generation; changes for each fresh
+  round, remains stable for in-place steer, and is null while idle/unresolved).
+  `busy` is true while the focused chat is working after a send
   (thinking and streaming). `awaitingResponse` is true until the first
   assistant payload. `busyBySession` maps runtime session id → mid-turn,
   for rosters that watch every session. Prefer the focused atoms for any

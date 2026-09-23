@@ -336,6 +336,8 @@ if (typeof window !== 'undefined') {
 /** Live usage of the FOCUSED session, projected out of the streamed session
  *  state — the same readout the core statusbar's context chip paints. */
 const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
+/** Monotonic backend generation for the focused turn; null while idle/unresolved. */
+const $focusedTurnId = computed($focusedSessionState, state => state?.turnId ?? null)
 
 const $activeConnectionId = computed($connection, connection => {
   if (!connection) {
@@ -682,6 +684,9 @@ export const host = {
      *  The UsageStats-optional fields (context_*, cost_usd) arrive as the
      *  backend reports them, so read them with a fallback. */
     focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
+    /** Monotonic identity of the focused backend turn. Changes per fresh round,
+     *  stays stable for in-place steer, and is null while idle/unresolved. */
+    focusedTurnId: readonlyAtom<number | null>($focusedTurnId),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. Not turn-busy. */
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */

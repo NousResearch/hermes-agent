@@ -332,15 +332,17 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
-    # HTML and --only are read by people, so they carry the turns in-place compaction archived; JSONL stays the
-    # live rows import_sessions restores.
-    shown = args.format == "html" or bool(getattr(args, "only", None))
+    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS
+    # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
+    shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
 
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
+        def _one(session_id):
+            return _redact(db.export_session(session_id, include_compacted=shown))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
-            data = _redact(db.export_session(resolved, include_compacted=shown)) if resolved else None
+            data = _one(resolved) if resolved else None
             if not data:
                 _not_found(args.session_id)
                 return None
@@ -349,7 +351,7 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
-            return [s for s in (_redact(db.export_session(row["id"], include_compacted=shown)) for row in candidates) if s]
+            return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
         return [_redact(s) for s in db.export_all(source=None, include_compacted=shown)]
@@ -547,8 +549,8 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
           f"to {exported_items[0][1] if n == 1 else output_dir}")
     if not args.delete_after_verified:
         return
-    # The file only proves it matches the dict it was written from. Whether the store still holds that history
-    # is decided inside delete_session's transaction (expected_display_messages), so no caller-side re-read.
+    # verify_export_file proves file == dict; store == dict is decided inside delete_session's transaction
+    # (expected_display_messages), where no writer can slip between the check and the delete.
     expected_messages = {}
     for data, exported_path, snapshots in exported_items:
         ok, reason = verify_export_file(exported_path, data)

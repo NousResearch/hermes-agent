@@ -46,6 +46,10 @@ _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE 
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
+# A display row is indexed only when both halves are set; the read path backfills before projecting, so
+# the in-transaction delete fence must refuse (not project) any session this probe still matches.
+_DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _DISPLAY_ACTIVE_CLAUSE
+                              + " AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls FROM messages "
                       "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
@@ -899,16 +903,13 @@ class SessionMessagesMixin:
             columns = set(self._message_column_names(conn))
         if not {"display_order", "display_identity"} <= columns:
             return False
-        missing_sql = (
-            "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
-            "AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
-        if self._read_one(missing_sql, (session_id,)) is None:
+        if self._read_one(_DISPLAY_INDEX_MISSING_SQL, (session_id,)) is None:
             return True
         if getattr(self, "read_only", False):
             return False
 
         def _do(conn):
-            missing = conn.execute(missing_sql, (session_id,)).fetchone()
+            missing = conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone()
             if missing is None:
                 return True
             first_id: Dict[bytes, int] = {}
@@ -1030,10 +1031,7 @@ class SessionMessagesMixin:
         """Exact display snapshot on an already-held transaction; None means fail closed."""
         if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
             return None
-        if conn.execute(
-            "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
-            "AND display_order IS NULL LIMIT 1", (session_id,),
-        ).fetchone():
+        if conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone():
             return None
         return [
             self._row_to_message_dict(row, warn_context="verified delete", summary_flag=True)
@@ -1057,7 +1055,7 @@ class SessionMessagesMixin:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
         if include_compacted and not include_inactive and self._ensure_display_order(session_id):
-            # Route through the IOERR-retrying reader (#100871), never a bare _read_ctx.
+            # _read_retrying_ioerr: mode=ro pooled readers see a transient IOERR mid-checkpoint (#100871).
             rows = self._read_retrying_ioerr(
                 lambda conn: self._display_rows_from_conn(
                     conn, session_id, limit=limit, offset=offset, latest=latest))

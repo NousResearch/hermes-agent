@@ -15,7 +15,7 @@ class _FlakyReads(sqlite3.Connection):
     """Real SQLite connection whose first N SELECTs fail the way a mid-checkpoint mode=ro reader does."""
 
     def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-        if str(sql).lstrip().upper().startswith(_STATE["fail_prefix"]):
+        if str(sql).lstrip().upper().startswith(_STATE["fail_prefix"].upper()):
             _STATE["attempts"] += 1
             if _STATE["failures_left"] > 0:
                 _STATE["failures_left"] -= 1
@@ -62,11 +62,13 @@ def test_persistent_ioerr_propagates_after_the_budget(db):
     assert db._db_corrupt is False  # busy/EIO is not corruption: no quarantine
 
 
-@pytest.mark.parametrize("include_compacted, fail_prefix", [(False, "SELECT"), (True, "WITH")])
+@pytest.mark.parametrize("include_compacted, fail_prefix", [(False, "SELECT"), (True, "WITH page AS")])
 def test_transient_ioerr_on_get_messages_is_retried(db, include_compacted, fail_prefix):
     """Both message read paths -- live rows and the deduped display-history CTE -- replay a transient IOERR."""
     db.append_message("s", "user", "hi")
-    _STATE.update(failures_left=1, attempts=0, fail_prefix=fail_prefix)  # WITH: only the display CTE can fail
+    # "WITH page AS" names the display CTE itself: _ensure_display_order's SELECT probe runs first and must not
+    # absorb the failure, and a reshaped query that no longer runs through the retrying reader fails loudly.
+    _STATE.update(failures_left=1, attempts=0, fail_prefix=fail_prefix)
     rows = db.get_messages("s", include_compacted=include_compacted)
     assert [r["content"] for r in rows] == ["hi"]
     assert _STATE["failures_left"] == 0 and _STATE["attempts"] == 2  # one failure, one replay

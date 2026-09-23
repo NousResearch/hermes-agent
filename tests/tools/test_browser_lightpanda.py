@@ -146,12 +146,17 @@ class TestConfigIntegration:
         assert "engine" in DEFAULT_CONFIG["browser"]
         assert DEFAULT_CONFIG["browser"]["engine"] == "auto"
 
-    def test_env_var_registered(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "AGENT_BROWSER_ENGINE" in OPTIONAL_ENV_VARS
-        entry = OPTIONAL_ENV_VARS["AGENT_BROWSER_ENGINE"]
-        assert entry["category"] == "tool"
-        assert entry["advanced"] is True
+    def test_env_var_deprecated_from_wizard(self):
+        """AGENT_BROWSER_ENGINE is deprecated in favor of browser.engine.
+
+        It must no longer be offered by the setup wizard (OPTIONAL_ENV_VARS)
+        but must stay known to reload/compat paths (_EXTRA_ENV_KEYS) since it
+        is still read as a back-compat fallback.
+        """
+        from hermes_cli.config import _EXTRA_ENV_KEYS, OPTIONAL_ENV_VARS
+
+        assert "AGENT_BROWSER_ENGINE" not in OPTIONAL_ENV_VARS
+        assert "AGENT_BROWSER_ENGINE" in _EXTRA_ENV_KEYS
 
 
 class TestLightpandaRequirements:

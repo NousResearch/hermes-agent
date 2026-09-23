@@ -417,6 +417,9 @@ DEFAULT_CONFIG = {
         # Ignored while a cloud provider, Camofox, cdp_url or use_real_profile is active. Also
         # settable via AGENT_BROWSER_ENGINE.
         "engine": "auto",
+        # Firecrawl browser-session TTL in seconds. Also settable via
+        # FIRECRAWL_BROWSER_TTL env var (legacy fallback).
+        "firecrawl_ttl": 300,
         # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
@@ -1513,6 +1516,7 @@ DEFAULT_CONFIG = {
 
     "discord": {
         "require_mention": True,  # require @mention to respond in server channels
+        "reply_to_mode": "first",  # reply threading: off | first (default) | all. Also settable via DISCORD_REPLY_TO_MODE env var.
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
@@ -1625,6 +1629,8 @@ DEFAULT_CONFIG = {
         "require_mention": True,  # require @mention to respond in rooms
         "free_response_rooms": "",  # comma-separated room IDs answered without mention
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
+        "auto_thread": True,  # auto-create threads for room messages
+        "dm_auto_thread": False,  # auto-create threads for DM messages
     },
     # Approvals for dangerous commands.
     # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
@@ -2843,16 +2849,6 @@ OPTIONAL_ENV_VARS = {
         "Browser Use API key for cloud browser (optional — local browser works without this)",
         "Browser Use API key", "https://browser-use.com/",
         tools=["browser_navigate", "browser_click"]),
-    "FIRECRAWL_BROWSER_TTL": _tool(
-        "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "Browser session TTL (seconds)", tools=["browser_navigate", "browser_click"],
-        password=False),
-    "AGENT_BROWSER_ENGINE": _env(
-        "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode "
-        "spawns lightpanda serve), chrome", "Browser engine (auto/lightpanda/chrome)",
-        url="https://lightpanda.io/docs/run-locally/installation/one-liner",
-        tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        password=False, category="tool", advanced=True),
     "CAMOFOX_URL": _tool(
         "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "Camofox server URL", "https://github.com/jo-inc/camofox-browser",
@@ -2946,10 +2942,6 @@ OPTIONAL_ENV_VARS = {
         "https://discord.com/developers/applications", password=True),
     "DISCORD_ALLOWED_USERS": _msg("Comma-separated Discord user IDs allowed to use the bot",
         "Allowed Discord user IDs (comma-separated)", None),
-    "DISCORD_REPLY_TO_MODE": _msg(
-        "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first "
-        "message only, default), 'all' (reply on every chunk)",
-        "Discord reply mode (off/first/all)", None),
     "SLACK_BOT_TOKEN": _msg(
         "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
         "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
@@ -2991,16 +2983,6 @@ OPTIONAL_ENV_VARS = {
     "MATRIX_ALLOWED_USERS": _msg(
         "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
         "Allowed Matrix user IDs (comma-separated)", None),
-    "MATRIX_REQUIRE_MENTION": _msg(
-        "Require @mention in Matrix rooms (default: true). Set to false to respond to all "
-        "messages.", "Require @mention in rooms (true/false)", None, advanced=True),
-    "MATRIX_FREE_RESPONSE_ROOMS": _msg(
-        "Comma-separated Matrix room IDs where bot responds without @mention",
-        "Free-response room IDs (comma-separated)", None, advanced=True),
-    "MATRIX_AUTO_THREAD": _msg("Auto-create threads for messages in Matrix rooms (default: true)",
-        "Auto-create threads in rooms (true/false)", None, advanced=True),
-    "MATRIX_DM_AUTO_THREAD": _msg("Auto-create threads for DM messages in Matrix (default: false)",
-        "Auto-create threads in DMs (true/false)", None, advanced=True),
     "MATRIX_DEVICE_ID": _msg(
         "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
         "Matrix device ID (stable across restarts)", None, advanced=True),
@@ -3086,10 +3068,7 @@ OPTIONAL_ENV_VARS = {
     # HERMES_TOOL_PROGRESS_MODE (deprecated; use display.tool_progress) is intentionally NOT listed:
     # this dict feeds user-facing surfaces (dashboard keys page, setup checklists), so deprecated
     # knobs stay in config._EXTRA_ENV_KEYS only. HERMES_TOOL_PROGRESS is unsupported.
-    "HERMES_PREFILL_MESSAGES_FILE": _setting(
-        "Path to JSON file with ephemeral prefill messages for few-shot priming",
-        "Prefill messages file path", None),
-    "HERMES_EPHEMERAL_SYSTEM_PROMPT": _setting(
-        "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
-        "Ephemeral system prompt", None),
+    # HERMES_PREFILL_MESSAGES_FILE and HERMES_EPHEMERAL_SYSTEM_PROMPT are deprecated in favor of
+    # the prefill_messages_file config key and the display.personality / agent.system_prompt
+    # resolution; the env vars stay readable (_EXTRA_ENV_KEYS) but are no longer offered here.
 }

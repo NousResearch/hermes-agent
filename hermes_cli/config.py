@@ -281,6 +281,13 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
+    # Deprecated behavioral knobs moved to config.yaml (browser.firecrawl_ttl,
+    # browser.engine, discord.reply_to_mode, prefill_messages_file, and the
+    # display.personality / agent.system_prompt resolution). The env vars stay
+    # readable as back-compat fallbacks but are no longer offered by the setup
+    # wizard (removed from OPTIONAL_ENV_VARS).
+    "FIRECRAWL_BROWSER_TTL", "AGENT_BROWSER_ENGINE", "DISCORD_REPLY_TO_MODE",
+    "HERMES_PREFILL_MESSAGES_FILE", "HERMES_EPHEMERAL_SYSTEM_PROMPT",
     # Langfuse observability plugin tuning keys + standard SDK vars (activation is via
     # plugins.enabled; credentials gate the plugin at runtime).
     "HERMES_LANGFUSE_ENV", "HERMES_LANGFUSE_RELEASE", "HERMES_LANGFUSE_SAMPLE_RATE",

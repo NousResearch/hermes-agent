@@ -199,6 +199,32 @@ class TestIsAvailable:
         assert p.is_available() is True
 
 
+class TestFirecrawlTtl:
+    """browser.firecrawl_ttl config wins; FIRECRAWL_BROWSER_TTL is the legacy fallback."""
+
+    def _provider(self):
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        return get_provider("firecrawl")
+
+    def test_defaults_to_300(self) -> None:
+        assert self._provider()._browser_ttl() == 300
+
+    def test_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FIRECRAWL_BROWSER_TTL", "123")
+        assert self._provider()._browser_ttl() == 123
+
+    def test_config_wins_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setenv("FIRECRAWL_BROWSER_TTL", "123")
+        monkeypatch.setattr(
+            config_mod, "read_raw_config", lambda: {"browser": {"firecrawl_ttl": 456}}
+        )
+        assert self._provider()._browser_ttl() == 456
+
+
 # ---------------------------------------------------------------------------
 # Registry resolution semantics
 # ---------------------------------------------------------------------------

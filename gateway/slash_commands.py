@@ -109,9 +109,14 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     source = event.source
     data = {"platform": source.platform.value if source.platform else None,
             "chat_id": source.chat_id, "chat_type": source.chat_type}
+    # Persist requester identity for the post-restart auth check even when this
+    # /restart did not arrive via the upstream relay.
+    if source.user_id:
+        data["user_id"] = source.user_id
     if source.delivered_via_upstream_relay is True:
         data["delivered_via_upstream_relay"] = True
-        data.update({k: getattr(source, k) for k in ("user_id", "scope_id") if getattr(source, k)})
+        if source.scope_id:
+            data["scope_id"] = source.scope_id
     optional = (("thread_id", source.thread_id), ("message_id", event.message_id),
                 ("profile", getattr(source, "profile", None)))
     data.update({k: v for k, v in optional if v})

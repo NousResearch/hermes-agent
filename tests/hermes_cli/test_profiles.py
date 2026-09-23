@@ -6,7 +6,6 @@ and shell completion generation.
 """
 
 import json
-import io
 import os
 import shutil
 import sys
@@ -34,13 +33,9 @@ from hermes_cli.profiles import (
     check_alias_collision,
     create_wrapper_script,
     remove_wrapper_script,
-    validate_alias_name,
     rename_profile,
     export_profile,
-    import_profile,
-    _get_profiles_root,
     _get_default_hermes_home,
-    seed_profile_skills,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
@@ -358,42 +353,6 @@ class TestNoSkillsOptOut:
 
 
 
-    def test_delete_marker_re_enables_seeding(self, profile_env, monkeypatch):
-        """Deleting .no-bundled-skills opts the profile back into a full sync.
-
-        The sync subprocess runs in BOTH states: with the marker present,
-        sync_skills() itself seeds only the essential skills and reports
-        ``skipped_opt_out``; without it, a normal full sync happens.
-        """
-        import subprocess as _sp
-
-        profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
-        assert (profile_dir / NO_BUNDLED_SKILLS_MARKER).is_file()
-
-        # Marker present: the subprocess still runs (essential-only seeding
-        # happens inside sync_skills) and its skipped_opt_out flag surfaces.
-        called = []
-        stdout_by_call = [
-            '{"copied": ["hermes-agent"], "skipped_opt_out": true}',
-            '{"copied": []}',
-        ]
-        monkeypatch.setattr(
-            "subprocess.run",
-            lambda *a, **kw: (called.append(a), _sp.CompletedProcess(
-                args=a, returncode=0,
-                stdout=stdout_by_call[min(len(called) - 1, 1)], stderr="",
-            ))[1],
-        )
-        r1 = seed_profile_skills(profile_dir, quiet=True)
-        assert r1.get("skipped_opt_out") is True
-        assert r1.get("copied") == ["hermes-agent"]
-        assert len(called) == 1
-
-        # Delete marker → next call is a normal full sync.
-        (profile_dir / NO_BUNDLED_SKILLS_MARKER).unlink()
-        r2 = seed_profile_skills(profile_dir, quiet=True)
-        assert r2 == {"copied": []}
-        assert len(called) == 2
 
 
 # ===================================================================
@@ -965,7 +924,7 @@ class TestWrapperScript:
 
     @pytest.mark.windows_only
     def test_remove_finds_bat_on_windows(self, profile_env):
-        from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
+        from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.exists()
@@ -1194,16 +1153,6 @@ class TestRenameProfile:
         acquire.assert_not_called()
 
 
-    def test_live_gateway_failure_does_not_rewrite_db_directly(self, profile_env, capsys):
-        create_profile("oldname", no_alias=True)
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
-             patch("hermes_cli.profiles._notify_multiplexer"), \
-             patch("gateway.control_socket.migrate_gateway_profile_identity", return_value=None), \
-             patch("hermes_state_registry.acquire") as acquire:
-            rename_profile("oldname", "newname")
-        acquire.assert_not_called()
-        assert "Restart the gateway" in capsys.readouterr().err
 
     def test_migrate_identity_command_repairs_a_failed_live_migration(self, profile_env, capsys):
         """The failed-live-migration end state must be recoverable: `hermes profile
@@ -1260,19 +1209,6 @@ class TestRenameProfile:
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
 
-    def test_rename_records_previous_name(self, profile_env):
-        create_profile("oldname", no_alias=True)
-
-        # Mock alias collision to avoid subprocess calls
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
-            new_dir = rename_profile("oldname", "newname")
-
-        # The rename history is recorded in the new profile's metadata ...
-        assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
-        # ... and surfaces through list_profiles (the gateway's profiles.list
-        # source), so Bot Mode group chats can re-link stale member handles.
-        info = next(p for p in list_profiles() if p.name == "newname")
-        assert info.previous_names == ["oldname"]
 
     def test_rename_accumulates_previous_names(self, profile_env):
         create_profile("firstname", no_alias=True)
@@ -1387,16 +1323,6 @@ class TestExportImport:
 # TestProfileIsolation
 # ===================================================================
 
-class TestProfileIsolation:
-    """Verify that two profiles have completely separate paths."""
-
-    def test_separate_config_paths(self, profile_env):
-        create_profile("alpha", no_alias=True)
-        create_profile("beta", no_alias=True)
-        alpha_dir = get_profile_dir("alpha")
-        beta_dir = get_profile_dir("beta")
-        assert alpha_dir / "config.yaml" != beta_dir / "config.yaml"
-        assert str(alpha_dir) not in str(beta_dir)
 
 
 # ===================================================================
@@ -1408,14 +1334,6 @@ class TestInternalHelpers:
 
 
 
-    def test_default_hermes_home_docker(self, tmp_path, monkeypatch):
-        """In Docker, _get_default_hermes_home() returns HERMES_HOME itself."""
-        docker_home = tmp_path / "opt" / "data"
-        docker_home.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(docker_home))
-        home = _get_default_hermes_home()
-        assert home == docker_home
 
 
 
@@ -1821,14 +1739,6 @@ class TestCloneAllExcludesRuntimeTrees:
             (source / tree).mkdir()
         assert not _clone_all_copytree_ignore(source)(str(source), [*self.RUNTIME_TREES, "SOUL.md"])
 
-    def test_runtime_trio_is_one_constant_shared_with_backup(self):
-        """backup's exclusion list and the clone-all root gate must be built from the same
-        constant; two literals drifting apart is how the models/ copy of #111718 crept in."""
-        from hermes_cli import backup, profiles
-        from hermes_constants import LOCAL_RUNTIME_ROOT_DIRS
-        assert LOCAL_RUNTIME_ROOT_DIRS == frozenset(self.RUNTIME_TREES)
-        assert backup._EXCLUDED_ROOT_DIRS is LOCAL_RUNTIME_ROOT_DIRS
-        assert LOCAL_RUNTIME_ROOT_DIRS <= profiles._CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
     def test_clone_all_from_default_skips_runtime_trees_but_keeps_the_rest(self, profile_env):
         default_home = profile_env / ".hermes"

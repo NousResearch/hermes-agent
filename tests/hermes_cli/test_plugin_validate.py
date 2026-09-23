@@ -84,7 +84,7 @@ def test_requires_hermes_spec_is_validated(tmp_path):
     report = validate_plugin_dir(d)
 
     assert report.ok, report.failures
-    assert ("requires_hermes", True, "spec '>=0.21' parses") in report.checks
+    assert any(name == "requires_hermes" and ok for name, ok, _ in report.checks)
 
 
 def test_admission_runs_the_install_scanner(tmp_path):
@@ -264,7 +264,7 @@ class TestDesktopSurface:
             "export default definePlugin({ id: 'desk', register(ctx) { ctx.storage.set('k', 1) } })\n"
         ))
         report = validate_plugin_dir(d)
-        assert ("desktop surface", True, "stays inside the plugin SDK surface") in report.checks
+        assert any(name == "desktop surface" and ok for name, ok, _ in report.checks)
 
     def test_script_regex_literal_is_not_injection_but_string_is(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (

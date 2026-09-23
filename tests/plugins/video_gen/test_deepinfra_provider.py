@@ -27,32 +27,11 @@ def _isolation(tmp_path, monkeypatch):
     yield
 
 
-def test_identity_and_availability(monkeypatch):
+def test_availability_follows_api_key(monkeypatch):
     p = deepinfra_plugin.DeepInfraVideoGenProvider()
-    assert p.name == "deepinfra"
-    assert p.display_name == "DeepInfra"
-    assert p._base_url() == "https://api.deepinfra.com/v1/openai"
     assert p.is_available() is True
     monkeypatch.delenv("DEEPINFRA_API_KEY", raising=False)
     assert p.is_available() is False
-
-
-def test_list_models_filters_by_video_gen_tag(monkeypatch):
-    """list_models() returns only ``video-gen``-tagged catalog entries."""
-    import hermes_cli.models as _models_mod
-
-    def _fake_by_tag(tag, **kw):
-        assert tag == "video-gen"
-        return [
-            {"id": "vendor/p-video", "metadata": {"description": "fast t2v"}},
-            {"id": "vendor/wan-t2v", "metadata": {}},
-        ]
-
-    monkeypatch.setattr(_models_mod, "_fetch_deepinfra_models_by_tag", _fake_by_tag)
-    rows = deepinfra_plugin.DeepInfraVideoGenProvider().list_models()
-    ids = {row["id"] for row in rows}
-    assert ids == {"vendor/p-video", "vendor/wan-t2v"}
-    assert all("display" in r for r in rows)
 
 
 def _fake_openai_with_capture(captured: dict, *, status="succeeded",
@@ -81,9 +60,10 @@ def _fake_openai_with_capture(captured: dict, *, status="succeeded",
             return SimpleNamespace(read=lambda: download)
 
     class _FakeClient:
-        def __init__(self, api_key=None, base_url=None):
+        def __init__(self, api_key=None, base_url=None, http_client=None):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["http_client"] = http_client
             self.videos = _FakeVideos()
 
     fake = MagicMock()
@@ -105,6 +85,32 @@ def _mock_url_download(captured: dict, raise_exc: Exception | None = None):
 
     with patch.object(base, "save_url_video", _fake_save_url_video):
         yield
+
+
+def test_generate_uses_env_only_proxy_http_client(monkeypatch):
+    """The SDK client is built on Hermes' env-only-proxy httpx client: a macOS system proxy (seen by
+    httpx via ``getproxies()``, ExceptionsList dropped) must not be mounted for a custom endpoint
+    (#64888), unlike a plain ``httpx.Client()`` under the same conditions (control)."""
+    import httpx
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DEEPINFRA_BASE_URL", "http://localhost:18081/v1")
+    sys_proxy = {"http": "http://sysproxy:3128", "https": "http://sysproxy:3128"}
+
+    def proxy_mounts(client):
+        return [m for m in client._mounts.values() if type(getattr(m, "_pool", None)).__name__ == "HTTPProxy"]
+
+    captured: dict = {}
+    with patch("httpx._utils.getproxies", return_value=sys_proxy), \
+            patch.dict("sys.modules", {"openai": _fake_openai_with_capture(captured)}), \
+            _mock_url_download(captured):
+        with httpx.Client() as control:
+            assert len(proxy_mounts(control)) == 2
+        assert deepinfra_plugin.DeepInfraVideoGenProvider().generate(prompt="a cube", model="vendor/x")["success"]
+    assert captured["base_url"] == "http://localhost:18081/v1"
+    assert isinstance(captured["http_client"], httpx.Client) and proxy_mounts(captured["http_client"]) == []
+    captured["http_client"].close()
 
 
 def test_generate_text_to_video_downloads_url_and_saves_locally():

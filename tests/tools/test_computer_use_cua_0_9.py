@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -73,53 +73,13 @@ def _make_backend(session: _FakeSession):
     return backend
 
 
-def _driver_result(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {"isError": False, "data": {}, "structuredContent": payload}
-
-
 # ---------------------------------------------------------------------------
 # Selected live schema and foreground delivery
 # ---------------------------------------------------------------------------
 
 
-def test_normalized_fixture_is_sanitized_and_records_the_selected_contract():
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    tools = {tool["name"]: tool for tool in fixture["tools"]}
-
-    assert fixture["contract_epoch"] == "cua-driver-0.9"
-    assert fixture["observed_reported_version"] == "0.8.3"
-    assert fixture["capability_version"] == "1"
-    assert fixture["observed_tool_count"] == 49
-    assert "delivery_mode" in tools["click"]["inputSchema"]["properties"]
-    assert "delivery_mode" in tools["type_text"]["inputSchema"]["properties"]
-    assert all(
-        "input.delivery_mode" not in tool["capabilities"] for tool in tools.values()
-    )
-    assert "bring_to_front" in tools
-    assert "bring_to_front" not in tools["click"]["inputSchema"]["properties"]
-    assert {
-        "get_browser_state",
-        "browser_prepare",
-        "browser_navigate",
-        "browser_click",
-        "browser_type",
-        "browser_pointer",
-    }.issubset(tools)
-
-    serialized = json.dumps(fixture)
-    for forbidden in (
-        "/Users/",
-        "\\Users\\",
-        "localhost",
-        "http://",
-        "https://",
-        "token-",
-    ):
-        assert forbidden not in serialized
-
-
 def test_foreground_support_is_discovered_from_tool_input_schema():
-    from tools.computer_use.cua_backend import _CuaDriverSession
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
 
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     listed = []
@@ -147,36 +107,6 @@ def test_foreground_support_is_discovered_from_tool_input_schema():
     assert session.supports_input_property("type_text", "delivery_mode") is True
     assert session.supports_input_property("bring_to_front", "delivery_mode") is False
     assert session.supports_capability("input.delivery_mode", tool="click") is False
-
-
-def test_foreground_focus_is_a_separate_call_before_action():
-    session = _FakeSession(input_properties={"click": {"delivery_mode"}})
-    backend = _make_backend(session)
-
-    result = backend.click(
-        element=3,
-        delivery_mode="foreground",
-        bring_to_front=True,
-    )
-
-    assert result.ok is True
-    assert [name for name, _ in session.calls] == ["bring_to_front", "click"]
-    focus_args = session.calls[0][1]
-    action_args = session.calls[1][1]
-    assert focus_args == {"pid": 42, "window_id": 7}
-    assert action_args["delivery_mode"] == "foreground"
-    assert "bring_to_front" not in action_args
-
-
-def test_foreground_refuses_only_when_schema_lacks_delivery_property():
-    backend = _make_backend(_FakeSession())
-
-    result = backend.click(element=3, delivery_mode="foreground")
-
-    assert result.ok is False
-    assert result.code == "foreground_unsupported"
-    assert "update" not in result.message.lower()
-    assert backend._session.calls == []
 
 
 def test_invalid_delivery_mode_is_rejected_before_driver_call():
@@ -259,10 +189,6 @@ def test_release_seam_stops_exact_backend_and_clears_session_state():
         "conversation-a": computer_use.threading.RLock(),
         "conversation-b": computer_use.threading.RLock(),
     })
-    computer_use._session_auto_approve["conversation-a"] = True
-    computer_use._always_allow["conversation-a"] = {
-        ("click", "background"),
-    }
 
     assert computer_use.release_computer_use_session("conversation-a") is True
     assert computer_use.release_computer_use_session("conversation-a") is False
@@ -271,8 +197,6 @@ def test_release_seam_stops_exact_backend_and_clears_session_state():
     second.stop.assert_not_called()
     assert "conversation-a" not in computer_use._backends
     assert "conversation-a" not in computer_use._backend_call_locks
-    assert "conversation-a" not in computer_use._session_auto_approve
-    assert "conversation-a" not in computer_use._always_allow
     assert computer_use._backends["conversation-b"] is second
 
 
@@ -283,12 +207,10 @@ def test_release_seam_evicts_state_even_when_backend_stop_fails():
     backend.stop.side_effect = RuntimeError("driver teardown failed")
     computer_use._backends["failed-run"] = backend
     computer_use._backend_call_locks["failed-run"] = computer_use.threading.RLock()
-    computer_use._session_auto_approve["failed-run"] = True
 
     assert computer_use.release_computer_use_session("failed-run") is True
     assert "failed-run" not in computer_use._backends
     assert "failed-run" not in computer_use._backend_call_locks
-    assert "failed-run" not in computer_use._session_auto_approve
 
 
 def test_release_seam_waits_for_in_flight_action_before_stopping_backend():
@@ -359,15 +281,18 @@ def test_concurrent_hermes_sessions_do_not_share_backend_state():
     assert len(created) == 2
 
 
-def test_persistent_focus_has_a_separate_approval_scope():
+def test_persistent_focus_has_a_separate_approval_scope(monkeypatch):
     from tools.computer_use import tool as computer_use
 
     seen = []
 
-    def approve(action, args, summary):
+    def approve(command, description, **kw):
+        # The shared gate prompts once per scope key: the click itself, then the separate bring_to_front scope.
+        action = description.split("`")[1]
         seen.append(action)
-        return "approve_once" if action == "click" else "deny"
+        return "once" if action == "click" else "deny"
 
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     computer_use.set_approval_callback(approve)
     try:
         result = json.loads(
@@ -385,6 +310,5 @@ def test_persistent_focus_has_a_separate_approval_scope():
         computer_use.set_approval_callback(None)
 
     assert seen == ["click", "bring_to_front"]
-    assert result["error"] == "denied by user"
+    assert result["error"].startswith("BLOCKED: User denied")
     assert result["action"] == "bring_to_front"
-

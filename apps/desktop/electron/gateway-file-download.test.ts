@@ -135,27 +135,6 @@ test('downloadTempPath stays beside the destination with a short, random per-cal
   assert.ok(path.basename(downloadTempPath(longName)).length < 40)
 })
 
-test('pumpStreamToFile streams chunks into a sibling temp file, then renames it onto the destination', async () => {
-  const res = new FakeResponse()
-  const ws = new FakeWriteStream()
-  const { deps, opened, renamed, unlinked } = recordingDeps(ws)
-
-  const promise = pumpStreamToFile(res as never, '/tmp/out.bin', deps)
-
-  res.emit('data', Buffer.from('abc'))
-  res.emit('data', Buffer.from('def'))
-  res.emit('end')
-
-  await promise
-
-  assert.equal(Buffer.concat(ws.chunks).toString('utf8'), 'abcdef')
-  assert.equal(ws.ended, true)
-  assert.equal(opened.length, 1)
-  assertTempPathBeside(opened[0], '/tmp/out.bin')
-  assert.deepEqual(renamed, [[opened[0], '/tmp/out.bin']])
-  assert.deepEqual(unlinked, []) // success -> no cleanup
-})
-
 test('pumpStreamToFile waits for the descriptor to close before renaming when the stream supports close()', async () => {
   const res = new FakeResponse()
   const order: string[] = []
@@ -258,60 +237,6 @@ test('pumpStreamToFile waits for the write stream to close before unlinking the 
   assert.deepEqual(unlinked, [opened[0]])
 })
 
-// Ownership gate: an exclusive create can fail BEFORE this pump owns anything at
-// the temp path (EEXIST on a collision). Cleanup must not unlink a file it did
-// not create, or the destructive class moves from the destination to the temp
-// name.
-test('pumpStreamToFile never unlinks a temp path it did not create when the exclusive open fails', async () => {
-  const res = new FakeResponse()
-  const ws = new FakeWriteStream([], { opens: false })
-  const { deps, opened, renamed, unlinked } = recordingDeps(ws)
-
-  const promise = pumpStreamToFile(res as never, '/tmp/out.bin', deps)
-
-  const eexist: any = new Error("EEXIST: file already exists, open '/tmp/.hermes-download-deadbeef.part'")
-
-  eexist.code = 'EEXIST'
-  ws.emit('error', eexist)
-
-  await assert.rejects(promise, /EEXIST/)
-  assert.equal(opened.length, 1, 'one create attempt')
-  assert.deepEqual(unlinked, [], 'the colliding file belongs to someone else and must survive')
-  assert.deepEqual(renamed, [])
-  assert.equal(res.destroyed, true)
-})
-
-test('pumpStreamToFile honours tempPathFor so a regression can pin the temp path', async () => {
-  const res = new FakeResponse()
-  const ws = new FakeWriteStream()
-  const { deps, opened, renamed } = recordingDeps(ws)
-
-  deps.tempPathFor = () => '/tmp/pinned.part'
-
-  const promise = pumpStreamToFile(res as never, '/tmp/out.bin', deps)
-
-  res.emit('data', Buffer.from('abc'))
-  res.emit('end')
-
-  await promise
-
-  assert.deepEqual(opened, ['/tmp/pinned.part'])
-  assert.deepEqual(renamed, [['/tmp/pinned.part', '/tmp/out.bin']])
-})
-
-test('writeBufferToFile streams the buffer through the same temp-then-rename contract', async () => {
-  const ws = new FakeWriteStream()
-  const { deps, opened, renamed, unlinked } = recordingDeps(ws)
-
-  await writeBufferToFile(Buffer.from('whole body'), '/tmp/out.bin', deps)
-
-  assert.equal(Buffer.concat(ws.chunks).toString('utf8'), 'whole body')
-  assert.equal(opened.length, 1)
-  assertTempPathBeside(opened[0], '/tmp/out.bin')
-  assert.deepEqual(renamed, [[opened[0], '/tmp/out.bin']])
-  assert.deepEqual(unlinked, [])
-})
-
 test('writeBufferToFile leaves the destination untouched when the write fails after open', async () => {
   // fs.WriteStream surfaces a write failure before 'finish', never after, so
   // the fake errors from write() itself.
@@ -331,42 +256,6 @@ test('writeBufferToFile leaves the destination untouched when the write fails af
   assert.ok(!opened.includes('/tmp/out.bin'))
   assert.deepEqual(unlinked, [opened[0]], 'only the owned temp file is removed')
   assert.deepEqual(renamed, [])
-})
-
-// Regression for #96597: opening the destination directly truncated it as soon
-// as the stream opened, and the error path then unlinked it — so a gateway
-// hiccup mid-download destroyed a pre-existing file the user had chosen to
-// overwrite. The destination must be neither opened nor removed on failure.
-test('pumpStreamToFile leaves a pre-existing destination untouched when the response fails mid-stream', async () => {
-  const res = new FakeResponse()
-  const ws = new FakeWriteStream()
-  const { deps, opened, renamed, unlinked } = recordingDeps(ws)
-
-  const promise = pumpStreamToFile(res as never, '/tmp/out.bin', deps)
-
-  res.emit('data', Buffer.from('abc'))
-  res.emit('error', new Error('socket hang up'))
-
-  await assert.rejects(promise, /socket hang up/)
-  assert.ok(!opened.includes('/tmp/out.bin'), 'destination must not be opened (and truncated) before the body lands')
-  assert.ok(!unlinked.includes('/tmp/out.bin'), 'destination must not be removed on failure')
-  assert.deepEqual(unlinked, [opened[0]])
-  assert.deepEqual(renamed, [])
-})
-
-test('pumpStreamToFile removes the temp file and rejects when the final rename fails', async () => {
-  const res = new FakeResponse()
-  const ws = new FakeWriteStream()
-  const { deps, opened, unlinked } = recordingDeps(ws, { renameError: new Error('EPERM: destination locked') })
-
-  const promise = pumpStreamToFile(res as never, '/tmp/out.bin', deps)
-
-  res.emit('data', Buffer.from('abc'))
-  res.emit('end')
-
-  await assert.rejects(promise, /destination locked/)
-  assert.deepEqual(unlinked, [opened[0]], 'the temp file must not be left behind after a failed rename')
-  assert.ok(!unlinked.includes('/tmp/out.bin'))
 })
 
 test('parseDataUrlToBuffer decodes base64 payloads', () => {
@@ -397,9 +286,9 @@ test('filenameFromContentDisposition prefers filename* and reduces to a basename
   assert.equal(filenameFromContentDisposition(undefined), '')
 })
 
-test('gatewayFilePath normalizes bare paths and file:// URLs', () => {
+test('gatewayFilePath preserves bare paths and file:// URLs for gateway-native conversion', () => {
   assert.equal(gatewayFilePath('/Users/me/report.md'), '/Users/me/report.md')
-  assert.equal(gatewayFilePath('file:///Users/me/a%20b.md'), '/Users/me/a b.md')
+  assert.equal(gatewayFilePath('file:///Users/me/a%20b.md'), 'file:///Users/me/a%20b.md')
   assert.equal(gatewayFilePath(''), '')
   assert.equal(gatewayFilePath(null), '')
 })

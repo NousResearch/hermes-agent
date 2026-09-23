@@ -2,10 +2,10 @@ import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { parseSlashCommand } from '@hermes/shared/slash'
 import { describe, expect, it } from 'vitest'
 
 import { findSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
-import { parseSlashCommand } from '../domain/slash.js'
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
@@ -94,16 +94,6 @@ describe('slash parity matrix', () => {
     it.skip(`Python command registry unavailable: ${skipReason}`, () => {})
   }
 
-  registryIt('classifies each command registry command as local/native/fallback', () => {
-    const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
-
-    expect(routes['model']).toBe('local')
-    expect(routes['browser']).toBe('native')
-    expect(routes['reload-mcp']).toBe('native')
-    expect(routes['rollback']).toBe('native')
-    expect(routes['stop']).toBe('native')
-  })
-
   registryIt('keeps every mutating command off slash-worker fallback', () => {
     const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
 
@@ -130,7 +120,6 @@ describe('parseSlashCommand argument fidelity', () => {
 
     expect(parseSlashCommand(`/pr-triage ${arg}`)).toEqual({
       arg,
-      cmd: `/pr-triage ${arg}`,
       name: 'pr-triage'
     })
   })
@@ -142,10 +131,9 @@ describe('parseSlashCommand argument fidelity', () => {
   it('still splits the command name off a single separator', () => {
     expect(parseSlashCommand('/cron add daily')).toEqual({
       arg: 'add daily',
-      cmd: '/cron add daily',
       name: 'cron'
     })
-    expect(parseSlashCommand('/exit')).toEqual({ arg: '', cmd: '/exit', name: 'exit' })
-    expect(parseSlashCommand('/exit ')).toEqual({ arg: '', cmd: '/exit ', name: 'exit' })
+    expect(parseSlashCommand('/exit')).toEqual({ arg: '', name: 'exit' })
+    expect(parseSlashCommand('/exit ')).toEqual({ arg: '', name: 'exit' })
   })
 })

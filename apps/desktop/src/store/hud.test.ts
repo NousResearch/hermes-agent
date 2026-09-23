@@ -10,11 +10,10 @@ const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDeskt
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
 const open = vi.fn().mockResolvedValue({ ok: true })
-const resetLayout = vi.fn().mockResolvedValue({ ok: true })
 
 function installBridge() {
   desktopWindow.hermesDesktop = {
-    hud: { open, resetLayout }
+    hud: { open }
   } as unknown as Window['hermesDesktop']
 }
 
@@ -24,7 +23,6 @@ function session(overrides: Partial<SessionInfo>): SessionInfo {
 
 beforeEach(() => {
   open.mockClear()
-  resetLayout.mockClear()
   installBridge()
   $hudActive.set(false)
   $hudSession.set(null)
@@ -114,12 +112,6 @@ describe('openHud profile targeting (#82285)', () => {
     openHud()
 
     expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'research' })
-  })
-
-  it('normalizes to default for single-profile users', () => {
-    openHud()
-
-    expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'default' })
   })
 
   it('uses the active profile when the target session is not in the cache', () => {

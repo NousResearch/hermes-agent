@@ -85,7 +85,7 @@ class TestReconfigureWritesProvider:
     ):
         """Env vars present and user accepts current value → still writes
         video_gen.provider via the post-env-vars branch."""
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config, tools_config_providers
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         video_gen_registry.register_provider(_FakeVideoProvider("xai_fake"))
@@ -93,11 +93,11 @@ class TestReconfigureWritesProvider:
         # Picker prompts replaced — no TTY in tests.
         monkeypatch.setattr(tools_config, "_prompt_choice", lambda *a, **kw: 0)
         # User presses Enter to keep the existing key.
-        monkeypatch.setattr(tools_config, "_prompt", lambda *a, **kw: "")
+        monkeypatch.setattr(tools_config_providers, "_prompt", lambda *a, **kw: "")
         # Pretend the env var is already set so the reconfigure path
         # hits the "Kept current" branch.
         monkeypatch.setattr(
-            tools_config,
+            tools_config_providers,
             "get_env_value",
             lambda key: "sk-fake" if key == "XAI_FAKE_API_KEY" else "",
         )

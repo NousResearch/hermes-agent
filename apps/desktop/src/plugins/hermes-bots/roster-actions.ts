@@ -10,7 +10,7 @@
 
 import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
-import { $openBotChat, $selectedBot, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
+import { $openBotChat, $selectedBot, lastToastedPreview, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
 import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
@@ -65,6 +65,12 @@ export function trackInboundActivity(roster: RosterRow[]) {
     rosterWatermarks.set(key, Math.max(prev, ts))
 
     if (seeding || ts <= prev) {
+      // Seed (or refresh) the last-toasted preview so a fresh mount, or a row
+      // whose activity hasn't advanced, treats current content as already-seen
+      // rather than replaying it — or a busy bridge's unchanged preview — as a
+      // duplicate toast.
+      lastToastedPreview.set(key, (activity?.preview || '').trim())
+
       continue
     }
 
@@ -93,10 +99,21 @@ export function trackInboundActivity(roster: RosterRow[]) {
 
     // Toasts are opt-in: the unread mark is recorded above regardless, but the
     // per-message notification fires only when the user enabled it.
+    const preview = (activity?.preview || '').trim()
+
+    // Content-level dedup, tracked independently of the toast pref so the
+    // memory stays accurate whether or not toasts are on: skip re-surfacing an
+    // identical preview a busy bridge keeps re-pinging (last_active advances
+    // but the visible content is unchanged). Unread marking above is unaffected.
+    if (lastToastedPreview.get(key) === preview) {
+      continue
+    }
+
+    lastToastedPreview.set(key, preview)
+
     if ($activityToasts.get()) {
       const meta = botRosterMeta(bot, $botMeta.get())
       const label = displayName(bot, meta)
-      const preview = (activity?.preview || '').trim()
       const inbound = /^Message from/i.test(preview)
       host.notify({
         kind: 'info',
@@ -116,11 +133,11 @@ export function trackInboundActivity(roster: RosterRow[]) {
  *  session — a group room or another tab owning the center must not be
  *  yanked away by background activity — and never mid-turn, when the
  *  activity is the turn itself, already streaming. */
-function refreshOpenBotChat(bot: RosterRow) {
+function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
   const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
   const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
 
-  if (!focused || !canonicalIds.includes(focused) || host.state.busy.get()) {
+  if (!focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get())) {
     return
   }
 
@@ -165,7 +182,9 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
   try {
     const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
 
-    return typeof focused === 'string' && focused ? { registryId: String(canonical!.id), storedSessionId: focused } : null
+    return typeof focused === 'string' && focused
+      ? { registryId: String(canonical!.id), storedSessionId: focused }
+      : null
   } catch {
     return null
   }
@@ -244,6 +263,14 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
 
+    // Fronting is presentation-only: the pane keeps whatever transcript it
+    // last painted, which can predate rows the bot wrote while the user was
+    // elsewhere (another bot's turn, a cron delivery, a teammate's
+    // message_agent). Force a registry open so forceResume re-pulls the
+    // latest transcript instead of leaving a stale snapshot until the next
+    // user turn (#99393 class; #95600 only covered the not-yet-open path).
+    refreshOpenBotChat(bot, { allowWhileBusy: true })
+
     return true
   }
 
@@ -255,7 +282,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
+      notifyBotOpenFailure(error, bot, 'reach')
     }
 
     return false
@@ -292,7 +319,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, `Could not open ${displayName(bot, meta)}'s chat — try again`)
+      notifyBotOpenFailure(error, bot, 'open', displayName(bot, meta))
     }
 
     return false

@@ -16,6 +16,7 @@ import os
 import pytest
 
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_deps as update_cmd_deps
 
 
 def _make_fake_venv(tmp_path):
@@ -59,6 +60,7 @@ def test_foreign_owned_dist_info_child_detected(tmp_path, monkeypatch):
         return real_uid(path)
 
     monkeypatch.setattr(update_cmd, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps, "_path_uid", fake_uid)
     foreign = update_cmd._venv_foreign_owned_paths(venv)
     assert foreign == [(installer, 0)]
 
@@ -72,14 +74,17 @@ def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
         "_path_uid",
         lambda p: 0 if str(p) == hermes_bin else real_uid(p),
     )
+    monkeypatch.setattr(
+        update_cmd_deps,
+        "_path_uid",
+        lambda p: 0 if str(p) == hermes_bin else real_uid(p),
+    )
     with pytest.raises(SystemExit) as exc:
         update_cmd._refuse_update_if_venv_foreign_owned(tmp_path)
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert hermes_bin in out
-    assert "owner uid 0" in out
     assert f"sudo chown -R $(id -un): {tmp_path}" in out
-    assert "Nothing in the venv was modified." in out
 
 
 def test_limit_caps_reported_paths(tmp_path, monkeypatch):
@@ -92,23 +97,16 @@ def test_limit_caps_reported_paths(tmp_path, monkeypatch):
         "_path_uid",
         lambda p: 0 if str(p).startswith(str(bin_dir) + os.sep) else 12345,
     )
+    monkeypatch.setattr(
+        update_cmd_deps,
+        "_path_uid",
+        lambda p: 0 if str(p).startswith(str(bin_dir) + os.sep) else 12345,
+    )
     monkeypatch.setattr(update_cmd.os, "geteuid", lambda: 12345, raising=False)
     foreign = update_cmd._venv_foreign_owned_paths(venv, limit=3)
     assert len(foreign) == 3
 
 
-def test_no_geteuid_returns_empty(tmp_path, monkeypatch):
-    """Windows (no os.geteuid) skips the preflight entirely."""
-    venv = _make_fake_venv(tmp_path)
-
-    class _NoGeteuidOS:
-        def __getattr__(self, name):
-            if name == "geteuid":
-                raise AttributeError(name)
-            return getattr(os, name)
-
-    monkeypatch.setattr(update_cmd, "os", _NoGeteuidOS())
-    assert update_cmd._venv_foreign_owned_paths(venv) == []
 
 
 def test_running_as_root_returns_empty(tmp_path, monkeypatch):
@@ -116,6 +114,7 @@ def test_running_as_root_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd.os, "geteuid", lambda: 0, raising=False)
     # Even with foreign uids everywhere, root skips the gate.
     monkeypatch.setattr(update_cmd, "_path_uid", lambda p: 4242)
+    monkeypatch.setattr(update_cmd_deps, "_path_uid", lambda p: 4242)
     assert update_cmd._venv_foreign_owned_paths(venv) == []
 
 

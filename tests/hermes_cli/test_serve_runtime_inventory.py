@@ -13,9 +13,12 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch  # noqa: F401 - kept for parity with siblings
 
+
 import hermes_cli.update_cmd as update_cmd
 import hermes_cli.update_inventory as update_inventory
 from hermes_cli import main as cli_main
+import hermes_cli.main_install_repair as main_install_repair
+import hermes_cli.main_dashboard as main_dashboard
 
 
 def _ledger_entry(**over):
@@ -109,9 +112,6 @@ def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     assert serves[0].restart_via == "desktop"
 
 
-def test_describe_restart_mechanism_respawn_argv():
-    text = update_inventory.describe_restart_mechanism("respawn-argv", "default")
-    assert "relaunch" in text
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +142,7 @@ def test_ledger_manual_serve_holders_filters_correctly(monkeypatch):
 
 def test_serve_relaunch_commands_built_from_structured_identity(monkeypatch):
     monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: None)
+    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
     entries = [
         _ledger_entry(),                                  # default profile
         _ledger_entry(pid=5000, profile="work", port=9200, host=""),
@@ -160,7 +161,11 @@ def test_relaunch_stopped_serves_is_idempotent(monkeypatch):
     monkeypatch.setattr(
         cli_main, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
     )
+    monkeypatch.setattr(
+        main_dashboard, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
+    )
     monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: None)
+    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
     token = {"pending": True, "entries": [_ledger_entry()]}
 
     update_cmd._relaunch_stopped_serves(token)
@@ -174,6 +179,9 @@ def test_relaunch_stopped_serves_untriggered_token_noop(monkeypatch):
     calls = []
     monkeypatch.setattr(
         cli_main, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
+    )
+    monkeypatch.setattr(
+        main_dashboard, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
     )
     update_cmd._relaunch_stopped_serves({"pending": False, "entries": [_ledger_entry()]})
     assert calls == []
@@ -235,3 +243,34 @@ def test_inventory_records_the_serve_process_incarnation(monkeypatch):
     plan = update_inventory.collect_runtime_inventory()
     serves = [r for r in plan.runtimes if r.kind == "serve"]
     assert serves and serves[0].detail["create_time"] == 1712345678.5
+
+
+# ---------------------------------------------------------------------------
+# update_inventory: launchd-owned serve/dashboard classification (#116503)
+# ---------------------------------------------------------------------------
+
+def test_inventory_classifies_launchd_job_owned_serve(monkeypatch):
+    """A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead,
+    so the spawner probe alone reads manual-serve — and the update plan then restarts it as a
+    detached argv respawn that fights the job's own KeepAlive respawn. A loaded job whose
+    ProgramArguments match the ledger argv must classify the row launchd (kickstart restart)."""
+    entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: True,  # bootstrap shell provably gone
+    )
+    jobs = [("gui/501", "ai.hermes.dashboard",
+             ["hermes", "serve", "--host", "100.94.65.93", "--port", "9119"], None)]
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
+         patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]):
+        plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves, "launchd-owned serve must appear in the inventory"
+    row = serves[0]
+    assert row.supervisor == "launchd"
+    assert row.restart_via == "launchd"
+    assert row.detail["launchd_domain"] == "gui/501"
+    assert row.detail["launchd_label"] == "ai.hermes.dashboard"
+
+

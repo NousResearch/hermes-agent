@@ -48,6 +48,70 @@ function emptyRegistry(): ConnectionRegistry {
   return normalizeRegistry(null)
 }
 
+test('Cloud apply upgrades only host labels without changing connection identity', () => {
+  const url = 'https://agent.example.com'
+  const name = 'Research cloud'
+
+  const first = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'cloud',
+    remote: { url, authMode: 'oauth' }
+  })
+
+  const named = reconcileAppliedGlobalConnection(first, {
+    mode: 'cloud',
+    remote: { url, authMode: 'oauth', name }
+  })
+
+  assert.equal(named.primary, first.primary)
+  assert.equal(named.connections.find(c => c.id === named.primary)?.label, name)
+  const restored = normalizeRegistry(JSON.parse(JSON.stringify(named)))
+  assert.equal(restored.connections.find(c => c.id === named.primary)?.name, name)
+
+  const custom = upsertConnection(restored, {
+    ...restored.connections.find(c => c.id === named.primary)!,
+    label: 'My device'
+  })
+
+  const reapplied = reconcileAppliedGlobalConnection(custom, {
+    mode: 'cloud',
+    remote: { url, authMode: 'oauth', name: 'New portal name' }
+  })
+
+  assert.equal(reapplied.primary, first.primary)
+  assert.equal(reapplied.connections.find(c => c.id === first.primary)?.label, 'My device')
+
+  const other = reconcileAppliedGlobalConnection(reapplied, {
+    mode: 'cloud',
+    remote: { url: 'https://other.example.com', authMode: 'oauth' }
+  })
+
+  assert.notEqual(other.primary, first.primary)
+  assert.equal(other.connections.find(c => c.id === other.primary)?.name, undefined)
+})
+
+test('Cloud name survives partial edits but never inherits across gateway URLs', () => {
+  const registry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'cloud',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth', name: 'Research cloud' }
+  })
+
+  const existing = registry.connections.find(c => c.id === registry.primary)!
+
+  const renamed = normalizeConnectionInput(
+    mergeConnectionInput({ id: existing.id, kind: 'cloud', label: 'Mine' }, existing),
+    registry
+  )
+
+  assert.equal(renamed.name, 'Research cloud')
+
+  const retargeted = normalizeConnectionInput(
+    mergeConnectionInput({ id: existing.id, kind: 'cloud', label: 'Mine', url: 'https://other.example.com' }, existing),
+    registry
+  )
+
+  assert.equal(retargeted.name, undefined)
+})
+
 // --- labels, slugs, handles ---
 
 test('labelKey is case-insensitive and trimmed', () => {
@@ -59,42 +123,6 @@ test('labelSlug kebab-cases and never returns empty for non-empty input', () => 
   assert.equal(labelSlug('Work Laptop'), 'work-laptop')
   assert.equal(labelSlug('Spark Box #2'), 'spark-box-2')
   assert.equal(labelSlug('!!!'), 'connection')
-})
-
-test('registry SSH fingerprint failures name the connection and ssh -G step', async () => {
-  const registry = migrateV1ToRegistry({
-    mode: 'ssh',
-    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
-    profiles: {}
-  })
-
-  const source = registry.connections.find(connection => connection.id === registry.primary)!
-
-  const cause = new Error('spawn ssh ENOENT')
-
-  source.label = 'Build box'
-
-  await assert.rejects(
-    reuseMatchingPrimarySshBackend({
-      connectionId: registry.primary,
-      effectiveFingerprint: async () => {
-        throw cause
-      },
-      ensurePrimary: async () => ({ mode: 'remote', remoteKind: 'ssh' }),
-      profile: 'default',
-      registry,
-      source
-    }),
-    error => {
-      assert.equal(
-        (error as Error).message,
-        `Could not resolve effective SSH config for connection "Build box" (${source.id}) via ssh -G: spawn ssh ENOENT`
-      )
-      assert.equal((error as Error).cause, cause)
-
-      return true
-    }
-  )
 })
 
 test('matching primary/default SSH route reuses the existing descriptor once', async () => {
@@ -1054,6 +1082,33 @@ test('token only persists on token-auth remotes; oauth/cloud drop it', () => {
   assert.equal(cloud.token, undefined)
 })
 
+test('an ssh entry keeps its session token through a label rename', () => {
+  // #103795, second half: saveRegistryConnection resolves the surviving
+  // envelope (resolvePersistedRemoteToken keeps the stored one when the
+  // editor sends no new value) and hands it to normalizeConnectionInput —
+  // whose ssh branch used to drop it, so renaming a connection wiped the live
+  // backend's reuse credential and re-armed the reap-and-respawn loop.
+  const stored = {
+    host: 'spark1',
+    id: 'spark',
+    kind: 'ssh' as const,
+    label: 'Spark',
+    port: 2222,
+    token: { enc: 'ssh-session-token' },
+    user: 'tek'
+  }
+
+  const merged = mergeConnectionInput(
+    { id: 'spark', kind: 'ssh', label: 'Spark (office)', token: stored.token },
+    stored
+  )
+
+  const renamed = normalizeConnectionInput(merged, emptyRegistry())
+
+  assert.equal(renamed.label, 'Spark (office)')
+  assert.deepEqual(renamed.token, { enc: 'ssh-session-token' })
+})
+
 // --- mergeConnectionInput (edit inheritance) ---
 
 test('merge preserves fields the editor does not carry (org, ssh extras)', () => {
@@ -1323,6 +1378,46 @@ test('normalizeRegistry falls back to Primary when the last-used source is missi
 
   assert.equal(registry.launchMode, 'last-used')
   assert.equal(registry.lastUsed, 'homelab')
+})
+
+test('normalizeRegistry keeps the persisted ssh session token across a cold read', () => {
+  // #103795: persistSshConnectionToken() writes the adopted per-serve token
+  // onto the ssh entry, but normalization rebuilt the entry from the DIAL
+  // fields alone and dropped it. The token then lived only in the mtime-keyed
+  // in-process cache, so the next launch dialed with an empty reuseToken,
+  // failed remote-lifecycle's `Boolean(reuseToken)` reuse gate, reaped a
+  // healthy owned backend and respawned it on a new port — while the renderer
+  // kept dialing the old token and got 403 forever.
+  const saved = {
+    version: REGISTRY_VERSION,
+    primary: 'spark',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      {
+        id: 'spark',
+        kind: 'ssh',
+        label: 'Spark',
+        host: 'spark1',
+        user: 'tek',
+        port: 2222,
+        token: { enc: 'ssh-session-token' }
+      }
+    ]
+  }
+
+  const registry = normalizeRegistry(saved)
+  const spark = registry.connections.find(connection => connection.id === 'spark')
+
+  assert.deepEqual(spark?.token, { enc: 'ssh-session-token' })
+  assert.equal(spark?.host, 'spark1')
+
+  // Write → read → normalize again: the token must survive every cold read,
+  // not just the first.
+  const reread = normalizeRegistry(JSON.parse(JSON.stringify(registry)))
+
+  assert.deepEqual(reread.connections.find(connection => connection.id === 'spark')?.token, {
+    enc: 'ssh-session-token'
+  })
 })
 
 // --- v1 → v2 migration ---

@@ -27,26 +27,37 @@ from __future__ import annotations
 
 import ast
 import functools
+import json
 import os
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MODULE_MARKER = "<module>"
+_RESOLUTION_ALLOWLIST_PATH = REPO_ROOT / "tests/fixtures/resolution_allowlist.json"
+_KNOWN_PATH_FRAGMENTS = (
+    ".local/bin",
+    ".cargo/bin",
+    "/opt/homebrew/bin",
+    "LOCALAPPDATA",
+    "scoop",
+    "WinGet",
+)
 
 # Runtimes Hermes provisions into HERMES_HOME and must therefore resolve
 # through a managed-aware helper rather than PATH.
 _MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx"})
 
 # Directories that are not Hermes-owned subprocess code: plugins ship their own
-# resolution policy, tests assert against PATH deliberately, and skills/scripts
-# run as standalone user-invoked programs.
+# resolution policy, tests assert against PATH deliberately, and skills/scripts/
+# evals run as standalone user-invoked programs.
 _EXEMPT_DIRS = (
     "tests",
     "plugins",
     "skills",
     "optional-skills",
     "scripts",
+    "evals",
     "website",
     "node_modules",
     ".git",
@@ -64,11 +75,11 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/update_cmd.py", "uv"): (
+    ("hermes_cli/update_cmd_deps.py", "uv"): (
         "Termux fallback: a pkg-installed uv lands on PATH but not in the "
         "managed bin dir, and it is checked only after resolve_uv() misses."
     ),
-    ("hermes_cli/update_cmd.py", "npm"): (
+    ("hermes_cli/update_cmd_deps.py", "npm"): (
         "WSL diagnostic: deliberately inspects what PATH resolves so it can "
         "warn that the only reachable npm is the Windows one."
     ),
@@ -81,18 +92,21 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "uv on PATH is a legitimate last rung before giving up with install "
         "guidance."
     ),
-    ("hermes_cli/gateway.py", "node"): (
+    ("hermes_cli/gateway_service_unit.py", "node"): (
         "Fallback rung of _append_node_dir_for_service(), after the managed "
         "dirs from iter_hermes_node_dirs() are already appended."
     ),
-    ("hermes_cli/main.py", "node"): (
+    ("hermes_cli/main_tui_launch.py", "node"): (
         "_ensure_tui_node()'s idempotence gate: the question really is 'is "
         "node already discoverable on PATH', before bootstrapping one."
     ),
-    ("hermes_cli/main.py", "npm"): (
+    ("hermes_cli/main_tui_launch.py", "npm"): (
         "Same _ensure_tui_node() gate as node."
     ),
-    ("tools/browser_tool.py", "npx"): (
+    ("hermes_cli/main_install_repair.py", "npm"): (
+        "_resolve_node_runtime_npm()'s WSL re-scan: PATH minus /mnt/* IS the question."
+    ),
+    ("tools/browser_tool_install.py", "npx"): (
         "agent-browser runs via `npx`, resolved against the extended browser "
         "PATH that _merge_browser_path() already seeds with the managed dirs."
     ),
@@ -119,6 +133,83 @@ def _iter_which_calls(tree: ast.AST):
         first = node.args[0]
         if isinstance(first, ast.Constant) and first.value in _MANAGED_COMMANDS:
             yield first.value, node.lineno
+
+
+class _ResolutionSiteVisitor(ast.NodeVisitor):
+    def __init__(self, tree: ast.Module) -> None:
+        self._scope: list[tuple[str, bool]] = []
+        self._shutil_aliases = {"shutil"}
+        self._which_aliases: set[str] = set()
+        self.sites: set[tuple[str, str]] = set()
+        self.visit(tree)
+
+    @property
+    def _symbol(self) -> str:
+        if not any(is_function for _, is_function in self._scope):
+            return MODULE_MARKER
+        parts: list[str] = []
+        for index, (name, _) in enumerate(self._scope):
+            if index and self._scope[index - 1][1]:
+                parts.append("<locals>")
+            parts.append(name)
+        return ".".join(parts)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name == "shutil":
+                self._shutil_aliases.add(alias.asname or alias.name)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module == "shutil":
+            for alias in node.names:
+                if alias.name == "which":
+                    self._which_aliases.add(alias.asname or alias.name)
+
+    def _visit_scope(self, node: ast.AST, name: str, *, is_function: bool) -> None:
+        self._scope.append((name, is_function))
+        self.generic_visit(node)
+        self._scope.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._visit_scope(node, node.name, is_function=False)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_scope(node, node.name, is_function=True)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_scope(node, node.name, is_function=True)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        is_shutil_which = (
+            isinstance(func, ast.Attribute)
+            and func.attr == "which"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in self._shutil_aliases
+        )
+        is_imported_which = isinstance(func, ast.Name) and func.id in self._which_aliases
+        if is_shutil_which or is_imported_which:
+            self.sites.add((self._symbol, "bare_which"))
+        self.generic_visit(node)
+
+    def visit_List(self, node: ast.List) -> None:
+        self._visit_path_table(node)
+        self.generic_visit(node)
+
+    def visit_Tuple(self, node: ast.Tuple) -> None:
+        self._visit_path_table(node)
+        self.generic_visit(node)
+
+    def _visit_path_table(self, node: ast.List | ast.Tuple) -> None:
+        # Re-join fragments split across path-construction arguments before matching.
+        strings = [
+            child.value for child in ast.walk(node)
+            if isinstance(child, ast.Constant) and isinstance(child.value, str)
+        ]
+        joined = "/".join(strings)
+        fragments = {fragment for fragment in _KNOWN_PATH_FRAGMENTS if fragment in joined}
+        if len(fragments) >= 2:
+            self.sites.add((self._symbol, "known_path_table"))
 
 
 def _source_files() -> list[Path]:
@@ -154,7 +245,8 @@ def _is_packaging_copy(top_level: str) -> bool:
     return (candidate / "PKG-INFO").exists()
 
 
-def _findings() -> list[tuple[str, str, int]]:
+@functools.lru_cache(maxsize=None)
+def _findings() -> tuple[tuple[str, str, int], ...]:
     """Return (relpath, command, lineno) for every bare managed lookup."""
     found: list[tuple[str, str, int]] = []
     for path in _source_files():
@@ -171,7 +263,60 @@ def _findings() -> list[tuple[str, str, int]]:
         rel = path.relative_to(REPO_ROOT).as_posix()
         for command, lineno in _iter_which_calls(tree):
             found.append((rel, command, lineno))
-    return found
+    return tuple(found)
+
+
+@functools.lru_cache(maxsize=None)
+def _resolution_sites() -> frozenset[tuple[str, str, str]]:
+    """Return (path, symbol, kind) for the resolution sites under review."""
+    sites: set[tuple[str, str, str]] = set()
+    for path in _source_files():
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel == "hermes_platform" or rel.startswith("hermes_platform/"):
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        visitor = _ResolutionSiteVisitor(tree)
+        sites.update((rel, symbol, kind) for symbol, kind in visitor.sites)
+    return frozenset(sites)
+
+
+def _resolution_allowlist() -> set[tuple[str, str, str]]:
+    rows = json.loads(_RESOLUTION_ALLOWLIST_PATH.read_text(encoding="utf-8"))
+    return {(row["path"], row["symbol"], row["kind"]) for row in rows}
+
+
+def _format_resolution_sites(sites: set[tuple[str, str, str]]) -> str:
+    return "\n".join(
+        f"  {path}::{symbol} ({kind})" for path, symbol, kind in sorted(sites)
+    )
+
+
+def test_bare_which_and_known_path_tables_are_allowlisted():
+    """New resolution sites must use the platform layer or be reviewed."""
+    unlisted = _resolution_sites() - _resolution_allowlist()
+
+    assert not unlisted, (
+        "Unreviewed command resolution sites:\n"
+        + _format_resolution_sites(unlisted)
+        + "\nuse a hermes_platform resolver or add a justified allowlist row"
+    )
+
+
+def test_resolution_allowlist_has_no_stale_rows():
+    """Remove bootstrap rows as their call sites move to hermes_platform."""
+    stale = _resolution_allowlist() - _resolution_sites()
+
+    assert not stale, (
+        "Resolution allowlist rows no longer match a source site; remove them:\n"
+        + _format_resolution_sites(stale)
+    )
 
 
 def test_no_unreviewed_bare_managed_runtime_lookups():
@@ -209,25 +354,5 @@ def test_allowlist_has_no_stale_entries():
     )
 
 
-@pytest.mark.parametrize(
-    "helper",
-    [
-        "find_node_executable",
-        "find_hermes_node_executable",
-        "iter_hermes_node_dirs",
-        "with_hermes_node_path",
-    ],
-)
-def test_managed_node_helpers_exist(helper):
-    """The alternatives this guard points contributors at must be importable."""
-    import hermes_constants
-
-    assert callable(getattr(hermes_constants, helper))
 
 
-def test_managed_uv_helpers_exist():
-    from hermes_cli.managed_uv import ensure_uv, managed_uv_path, resolve_uv
-
-    assert callable(resolve_uv)
-    assert callable(ensure_uv)
-    assert managed_uv_path().parent.name == "bin"

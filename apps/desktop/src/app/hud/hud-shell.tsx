@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { chatMessageText } from '@/lib/chat-messages'
 import { $hudOrientation } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
@@ -235,7 +236,11 @@ export function HudShell() {
   // measurement corrects a moment later.
   const [edge, setEdge] = useState<'bottom' | 'top'>(orientation === 'composer-top' ? 'top' : 'bottom')
 
-  useEffect(() => {
+  // Viewed-gated (#88275): window position only changes while the user can
+  // see the window, so an ungated 300ms poll keeps the idle renderer hot
+  // forever. useViewedInterval parks the timer when hidden/unfocused and
+  // leading-ticks on return, so a drag is still picked up within one tick.
+  const measureEdge = useCallback(() => {
     // A pinned orientation wins outright — no measurement, no flip.
     if (orientation === 'composer-top') {
       setEdge('top')
@@ -259,24 +264,24 @@ export function HudShell() {
     const FLIP_ON = 0
     const FLIP_OFF = 4
 
-    const measure = () => {
-      // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
-      // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
-      const availTop = (window.screen as { availTop?: number }).availTop ?? 0
-      const topGap = window.screenY - availTop
+    // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
+    // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
+    const availTop = (window.screen as { availTop?: number }).availTop ?? 0
+    const topGap = window.screenY - availTop
 
-      setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
-    }
+    setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
+  }, [orientation])
 
-    measure()
-    const timer = setInterval(measure, 300)
-    window.addEventListener('resize', measure)
+  useViewedInterval(measureEdge, 300)
+
+  useEffect(() => {
+    measureEdge()
+    window.addEventListener('resize', measureEdge)
 
     return () => {
-      clearInterval(timer)
-      window.removeEventListener('resize', measure)
+      window.removeEventListener('resize', measureEdge)
     }
-  }, [orientation])
+  }, [measureEdge])
 
   const rootRef = useRef<HTMLDivElement | null>(null)
 
@@ -315,8 +320,12 @@ export function HudShell() {
     const style = document.createElement('style')
     style.textContent = 'html,body,#root{background:transparent !important;}'
     document.head.appendChild(style)
+    document.documentElement.setAttribute('data-hud-window', '')
 
-    return () => style.remove()
+    return () => {
+      style.remove()
+      document.documentElement.removeAttribute('data-hud-window')
+    }
   }, [])
 
   return (

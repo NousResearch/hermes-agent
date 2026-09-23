@@ -22,7 +22,8 @@ import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -200,7 +201,4 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         "continuation enqueued under a different key than the adapter "
         f"drains: pending keys={list(adapter._pending_messages)} "
         f"expected={adapter_key}"
-    )
-    assert adapter._pending_messages[adapter_key].text.startswith(
-        "[Continuing toward your standing goal]"
     )

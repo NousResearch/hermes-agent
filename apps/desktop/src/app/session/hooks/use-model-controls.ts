@@ -1,3 +1,4 @@
+import type { ModelOptionsResult } from '@hermes/shared'
 import { type QueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 
@@ -6,7 +7,7 @@ import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
-import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -21,7 +22,6 @@ import {
   setCurrentProvider
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string
@@ -60,7 +60,7 @@ export function useModelControls({
       profile = cacheProfile || $activeGatewayProfile.get(),
       ownerConnectionId = cacheOwnerConnectionId
     ) => {
-      const patch = (prev: ModelOptionsResponse | undefined) => {
+      const patch = (prev: ModelOptionsResult | undefined) => {
         // Selection state can update before the catalog query has resolved.
         // Keep that optimistic cache structurally complete; the composer
         // interprets a response without `providers` as an empty catalog.
@@ -73,10 +73,10 @@ export function useModelControls({
         return { ...prev, provider, model, providers }
       }
 
-      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
+      queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
+        queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
       }
     },
     [cacheOwnerConnectionId, cacheProfile, queryClient]
@@ -110,75 +110,60 @@ export function useModelControls({
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
-  const refreshCurrentModel = useCallback(
-    async (force = false) => {
-      // A forced profile swap opens a new intent epoch; an older in-flight
-      // response for a previous profile must stand down when it resolves.
-      if (force) {
-        profileRefreshEpochRef.current += 1
+  const refreshCurrentModel = useCallback(async (force = false) => {
+    // A forced profile swap opens a new intent epoch; an older in-flight
+    // response for a previous profile must stand down when it resolves.
+    if (force) {
+      profileRefreshEpochRef.current += 1
+    }
+
+    const profileRefreshEpoch = profileRefreshEpochRef.current
+    const profile = $activeGatewayProfile.get()
+
+    try {
+      if ($activeSessionId.get()) {
+        return
       }
 
-      const profileRefreshEpoch = profileRefreshEpochRef.current
-      const profile = $activeGatewayProfile.get()
+      // A manual pick is sticky. It is never diffed against the catalog: rows
+      // are hints, and a custom slug the row lacks is still the user's choice
+      // (the gateway validates it on switch).
+      const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
 
-      try {
-        if ($activeSessionId.get()) {
-          return
-        }
-
-        // A manual pick stays sticky UNLESS it was removed from the catalog (its
-        // model no longer exists on the provider), in which case keeping it would
-        // 404 every new chat — fall through to reseed from the profile default.
-        // Reads the model-options cache the composer already populated; an
-        // unknown/not-yet-loaded catalog conservatively preserves the pick.
-        const keepManualPick = () => {
-          if (force || !$currentModel.get() || getCurrentModelSource() !== 'manual') {
-            return false
-          }
-
-          const options = queryClient.getQueryData<ModelOptionsResponse>(
-            modelOptionsQueryKey(cacheProfile || $activeGatewayProfile.get(), null, cacheOwnerConnectionId)
-          )
-
-          return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())
-        }
-
-        if (keepManualPick()) {
-          return
-        }
-
-        // Snapshot the selection generation before awaiting so a picker click
-        // that lands while getGlobalModelInfo is in flight wins over this older
-        // default — value comparisons alone miss re-selecting the same row.
-        const selectionGeneration = getComposerSelectionGeneration()
-        const result = await getGlobalModelInfo(profile)
-
-        if (
-          profileRefreshEpochRef.current !== profileRefreshEpoch ||
-          $activeSessionId.get() ||
-          getComposerSelectionGeneration() !== selectionGeneration ||
-          keepManualPick()
-        ) {
-          return
-        }
-
-        if (typeof result.model === 'string') {
-          setCurrentModel(result.model)
-        }
-
-        if (typeof result.provider === 'string') {
-          setCurrentProvider(result.provider)
-        }
-
-        if (typeof result.model === 'string' || typeof result.provider === 'string') {
-          setCurrentModelSource('default')
-        }
-      } catch {
-        // The delayed session.info event still updates this once the agent is ready.
+      if (keepManualPick()) {
+        return
       }
-    },
-    [cacheOwnerConnectionId, cacheProfile, queryClient]
-  )
+
+      // Snapshot the selection generation before awaiting so a picker click
+      // that lands while getGlobalModelInfo is in flight wins over this older
+      // default — value comparisons alone miss re-selecting the same row.
+      const selectionGeneration = getComposerSelectionGeneration()
+      const result = await getGlobalModelInfo(profile)
+
+      if (
+        profileRefreshEpochRef.current !== profileRefreshEpoch ||
+        $activeSessionId.get() ||
+        getComposerSelectionGeneration() !== selectionGeneration ||
+        keepManualPick()
+      ) {
+        return
+      }
+
+      if (typeof result.model === 'string') {
+        setCurrentModel(result.model)
+      }
+
+      if (typeof result.provider === 'string') {
+        setCurrentProvider(result.provider)
+      }
+
+      if (typeof result.model === 'string' || typeof result.provider === 'string') {
+        setCurrentModelSource('default')
+      }
+    } catch {
+      // The delayed session.info event still updates this once the agent is ready.
+    }
+  }, [])
 
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
@@ -301,15 +286,16 @@ export function useModelControls({
           // ONE shared applier for guarded switches (#95293): the same
           // confirm flow the Bots editor routes through — never fork this
           // logic per surface.
-          surfaceModelSwitchConfirm({
-            confirmLabel: t.common.confirm,
+          // Not awaited: `selectModel` answers "was the switch applied NOW",
+          // and that answer only exists once the user answers the dialog.
+          void surfaceModelSwitchConfirm({
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
             finish: finishSwitch,
-            // Staleness guard — the warning can linger while the user picks
-            // a different model or switches sessions. Clicking Confirm must
-            // not clobber the newer choice: bail if the live state no longer
-            // matches the snapshot this notification was created for.
+            // Staleness guard — the session or model can move on while the
+            // dialog is open. Answering it must not clobber the newer choice:
+            // bail (with a notice) if the live state no longer matches the
+            // snapshot this prompt was created for.
             isStale: () =>
               touchesPrimary
                 ? $activeSessionId.get() !== liveSessionId ||
@@ -318,6 +304,7 @@ export function useModelControls({
                 : !liveSessionId ||
                   $sessionStates.get()[liveSessionId]?.model !== prevModel ||
                   $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
+            model: selection.model,
             repaint: () => {
               paintSelection()
               cacheSelection(selection.provider, selection.model)
@@ -348,15 +335,7 @@ export function useModelControls({
         return false
       }
     },
-    [
-      cacheOwnerConnectionId,
-      cacheProfile,
-      copy.modelSwitchFailed,
-      queryClient,
-      requestGateway,
-      t.common.confirm,
-      updateModelOptionsCache
-    ]
+    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

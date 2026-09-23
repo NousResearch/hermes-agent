@@ -251,6 +251,58 @@ ${payload}
     ])
   })
 
+  it('indexes explicitly delivered Office documents as files', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'office-session' }), [
+      {
+        content: 'Workbook ready. MEDIA:C:\\Users\\Example\\Documents\\report.xlsx',
+        role: 'assistant',
+        timestamp: 1_781_774_001
+      },
+      {
+        content: 'Deck exported. **MEDIA: /tmp/generated/summary.pptx**',
+        role: 'assistant',
+        timestamp: 1_781_774_002
+      },
+      {
+        content: 'Notes compiled. MEDIA:"/tmp/generated/contract draft.docx"',
+        role: 'assistant',
+        timestamp: 1_781_774_003
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.kind)).toEqual(['file', 'file', 'file'])
+    expect(artifacts.map(artifact => artifact.value)).toEqual([
+      'C:\\Users\\Example\\Documents\\report.xlsx',
+      '/tmp/generated/summary.pptx',
+      '/tmp/generated/contract draft.docx'
+    ])
+  })
+
+  it('keeps unknown-extension explicit deliveries as opaque files', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'odd-ext-session' }), [
+      {
+        content: 'Palette saved. MEDIA:/tmp/generated/palette.icc',
+        role: 'assistant',
+        timestamp: 1_781_774_001
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({ kind: 'file', value: '/tmp/generated/palette.icc' })
+  })
+
+  it('does not index extensionless or unknown-extension bare paths from prose', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'State lives in /tmp/plumbing/state-dir and /tmp/notes.bin',
+        role: 'assistant',
+        timestamp: 1_781_774_001
+      }
+    ])
+
+    expect(artifacts).toHaveLength(0)
+  })
+
   it('normalizes epoch-second message timestamps', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

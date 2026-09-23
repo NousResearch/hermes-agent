@@ -17,6 +17,7 @@ import pytest
 def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
     """A managed server revival must publish tools before readiness is reset."""
     from tools import mcp_tool
+    from tools import mcp_tool_registration as _mcp_registration
     from tools.mcp_tool import MCPServerTask
 
     server = MCPServerTask("srv")
@@ -33,7 +34,7 @@ def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
     monkeypatch.setitem(mcp_tool._servers, server.name, server)
 
     register = MagicMock(return_value=["srv__send_message"])
-    monkeypatch.setattr(mcp_tool, "_register_server_tools", register)
+    monkeypatch.setattr(_mcp_registration, "_register_server_tools", register)
 
     asyncio.run(server._discover_tools())
 
@@ -53,6 +54,9 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 1)
     # Keep the self-probe cadence tiny so the test is fast.
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
+
+    from tools import mcp_tool_config as _config
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"srv": {"command": "x"}})
 
     _real_sleep = asyncio.sleep
 

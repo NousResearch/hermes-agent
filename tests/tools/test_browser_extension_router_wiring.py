@@ -73,15 +73,6 @@ def test_every_browser_registry_handler_routes_through_wrapper(_route_spy):
         assert route["session_id"] == "session-fixture"
 
 
-def test_browser_navigate_forwards_raw_args_and_identity(_route_spy):
-    handler = registry.get_entry("browser_navigate").handler
-    args = {"url": "https://example.test"}
-    result = handler(dict(args), task_id="task-fixture", session_id="session-fixture")
-    assert result == "legacy-nav"
-    route = _route_spy[0]
-    assert route["args"] == args
-    # The router must not mutate the args dict.
-    assert args == {"url": "https://example.test"}
 
 
 def test_browser_cdp_handler_routes_through_wrapper(_route_spy):

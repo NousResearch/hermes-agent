@@ -16,11 +16,8 @@ import os
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from unittest.mock import patch, MagicMock, AsyncMock, ANY
+from unittest.mock import patch, MagicMock, ANY
 
-from gateway.platforms.base import SendResult
 
 
 class TestConfigEnvOverrides(unittest.TestCase):
@@ -105,14 +102,6 @@ class TestExtractTextBody(unittest.TestCase):
         self.assertEqual(result, "Plain version")
 
 
-class TestExtractAttachments(unittest.TestCase):
-    """Test attachment extraction and caching."""
-
-    def test_no_attachments(self):
-        from plugins.platforms.email.adapter import _extract_attachments
-        msg = MIMEText("No attachments here.", "plain", "utf-8")
-        result = _extract_attachments(msg)
-        self.assertEqual(result, [])
 
 
 class TestDispatchMessage(unittest.TestCase):
@@ -182,7 +171,6 @@ class TestDispatchMessage(unittest.TestCase):
 
         adapter._message_handler = mock_handler
         # Override handle_message to capture the event directly
-        original_handle = adapter.handle_message
 
         async def capture_handle(event):
             captured_events.append(event)
@@ -238,7 +226,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""
         import asyncio
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         adapter = self._make_adapter()
         captured_events = []
 
@@ -432,19 +420,27 @@ class TestSendMethods(unittest.TestCase):
             os.unlink(tmp_path)
 
 
-    def test_get_chat_info(self):
-        """get_chat_info should return email address as chat info."""
+    def test_send_document_threads_on_explicit_reply_to(self):
+        """An explicit reply_to wins over the cached thread context for attachment sends (#10131)."""
         import asyncio
+        import tempfile
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {"subject": "Test", "message_id": "<m@t>"}
+        adapter._thread_context["user@test.com"] = {"subject": "Old", "message_id": "<cached@test.com>"}
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, reply_to="<explicit@test.com>"))
+                self.assertTrue(result.success)
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["In-Reply-To"], "<explicit@test.com>")
+                self.assertEqual(sent_msg["References"], "<explicit@test.com>")
+        finally:
+            os.unlink(tmp_path)
 
-        info = asyncio.run(
-            adapter.get_chat_info("user@test.com")
-        )
-
-        self.assertEqual(info["name"], "user@test.com")
-        self.assertEqual(info["type"], "dm")
-        self.assertEqual(info["subject"], "Test")
 
 
 class TestConnectDisconnect(unittest.TestCase):
@@ -939,6 +935,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID", "UIDPLUS")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \

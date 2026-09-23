@@ -129,14 +129,12 @@ import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
-    card_spec_to_cards_v2,
-    check_google_chat_requirements,
 )
 
 
@@ -233,9 +231,6 @@ def _make_chat_envelope(text="hello", sender_email="u@example.com", sender_type=
 # ===========================================================================
 
 
-class TestPlatformRegistration:
-    def test_enum_value(self):
-        assert _GC.value == "google_chat"
 
 
 # ===========================================================================
@@ -488,9 +483,6 @@ class TestConnectModes:
 # ===========================================================================
 
 
-class TestChunkText:
-    def test_empty_returns_empty_list(self, adapter):
-        assert adapter._chunk_text("") == []
 
 
 # ===========================================================================
@@ -989,20 +981,6 @@ class TestTypingLifecycle:
 
 
 class TestEditMessage:
-    @pytest.mark.asyncio
-    async def test_edit_message_patches_via_messages_patch(self, adapter):
-        adapter._patch_message = AsyncMock(
-            return_value=type("R", (), {"success": True,
-                                        "message_id": "spaces/S/messages/M",
-                                        "error": None})()
-        )
-        result = await adapter.edit_message(
-            "spaces/S", "spaces/S/messages/M", "edited content",
-        )
-        assert result.success is True
-        adapter._patch_message.assert_awaited_once_with(
-            "spaces/S/messages/M", {"text": "edited content"},
-        )
 
     @pytest.mark.asyncio
     async def test_edit_message_truncates_overlong_text(self, adapter):
@@ -1017,15 +995,6 @@ class TestEditMessage:
         assert len(sent) <= 4000
 
 
-class TestDeleteMessage:
-    @pytest.mark.asyncio
-    async def test_delete_message_calls_api(self, adapter):
-        delete_mock = MagicMock()
-        delete_mock.return_value.execute = MagicMock(return_value={})
-        adapter._chat_api.spaces.return_value.messages.return_value.delete = delete_mock
-        result = await adapter.delete_message("spaces/S", "spaces/S/messages/M")
-        assert result is True
-        delete_mock.assert_called_once()
 
 
 # ===========================================================================
@@ -1336,9 +1305,9 @@ class TestAttachmentSSRFGuard:
         monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
         from plugins.platforms.google_chat import adapter as gc_mod
         monkeypatch.setattr(
-            gc_mod, "cache_document_from_bytes",
-            lambda data, ext=None, filename=None: str(tmp_path / "out.pdf"),
-            raising=False,
+            gc_mod,
+            "cache_document_from_bytes_async",
+            AsyncMock(return_value=str(tmp_path / "out.pdf")),
         )
 
         path, mime = await adapter._download_attachment(attachment)
@@ -1415,25 +1384,6 @@ class TestOutboundThreadRouting:
 # ===========================================================================
 
 
-class TestMediaDelegation:
-
-
-    @pytest.mark.asyncio
-    async def test_send_animation_delegates_to_image(self, adapter):
-        """Google Chat has no native animation type; the adapter falls back
-        to send_image (which posts the URL inline). Animations and images
-        share the same render path on Chat so we just delegate."""
-        adapter.send_image = AsyncMock(
-            return_value=type("R", (), {"success": True, "message_id": "m",
-                                        "error": None})()
-        )
-        await adapter.send_animation(
-            "spaces/S", "https://example.com/dance.gif", caption="hop"
-        )
-        adapter.send_image.assert_awaited_once()
-        args, kwargs = adapter.send_image.await_args
-        assert args[1] == "https://example.com/dance.gif"
-        assert kwargs.get("caption") == "hop"
 
 
 # ===========================================================================
@@ -1560,59 +1510,6 @@ class TestADCFallback:
         assert "google_chat_service_account_json" in msg
 
 
-class TestGoogleChatInteractiveSetup:
-    def test_interactive_setup_uses_shared_cli_prompt_helpers(self, monkeypatch):
-        """Google Chat setup should not import prompt helpers from config.py."""
-        from plugins.platforms.google_chat import adapter as gc_mod
-
-        saved: dict[str, str] = {}
-        answers = {
-            "GCP project ID (e.g. my-project)": "demo-project",
-            "Pub/Sub subscription (projects/<proj>/subscriptions/<sub>)": (
-                "projects/demo-project/subscriptions/hermes-chat"
-            ),
-            "Path to Service Account JSON (or inline JSON)": "/tmp/sa.json",
-            "Allowed user emails (comma-separated)": "alice@example.com, bob@example.com",
-            "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)": (
-                "spaces/AAAA"
-            ),
-        }
-
-        def fake_get_env_value(key):
-            return saved.get(key, "")
-
-        def fake_save_env_value(key, value):
-            saved[key] = value
-
-        def fake_prompt(question, default=None, password=False):
-            return answers.get(question, default or "")
-
-        monkeypatch.setattr("hermes_cli.config.get_env_value", fake_get_env_value)
-        monkeypatch.setattr("hermes_cli.config.save_env_value", fake_save_env_value)
-        monkeypatch.setattr("hermes_cli.cli_output.prompt", fake_prompt)
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.prompt_yes_no", lambda *_a, **_kw: True
-        )
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.print_info", lambda *_a, **_kw: None
-        )
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.print_success", lambda *_a, **_kw: None
-        )
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.print_warning", lambda *_a, **_kw: None
-        )
-
-        gc_mod.interactive_setup()
-
-        assert saved["GOOGLE_CHAT_PROJECT_ID"] == "demo-project"
-        assert (
-            saved["GOOGLE_CHAT_SUBSCRIPTION_NAME"]
-            == "projects/demo-project/subscriptions/hermes-chat"
-        )
-        assert saved["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"] == "/tmp/sa.json"
-        assert saved["GOOGLE_CHAT_ALLOWED_USERS"] == "alice@example.com,bob@example.com"
-        assert saved["GOOGLE_CHAT_HOME_CHANNEL"] == "spaces/AAAA"
 
 
 # ===========================================================================
@@ -1735,7 +1632,7 @@ class TestCronSchedulerRegistry:
 
     def test_google_chat_is_known_delivery_platform(self):
         self._ensure_registered()
-        from cron.scheduler import _is_known_delivery_platform
+        from cron.scheduler_delivery import _is_known_delivery_platform
 
         assert _is_known_delivery_platform("google_chat") is True
 

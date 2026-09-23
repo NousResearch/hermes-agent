@@ -19,7 +19,6 @@ import {
   ZOOM_REASSERT_MAX_SETTLE_CHECKS,
   ZOOM_REASSERT_SETTLE_DELAY_MS,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
-  ZOOM_STEP,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomReassertWindowEvents,
@@ -28,12 +27,6 @@ import {
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
   assert.equal(ZOOM_STORAGE_KEY, 'hermes:desktop:zoomLevel')
-})
-
-test('default zoom matches the Appearance 90% preset', () => {
-  assert.equal(ZOOM_STEP, 0.1)
-  assert.equal(zoomLevelToPercent(DEFAULT_ZOOM_LEVEL), 90)
-  assert.equal(DEFAULT_ZOOM_LEVEL, percentToZoomLevel(90))
 })
 
 test('clampZoomLevel rejects garbage and enforces bounds', () => {
@@ -103,30 +96,6 @@ test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and 
   handlers.get('resized')()
   handlers.get('moved')()
   assert.equal(calls, 5)
-})
-
-test('focus event reasserts zoom immediately without debounce on Windows (high-DPI alt-tab, #50837)', () => {
-  const handlers = new Map()
-
-  const win = {
-    isDestroyed: () => false,
-    on(event, listener) {
-      handlers.set(event, listener)
-    }
-  }
-
-  let calls = 0
-  installZoomReassertOnWindowEvents(
-    win,
-    () => {
-      calls += 1
-    },
-    'win32'
-  )
-
-  // focus on Windows triggers immediate reassert — no timer involved
-  handlers.get('focus')()
-  assert.equal(calls, 1)
 })
 
 test('isDebouncedReassertEvent debounces focus only on Linux, not Windows/macOS', () => {

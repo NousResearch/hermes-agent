@@ -108,6 +108,11 @@ hermes config set auxiliary.background_review.enabled false
 # Drop Hermes' "Finishing the job" block ("... then report what real execution returned"):
 # an assistant's duty to account for its work, not Wintermute's.
 hermes config set agent.task_completion_guidance false
+# His tools on Telegram: his own, plus web, files, terminal, memory and recall. Hermes' default
+# set has 25 tools (browser, image, TTS, sub-agents...) whose descriptions are resent with
+# every message: ~11k tokens down to ~4.5k. Also drops the skills toolset, so he no longer
+# reads Hermes' own documentation as if it were about himself.
+hermes config set platform_toolsets.telegram '["wintermute","memory","web","file","terminal","session_search"]'
 
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"

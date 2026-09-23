@@ -371,6 +371,41 @@ export interface ObserveUpdaterHandoffDeps {
   clearTimeoutFn?: (timer: unknown) => void
 }
 
+export interface WaitForUpdaterHandoffStartDeps {
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * Wait for the real updater to acknowledge launch, rather than trusting an
+ * intermediate wrapper's exit code. On Windows `cmd start /b` exits 0 as soon
+ * as it asks Windows to create PowerShell; that does not prove PowerShell got
+ * far enough to execute the hand-off script (#119174).
+ */
+export async function waitForUpdaterHandoffStart(
+  hasStarted: () => boolean,
+  timeoutMs: number,
+  deps: WaitForUpdaterHandoffStartDeps = {}
+): Promise<boolean> {
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const deadline = now() + timeoutMs
+
+  while (true) {
+    if (hasStarted()) {
+      return true
+    }
+
+    const remaining = deadline - now()
+
+    if (remaining <= 0) {
+      return false
+    }
+
+    await sleep(Math.min(50, remaining))
+  }
+}
+
 /**
  * User-facing copy for a hand-off that did not take (spawn error or early exit).
  * The lead sentence is plain: nothing changed and Hermes keeps running. The raw

@@ -123,6 +123,20 @@ def test_handoff_resolves_uv_default_dotvenv_before_building_python_and_shim_pat
     assert 'Join-Path $VenvDir "Scripts\\hermes.exe"' in source
 
 
+def test_handoff_acknowledges_power_shell_before_starting_the_ui_or_update_gates() -> None:
+    source = _read()
+
+    acknowledgement = '[System.IO.File]::WriteAllText($env:HERMES_UPDATE_HANDOFF_ACK, "$PID")'
+    assert acknowledgement in source, (
+        "Electron must be able to distinguish cmd.exe's successful wrapper exit "
+        "from a PowerShell hand-off that actually started."
+    )
+    assert source.index(acknowledgement) < source.index("$script:Ui = $null"), (
+        "The launch acknowledgement must happen before UI setup and update gates, "
+        "so a pre-hand-off stall restores the gateways instead of quitting Desktop."
+    )
+
+
 def test_desktop_relaunch_waits_for_an_in_place_rebuild() -> None:
     source = _read()
     relaunch = re.search(

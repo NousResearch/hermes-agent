@@ -2480,8 +2480,6 @@ def save_config(
             managed_error("save configuration")
             return
 
-        config = _strip_managed_keys_for_save(config)
-
         ensure_hermes_home()
         config_path = get_config_path()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
@@ -2492,6 +2490,11 @@ def save_config(
         _raw_for_paths = require_readable_config_before_write(config_path)
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
+
+        # This must run AFTER `_merge_partial_save`: the merge folds the on-disk
+        # document back in, so stripping the caller's partial dict beforehand
+        # would leave any stale managed leaf on disk.
+        config = _strip_managed_keys_for_save(config)
 
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized

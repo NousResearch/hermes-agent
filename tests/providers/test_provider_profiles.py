@@ -339,3 +339,13 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
             assert resolve_provider(pid) == pid
         assert (PROVIDER_REGISTRY["alibaba-token-plan-cn"].inference_base_url
                 == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")
+
+
+class TestDeepSeekProfile:
+    def test_output_cap_default(self):
+        """#110126 layer 1: V4 reasoning spends the server's low default cap on
+        thinking and truncates large tool calls — the profile declares its own."""
+        p = get_provider_profile("deepseek")
+        assert p.default_max_tokens == 65536
+        assert p.get_max_tokens("deepseek-v4-flash") == 65536
+        assert p.get_max_tokens("deepseek-v4-pro") == 65536

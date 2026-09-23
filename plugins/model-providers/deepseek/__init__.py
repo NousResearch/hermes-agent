@@ -51,6 +51,12 @@ deepseek = DeepSeekProfile(
     # Native API implements only ``json_object`` (https://api-docs.deepseek.com/guides/json_mode);
     # ``json_schema`` is a guaranteed HTTP 400 "This response_format type is unavailable now".
     unsupported_response_formats=("json_schema",),
+    # V4 models think by default and the API's own output cap is low: without an
+    # explicit max_tokens the thinking + a large tool-call body exceed it, the
+    # response truncates (finish_reason='length') and the incomplete tool call is
+    # refused — a dead turn / dead subagent. 65536 mirrors the qwen-oauth profile,
+    # which declares the same cap for the same reasoning-model failure mode.
+    default_max_tokens=65536,
 )
 
 register_provider(deepseek)

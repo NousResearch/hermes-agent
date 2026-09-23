@@ -64,6 +64,7 @@ import {
 import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
+import type { HostBackendRecord } from './backend-discovery'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
@@ -259,9 +260,15 @@ import {
 import {
   type AttachedBackend,
   attachOrReserveSpawn,
+  type HostBackendRendezvousState,
   spawnLedgerPath,
   type SpawnReservation
 } from './host-backend-attach'
+import {
+  parseHostBackendRendezvous,
+  rendezvousPortFromRecord,
+  validateHostBackendIdentity
+} from './host-backend-rendezvous'
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
@@ -13074,9 +13081,107 @@ function hostBackendAttachDeps() {
         return null
       }
     },
+    probeHostIdentity: probeHostBackendIdentity,
+    readRendezvous: readHostBackendRendezvous,
     probeWebSocket: (wsUrl: string) => probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket }),
     resolveServedToken: (baseUrl: string) => resolveServedDashboardToken(baseUrl, ''),
     waitForReady: (baseUrl: string, token: string) => waitForHermes(baseUrl, token, undefined, 'token', {})
+  }
+}
+
+function hostRendezvousDirectory() {
+  const override = String(process.env.HERMES_GATEWAY_LOCK_DIR || '')
+
+  if (override) {
+    // The Python writer resolves a relative override from its process cwd. The
+    // Desktop process shares that cwd during update handoff; resolving here
+    // keeps relative overrides usable instead of silently ignoring them.
+    return path.resolve(override)
+  }
+
+  const stateHomeEnv = String(process.env.XDG_STATE_HOME || '').trim()
+
+  const stateHome =
+    stateHomeEnv && path.isAbsolute(stateHomeEnv) ? stateHomeEnv : path.join(app.getPath('home'), '.local', 'state')
+
+  return path.join(stateHome, 'hermes', 'gateway-locks')
+}
+
+function readPrivateRendezvousFile(filePath: string) {
+  const stat = fs.lstatSync(filePath)
+
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error('rendezvous entry is not a file')
+  }
+
+  if (
+    process.platform !== 'win32' &&
+    ((stat.mode & 0o077) !== 0 || (typeof process.getuid === 'function' && stat.uid !== process.getuid()))
+  ) {
+    throw new Error('rendezvous entry is not owner-only')
+  }
+
+  return fs.readFileSync(filePath, 'utf8')
+}
+
+function readHostBackendRendezvous(): HostBackendRendezvousState {
+  const directory = hostRendezvousDirectory()
+  const empty = { candidate: null, port: null }
+
+  try {
+    const directoryStat = fs.lstatSync(directory)
+
+    if (
+      directoryStat.isSymbolicLink() ||
+      !directoryStat.isDirectory() ||
+      (process.platform !== 'win32' &&
+        ((directoryStat.mode & 0o077) !== 0 ||
+          (typeof process.getuid === 'function' && directoryStat.uid !== process.getuid())))
+    ) {
+      return empty
+    }
+
+    const recordPath = path.join(directory, 'host-serve.json')
+    const tokenPath = path.join(directory, 'host-serve.token')
+    let recordContents = readPrivateRendezvousFile(recordPath)
+    let port = rendezvousPortFromRecord(recordContents)
+
+    // The writer replaces the token before the JSON record. Re-read the pair
+    // a bounded number of times when it is briefly inconsistent so an update
+    // handoff does not mistake a healthy backend for a stale one and spawn a
+    // duplicate.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const candidate = parseHostBackendRendezvous(recordContents, readPrivateRendezvousFile(tokenPath))
+
+        if (candidate) {
+          return { candidate, port }
+        }
+      } catch {
+        // The token may be between atomic replacements; refresh below.
+      }
+
+      try {
+        recordContents = readPrivateRendezvousFile(recordPath)
+        port = rendezvousPortFromRecord(recordContents)
+      } catch {
+        return { candidate: null, port }
+      }
+    }
+
+    return { candidate: null, port }
+  } catch {
+    return empty
+  }
+}
+
+async function probeHostBackendIdentity(baseUrl: string, token: string, record: HostBackendRecord) {
+  try {
+    const identity = (await fetchJson(`${baseUrl}/api/host/identity`, token, { timeoutMs: 3_000 })) as any
+
+    return validateHostBackendIdentity(identity, record)
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) }
   }
 }
 

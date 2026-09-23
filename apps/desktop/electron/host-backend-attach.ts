@@ -28,13 +28,32 @@ export interface AttachedBackend {
   wsUrl: string
 }
 
+export interface HostBackendRendezvous {
+  record: HostBackendRecord
+  token: string
+}
+
+export interface HostBackendRendezvousState {
+  candidate: HostBackendRendezvous | null
+  /** A safe loopback port extracted even when the private record is invalid. */
+  port: number | null
+}
+
 export interface HostBackendAttachDeps {
   /** Read the ledger file; return null when it is missing/unreadable. */
   readLedger: (path: string) => string | null
+  /** Read the private same-user host record and token, when available. */
+  readRendezvous?: () => HostBackendRendezvousState
   /** Resolve the token the backend actually serves at `GET /`. */
   resolveServedToken: (baseUrl: string) => Promise<string | null>
   /** Reject unless the backend answers its readiness probe. */
   waitForReady: (baseUrl: string, token: string) => Promise<unknown>
+  /** Prove a private rendezvous token belongs to the recorded serve process. */
+  probeHostIdentity?: (
+    baseUrl: string,
+    token: string,
+    record: HostBackendRecord
+  ) => Promise<{ ok: boolean; reason?: string }>
   /** Reject unless `/api/ws` accepts the token — the leg the renderer uses. */
   probeWebSocket: (wsUrl: string) => Promise<{ ok: boolean; reason?: string }>
   log: (message: string) => void
@@ -55,35 +74,72 @@ function wsUrlFor(baseUrl: string, token: string): string {
  * use, and the caller falls through to the next rung (another record, then
  * spawning). Only a *validated* candidate is ever returned.
  */
-async function validate(record: HostBackendRecord, deps: HostBackendAttachDeps): Promise<AttachedBackend | null> {
+async function validate(
+  record: HostBackendRecord,
+  deps: HostBackendAttachDeps,
+  rendezvousToken?: string
+): Promise<AttachedBackend | null> {
   const baseUrl = recordBaseUrl(record)
 
-  const token = await deps.resolveServedToken(baseUrl).catch(() => null)
+  const servedToken = await deps.resolveServedToken(baseUrl).catch(() => null)
 
-  if (!token) {
+  const tokenCandidates = [rendezvousToken, servedToken].filter(
+    (token, index, tokens): token is string => Boolean(token) && tokens.indexOf(token) === index
+  )
+
+  if (tokenCandidates.length === 0) {
     deps.log(`[attach] ${baseUrl} (pid ${record.pid}) did not publish a session token; not attaching`)
 
     return null
   }
 
-  try {
-    await deps.waitForReady(baseUrl, token)
-  } catch (error) {
-    deps.log(`[attach] ${baseUrl} (pid ${record.pid}) is not ready: ${(error as Error).message}`)
+  for (const token of tokenCandidates) {
+    if (rendezvousToken) {
+      const identityProbe = deps.probeHostIdentity
+        ? await deps.probeHostIdentity(baseUrl, token, record).catch(error => ({
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error)
+          }))
+        : null
 
-    return null
+      if (!identityProbe?.ok) {
+        deps.log(
+          `[attach] ${baseUrl} (pid ${record.pid}) did not prove its host identity: ${
+            identityProbe?.reason || 'identity probe unavailable'
+          }`
+        )
+
+        continue
+      }
+    }
+
+    try {
+      await deps.waitForReady(baseUrl, token)
+    } catch (error) {
+      deps.log(
+        `[attach] ${baseUrl} (pid ${record.pid}) is not ready: ${error instanceof Error ? error.message : String(error)}`
+      )
+
+      continue
+    }
+
+    const wsUrl = wsUrlFor(baseUrl, token)
+
+    const probe = await deps.probeWebSocket(wsUrl).catch(error => ({
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error)
+    }))
+
+    if (!probe.ok) {
+      deps.log(`[attach] ${baseUrl} (pid ${record.pid}) rejected the session token on /api/ws: ${probe.reason}`)
+
+      continue
+    }
+
+    return { baseUrl, pid: record.pid, port: record.port, token, wsUrl }
   }
 
-  const wsUrl = wsUrlFor(baseUrl, token)
-  const probe = await deps.probeWebSocket(wsUrl).catch(error => ({ ok: false, reason: error.message }))
-
-  if (!probe.ok) {
-    deps.log(`[attach] ${baseUrl} (pid ${record.pid}) rejected the session token on /api/ws: ${probe.reason}`)
-
-    return null
-  }
-
-  return { baseUrl, pid: record.pid, port: record.port, token, wsUrl }
+  return null
 }
 
 /**
@@ -97,7 +153,10 @@ export async function attachToHostBackend(
   deps: HostBackendAttachDeps
 ): Promise<AttachedBackend | null> {
   const records = parseSpawnLedger(deps.readLedger(ledgerPath))
-  const decision = spawnOrAttach({ isolated, records })
+  const rendezvousState = deps.readRendezvous?.() || { candidate: null, port: null }
+  const rendezvous = rendezvousState.candidate
+  const discoveryRecords = rendezvous ? [rendezvous.record, ...records] : records
+  const decision = spawnOrAttach({ isolated, records: discoveryRecords })
 
   if (decision.action === 'spawn') {
     if (decision.reason === 'isolated') {
@@ -108,15 +167,39 @@ export async function attachToHostBackend(
   }
 
   // Newest first, then the rest: a stale record must not cost us a live one.
-  const ordered = [decision.record, ...records.filter(candidate => candidate !== decision.record)]
+  // The private rendezvous record is authoritative when present, but keep the
+  // ledger candidates as a fallback for older backends and mixed-version hosts.
+  const ordered = [
+    ...(rendezvous ? [{ record: rendezvous.record, rendezvousToken: rendezvous.token }] : []),
+    ...records.map(record => ({ record, rendezvousToken: undefined }))
+  ].sort((left, right) => {
+    if (left.rendezvousToken && !right.rendezvousToken) {
+      return -1
+    }
 
-  for (const record of ordered) {
-    const attached = await validate(record, deps)
+    if (!left.rendezvousToken && right.rendezvousToken) {
+      return 1
+    }
+
+    return right.record.registeredAt - left.record.registeredAt
+  })
+
+  const rendezvousPort = rendezvous?.record.port ?? rendezvousState.port
+
+  for (const candidate of ordered) {
+    // Once a private record names an endpoint, do not bypass its identity proof
+    // with the less authoritative ledger token for that same endpoint. A
+    // different ledger endpoint is still a valid mixed-version fallback.
+    if (!candidate.rendezvousToken && rendezvousPort === candidate.record.port) {
+      continue
+    }
+
+    const attached = await validate(candidate.record, deps, candidate.rendezvousToken)
 
     if (attached) {
       deps.log(
         `[attach] attached to the running Hermes backend on ${attached.baseUrl} ` +
-          `(pid ${attached.pid}, registered by profile "${record.profile || 'default'}"); spawning nothing`
+          `(pid ${attached.pid}, registered by profile "${candidate.record.profile || 'default'}"); spawning nothing`
       )
 
       return attached

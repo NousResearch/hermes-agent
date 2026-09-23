@@ -130,9 +130,12 @@ async def get_host_identity(request: Request):
     headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
     """
     _require_token(request)
+    from gateway.host_rendezvous import process_create_time
+
     # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
     # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
     return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
+            "createTime": process_create_time(),
             "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 

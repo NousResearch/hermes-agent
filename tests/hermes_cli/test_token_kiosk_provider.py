@@ -15,7 +15,7 @@ class TestTokenKioskResolver:
             "`provider: token-kiosk` would be discarded and auto-detect would win"
         )
         assert pdef.id == "token-kiosk"
-        assert pdef.base_url == "https://agent-router.gaib.ai/v1"
+        assert pdef.base_url == "https://api-token-kiosk.gaib.ai/v1"
         assert "TOKEN_KIOSK_API_KEY" in pdef.api_key_env_vars
 
     def test_resolve_provider_full_recognizes_aliases(self):
@@ -36,7 +36,7 @@ class TestTokenKioskOverlay:
         assert overlay.transport == "openai_chat"
         assert overlay.is_aggregator is True
         assert overlay.extra_env_vars == ("TOKEN_KIOSK_API_KEY",)
-        assert overlay.base_url_override == "https://agent-router.gaib.ai/v1"
+        assert overlay.base_url_override == "https://api-token-kiosk.gaib.ai/v1"
         assert overlay.base_url_env_var == "TOKEN_KIOSK_BASE_URL"
 
     def test_provider_label(self):
@@ -85,8 +85,8 @@ class TestTokenKioskProfile:
         assert profile is not None
         assert profile.name == "token-kiosk"
         assert profile.display_name == "Token Kiosk"
-        assert profile.base_url == "https://agent-router.gaib.ai/v1"
-        assert profile.signup_url == "https://agent-router.gaib.ai"
+        assert profile.base_url == "https://api-token-kiosk.gaib.ai/v1"
+        assert profile.signup_url == "https://token-kiosk.gaib.ai"
         assert profile.auth_type == "api_key"
         assert profile.supports_vision is True
         assert "claude-3-5-sonnet" in profile.fallback_models

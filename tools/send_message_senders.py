@@ -256,8 +256,22 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+def _telegram_reply_fields(first_msg, requested):
+    """Anchor fields for an anchored send, read back from the first delivered message rather than
+    echoed from the request. Telegram reports an in-topic reply as ``reply_to_message`` and a reply
+    across topics as ``external_reply``; a topic message that is not a reply still points
+    ``reply_to_message`` at the topic root, so only a match on ``requested`` counts."""
+    confirmed = any(getattr(getattr(first_msg, field, None), "message_id", None) == requested
+                    for field in ("reply_to_message", "external_reply"))
+    return {"reply_message_id": str(first_msg.message_id),
+            "reply_to_message_id": str(requested) if confirmed else None}
+
+
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                         force_document=False, reply_to_message_id=None):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text. ``reply_to_message_id``
+    anchors the first delivered message only (as reply_to_mode "first" does), fails closed when the
+    target message is gone (``allow_sending_without_reply=False``) and reports what Telegram confirmed."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -268,9 +282,20 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
+        anchor = ({} if reply_to_message_id is None else
+                  {"reply_to_message_id": int(reply_to_message_id), "allow_sending_without_reply": False})
         # disable_web_page_preview is only valid for send_message, not media sends.
-        text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
-        last_msg, warnings, _tg_caption = None, [], None
+        text_kwargs = {**thread_kwargs, **anchor, **({"disable_web_page_preview": True} if disable_link_previews else {})}
+        last_msg, first_msg, warnings, _tg_caption = None, None, [], None
+
+        def delivered(msg):
+            nonlocal first_msg
+            if first_msg is None:
+                first_msg = msg
+                for key in anchor:  # only the first delivered message is the reply
+                    text_kwargs.pop(key, None)
+            return msg
+
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
@@ -278,7 +303,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+            last_msg = delivered(await _telegram_send_text_chunk(
+                bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs))
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
@@ -286,23 +312,25 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 # Caption mode suppressed the text send; the file is gone, so deliver the words alone.
                 if _tg_caption is not None and last_msg is None:
                     try:
-                        last_msg = await _send_telegram_message_with_retry(
-                            bot, chat_id=int_chat_id, text=_tg_caption, parse_mode=send_parse_mode, **text_kwargs)
+                        last_msg = delivered(await _send_telegram_message_with_retry(
+                            bot, chat_id=int_chat_id, text=_tg_caption, parse_mode=send_parse_mode, **text_kwargs))
                         _tg_caption = None  # delivered — don't re-caption a later file
                     except Exception as _cap_err:
                         logger.warning("Telegram caption-fallback send failed for missing media: %s",
                                        _sanitize_error_text(_cap_err))
                 continue
             try:
-                last_msg = await _telegram_send_one_media(
+                last_msg = delivered(await _telegram_send_one_media(
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
-                    has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
+                    has_html=_has_html, thread_kwargs={**thread_kwargs, **(anchor if first_msg is None else {})},
+                    force_document=force_document))
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
-        return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
+        return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id),
+                        **(_telegram_reply_fields(first_msg, anchor["reply_to_message_id"]) if anchor else {}))
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}"}

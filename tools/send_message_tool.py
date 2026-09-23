@@ -215,6 +215,9 @@ def _handle_send(args):
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
+    reply_to, reply_error = _reply_to_message_id(args.get("reply_to_message_id"), platform_name, chat_id)
+    if reply_error:
+        return tool_error(reply_error)
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
@@ -270,6 +273,8 @@ def _handle_send(args):
         mentions = args.get("mentions")
         if mentions and platform_name == "whatsapp":
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
+        if reply_to is not None:
+            handler_args["reply_to_message_id"] = reply_to
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
@@ -278,6 +283,13 @@ def _handle_send(args):
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
             if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
+            if reply_to is not None and result.get("reply_to_message_id") != str(reply_to):
+                # Delivered, but Telegram does not report it as that reply: don't book it as one,
+                # and name the message that went out so the caller doesn't blindly resend it.
+                result["success"] = False
+                result["partial_success"] = True
+                result["error"] = (f"Delivery incomplete: Telegram did not confirm message "
+                                   f"{result.get('reply_message_id')} as a reply to {reply_to}")
             if media_dropped:
                 # The text went out but an attachment the caller asked for did not: a script reading
                 # ``success`` / exit 0 must not book a delivery that never happened (#115908).
@@ -292,6 +304,19 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _reply_to_message_id(value, platform_name, chat_id):
+    """``(message_id, error)`` for the optional Telegram reply anchor. Fail closed: an anchor is never
+    dropped on another platform or re-targeted to the home channel, where the id means nothing."""
+    if value is None:
+        return None, None
+    if platform_name != "telegram" or not chat_id:
+        return None, "'reply_to_message_id' needs an explicit Telegram target: telegram:chat_id[:thread_id]"
+    digits = str(value).strip() if isinstance(value, (int, str)) and not isinstance(value, bool) else ""
+    if not (digits.isascii() and digits.isdigit()) or int(digits) <= 0:
+        return None, f"'reply_to_message_id' must be a positive message id, got {value!r}"
+    return int(digits), None
 
 
 def _platform_enum(platform_name):
@@ -685,7 +710,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, reply_to_message_id=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -698,7 +723,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.TELEGRAM:
         return await _send_telegram(
             pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
-            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
+            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")),
+            reply_to_message_id=reply_to_message_id)
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]

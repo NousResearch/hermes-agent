@@ -335,7 +335,7 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 
 def test_set_state_active(skills_home):
     from tools.skill_usage import set_state, get_record, STATE_ACTIVE
-    set_state("x", STATE_ACTIVE)
+    assert set_state("x", STATE_ACTIVE) is True
     assert get_record("x")["state"] == "active"
 
 
@@ -414,6 +414,43 @@ def test_is_agent_created(skills_home):
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------
+
+
+def test_archive_reverses_move_when_lifecycle_persistence_fails(skills_home, monkeypatch):
+    """An archive move is unsuccessful unless its archived state lands durably."""
+    from tools import skill_usage
+
+    skills_dir = skills_home / "skills"
+    skill_dir = _write_skill(skills_dir, "my-skill")
+    skill_usage.mark_agent_created("my-skill")
+    monkeypatch.setattr(skill_usage, "set_state", lambda *_args, **_kwargs: False)
+
+    ok, message = skill_usage.archive_skill("my-skill")
+
+    assert ok is False
+    assert "lifecycle state" in message
+    assert skill_dir.is_dir()
+    assert not (skills_dir / ".archive" / "my-skill").exists()
+
+
+def test_restore_reverses_move_when_lifecycle_persistence_fails(skills_home, monkeypatch):
+    """A restore move is unsuccessful unless its active state lands durably."""
+    from tools import skill_usage
+
+    skills_dir = skills_home / "skills"
+    skill_dir = _write_skill(skills_dir, "my-skill")
+    skill_usage.mark_agent_created("my-skill")
+    assert skill_usage.archive_skill("my-skill")[0] is True
+    archived = skills_dir / ".archive" / "my-skill"
+    assert archived.is_dir()
+
+    monkeypatch.setattr(skill_usage, "set_state", lambda *_args, **_kwargs: False)
+    ok, message = skill_usage.restore_skill("my-skill")
+
+    assert ok is False
+    assert "lifecycle state" in message
+    assert not skill_dir.exists()
+    assert archived.is_dir()
 
 
 # ---------------------------------------------------------------------------

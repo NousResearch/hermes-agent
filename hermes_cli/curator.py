@@ -322,6 +322,16 @@ def _cmd_archive(args) -> int:
     return _as_user(skill_usage.archive_skill, args.skill)
 
 
+def _cmd_consolidate(args) -> int:
+    """Public source-to-destination archive plus cron-forwarding transaction."""
+    import json
+    from agent.curator_consolidation import consolidate_skills
+
+    receipt = consolidate_skills(args.source, args.destination, actor="user")
+    print("curator: " + json.dumps(receipt, sort_keys=True, ensure_ascii=False))
+    return 0 if receipt.get("success") else 1
+
+
 def _idle_days(record: dict) -> Optional[int]:
     """Days since last activity, falling back to ``created_at`` so never-used skills aren't
     immortal; None only when both fields are missing or unparseable."""
@@ -404,6 +414,11 @@ def _cmd_ledger(args) -> int:
         extra = ""
         if evidence.get("absorbed_into"):
             extra = f"  → absorbed into '{evidence['absorbed_into']}'"
+        elif evidence.get("recovered_consolidation_entry"):
+            extra = (
+                f"  → recovered consolidation {evidence['recovered_consolidation_entry']} "
+                f"(source {'active' if evidence.get('source_restored') else 'not restored'})"
+            )
         elif evidence.get("rollback_target"):
             extra = f"  → rollback of {evidence['rollback_target']}"
         print(
@@ -647,6 +662,9 @@ _SUBCOMMANDS = (
         _arg("--yes", **_STORE_TRUE, help="Skip the confirmation prompt for --all-unmanaged")),
     ("restore", "Restore an archived skill", _cmd_restore, _SKILL),
     ("list-archived", "List archived skills", _cmd_list_archived),
+    ("consolidate", "Atomically archive a source skill and forward cron references to a destination", _cmd_consolidate,
+     _arg("source", help="Curator-managed active source skill to archive"),
+     _arg("destination", help="Active local destination skill for forwarded cron references")),
     ("archive", "Manually archive a skill (move to .archive/, excluded from prompt)", _cmd_archive,
      _SKILL),
     (

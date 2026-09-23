@@ -310,8 +310,37 @@ def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
     assert usage["orphan"]["state"] == u.STATE_ARCHIVED
 
 
+def test_automatic_archive_does_not_count_or_leave_move_when_state_persistence_fails(
+    curator_env, monkeypatch,
+):
+    """Automatic archival reports success only after the lifecycle write commits."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "orphan")
+    _backdate(u, "orphan", 200)
+    monkeypatch.setattr(u, "set_state", lambda *_args, **_kwargs: False)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert skill_dir.is_dir()
+    assert not (skills_dir / ".archive" / "orphan").exists()
 
 
+def test_automatic_state_transition_does_not_count_when_persistence_fails(curator_env, monkeypatch):
+    """Stale/reactivated counters also require a durable lifecycle write."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "stale-candidate")
+    _backdate(u, "stale-candidate", 20)
+    monkeypatch.setattr(u, "set_state", lambda *_args, **_kwargs: False)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["marked_stale"] == 0
+    assert u.get_record("stale-candidate")["state"] == u.STATE_ACTIVE
 
 
 # ---------------------------------------------------------------------------

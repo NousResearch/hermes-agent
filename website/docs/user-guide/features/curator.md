@@ -114,6 +114,7 @@ hermes curator adopt --all-unmanaged   # hand over every unmanaged skill
 hermes curator list-unmanaged   # itemize skills with no provenance marker
 hermes curator restore <skill>  # move an archived skill back to active
 hermes curator list-archived    # list skills currently in ~/.hermes/skills/.archive/
+hermes curator consolidate <source> <destination>  # atomically archive a managed source and forward cron references
 hermes curator archive <skill>  # manually archive a single skill now
 hermes curator prune [--days N] # bulk-archive agent-created skills idle >= N days (default: `archive_after_days`, 30)
 hermes curator ledger           # list the per-mutation audit ledger (all actors)
@@ -121,6 +122,20 @@ hermes curator ledger --skill <name> --limit 50  # filter/paginate ledger entrie
 hermes curator rollback <entry-id>  # undo a single mutation from the ledger
 hermes curator purge [--days N] [--dry-run]  # delete archived skills older than the TTL (explicit only)
 ```
+
+## Consolidation verification
+
+`hermes curator consolidate <source> <destination>` is the public, recoverable source-to-destination operation. Before it mutates anything it requires distinct active local, curator-managed source and destination packages, an unpinned source, complete readable packages, a readable cron store, a durable ledger, and a whole-tree snapshot. It archives the complete source package, rewrites both cron `skills` and legacy `skill` references, reads the cron store back, and records a machine-readable receipt plus a human-readable report. If archival, cron persistence/readback, ledger receipt, or report receipt verification fails, Hermes restores the active source and original cron store before returning nonzero.
+
+After a consolidation, use this read-only verification sequence:
+
+```bash
+hermes curator list-archived
+hermes curator ledger --skill <source> --limit 20
+hermes curator rollback --list
+```
+
+Then audit the archived package inventory (including `SKILL.md` and every support file) against its pre-operation manifest, inspect the affected cron jobs' `skills` and `skill` fields, and retain the receipt's rollback handle. `hermes curator archive <skill>` alone does **not** prove destination forwarding or archive-and-forward atomicity; it is only a recoverable source archive.
 
 ## Backups and rollback
 

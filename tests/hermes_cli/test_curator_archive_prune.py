@@ -82,6 +82,11 @@ def test_archive_and_prune_registered():
     assert args.skill == "my-skill"
     assert args.func.__name__ == "_cmd_archive"
 
+    args = parser.parse_args(["consolidate", "source-skill", "destination-skill"])
+    assert args.source == "source-skill"
+    assert args.destination == "destination-skill"
+    assert args.func.__name__ == "_cmd_consolidate"
+
     args = parser.parse_args(["prune", "--days", "45", "--yes", "--dry-run"])
     assert args.days == 45
     assert args.yes is True

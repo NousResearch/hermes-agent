@@ -200,8 +200,8 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     def _set(name: str, state: str, key: str) -> None:
-        _u.set_state(name, state)
-        counts[key] += 1
+        if _u.set_state(name, state):
+            counts[key] += 1
 
     for row in _u.curated_report():
         counts["checked"] += 1

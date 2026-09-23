@@ -565,6 +565,37 @@ def _validate_entry_paths(entry: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _transaction_created_package_dirs(entry: Dict[str, Any], after: List[Dict[str, str]]) -> List[Path]:
+    """Package directories explicitly proven created by a relocation transaction.
+
+    File manifests cannot prove whether an empty ancestor existed before the
+    mutation.  Only relocation writers may declare their newly-created package
+    destination, and rollback removes that exact package directory after its
+    after-files are gone; it never walks into an ancestor.
+    """
+    if entry.get("action") not in {"archive", "restore", "consolidate"}:
+        return []
+    evidence = entry.get("evidence")
+    declared = evidence.get("transaction_created_dirs") if isinstance(evidence, dict) else None
+    if not isinstance(declared, list):
+        return []
+    skills_root = _skills_dir()
+    after_packages = {
+        Path(os.path.normpath(str(path)))
+        for path in _skill_md_parents(after)
+    }
+    dirs: List[Path] = []
+    for raw in declared:
+        if not isinstance(raw, str) or not raw:
+            continue
+        candidate = Path(os.path.normpath(raw))
+        if candidate == skills_root or not _is_within(skills_root, candidate):
+            continue
+        if candidate in after_packages and candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
+
+
 def rollback_entry(entry_id: str) -> Tuple[bool, str]:
     """Restore the before-state of mutation *entry_id*. Fail-closed (mirrors
     agent/curator_backup.rollback): every before-blob must exist BEFORE any change, and a
@@ -623,6 +654,18 @@ def rollback_entry(entry_id: str) -> Tuple[bool, str]:
                     removed += 1
             except OSError as e:
                 logger.warning("skill_ledger: could not remove %s during rollback: %s", p, e)
+    # Directories are removed only when the relocation transaction recorded the
+    # exact package it created.  Do not infer directory provenance from file
+    # manifests: doing so prunes pre-existing empty category/archive parents.
+    for package_dir in _transaction_created_package_dirs(entry, after):
+        with suppress(OSError):
+            for descendant in sorted(
+                package_dir.rglob("*"), key=lambda path: len(path.parts), reverse=True,
+            ):
+                if descendant.is_dir():
+                    with suppress(OSError):
+                        descendant.rmdir()
+            package_dir.rmdir()
     append_entry(
         "rollback", entry.get("skill", "?"), before=safety_before, after=before,
         evidence={"rollback_target": entry_id, "restored": restored, "removed": removed})

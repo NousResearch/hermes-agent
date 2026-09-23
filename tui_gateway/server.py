@@ -1545,6 +1545,10 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         provider = billing_provider
     base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
     reasoning_config = model_config.get("reasoning_config")
+    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+    if is_foreign_provider_endpoint(provider, base_url):
+        # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
+        base_url = api_mode = ""
     # Heal a stale provider persisted by an older build (renamed/removed custom provider → "Unknown provider"):
     # recover ``custom:<name>`` from the stored base_url, then from the entry serving the model; else drop it.
     if provider and not _is_routable_provider(provider):

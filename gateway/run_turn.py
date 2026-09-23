@@ -206,7 +206,8 @@ class GatewayTurnMixin:
                     skey or "", model, override_model, override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
-            # No api_key on the override: env-based resolution below, override model/provider on top.
+            # No api_key on the override (credentials failed to re-resolve at rehydrate): resolve them
+            # for the override's own provider below, never layer it over the default provider's runtime.
             logger.debug(
                 "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
                 skey or "", model, override_model,
@@ -221,7 +222,19 @@ class GatewayTurnMixin:
                 ][:5] or "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs, unavailable_override = None, None
+        if override and override.get("provider"):
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                    override["provider"], target_model=override.get("model") or None)
+            except Exception as exc:
+                # Layering the override on the default runtime sent its model to the default provider's
+                # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
+                # so; the persisted override is kept, so the next turn retries it.
+                logger.warning("Session /model override provider %s unavailable: %s", override["provider"], exc)
+                unavailable_override, override = override, None
+        if runtime_kwargs is None:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
         self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
@@ -229,6 +242,10 @@ class GatewayTurnMixin:
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
+        if unavailable_override and not self._pre_agent_fallback_notice:
+            from hermes_cli.fallback_config import pre_agent_fallback_notice
+            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
+                unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
         if cfg and source is not None:

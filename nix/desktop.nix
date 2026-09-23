@@ -81,8 +81,9 @@ let
       patchShebangs .
 
       pushd apps/desktop
-        # typecheck :3
-        npm exec -- tsc -b
+        # Keep the packaged renderer self-contained while the regular desktop
+        # config continues type-checking its test suite and shared fixtures.
+        npm exec -- tsc -b tsconfig.build.json
 
         # build the renderer bundle
         # vite's emptyOutDir wipes dist/ on every run

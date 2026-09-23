@@ -228,7 +228,7 @@ def test_split_text_keeps_cjk_terminators():
     # zero-width lookbehind, not a consuming match, or split() drops 。！？…
     # and each sentence is synthesized without its terminator (#78477).
     text = "今天有什么新鲜事。帮我查一下可转债！谢谢……"
-    pieces = web_server._split_text_for_speak_stream(text, 4000)
+    pieces = _web_server_gateway._split_text_for_speak_stream(text, 4000)
     assert pieces == ["今天有什么新鲜事。 帮我查一下可转债！ 谢谢……"]
     # A terminator run (……) stays grouped, no lone-punctuation piece.
     assert "。" in pieces[0]

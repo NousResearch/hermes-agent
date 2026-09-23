@@ -168,7 +168,9 @@ def test_plugins_manage_list_reports_declared_server_snapshot(tmp_path):
     current = SimpleNamespace(state="missing_app", availability=object())
     liveness = SimpleNamespace(
         status=lambda _name: current,
-        describe=lambda _decl, _availability, _state: "Example App is not installed. Install Example App, then try again.",
+        describe=lambda _decl, _availability, _state, *, app_name=None: (
+            f"{app_name or 'Example App'} is not installed. Install {app_name or 'Example App'}, then try again."
+        ),
     )
     rows = [("example-plugin", "1.0", "Example", "user", plugin_dir, "example-plugin")]
     import_module = server._tools_mod
@@ -190,3 +192,39 @@ def test_plugins_manage_list_reports_declared_server_snapshot(tmp_path):
         "state": "missing_app",
         "sentence": "Example App is not installed. Install Example App, then try again.",
     }]
+
+
+def test_plugins_manage_list_uses_catalog_title_for_server_status(tmp_path):
+    plugin_dir = tmp_path / "example-plugin"
+    plugin_dir.mkdir()
+    package = SimpleNamespace(
+        manifest={"extensions": {"com.nousresearch.hermes": {"servers": {"example-server": {}}}}}
+    )
+    current = SimpleNamespace(state="mcp_not_connected", availability=object())
+    liveness = SimpleNamespace(
+        status=lambda _name: current,
+        describe=lambda _decl, _availability, _state, *, app_name=None: (
+            f"{app_name} is running, but Hermes is not connected to its MCP server."
+        ),
+    )
+    rows = [("example-plugin", "1.0", "Example", "user", plugin_dir, "example-plugin")]
+    import_module = server._tools_mod
+
+    with patch("hermes_cli.plugins_cmd._discover_all_plugins", return_value=rows), \
+         patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
+         patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
+         patch("hermes_cli.plugins_cmd._is_portable_plugin_dir", return_value=True), \
+         patch("hermes_cli.agent_plugins.load_agent_plugin", return_value=package), \
+         patch("hermes_platform.declaration.lookup", return_value=object()), \
+         patch("tools.mcp_tool_scope._resolve_server_key", return_value="example-plugin__example-server"), \
+         patch("hermes_cli.plugins_cmd_catalog.catalog_pins", return_value={}), \
+         patch("hermes_cli.plugins_cmd_catalog.catalog_versions", return_value={}), \
+         patch("hermes_cli.plugins_cmd_catalog.catalog_titles", return_value={"example-plugin": "Example App"}), \
+         patch("hermes_cli.plugins_cmd_catalog.catalog_row_fields", return_value={"catalog_title": "Example App"}), \
+         patch("tui_gateway.server._tools_mod", wraps=import_module) as modules:
+        modules.side_effect = lambda name: liveness if name == "tools.mcp_liveness" else import_module(name)
+        resp = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
+
+    server_row = resp["result"]["plugins"][0]["servers"][0]
+    assert server_row["state"] == "mcp_not_connected"
+    assert server_row["sentence"] == "Example App is running, but Hermes is not connected to its MCP server."

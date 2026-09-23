@@ -1496,7 +1496,7 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
-def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) -> list[dict]:
+def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool, app_name: str | None = None) -> list[dict]:
     if not portable or plugin_dir is None:
         return []
     package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
@@ -1525,7 +1525,7 @@ def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) ->
         rows.append({
             "name": name,
             "state": status.state,
-            "sentence": liveness.describe(decl, status.availability, status.state),
+            "sentence": liveness.describe(decl, status.availability, status.state, app_name=app_name),
         })
     return rows
 
@@ -1536,6 +1536,7 @@ def _plugin_rows() -> list[dict]:
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
     pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
     versions = cat.catalog_versions()
+    titles = cat.catalog_titles()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     active = pc._category_active_names()
@@ -1548,6 +1549,7 @@ def _plugin_rows() -> list[dict]:
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
         _dir_path = Path(str(_dir)) if _dir else None
         portable = pc._is_portable_plugin_dir(_dir)
+        catalog_fields = cat.catalog_row_fields(_dir, pins, versions, titles)
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
             "source": source, "status": status, "portable": portable,
@@ -1555,8 +1557,10 @@ def _plugin_rows() -> list[dict]:
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
-            "servers": _plugin_server_rows(_dir_path, key, portable=portable),
-            **cat.catalog_row_fields(_dir, pins, versions),
+            "servers": _plugin_server_rows(
+                _dir_path, key, portable=portable, app_name=catalog_fields.get("catalog_title")
+            ),
+            **catalog_fields,
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 

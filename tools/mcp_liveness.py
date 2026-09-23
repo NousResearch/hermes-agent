@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 LivenessKind = Literal["static", "server_json", "interactive_session"]
 LivenessState = Literal[
     "app_not_running",
+    "mcp_not_connected",
     "endpoint_unavailable",
     "no_interactive_session",
     "version_too_old",
@@ -109,6 +110,7 @@ def liveness_for(server_name: str) -> Liveness:
 def _action(state: LivenessState, app_name: str) -> tuple[str, Retry]:
     actions: dict[LivenessState, tuple[str, Retry]] = {
         "app_not_running": (f"Start {app_name}, then try again.", "after_user_action"),
+        "mcp_not_connected": (f"Reconnect {app_name} in Hermes, then try again.", "after_user_action"),
         "endpoint_unavailable": (f"Open {app_name} and enable its local connection, then try again.", "after_user_action"),
         "no_interactive_session": (f"Open an interactive desktop session and start {app_name}, then try again.", "never_here"),
         "version_too_old": (f"Update {app_name}, then try again.", "after_user_action"),
@@ -143,16 +145,22 @@ def status(server_name: str) -> Status | None:
             elif probe.endpoint.state is not CheckState.PRESENT:
                 state = "endpoint_unavailable"
             else:
-                state = "app_not_running"
+                state = "mcp_not_connected"
     else:
-        state = "app_not_running"
+        state = "mcp_not_connected"
     action, retry = _action(state, decl.name)
     return Status(state, available, live, action, retry)
 
 
-def describe(decl: declaration.Declaration, available: Availability, liveness_state: LivenessState) -> str:
+def describe(
+    decl: declaration.Declaration,
+    available: Availability,
+    liveness_state: LivenessState,
+    *,
+    app_name: str | None = None,
+) -> str:
     """Compose one unavailable-state sentence with one user action."""
-    app_name = decl.name
+    app_name = app_name or decl.name
     action, _retry = _action(liveness_state, app_name)
     if liveness_state == "missing_app":
         reason = f"{app_name} is not installed."
@@ -164,6 +172,8 @@ def describe(decl: declaration.Declaration, available: Availability, liveness_st
         reason = f"{app_name} needs an interactive desktop session."
     elif liveness_state == "endpoint_unavailable":
         reason = f"{app_name}'s local endpoint is unavailable."
+    elif liveness_state == "mcp_not_connected":
+        reason = f"{app_name} is running, but Hermes is not connected to its MCP server."
     else:
         reason = f"{app_name} is not running."
     return f"{reason} {action}"

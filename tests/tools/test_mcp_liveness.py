@@ -10,7 +10,7 @@ import pytest
 
 from hermes_platform import declaration
 from hermes_platform.resolver.availability import Availability
-from tools.mcp_liveness import describe, parse_liveness
+from tools.mcp_liveness import describe, parse_liveness, status
 
 
 def _decl(tmp_path, *, min_version=None):
@@ -59,6 +59,7 @@ def test_invalid_registered_liveness_degrades_to_static(monkeypatch, caplog):
     ("state", "available", "fragment"),
     [
         ("app_not_running", Availability("available"), "is not running"),
+        ("mcp_not_connected", Availability("available"), "is running, but Hermes is not connected"),
         ("endpoint_unavailable", Availability("available"), "local endpoint is unavailable"),
         ("no_interactive_session", Availability("available"), "interactive desktop session"),
         ("version_too_old", Availability("version_too_old", version="1.2", min_version="2.0"), "version 1.2 is too old"),
@@ -70,6 +71,38 @@ def test_describe_has_one_state_sentence_and_one_action(tmp_path, state, availab
     assert sentence.startswith("Example App")
     assert fragment in sentence
     assert sentence.count("try again") <= 1
+
+
+def test_live_server_json_is_reported_as_mcp_not_connected(tmp_path, monkeypatch):
+    import hermes_cli.agent_plugins as agent_plugins
+
+    runtime = tmp_path / "server.json"
+    runtime.write_text(json.dumps({"http": "http://127.0.0.1:3333", "pid": os.getpid()}))
+    declaration.register("example-server", _decl(tmp_path))
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda _name: {
+        "kind": "server_json", "path": str(runtime),
+    }, raising=False)
+    try:
+        current = status("example-server")
+    finally:
+        declaration.unregister("example-server")
+
+    assert current is not None
+    assert current.state == "mcp_not_connected"
+
+
+def test_static_liveness_is_reported_as_mcp_not_connected(tmp_path, monkeypatch):
+    import hermes_cli.agent_plugins as agent_plugins
+
+    declaration.register("example-server", _decl(tmp_path))
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda _name: {"kind": "static"}, raising=False)
+    try:
+        current = status("example-server")
+    finally:
+        declaration.unregister("example-server")
+
+    assert current is not None
+    assert current.state == "mcp_not_connected"
 
 
 def test_live_endpoint_reloads_file_and_registers_token_before_use(tmp_path, monkeypatch, caplog):
@@ -162,7 +195,7 @@ def test_hydrated_error_shape_for_registered_declaration(tmp_path, monkeypatch):
     payload = json.loads(error)
     assert server is None
     assert payload["server"] == "example-server"
-    assert payload["state"] == "app_not_running"
+    assert payload["state"] == "mcp_not_connected"
     assert payload["app"]["name"] == "Example App"
     assert payload["user_action"]
     assert payload["retry"] == "after_user_action"

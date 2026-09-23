@@ -4311,6 +4311,18 @@
             "default": null,
             "title": "Catalog Name"
           },
+          "catalog_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Title"
+          },
           "catalog_tier": {
             "anyOf": [
               {
@@ -19959,6 +19971,7 @@
         "enum": [
           "connected",
           "app_not_running",
+          "mcp_not_connected",
           "endpoint_unavailable",
           "no_interactive_session",
           "version_too_old",

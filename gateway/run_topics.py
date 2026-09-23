@@ -483,11 +483,33 @@ class GatewayTopicThreadsMixin:
 
     def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
         """``gateway.platforms.telegram.extra.disable_topic_auto_rename``; default False (auto-rename on)."""
+        return self._telegram_extra_flag(source, "disable_topic_auto_rename", default=False)
+
+    def _telegram_topic_auto_icon_enabled(self, source: SessionSource) -> bool:
+        """``gateway.platforms.telegram.extra.topic_auto_icon``; default False (opt-in: one extra aux call per title)."""
+        return self._telegram_extra_flag(source, "topic_auto_icon", default=False)
+
+    def _telegram_extra_flag(self, source: SessionSource, key: str, *, default: bool) -> bool:
         config = getattr(self, "config", None)
         platform_cfg = config.platforms.get(source.platform) if config and getattr(config, "platforms", None) else None
         if platform_cfg is None:
-            return False
-        return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename"))
+            return default
+        value = (getattr(platform_cfg, "extra", None) or {}).get(key)
+        return default if value is None else is_truthy_value(value)
+
+    async def _pick_telegram_topic_icon(self, adapter, title: str) -> Optional[str]:
+        """Catalog ``custom_emoji_id`` matching ``title``, or None. The catalog is cached per runner
+        (one ``getForumTopicIconStickers`` per day); the aux call runs off-loop."""
+        from gateway.topic_icons import TopicIconCatalog, choose_topic_icon
+        fetch = getattr(adapter, "fetch_forum_topic_icon_stickers", None)
+        if not callable(fetch):
+            return None
+        catalog = getattr(self, "_telegram_topic_icon_catalog", None)
+        if catalog is None:
+            catalog = self._telegram_topic_icon_catalog = TopicIconCatalog()
+        if not await catalog.ensure_loaded(fetch):
+            return None
+        return await asyncio.to_thread(choose_topic_icon, title, catalog)
 
     async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
@@ -525,10 +547,17 @@ class GatewayTopicThreadsMixin:
         if adapter is None:
             return
         topic_name = self._sanitize_telegram_topic_title(title)
+        icon_id = None
+        if self._telegram_topic_auto_icon_enabled(source):
+            try:
+                icon_id = await self._pick_telegram_topic_icon(adapter, topic_name)
+            except Exception:
+                logger.debug("Telegram topic icon selection failed; renaming without icon", exc_info=True)
         try:
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:
-                await rename_topic(chat_id=str(source.chat_id), thread_id=str(source.thread_id), name=topic_name)
+                kwargs = {"icon_custom_emoji_id": icon_id} if icon_id else {}
+                await rename_topic(chat_id=str(source.chat_id), thread_id=str(source.thread_id), name=topic_name, **kwargs)
                 return
             bot = getattr(adapter, "_bot", None)
             edit_forum_topic = getattr(bot, "edit_forum_topic", None) or getattr(bot, "editForumTopic", None)

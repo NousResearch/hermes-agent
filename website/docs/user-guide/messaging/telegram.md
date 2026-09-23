@@ -873,6 +873,20 @@ gateway:
 
 When this flag is on, Hermes still generates an internal session title (used by `hermes sessions`, the TUI, etc.) but never edits the Telegram topic name. Useful when you organise topics by hand under BotFather Threaded Mode and don't want every first reply to overwrite the title.
 
+### Semantic topic icons
+
+Telegram forum topics carry an icon from a fixed catalog of ~110 custom-emoji stickers (`getForumTopicIconStickers`); by default a topic shows the first letter of its name. Opt in to let Hermes pick the catalog icon that best matches the generated title, alongside the rename:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        topic_auto_icon: true
+```
+
+Off by default: it costs one extra auxiliary (`title_generation` tier) call per titled topic. The catalog is fetched once per day; an icon the model picks outside the catalog, an aux failure or a Telegram error all degrade to the plain rename. Operator-declared `dm_topics` keep their configured `icon_custom_emoji_id` — the auto-icon lane never touches them, and `disable_topic_auto_rename: true` disables it too.
+
 ### `/new` inside a topic
 
 Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.

@@ -207,9 +207,16 @@ export function createManagedRolloutProductionAdapters(
       repositoryOwners.clear()
       const sources = options.listSources().filter(source => source.kind === 'ssh')
 
-      const inspected = await Promise.all(
-        sources.map(async source => ({ source, inspection: await options.inspectSource(source).catch(() => null) }))
-      )
+      const inspected: Array<{ source: ProductionSource; inspection: ProductionInventoryInspection | null }> = []
+
+      for (let offset = 0; offset < sources.length; offset += 8) {
+        inspected.push(...await Promise.all(
+          sources.slice(offset, offset + 8).map(async source => ({
+            source,
+            inspection: await options.inspectSource(source).catch(() => null)
+          }))
+        ))
+      }
 
       const usable = inspected.filter(
         (item): item is { source: ProductionSource; inspection: ProductionInventoryInspection } => item.inspection !== null

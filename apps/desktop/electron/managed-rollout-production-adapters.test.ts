@@ -139,6 +139,32 @@ test('captures a coherent inventory revision and routes Git through the inspecte
   assert.ok(gitCalls[0].includes('rev-parse HEAD'))
 })
 
+test('inventory inspection never opens more than eight SSH probes at once', async () => {
+  const sources = Array.from({ length: 9 }, (_, index) => source(`source-${index}`, index.toString(16).repeat(32)))
+  let active = 0
+  let peak = 0
+  const adapters = createManagedRolloutProductionAdapters({
+    nowMono: () => 1000,
+    listSources: () => sources,
+    inspectSource: async current => {
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      active -= 1
+
+      return inspection(current, current.id.slice(-1).repeat(32), SOURCE_A)
+    },
+    git: async () => '',
+    reviewManifestPath: 'unused',
+    assuranceRoot: 'unused'
+  })
+
+  const snapshot = await adapters.inventoryReader.capture()
+  assert.ok(snapshot)
+  assert.equal(snapshot!.observations.length, sources.length)
+  assert.ok(peak <= 8, `observed ${peak} concurrent SSH inventory probes`)
+})
+
 test('an empty registered SSH fleet is known empty, while an unreachable registered source remains unknown', async () => {
   const base = {
     nowMono: () => 23,

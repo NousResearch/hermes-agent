@@ -179,6 +179,24 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertIn("raw-passthrough", result["output"])
 
 
+class TestModelFacingReset(unittest.TestCase):
+    def test_reset_is_reachable_from_a_model_call_despite_stale_kernel_mode(self):
+        """Session kernels are always on (#96787), so ``reset`` is the model's only
+        way out of poisoned state. A stale ``kernel_mode: per-call`` key must not
+        drop it from the schema, and a model-shaped call routed through the
+        registered handler must actually discard the kernel's state."""
+        from tools.code_execution_tool import _execute_code_handler, build_execute_code_schema
+
+        with _kernel_config(kernel_mode="per-call"):
+            schema = build_execute_code_schema(mode="strict")
+            self.assertEqual(schema["parameters"]["properties"]["reset"]["type"], "boolean")
+            _execute_code_handler({"code": "x = 41"}, task_id="kernel-test")
+            kept = json.loads(_execute_code_handler({"code": "print(x + 1)"}, task_id="kernel-test"))
+            self.assertIn("42", kept["output"], kept)
+            reset = json.loads(_execute_code_handler(
+                {"code": "print(x + 1)", "reset": True}, task_id="kernel-test"))
+        self.assertEqual(reset["status"], "error", reset)
+        self.assertIn("NameError", reset.get("error", ""))
 
 
 if __name__ == "__main__":

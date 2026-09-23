@@ -141,15 +141,14 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
 
   if (!loaded) {
     setLoaded(true)
+    // The user just opened this editor: a cold backend takes the pool's
+    // reserved slot instead of queuing behind warm roster backends.
+    const opened = { spawnPriority: 'foreground' } as const
     Promise.all([
-      requestForBot(bot, 'profiles.describe', {
-        name: bot.name
-      }) as Promise<ProfileDescribeResponse>,
-      (
-        requestForBot(bot, 'mcp.catalog', {
-          profile: bot.name
-        }) as Promise<McpCatalogResponse>
-      ).catch(() => null)
+      requestForBot(bot, 'profiles.describe', { name: bot.name }, opened) as Promise<ProfileDescribeResponse>,
+      (requestForBot(bot, 'mcp.catalog', { profile: bot.name }, opened) as Promise<McpCatalogResponse>).catch(
+        () => null
+      )
     ])
       .then(([res, cat]) => {
         const configured = res.mcp_servers || []

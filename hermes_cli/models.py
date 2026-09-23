@@ -1154,13 +1154,11 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Accepts the Anthropic Fast Mode ``speed`` param (Opus 4.8 / Opus 5 only) — deliberately NOT a
-    general "fast model" check: Opus 4.7 hard-400s on it, and dedicated ``…-fast`` ids select fast
-    inference via the model field and must not also get it."""
-    base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
-    if not base.startswith("claude-") or "-fast" in base:
-        return False
-    return any(v in base for v in ("opus-4-8", "opus-4.8", "opus-5"))
+    """Accepts the Anthropic Fast Mode ``speed`` param (Opus 4.8 / Opus 5 / Opus 5.5 only) —
+    deliberately NOT a general "fast model" check. The list lives in ``agent.model_metadata``."""
+    from agent.model_metadata import is_anthropic_fast_mode_model
+
+    return is_anthropic_fast_mode_model(model_id)
 
 
 def _fast_mode_route_supported(
@@ -1899,23 +1897,17 @@ def cached_provider_model_ids(
     if not normalized:
         return []
     is_ollama = normalized == "ollama"
-    if is_ollama:
-        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
     entry = cache.get(normalized)
     now = time.time()
 
-    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
-        age = now - entry["at"]
-        if age < (_PROVIDER_MODELS_FALLBACK_TTL if entry.get("fallback") else ttl_seconds):
-            return list(entry["models"])
-        # Empty native catalogs are authoritative only for the short native TTL — never served
-        # through the stale window. Non-empty stale rows are served immediately (SWR) so picker
-        # opens never block on serial /v1/models round-trips.
-        if entry["models"] and not entry.get("fallback") and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
-            _spawn_swr_refresh(normalized)
+    if not force_refresh:
+        tier = _disk_serve_tier(entry, fp, now, is_ollama=is_ollama, ttl_seconds=ttl_seconds)
+        if tier is not None:
+            if tier == "stale":
+                _spawn_swr_refresh(normalized)
             return list(entry["models"])
 
     if non_blocking and not force_refresh:
@@ -2691,6 +2683,27 @@ def _cache_entry_valid(
         and (allow_empty or bool(entry["models"]))
         and isinstance(entry.get("at"), (int, float))
         and not isinstance(entry.get("at"), bool))
+
+
+def _disk_serve_tier(entry: Any, fp: str, now: float, *, is_ollama: bool,
+                     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> Optional[str]:
+    """How :func:`cached_provider_model_ids` serves *entry* without the network.
+
+    ``"fresh"`` inside the row's TTL (a curated fallback row only for
+    ``_PROVIDER_MODELS_FALLBACK_TTL``), ``"stale"`` for a non-empty, non-fallback row inside
+    ``_PROVIDER_MODELS_STALE_SERVE_MAX`` (served while an SWR thread revalidates), else ``None``:
+    the call would block on a live fetch. Empty native catalogs are authoritative only inside the
+    short native TTL, never through the stale window."""
+    if is_ollama:
+        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
+    if not _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+        return None
+    age = now - entry["at"]
+    if age < (_PROVIDER_MODELS_FALLBACK_TTL if entry.get("fallback") else ttl_seconds):
+        return "fresh"
+    if entry["models"] and not entry.get("fallback") and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        return "stale"
+    return None
 
 
 def cached_fetch_api_models(

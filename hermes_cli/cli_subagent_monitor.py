@@ -1,5 +1,6 @@
-"""Classic CLI live-work dock (subagents + background processes) and scoped controls; no
-agent-loop state is changed. Process rows come from ``cli_process_dock``."""
+"""Classic CLI live-work dock (subagents, background processes, active goal, queued prompts) and
+scoped controls; no agent-loop state is changed. Process rows come from ``cli_process_dock``,
+goal/queue rows from ``cli_session_dock``."""
 from __future__ import annotations
 
 import json
@@ -8,6 +9,7 @@ import time
 from prompt_toolkit.utils import get_cwidth
 
 from hermes_cli import cli_process_dock as procs
+from hermes_cli import cli_session_dock as session_rows
 
 
 def _clip(value, width):
@@ -28,12 +30,18 @@ class SubagentMonitor:
         self.cli = cli
         self.entries = []
         self.processes = []
+        self.goal = ''
+        self.queued = []
         self.selected_id = None
         self._signature = None
         self._last_poll = 0
         self.app = None
         self.opening = False
         self.collapsed = False
+
+    @property
+    def has_rows(self):
+        return bool(self.entries or self.processes or self.goal or self.queued)
 
     @property
     def roster(self):
@@ -68,11 +76,15 @@ class SubagentMonitor:
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
         processes = procs.process_rows(now)
-        signature = json.dumps([entries, processes], sort_keys=True, default=str)
+        goal = session_rows.goal_line(self.cli)
+        queued = session_rows.queued_prompts(self.cli)
+        signature = json.dumps([entries, processes, goal, queued], sort_keys=True, default=str)
         changed = signature != self._signature
         self._signature = signature
         self.entries = entries
         self.processes = processes
+        self.goal = goal
+        self.queued = queued
         if self.selected is None:
             roster = self.roster
             self.selected_id = self._key(roster[0]) if roster else None
@@ -113,14 +125,20 @@ class SubagentMonitor:
         from tools.delegate_tool_registry import _handle_control_action
         return json.loads(_handle_control_action(action, target, message, getattr(self.cli, 'agent', None)))
 
-    def _counts(self):
-        """Collapsed-heading count fragment: ``2 live``, ``1 proc``, or ``2 live · 3 procs``."""
+    def _counts(self, *, session=True):
+        """Count fragment: ``2 live``, ``1 proc``, ``2 live · 3 procs``; the collapsed heading
+        (``session=True``) adds ``goal active|paused|parked`` and ``N queued``."""
         parts = []
         if self.entries:
             parts.append(f'{len(self.entries)} live')
         if self.processes:
             running = sum(r['status'] == 'running' for r in self.processes)
             parts.append(f"{running} proc{'s' if running != 1 else ''}" if running else f'{len(self.processes)} done')
+        if session and self.goal:
+            parts.append('goal ' + ('parked' if self.goal.startswith('⏳') else
+                                    'paused' if self.goal.startswith('⏸') else 'active'))
+        if session and self.queued:
+            parts.append(f'{len(self.queued)} queued')
         return ' · '.join(parts)
 
     def _title(self):
@@ -132,32 +150,40 @@ class SubagentMonitor:
         if self.entries:
             row = self.entries[0]
             return f"last: {row['last_tool']}" if row.get('last_tool') else row.get('status') or 'starting'
-        return procs.process_activity(self.processes[0])
+        if self.processes:
+            return procs.process_activity(self.processes[0])
+        return self.goal or f'next: {self.queued[0]}'
 
     def dock_text(self, *, columns, rows):
-        if not self.entries and not self.processes:
+        if not self.has_rows:
             return ''
         if self.collapsed:
             count = self._counts()
-            # Keep both controls before spending scarce cells on activity.
-            headings = (
-                f'{self._title()} · {count} · Ctrl+T expand · F7 restore',
-                f'{count} · Ctrl+T expand · F7 restore',
-                f'{count} · Ctrl+T · F7',
-                count,
-            )
+            # Keep both controls before spending scarce cells on activity. Ctrl+T opens the
+            # subagent/process monitor, so a goal/queue-only dock offers just F7.
+            if self.entries or self.processes:
+                headings = (
+                    f'{self._title()} · {count} · Ctrl+T expand · F7 restore',
+                    f'{count} · Ctrl+T expand · F7 restore',
+                    f'{count} · Ctrl+T · F7',
+                    count,
+                )
+            else:
+                headings = (f'{count} · F7 restore', f'{count} · F7', count)
             width = max(0, columns - 1)
             heading = next((text for text in headings if get_cwidth(text) <= width), count)
             activity = self._collapsed_activity()
-            if get_cwidth(heading + ' · ' + activity) <= width:
-                heading += ' · ' + activity
+            # A goal/queue preview is long prose: clip it into the room left instead of dropping it.
+            room = width - get_cwidth(heading + ' · ')
+            if get_cwidth(activity) <= room or (room >= 12 and not (self.entries or self.processes)):
+                heading += ' · ' + _clip(activity, room)
             return _clip(' ' + heading, max(0, columns))
         columns = max(0, columns - 2)
+        lines = [_clip(f' {self.goal}', columns)] if self.goal else []
         budget = max(1, min(4, (rows - 10) // 3))
         # Both blocks present: split the row budget so neither hides the other entirely.
         agent_budget = budget if not self.processes else max(1, budget - max(1, budget // 2))
         agent_count = min(len(self.entries), agent_budget)
-        lines = []
         if self.entries:
             hidden = len(self.entries) - agent_count
             lines.append(_clip(f' Subagents · {len(self.entries)} live · Ctrl+T expand · F7 collapse', columns))
@@ -181,6 +207,15 @@ class SubagentMonitor:
                 lines.append(_clip(f" {procs.process_glyph(row)} {_clip(row['command'], command_width)} · {activity}", columns))
             if len(self.processes) > proc_count:
                 lines.append(_clip(f' +{len(self.processes) - proc_count} more · Ctrl+T all processes', columns))
+        if self.queued:
+            # Last, so the next prompt to run sits right above the input it came from.
+            shown = min(len(self.queued), session_rows.QUEUE_ROWS if rows >= 24 else 1)
+            controls = '' if self.entries or self.processes else ' · F7 collapse'
+            lines.append(_clip(f' Queue · {len(self.queued)} queued · /queue list{controls}', columns))
+            for index, text in enumerate(self.queued[:shown], 1):
+                lines.append(_clip(f'  {index}. {text}', columns))
+            if len(self.queued) > shown:
+                lines.append(_clip(f'  +{len(self.queued) - shown} more', columns))
         return '\n'.join(' ' + line for line in lines)
 
 
@@ -258,7 +293,7 @@ def build_monitor_application(monitor, **kwargs):
 
     def header():
         row = monitor.selected
-        title = f"{monitor._title()} · {monitor._counts()}"
+        title = f"{monitor._title()} · {monitor._counts(session=False)}"
         if state['detail'] and row:
             title += f" · {monitor._key(row)} · {row.get('goal') or row.get('command') or ''}"
         return [('class:subagent-dock.heading', _clip(title, app.output.get_size().columns))]
@@ -416,5 +451,5 @@ def install_dock(cli):
     cli._subagent_dock_widget = ConditionalContainer(
         Window(FormattedTextControl(text), wrap_lines=False, dont_extend_height=True,
                style='class:subagent-dock'),
-        filter=Condition(lambda: bool(monitor.entries or monitor.processes) and not modal_prompt_active(cli)),
+        filter=Condition(lambda: monitor.has_rows and not modal_prompt_active(cli)),
     )

@@ -1535,10 +1535,11 @@ class SessionSessionsMixin:
     def delete_session(
         self, session_id: str, sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
+        expected_display_messages: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
-        are orphaned. *expected_delete_ids*: proceed only if parent + delegate cascade still equals that
-        set (re-walked inside the transaction on purpose: export-before-delete fails closed)."""
+        are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
+        transcript drift. Both checks run inside the same write transaction as deletion."""
         removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
@@ -1547,6 +1548,11 @@ class SessionSessionsMixin:
             if expected_ids is not None and expected_ids != {
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
+                return False
+            if expected_display_messages is not None and any(
+                self._display_messages_from_conn(conn, covered_id) != expected
+                for covered_id, expected in expected_display_messages.items()
+            ):
                 return False
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied

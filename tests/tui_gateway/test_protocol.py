@@ -1365,8 +1365,48 @@ def test_dispatch_runs_short_handlers_inline(server):
     assert resp == {"jsonrpc": "2.0", "id": "r1", "result": {"pong": True}}
 
 
+@pytest.mark.parametrize(
+    "slow_method",
+    ["complete.path", "complete.slash", "voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
+)
+def test_slow_handlers_run_off_the_reader_thread(slow_method, server, monkeypatch):
+    """dispatch() must hand these RPCs to the pool and return at once, so a stalled handler never blocks
+    the stdin/WS reader behind it. Completion (#21123: git ls-files / skill scan froze prompt.submit for
+    the 120s RPC timeout) and voice/wake (synchronous faster-whisper lazy install, up to 300s: sent
+    messages never reached the agent) are the same bug class as #50005."""
+    release = threading.Event()
+    written = []
 
+    class _Transport:
+        def write(self, obj):
+            written.append(obj)
+            return True
 
+        def close(self):
+            pass
+
+    ran_on = []
+
+    def _stalled(rid, params):
+        ran_on.append(threading.get_ident())
+        release.wait(timeout=10)
+        return server._ok(rid, {})
+
+    monkeypatch.setitem(server._methods, slow_method, _stalled)
+
+    t0 = time.monotonic()
+    resp = server.dispatch({"id": "slow", "method": slow_method, "params": {}}, _Transport())
+    elapsed = time.monotonic() - t0
+    release.set()
+
+    assert resp is None, f"{slow_method} ran inline on the reader thread"
+    assert elapsed < 5
+    deadline = time.monotonic() + 10
+    while not written and time.monotonic() < deadline:
+        time.sleep(0.01)
+    # The pool worker, not the reader, ran the handler and wrote its response frame.
+    assert written and written[0]["id"] == "slow", written
+    assert ran_on and ran_on[0] != threading.get_ident()
 
 
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):

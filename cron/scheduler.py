@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 # fcntl is Unix-only; Windows uses msvcrt
 try:
@@ -375,12 +375,12 @@ def _repeat_alert_withheld(incident: dict) -> bool:
     if not alerted_at:
         return False
     try:
-        from cron.jobs import _ensure_aware
+        from cron.jobs import _elapsed_seconds, _ensure_aware
 
         last = _ensure_aware(datetime.fromisoformat(str(alerted_at)))
     except (TypeError, ValueError):
         return False
-    return _hermes_now() - last < timedelta(hours=hours)
+    return _elapsed_seconds(_hermes_now(), last) < hours * 3600
 
 
 def _upsert_incident_for_failure(

@@ -1,4 +1,7 @@
+from decimal import Decimal
 from types import SimpleNamespace
+
+import pytest
 
 from agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
@@ -9,7 +12,6 @@ from agent.usage_pricing import (
     normalize_usage,
     resolve_billing_route,
 )
-from decimal import Decimal
 
 
 def test_astra_whole_request_price_tier_includes_cache_writes():
@@ -36,10 +38,38 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
     assert below.amount_usd < above.amount_usd
 
 
+_MODELS_DEV_REGISTRY = {
+    "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
+    "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},
+}
+_USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
 
 
+@pytest.fixture
+def models_dev_registry(monkeypatch):
+    """A models.dev cache holding the vendors' rate cards; the providers' own /models carry no prices."""
+    import agent.models_dev as models_dev
+
+    monkeypatch.setattr(models_dev, "_models_dev_cache", _MODELS_DEV_REGISTRY)
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
 
 
+@pytest.mark.parametrize(("provider", "base_url", "model", "expected"), [
+    ("openai-api", "https://api.openai.com/v1", "gpt-5-nano", ("estimated", Decimal("0.455"))),
+    ("openai", "", "gpt-5-nano", ("estimated", Decimal("0.455"))),
+    ("xai", "https://api.x.ai/v1", "grok-4.3", ("estimated", Decimal("3.95"))),
+    # The vendor's list price needs the vendor's own API: same provider name on
+    # someone else's host, a downgraded origin, a subscription route or a custom
+    # endpoint keep ``unknown`` rather than inheriting it.
+    ("xai", "https://grok-relay.example.com/v1", "grok-4.3", ("unknown", None)),
+    ("xai", "http://api.x.ai/v1", "grok-4.3", ("unknown", None)),
+    ("xai-oauth", "https://api.x.ai/v1", "grok-4.3", ("unknown", None)),
+    ("custom", "https://api.x.ai/v1", "grok-4.3", ("unknown", None)),
+])
+def test_direct_first_party_route_prices_models_missing_from_snapshot(models_dev_registry, provider, base_url, model, expected):
+    cost = estimate_usage_cost(model, _USAGE, provider=provider, base_url=base_url)
+
+    assert (cost.status, cost.amount_usd) == expected
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
@@ -836,3 +866,39 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def _anthropic_usage(speed=None):
+    """Canonical usage from an Anthropic-shaped usage payload; ``speed`` rides ``raw_usage``."""
+    payload = {"input_tokens": 100_000, "output_tokens": 10_000, "cache_read_input_tokens": 200_000, "cache_creation_input_tokens": 50_000}
+    if speed:
+        payload["speed"] = speed
+    return normalize_usage(payload, provider="anthropic", api_mode="anthropic_messages")
+
+
+def test_anthropic_fast_mode_responses_price_from_the_fast_rate_row():
+    from agent.model_metadata import _ANTHROPIC_FAST_MODE_MODELS
+    from agent.usage_pricing import _ANTHROPIC_FAST_MODE_PRICING
+
+    # Every model the fast-mode gate sends ``speed`` to has a fast rate and a standard rate.
+    assert set(_ANTHROPIC_FAST_MODE_PRICING) == set(_ANTHROPIC_FAST_MODE_MODELS)
+    for model in _ANTHROPIC_FAST_MODE_MODELS:
+        standard_entry = get_pricing_entry(model, provider="anthropic")
+        assert standard_entry is not None
+        fast = estimate_usage_cost(model, _anthropic_usage("fast"), provider="anthropic")
+        standard = estimate_usage_cost(model, _anthropic_usage(), provider="anthropic")
+        assert fast.pricing_version == _ANTHROPIC_FAST_MODE_PRICING[model].pricing_version
+        assert standard.pricing_version == standard_entry.pricing_version
+        assert fast.amount_usd > standard.amount_usd
+        # A response the API reports as standard speed is billed like one without the field.
+        assert estimate_usage_cost(model, _anthropic_usage("standard"), provider="anthropic").amount_usd == standard.amount_usd
+    # Vendor-prefixed, dotted ids price from the same fast row.
+    assert estimate_usage_cost("anthropic/claude-opus-5.5", _anthropic_usage("fast"), provider="anthropic").amount_usd == (
+        estimate_usage_cost("claude-opus-5-5", _anthropic_usage("fast"), provider="anthropic").amount_usd
+    )
+
+
+def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
+    result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
+    assert result.amount_usd is None
+    assert result.status == "unknown"

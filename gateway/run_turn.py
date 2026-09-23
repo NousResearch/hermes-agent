@@ -212,7 +212,8 @@ class GatewayTurnMixin:
                 "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
                 skey or "", model, override_model,
             )
-        else:
+        elif logger.isEnabledFor(logging.DEBUG):
+            # The override_keys scan walks every session; only pay for it when DEBUG is on.
             logger.debug(
                 "No session model override: session=%s config_model=%s override_keys=%s",
                 skey or "", model,

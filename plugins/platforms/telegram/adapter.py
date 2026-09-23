@@ -476,6 +476,9 @@ class _PollingStallError(RuntimeError):
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
+    # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
+    _STATUS_MESSAGE_IDS_MAX = 2000
+
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -3819,12 +3822,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if cached_id is not None:
             result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)
             if result.success:
-                if result.message_id:
+                # Only write back if nobody evicted/replaced this key during the await.
+                if result.message_id and self._status_message_ids.get(key) == cached_id:
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             self._status_message_ids.pop(key, None)
         result = await self.send(chat_id, content, metadata=metadata)
         if result.success and result.message_id:
+            if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
+                # FIFO trim: drop the oldest half to bound memory (mirrors the Slack adapter).
+                for stale in list(self._status_message_ids)[: self._STATUS_MESSAGE_IDS_MAX // 2]:
+                    self._status_message_ids.pop(stale, None)
             self._status_message_ids[key] = str(result.message_id)
         return result
 

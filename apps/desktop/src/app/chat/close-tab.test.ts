@@ -138,6 +138,7 @@ describe('closeWorkspaceTab', () => {
   it('a focused remote bot screen swallows ⌘W: no terminal tab, no session tab closes', async () => {
     loadedMainOnly()
     const combo = await import('@/lib/keybinds/combo')
+
     const spy = vi
       .spyOn(combo, 'isFocusWithin')
       .mockImplementation(selector => selector === '[data-remote-screen]' || selector === '[data-terminal]')

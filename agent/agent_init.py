@@ -2408,6 +2408,9 @@ def init_agent(
     # Every (provider, model) that rejected image content this session. build_api_request strips
     # images from requests to those models only, so history keeps them for any model that can see.
     agent._image_rejecting_models = set()
+    # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
+    # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
+    agent._fast_mode_unavailable_models = set()
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)

@@ -993,6 +993,39 @@ export interface Translations {
       backendIdleTimeoutTitle: string
     }
     customEndpoints: {
+      active: string
+      apiKeySet: string
+      use: string
+      editTitle: string
+      addTitle: string
+      fields: {
+        name: string
+        providerId: string
+        endpointUrl: string
+        defaultModel: string
+        context: string
+        apiKey: string
+        apiKeyNewPlaceholder: string
+        apiKeyPlaceholder: string
+        useNewChats: string
+        discoverModels: string
+      }
+      test: string
+      save: string
+      newEndpoint: string
+      apiMode: string
+      autoDetect: string
+      couldNotLoad: string
+      endpointSaved: string
+      saveFailed: string
+      endpointReachable: string
+      endpointReachableTransport: (transport: string) => string
+      endpointReachableModels: (reachable: string, count: number) => string
+      endpointValidationFailed: string
+      validationFailed: string
+      activationFailed: string
+      deleteConfirm: (name: string) => string
+      deleteFailed: string
       title: string
       deleteEndpoint: string
       emptyDescription: string
@@ -1388,6 +1421,19 @@ export interface Translations {
       deepLinkErrorTooLarge: string
     }
     model: {
+      setupProviderFallback: string
+      setUpProvider: (name: string) => string
+      staleAuxBefore: (count: number, names: string) => string
+      staleAuxAfter: string
+      staleAuxOtherProviders: string
+      moaEnabled: string
+      moaSetDefault: string
+      moaNewPresetPlaceholder: string
+      moaAddPreset: string
+      moaDefault: string
+      moaReferenceToggle: (enabled: boolean, index: number) => string
+      moaReferenceTitle: (index: number) => string
+      moaAddReference: string
       loading: string
       appliesDesc: string
       provider: string
@@ -3104,6 +3150,13 @@ export interface Translations {
     everythingSkipped: string
     everythingRowFailed: string
     everythingFanoutFailedTitle: string
+    changeLogNew: string
+    changeLogFixed: string
+    changeLogFaster: string
+    changeLogImproved: string
+    changeLogOther: string
+    changeLogFallbackLabel: string
+    changeLogFallbackItem: string
     applyStatus: {
       preparing: string
       pulling: string

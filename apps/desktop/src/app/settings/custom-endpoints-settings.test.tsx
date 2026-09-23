@@ -3,13 +3,21 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
 import { $connection } from '@/store/session'
 import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
-import type { CustomEndpoint, CustomEndpointsResponse } from '@/types/hermes'
+import type {
+  CustomEndpoint,
+  CustomEndpointsResponse,
+  CustomEndpointValidationResponse
+} from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
 const saveCustomEndpoint = vi.fn()
 const validateCustomEndpoint = vi.fn()
+const activateCustomEndpoint = vi.fn()
+const deleteCustomEndpoint = vi.fn()
+const confirm = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
 const triggerHaptic = vi.fn()
@@ -24,14 +32,15 @@ vi.mock('@/store/profile', () => ({
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  activateCustomEndpoint: vi.fn(),
-  deleteCustomEndpoint: vi.fn(),
+  activateCustomEndpoint: (...args: unknown[]) => activateCustomEndpoint(...args),
+  deleteCustomEndpoint: (...args: unknown[]) => deleteCustomEndpoint(...args),
   getCustomEndpoints: (...args: unknown[]) => getCustomEndpoints(...args),
   getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
   saveCustomEndpoint: (...args: unknown[]) => saveCustomEndpoint(...args),
   setApiRequestProfile: vi.fn(),
   validateCustomEndpoint: (...args: unknown[]) => validateCustomEndpoint(...args)
 }))
+vi.mock('@/store/confirm', () => ({ confirm: (...args: unknown[]) => confirm(...args) }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: (...args: unknown[]) => triggerHaptic(...args) }))
 vi.mock('@/store/notifications', () => ({
   notify: (...args: unknown[]) => notify(...args),
@@ -83,6 +92,19 @@ function currentScope() {
   return scope!
 }
 
+function replaceOwner() {
+  $connection.set({
+    authMode: 'token',
+    baseUrl: 'https://gateway-b.example',
+    connectionId: 'gateway',
+    headers: { 'Cf-Access-Client-Id': 'client-b' },
+    mode: 'remote',
+    profile: 'default',
+    remoteHost: 'operator@gateway-b',
+    token: 'token-b'
+  } as never)
+}
+
 beforeEach(async () => {
   const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
   vi.stubGlobal('hermesDesktop', {
@@ -119,6 +141,45 @@ afterEach(async () => {
 })
 
 describe('CustomEndpointsSettings', () => {
+  it('localizes endpoint editing on language changes without changing transport or draft identifiers', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+    let language!: I18nContextValue
+
+    function Surface() {
+      language = useI18n()
+
+      return <CustomEndpointsSettings scope={currentScope()} />
+    }
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh">
+        <Surface />
+      </I18nProvider>
+    )
+    await screen.findByText('暂无自定义端点')
+    fireEvent.change(screen.getByRole('textbox', { name: '名称' }), { target: { value: 'Fixture Ω' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '端点 URL' }), { target: { value: 'http://fixture.test/v1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '默认模型' }), { target: { value: 'fixture-model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Responses API' }))
+    await act(() => language.setLocale('zh-hant'))
+    expect((screen.getByRole('textbox', { name: '名稱' }) as HTMLInputElement).value).toBe('Fixture Ω')
+    expect(screen.getByText('API 模式')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '自動偵測' })).toBeTruthy()
+    expect(saveCustomEndpoint).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Fixture Ω',
+        api_mode: 'codex_responses',
+        base_url: 'http://fixture.test/v1',
+        model: 'fixture-model'
+      }),
+      expect.objectContaining({ connectionId: 'gateway', profile: 'default' })
+    )
+  })
+
   it('sends the chosen API mode and discovered alias metadata on Save (#93622)', async () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     validateCustomEndpoint.mockResolvedValue({
@@ -263,16 +324,7 @@ describe('CustomEndpointsSettings', () => {
 
     const staleEndpoint = { ...originalEndpoint, name: 'Stale response' }
     await act(async () => {
-      $connection.set({
-        authMode: 'token',
-        baseUrl: 'https://gateway-b.example',
-        connectionId: 'gateway',
-        headers: { 'Cf-Access-Client-Id': 'client-b' },
-        mode: 'remote',
-        profile: 'default',
-        remoteHost: 'operator@gateway-b',
-        token: 'token-b'
-      } as never)
+      replaceOwner()
       resolveSave({ ...savedResponse, endpoints: [staleEndpoint], id: staleEndpoint.id })
     })
 
@@ -280,6 +332,86 @@ describe('CustomEndpointsSettings', () => {
     expect(onMainModelChanged).not.toHaveBeenCalled()
     expect(screen.getByDisplayValue('Profile A')).toBeTruthy()
     expect(screen.queryByDisplayValue('Stale response')).toBeNull()
+  })
+
+  it('drops a pending validation completion after the registered owner is replaced', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    let resolveValidation!: (value: CustomEndpointValidationResponse) => void
+    validateCustomEndpoint.mockReturnValue(new Promise(resolve => (resolveValidation = resolve)))
+
+    render(<CustomEndpointsSettings scope={currentScope()} />)
+    await screen.findByText('No custom endpoints')
+    const urlInput = screen.getByPlaceholderText<HTMLInputElement>('http://127.0.0.1:8081/v1')
+    fireEvent.change(urlInput, { target: { value: 'http://old-owner.test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    await waitFor(() => expect(validateCustomEndpoint).toHaveBeenCalled())
+
+    await act(async () => {
+      replaceOwner()
+      resolveValidation({
+        message: '',
+        models: ['stale-model'],
+        ok: true,
+        reachable: true,
+        resolved_base_url: 'http://stale-owner.test/v1'
+      })
+    })
+
+    expect(urlInput.value).toBe('http://old-owner.test')
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('drops a pending activation completion after the registered owner is replaced', async () => {
+    const inactiveEndpoint = { ...(savedResponse.endpoints[0] as CustomEndpoint), is_current: false }
+    getCustomEndpoints.mockResolvedValue({ ...savedResponse, endpoints: [inactiveEndpoint] })
+    let resolveActivation!: (value: { model: string; provider: string }) => void
+    activateCustomEndpoint.mockReturnValue(new Promise(resolve => (resolveActivation = resolve)))
+    const onConfigSaved = vi.fn()
+    const onMainModelChanged = vi.fn()
+
+    render(
+      <CustomEndpointsSettings
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        scope={currentScope()}
+      />
+    )
+    await screen.findByDisplayValue('Profile A')
+    fireEvent.click(screen.getByRole('button', { name: 'Use' }))
+    await waitFor(() => expect(activateCustomEndpoint).toHaveBeenCalled())
+
+    await act(async () => {
+      replaceOwner()
+      resolveActivation({ model: 'stale-model', provider: 'stale-provider' })
+    })
+
+    expect(getCustomEndpoints).toHaveBeenCalledTimes(1)
+    expect(onConfigSaved).not.toHaveBeenCalled()
+    expect(onMainModelChanged).not.toHaveBeenCalled()
+    expect(triggerHaptic).not.toHaveBeenCalled()
+  })
+
+  it('drops a pending delete completion after the registered owner is replaced', async () => {
+    getCustomEndpoints.mockResolvedValue(savedResponse)
+    confirm.mockResolvedValue(true)
+    let resolveDelete!: (value: CustomEndpointsResponse) => void
+    deleteCustomEndpoint.mockReturnValue(new Promise(resolve => (resolveDelete = resolve)))
+    const onConfigSaved = vi.fn()
+
+    render(<CustomEndpointsSettings onConfigSaved={onConfigSaved} scope={currentScope()} />)
+    await screen.findByDisplayValue('Profile A')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete endpoint' }))
+    await waitFor(() => expect(deleteCustomEndpoint).toHaveBeenCalled())
+
+    await act(async () => {
+      replaceOwner()
+      resolveDelete({ ...emptyResponse, ok: true })
+    })
+
+    expect(screen.getByDisplayValue('Profile A')).toBeTruthy()
+    expect(onConfigSaved).not.toHaveBeenCalled()
+    expect(triggerHaptic).not.toHaveBeenCalled()
   })
 
   it('does not publish callbacks while editing a non-active profile owner', async () => {

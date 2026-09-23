@@ -266,7 +266,9 @@ def resolve(specs: list[str], constraints: list[str], *, dry_run: bool, timeout:
     """Run the shared installer ladder on *specs* under *constraints*. Raises ``DependencyConflict`` or
     ``DependencyInstallError``; returns the installer result on success."""
     from tools.lazy_deps import install_specs
-    result = install_specs(specs, timeout=timeout, constraints=constraints, dry_run=dry_run)
+    # A plugin's declared deps follow the plugin's own security policy; Hermes's exclude-newer quarantine
+    # covers Hermes's packages only (core_constraints still keeps them in range).
+    result = install_specs(specs, timeout=timeout, constraints=constraints, dry_run=dry_run, policy="plugin")
     error = _classify(result)
     if error is not None:
         raise error

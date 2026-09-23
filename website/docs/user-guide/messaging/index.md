@@ -288,7 +288,8 @@ Semantics are honest at-least-once:
 
 - A response whose send **never started** is redelivered as-is.
 - A response that was **mid-send** when the gateway died (the platform may or
-  may not have received it) is redelivered with a visible
+  may not have received it), including a redelivery an earlier boot was
+  still sending, is redelivered with a visible
   "♻️ Recovered reply — … may be a duplicate" prefix. Ambiguity is labeled,
   never silently resent.
 - A final send refused by **flood control** (such as Telegram rate limits) is retried automatically

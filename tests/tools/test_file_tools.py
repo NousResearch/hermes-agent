@@ -890,6 +890,35 @@ class TestNotFoundCache:
 
 
 
+class TestSSHConfigWriteGate:
+    """~/.ssh/config can run commands (ProxyCommand / Match exec), so a write
+    routes through the approval gate and fails closed with nobody to approve.
+    #93201: the gate call once raised TypeError (missing required kwarg)
+    instead of returning an approval decision — drive the real gate end to end."""
+
+    @pytest.fixture()
+    def ssh_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        return tmp_path / ".ssh" / "config"
+
+    def test_no_human_present_blocks_and_writes_nothing(self, ssh_config):
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool(str(ssh_config), "Host x\n  ProxyCommand evil\n"))
+        assert "BLOCKED" in result["error"]
+        assert not ssh_config.exists()
+
+    def test_single_query_session_denies_with_the_q_mode_message(self, ssh_config, monkeypatch):
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")  # `hermes chat -q` exports it too
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool(str(ssh_config), "Host x\n  ProxyCommand evil\n"))
+        assert "BLOCKED" in result["error"]
+        assert "single-query" in result["error"]
+        assert not ssh_config.exists()
+
+
 class TestSecretFileReadRedaction:
     """#110567: read_file / search_files must classify the RESOLVED path and run the
     assignment passes for a secret-bearing file, instead of returning an opaque

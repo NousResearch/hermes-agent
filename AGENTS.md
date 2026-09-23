@@ -323,6 +323,14 @@ May 2026). PyPI: `>=floor,<next_major` (`"httpx>=0.28.1,<1"`); pre-1.0: `<0.(min
 pip: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers. Run `uv lock` after
 changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
 
+The `[tool.uv] exclude-newer = "14 days"` quarantine covers **Hermes's own dependencies only**
+(`uv lock`/`sync`, `hermes update`, `tools.lazy_deps.ensure` extras — `install policy "core"`).
+Plugin `python_dependencies` install under the plugin's own policy (`install_specs(policy="plugin")`
+→ `uv --no-config`, still inside the core constraints file); Teknium's ruling: "plugins dont have to
+abide by our 14 day rule … Only hermes' dependencies themselves have to." We recommend (not require)
+plugin authors adopt their own quarantine — the developer guide and `plugin-catalog/README.md` carry
+that guidance.
+
 ## Commits, Merges, PRs
 
 - **Squash merges from stale branches silently revert recent fixes.** Before squash-merging,

@@ -1165,6 +1165,39 @@ export const zh = defineLocale({
       backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
     },
     customEndpoints: {
+      active: '已启用',
+      apiKeySet: '已设置 API 密钥',
+      use: '使用',
+      editTitle: '编辑端点',
+      addTitle: '添加端点',
+      fields: {
+        name: '名称',
+        providerId: '提供商 ID',
+        endpointUrl: '端点 URL',
+        defaultModel: '默认模型',
+        context: '上下文',
+        apiKey: 'API 密钥',
+        apiKeyNewPlaceholder: '留空以保留当前密钥',
+        apiKeyPlaceholder: '可选',
+        useNewChats: '用于新对话',
+        discoverModels: '发现模型'
+      },
+      test: '测试',
+      save: '保存',
+      newEndpoint: '新建端点',
+      apiMode: 'API 模式',
+      autoDetect: '自动检测',
+      couldNotLoad: '无法加载自定义端点',
+      endpointSaved: '自定义端点已保存。',
+      saveFailed: '保存失败',
+      endpointReachable: '端点可连接。',
+      endpointReachableTransport: transport => `端点可连接（${transport} 路由已响应）。`,
+      endpointReachableModels: (reachable, count) => `${reachable} 找到 ${count} 个模型。`,
+      endpointValidationFailed: '端点验证失败。',
+      validationFailed: '验证失败',
+      activationFailed: '启用失败',
+      deleteConfirm: name => `删除 ${name}？`,
+      deleteFailed: '删除失败',
       title: '自定义端点',
       deleteEndpoint: '删除端点',
       emptyDescription: '在下方添加兼容 OpenAI 的端点。',
@@ -1584,6 +1617,19 @@ export const zh = defineLocale({
       deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
     },
     model: {
+      setupProviderFallback: '提供方',
+      setUpProvider: name => `设置 ${name}`,
+      staleAuxBefore: (count, names) => `${count} 个辅助任务（${names}）仍由 `,
+      staleAuxAfter: ' 运行，而不是主模型。',
+      staleAuxOtherProviders: '其他提供方',
+      moaEnabled: '启用',
+      moaSetDefault: '设为默认',
+      moaNewPresetPlaceholder: '新预设',
+      moaAddPreset: '添加预设',
+      moaDefault: '默认：',
+      moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
+      moaReferenceTitle: index => `参考 ${index}`,
+      moaAddReference: '添加参考模型',
       loading: '正在加载模型配置...',
       appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
       provider: '提供方',
@@ -1768,7 +1814,7 @@ export const zh = defineLocale({
     sessions: {
       loading: '正在加载已归档会话…',
       archivedTitle: '已归档会话',
-      archivedIntro: '已归档对话会从侧边栏隐藏，但会保留全部消息。在侧边栏 Ctrl/⌘ 点击对话即可归档。',
+      archivedIntro: '已归档对话会从侧边栏隐藏，但会保留全部消息。在侧边栏 Alt/⌥+Shift 点击对话即可归档。',
       emptyArchivedTitle: '暂无归档',
       emptyArchivedDesc: '归档一个对话后会显示在这里。',
       unarchive: '取消归档',
@@ -1958,7 +2004,7 @@ export const zh = defineLocale({
     plugins: {
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
-      pageBlurb: '每个插件一行。插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
+      pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
       halfDesktop: '桌面',
       halfDesktopHint: '本应用，所有配置相同',
       halfAgent: 'Agent',
@@ -3166,12 +3212,77 @@ export const zh = defineLocale({
     hotkeys: '快捷键',
     helpFooter: '打开完整面板 · 退格键关闭',
     commandDescs: {
-      '/help': '命令与快捷键的完整列表',
+      '/help': '显示桌面端斜线命令',
       '/clear': '开始新会话',
-      '/resume': '恢复之前的会话',
+      '/resume': '恢复已保存的会话',
       '/details': '控制对话记录的详细程度',
       '/copy': '复制所选内容或最后一条助手消息',
-      '/quit': '退出 hermes'
+      '/quit': '退出 hermes',
+      '/start': '确认平台启动请求，不发送回复',
+      '/new': '开始新的桌面对话',
+      '/topic': '启用或查看 Telegram 私聊话题会话',
+      '/save': '将当前对话记录保存为 JSON',
+      '/retry': '重试最后一条消息（重新发送给代理）',
+      '/prompt': '在 $EDITOR 中用 Markdown 编写下一个提示词，然后发送',
+      '/undo': '回退 N 个用户回合并重新提示（默认为 1）',
+      '/title': '重命名当前会话',
+      '/handoff': '将此会话移交到消息平台',
+      '/branch': '将最新消息分支到新对话',
+      '/worktree': '显示、列出、创建或清理隔离的 Git worktree',
+      '/compress': '压缩此对话的上下文',
+      '/rollback': '列出或还原文件系统检查点（还原会保留你的手动编辑；--all 可覆盖此行为）',
+      '/export': '将配置档案（设置、技能、主题）导出为可分享的归档文件',
+      '/import': '将共享的配置档案归档文件导入为新的配置档案',
+      '/stop': '停止当前回合与后台进程',
+      '/pause': '暂停全局新任务（紧急停止）；/pause off 恢复',
+      '/bg': '在独立的后台会话中运行提示词',
+      '/btw': '在不中断当前对话的情况下询问旁支问题',
+      '/agents': '显示活跃代理与正在运行的任务',
+      '/journey': '打开记忆图谱 — 查看技能与记忆随时间的变化',
+      '/queue': '排队、查看、编辑、移除、移动或清空下一轮提示词',
+      '/steer': '在下一次工具调用后插入消息，不会中断当前工作',
+      '/goal': '设置持续目标，让 Hermes 跨回合工作直到完成',
+      '/heartbeat': '设置周期性提示词，在空闲时重新进入此会话',
+      '/refine': '立即检查此对话，并将心得保存到记忆或技能',
+      '/review': '生成独立子代理，审查刚才讨论的工作（PR、代码、文档）',
+      '/loop': '在此会话中以固定间隔重新运行提示词',
+      '/plan': '将 Markdown 实施计划写入 .hermes/plans/，不执行任何操作',
+      '/moa': '使用默认的 Mixture of Agents 组合运行提示词，完成后还原模型',
+      '/subgoal': '添加或管理活跃目标的额外条件',
+      '/status': '显示当前会话状态',
+      '/egress': '显示 Docker 对外连接代理状态',
+      '/context': '显示详细的上下文窗口，包括用量、分类明细、压缩统计与吞吐量',
+      '/whoami': '显示你的斜线命令访问权限（admin / user）',
+      '/profile': '切换活跃的 Hermes 配置档案',
+      '/codex-runtime': '切换 OpenAI/Codex 模型使用的 Codex app-server runtime',
+      '/personality': '设置预定义人格',
+      '/battery': '切换状态栏中的彩色电池指示器',
+      '/timestamps': '切换消息与 /history 上的 [HH:MM] 时间戳',
+      '/diff': '显示工作目录中的 Git 更改',
+      '/focus': '切换专注视图 — 只显示你的提示词与最终回复',
+      '/yolo': '切换 YOLO — 自动批准危险命令',
+      '/approvals': '显示或设置持久化的危险命令批准模式',
+      '/reasoning': '管理推理强度和显示方式',
+      '/skin': '切换桌面主题，或切换到下一个主题',
+      '/wake': '控制桌面的唤醒词监听器 [on|off|status]',
+      '/tools': '管理工具',
+      '/memory': '查看待处理的记忆写入，或切换批准闸门',
+      '/bundles': '列出技能包（可用 /<name> 作为多个技能的别名）',
+      '/pet': '切换或领养 petdex 吉祥物（/pet、/pet list、/pet boba）',
+      '/hatch': '生成新的宠物（打开宠物生成器）',
+      '/learn': '从你描述的任何内容（目录、URL、此聊天、笔记）学习可复用的技能',
+      '/init': '扫描仓库并生成或更新 AGENTS.md 项目指引',
+      '/suggestions': '查看建议的自动化项目（接受或跳过）',
+      '/blueprint': '使用 blueprint 模板设置自动化',
+      '/browser': '管理浏览器 CDP 连接 [connect|disconnect|status]（仅限本地 gateway）',
+      '/palette': '打开模糊搜索命令面板（也可使用 Ctrl+P）',
+      '/usage': '显示 Token 用量与速率限制；`reset` 可兑换保留的 Codex 限额重置',
+      '/subscription': '查看你的 Nous 方案，并在浏览器中更改',
+      '/topup': '显示你的 Nous 余额，并在 Portal 管理账务',
+      '/platform': '暂停、恢复或列出故障的网关平台',
+      '/version': '显示 Hermes Agent 版本',
+      '/debug': '上传调试报告（系统信息与日志），并获取可分享链接',
+      '/model': '切换此会话的模型'
     },
     hotkeyDescs: {
       'composer.mention': '引用文件、文件夹、URL、git',
@@ -3506,6 +3617,13 @@ export const zh = defineLocale({
     everythingSkipped: '已跳过',
     everythingRowFailed: '更新失败',
     everythingFanoutFailedTitle: '无法更新其他实例',
+    changeLogNew: '新增',
+    changeLogFixed: '修复',
+    changeLogFaster: '更快',
+    changeLogImproved: '改进',
+    changeLogOther: '其他改进',
+    changeLogFallbackLabel: '本次更新',
+    changeLogFallbackItem: '改进与修复',
     applyStatus: {
       preparing: '正在更新后端…',
       pulling: '后端更新中…',
@@ -4147,6 +4265,59 @@ export const zh = defineLocale({
       branchNewChat: '在新对话中分支',
       react: '回应',
       dismissError: '关闭错误',
+      errorGenericProvider: 'AI 服务',
+      errorLayerBodies: {
+        generic: 'Hermes 回复时出现问题。请重试；若问题持续，请复制错误详情。',
+        provider: 'AI 服务无法完成此请求。请稍后重试或切换服务商。',
+        endpoint: 'Hermes 无法连接到你的自定义模型服务器。请确认它正在运行，然后重新发送消息。',
+        streaming: '回复完成前连接已断开。请重试以重新发送。'
+      },
+      errorCodes: {
+        provider_policy_blocked: {
+          title: '账户设置阻止了此模型',
+          body: provider => `${provider} 无法按你账户的数据或隐私设置路由此请求。请选择其他模型或切换服务商。`
+        },
+        content_policy_blocked: {
+          title: 'AI 服务拒绝回答此请求',
+          body: provider => `${provider} 拒绝回答这条消息。请修改后重新发送。`
+        },
+        format_error: {
+          title: 'AI 服务拒绝了请求格式',
+          body: provider => `${provider} 不接受此请求的构造方式。请切换服务商，或发送诊断信息以便我们排查。`
+        },
+        invalid_response: {
+          title: 'AI 服务返回了无法读取的回复',
+          body: provider => `${provider} 返回了 Hermes 无法读取的内容。请稍后重试。`
+        },
+        empty_response: {
+          title: 'AI 服务返回了空回复',
+          body: provider => `${provider} 没有为此消息返回内容。请稍后重试。`
+        },
+        rate_limit: {
+          title: 'AI 服务繁忙',
+          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+        },
+        upstream_rate_limit: {
+          title: 'AI 服务繁忙',
+          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+        },
+        overloaded: {
+          title: 'AI 服务负载过高',
+          body: provider => `${provider} 当前遇到问题。请稍后重试或切换服务商。`
+        },
+        server_error: {
+          title: 'AI 服务发生错误',
+          body: provider => `${provider} 返回了服务器错误。请稍后重试或切换服务商。`
+        },
+        timeout: {
+          title: '回复超时',
+          body: provider => `${provider} 未及时响应。请重试以重新发送。`
+        },
+        ssl_cert_verification: {
+          title: '安全连接失败',
+          body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
+        }
+      },
       errorLayers: {
         auth: '认证错误',
         billing: '额度不足',

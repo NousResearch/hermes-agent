@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
@@ -40,7 +40,7 @@ from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
     StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error,
-    is_malformed_schema_error,
+    is_malformed_schema_error, is_sqlite_lock_error,
 )
 from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
@@ -178,6 +178,11 @@ _READ_OPEN_RETRY_SECONDS = 60.0
 # Deliberately NOT for writable opens: a writer owns the transition, so an IOERR there is a real
 # storage/fd problem. A persistent IOERR still exhausts the budget and propagates.
 _READ_ONLY_IOERR_RETRY_ATTEMPTS, _READ_ONLY_IOERR_RETRY_BACKOFF_S = 3, 0.05
+# SQLite busy handler budget for reads. Under DELETE (rollback-journal) mode a reader needs a SHARED
+# lock, which every commit from another process blocks across its journal+db fsyncs; the writer
+# connection's 1 s timeout exists for writes (they retry at application level) and starved readers
+# into "database is locked" (dashboard 503s, `hermes sessions list` crashes) under a busy gateway.
+_READ_BUSY_TIMEOUT_S = 5.0
 
 
 def _default_db_path() -> Path:
@@ -687,7 +692,7 @@ class SessionDB(
         leaked tracked connection cannot block the forensic backup the writable heal takes next."""
         for attempt in range(_READ_ONLY_IOERR_RETRY_ATTEMPTS + 1):
             try:
-                self._conn = conn = self._connect_read_only(timeout=1.0)
+                self._conn = conn = self._connect_read_only(timeout=_READ_BUSY_TIMEOUT_S)
                 try:
                     apply_database_pragmas(conn, db_label="state.db")
                     cursor = conn.cursor()
@@ -706,6 +711,8 @@ class SessionDB(
                 # SQLITE_IOERR to a mode=ro reader (it can't do the -shm recovery the read
                 # needs). Closes in milliseconds: retry a bounded number of times before
                 # classifying the store as failed (#100436; see _READ_ONLY_IOERR_RETRY_ATTEMPTS).
+                # A lock is NOT retried here: the connection already waited _READ_BUSY_TIMEOUT_S,
+                # and a retry would multiply that wait on blocking callers (TUI, `hermes status`).
                 transient = _DISK_IO_ERROR_MARKER in str(ioerr).lower()
                 if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or not transient:
                     raise
@@ -796,8 +803,7 @@ class SessionDB(
                 self._connect_and_init()
                 return
             except sqlite3.OperationalError as exc:
-                err = str(exc).lower()
-                if "locked" not in err and "busy" not in err:
+                if not is_sqlite_lock_error(exc):
                     raise
                 self._close_connection_quietly(self._conn)
                 now = time.monotonic()
@@ -831,7 +837,7 @@ class SessionDB(
             return None
         conn = None  # bound before the try so the handlers can close a half-open one
         try:
-            conn = self._connect_read_only(timeout=5.0)
+            conn = self._connect_read_only(timeout=_READ_BUSY_TIMEOUT_S)
             apply_database_pragmas(conn, db_label="state.db")
             if self._fts_cjk_loaded:  # registers in the connection, not the file: ro is fine
                 load_fts5_cjk_extension(conn)
@@ -904,7 +910,18 @@ class SessionDB(
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
                 self._reopen_after_close_locked(context="read")
-            yield cast(sqlite3.Connection, self._conn)
+            conn = cast(sqlite3.Connection, self._conn)
+            if self._wal_active or self.read_only:  # WAL: no SHARED-lock wait; ro: opened with the read budget
+                yield conn
+                return
+            # DELETE-mode writer connection: wait out a sibling's commit like a pooled reader would.
+            previous_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            conn.execute(f"PRAGMA busy_timeout={int(_READ_BUSY_TIMEOUT_S * 1000)}")
+            try:
+                yield conn
+            finally:
+                with suppress(sqlite3.Error):
+                    conn.execute(f"PRAGMA busy_timeout={int(previous_ms)}")
 
     def _reopen_after_close_locked(self, context: str = "write") -> None:
         """Reopen the writer after ``close()`` raced a live caller (a teardown owner
@@ -1025,7 +1042,7 @@ class SessionDB(
                     continue
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
-                    if "locked" in err_msg or "busy" in err_msg:
+                    if is_sqlite_lock_error(exc):
                         if self._sleep_before_write_retry(deadline, patience_s):
                             continue
                         # Say what actually happened, not disk/permission damage. The holder goes to

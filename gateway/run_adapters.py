@@ -21,6 +21,7 @@ from contextvars import Context
 from datetime import datetime, timedelta, timezone
 from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, Platform, platform_binds_port as _platform_binds_port
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.helpers import carry_inbound_dedup, inbound_dedup_caches
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
@@ -219,6 +220,7 @@ class GatewayAdapterLifecycleMixin:
             **({"queued_at": now} if queued else {}),
             "credential_claim": self._adapter_credential_claim(platform, adapter),
             "listener_claim": self._adapter_listener_claim(platform, adapter),
+            "inbound_dedup": inbound_dedup_caches(adapter),
         }
 
     def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
@@ -739,6 +741,7 @@ class GatewayAdapterLifecycleMixin:
             if not adapter:
                 self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                 return
+            carry_inbound_dedup(info.get("inbound_dedup"), adapter)
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
             success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
@@ -1213,7 +1216,7 @@ class GatewayAdapterLifecycleMixin:
                 and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
             adapter._shared_listener_profile = profile_name
 
-    async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform):
+    async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform, inbound_dedup=None):
         """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;
         ``(None, None)`` = give up for good (disabled, credential removed, adapter unavailable). Caller
         tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
@@ -1245,6 +1248,7 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, profile_name,
                 )
                 return None, None
+            carry_inbound_dedup(inbound_dedup, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)
                 success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
@@ -1254,7 +1258,9 @@ class GatewayAdapterLifecycleMixin:
                 raise
             return adapter, success
 
-    async def _run_secondary_profile_reconnect(self, profile_name: str, platform: Platform) -> None:
+    async def _run_secondary_profile_reconnect(
+        self, profile_name: str, platform: Platform, inbound_dedup=None
+    ) -> None:
         """Reconnect a retryable secondary adapter under its own profile scope."""
         from gateway.run import _profile_runtime_scope, _reconnect_backoff
         attempts = 0
@@ -1265,7 +1271,9 @@ class GatewayAdapterLifecycleMixin:
             while self._running:
                 adapter = None
                 try:
-                    adapter, success = await self._secondary_reconnect_attempt(profile_name, platform)
+                    adapter, success = await self._secondary_reconnect_attempt(
+                        profile_name, platform, inbound_dedup
+                    )
                     if adapter is None:
                         return
                     if success and self._running:
@@ -1386,7 +1394,7 @@ class GatewayAdapterLifecycleMixin:
         if platform in profile_pending:
             return
         profile_pending[platform] = self._retain_background_task(asyncio.create_task(
-            self._run_secondary_profile_reconnect(profile_name, platform),
+            self._run_secondary_profile_reconnect(profile_name, platform, inbound_dedup_caches(adapter)),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
         ))
 

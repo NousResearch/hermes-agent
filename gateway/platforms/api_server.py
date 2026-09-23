@@ -1229,6 +1229,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
         self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
+        # Per-profile single-flight locks for the off-loop store construction in
+        # _artifact_store_for_async(); a lost race would strand receipts (in-memory index).
+        self._browser_control_artifact_locks: Dict[str, asyncio.Lock] = {}
 
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
@@ -2626,6 +2629,30 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.debug("could not attach artifact store to broker", exc_info=True)
         return store
 
+    async def _artifact_store_for_async(self, profile: str) -> ArtifactStore:
+        """Async variant for the artifact routes: resolve the store off the loop.
+
+        ``ArtifactStore.__init__`` mkdirs the root and iterates the whole directory to sweep
+        orphans, and the caller then runs ``prune_expired`` (glob + one unlink per expired
+        entry). On a cold profile under filesystem pressure that is unbounded, and it runs on
+        the single aiohttp event-loop thread. Cache hits stay on the loop; only construction
+        hops. The per-profile single-flight lock is load-bearing: the offload adds a real await
+        between cache miss and cache fill, so two racing first requests would each build a
+        store and the loser's instance — which holds its receipts IN MEMORY — would be evicted,
+        making anything uploaded through it permanently undownloadable. Same shape as
+        ``_ensure_session_db_async``.
+        """
+        profile_key = str(profile or "default")
+        store = self._browser_control_artifacts.get(profile_key)
+        if store is not None:
+            return store
+        lock = self._browser_control_artifact_locks.setdefault(profile_key, asyncio.Lock())
+        async with lock:
+            store = self._browser_control_artifacts.get(profile_key)
+            if store is not None:
+                return store
+            return await asyncio.to_thread(self._artifact_store_for, profile_key)
+
     def _artifact_limiter(self) -> ArtifactRateLimiter:
         """Return the per-principal artifact route limiter (lazy)."""
         if self._browser_control_artifact_limiter is None:
@@ -2678,7 +2705,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not filename:
             return _error_response("X-Artifact-Filename header is required.", 400)
         try:
-            store = self._artifact_store_for(profile)
+            store = await self._artifact_store_for_async(profile)
         except ArtifactError as exc:
             return _error_response(str(exc), 500, code="artifact_rejected")
         max_bytes = store.max_bytes
@@ -2693,7 +2720,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response("Empty artifact body.", 400)
         scope = _ArtifactScopeFacade(principal, transport_family=self._browser_control_transport_family(request))
         try:
-            receipt = store.store(data, filename=filename, content_type=content_type, scope=scope)
+            # store ends in mkstemp + write + os.fsync + os.replace — unbounded under
+            # filesystem pressure, and this is a coroutine on the single loop thread.
+            # Awaited (not fire-and-forget): the caller needs the receipt, and a swallowed
+            # failure would return 201 for bytes that never reached disk.
+            receipt = await asyncio.to_thread(
+                store.store, data, filename=filename, content_type=content_type, scope=scope)
         except ArtifactTooLarge as exc:
             return _error_response(str(exc), 413, code="artifact_too_large")
         except ArtifactError as exc:
@@ -2716,7 +2748,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         artifact_id = request.match_info.get("artifact_id", "")
         scope = _ArtifactScopeFacade(principal, transport_family=self._browser_control_transport_family(request))
         try:
-            data, receipt = self._artifact_store_for(profile).load(artifact_id, scope=scope)
+            # load is the same class as the upload write: whole-file read_bytes, SHA-256
+            # re-hash, unlink — all blocking, all on the loop thread.
+            store = await self._artifact_store_for_async(profile)
+            data, receipt = await asyncio.to_thread(store.load, artifact_id, scope=scope)
         except ArtifactError as exc:
             message = str(exc)
             if "expired" in message:

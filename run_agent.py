@@ -1557,8 +1557,9 @@ def main(
 
 
 if __name__ == "__main__":
-    import fire
-    fire.Fire(main)
+    from agent.legacy_cli import main as _legacy_cli_main
+
+    raise SystemExit(_legacy_cli_main(run=main))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

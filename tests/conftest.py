@@ -1488,6 +1488,23 @@ def _check_symlink_support() -> bool:
         return False
 
 
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtest_call(item):
+    """Join the turn's auto-title threads INSIDE capture, before pytest snaps it.
+
+    A title thread that prints its failure warning while capture's
+    ``readouterr`` swaps the fd crashed the interpreter (SIGSEGV in
+    ``_pytest/capture.py::snap``). The teardown join in
+    ``_close_leaked_session_dbs`` runs after that snap, too late for this race.
+    """
+    try:
+        return (yield)
+    finally:
+        wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+        if wait is not None:
+            wait()
+
+
 def pytest_runtest_setup(item):
     if item.get_closest_marker("require_symlinks"):
         if not _check_symlink_support():

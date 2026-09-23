@@ -86,6 +86,16 @@ class TestGetDefaultHermesRoot:
 class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 
+    def test_warn_once_latch_engages_on_first_check_even_without_warning(self, tmp_path, monkeypatch):
+        """Regression for #90065: the latch must engage on the first check even when there is
+        nothing to warn about, otherwise every get_hermes_home() call re-stats active_profile."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: tmp_path)
+
+        get_hermes_home()
+        assert hermes_constants._profile_fallback_warned is True
+
     @pytest.mark.windows_only
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
         """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""

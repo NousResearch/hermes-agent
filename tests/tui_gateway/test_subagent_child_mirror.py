@@ -152,13 +152,13 @@ def test_upgraded_child_session_not_mirrored(server, emits):
     assert [(e, s) for e, s, _ in emits] == [("subagent.tool", "parent-sid")]
     assert server._child_mirrors == {}
     # Liveness registry still updates — it serves resume, not the mirror.
-    assert "child-1" in server._active_child_runs
+    assert (None, "child-1") in server._active_child_runs
 
 
 def test_stale_child_run_not_reported_active(server, emits):
     """A leaked registry entry (lost completion event) must age out instead of
     pinning running=true on every future lazy resume of that child."""
-    server._active_child_runs["child-1"] = 0.0  # epoch — ancient
+    server._active_child_runs[(None, "child-1")] = 0.0  # epoch — ancient
 
     assert server._child_run_active("child-1") is False
 
@@ -194,13 +194,13 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
     open), and completion clears it — lazy watch resumes read this registry to
     report running=true while the child is silent inside a long tool call."""
     _relay(server, "subagent.start", preview="go", child_session_id="child-1")
-    assert "child-1" in server._active_child_runs
+    assert (None, "child-1") in server._active_child_runs
 
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert "child-1" in server._active_child_runs
+    assert (None, "child-1") in server._active_child_runs
 
     _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="ok")
-    assert "child-1" not in server._active_child_runs
+    assert (None, "child-1") not in server._active_child_runs
 
 
 def test_start_mirrors_as_immediate_header_line(server, emits):

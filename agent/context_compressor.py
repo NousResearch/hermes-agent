@@ -2629,9 +2629,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
         effective_percent = self._effective_threshold_percent(context_length, base_percent)
         threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
-        cap = self._effective_threshold_cap(context_length)
-        if cap is not None:
-            threshold = min(threshold, cap)
+        for cap in (self._effective_threshold_cap(context_length),
+                    self._per_model_threshold_cap(model, provider, context_length)):
+            if cap is not None:
+                threshold = min(threshold, cap)
         return base_percent, effective_percent, threshold
 
     def _effective_threshold_cap(self, context_length: int) -> int | None:
@@ -2734,20 +2735,26 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self.threshold_tokens = _aux_ceiling
         # Applied after the aux ceiling: both clamps are lower-only, and the sign guard below
         # returns early, so the per-model cap must not sit in front of it.
+        _per_model_cap = self._per_model_threshold_cap(self.model, self.provider, self.context_length)
+        # Lower-only: a per-model cap never raises the threshold.
+        if _per_model_cap is not None and _per_model_cap < self.threshold_tokens:
+            self.threshold_tokens = _per_model_cap
+
+    def _per_model_threshold_cap(self, model: str, provider: str, context_length: int) -> int | None:
+        """The matching ``model_threshold_tokens`` cap clamped to the window; None when none applies."""
         # getattr: the threshold_tokens getter can run mid-__init__, before the attribute lands.
-        _per_model_caps = getattr(self, "model_threshold_tokens", None)
-        if _per_model_caps and self.model:
-            _key = match_model_override(self.model, _per_model_caps, self.provider)
-            if _key:
-                _effective_cap = _per_model_caps[_key]
-                # Sign guard mirrors the global cap above: a non-positive
-                # cap (e.g. an unparsed caller) must never zero the trigger.
-                if _effective_cap <= 0:
-                    return
-                _effective_cap = self._cap_within_context(_effective_cap, self.context_length)
-                # Lower-only: a per-model cap never raises the threshold.
-                if _effective_cap < self.threshold_tokens:
-                    self.threshold_tokens = _effective_cap
+        per_model_caps = getattr(self, "model_threshold_tokens", None)
+        if not per_model_caps or not model:
+            return None
+        key = match_model_override(model, per_model_caps, provider)
+        if not key:
+            return None
+        cap = per_model_caps[key]
+        # Sign guard mirrors the global cap: a non-positive cap (e.g. an unparsed caller) must never
+        # zero the trigger.
+        if cap <= 0:
+            return None
+        return self._cap_within_context(cap, context_length)
 
     @staticmethod
     def _cap_within_context(cap: int, context_length: int) -> int:

@@ -2338,6 +2338,25 @@ Example footer appended to a Telegram/Discord/Slack reply:
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.
 
+### Response prefix
+
+The opt-in counterpart of the footer: a short model/provider tag prepended to the **first** message of every gateway turn (off by default). Later messages in the same turn — tool-boundary segments, interim updates — never repeat it, and streamed replies carry it from the first delta.
+
+```yaml
+display:
+  response_prefix:
+    enabled: true
+    template: "[{provider}/{model}]"   # variables: {model} (bare id), {modelFull}, {provider}
+  platforms:
+    telegram:
+      response_prefix:
+        enabled: false                 # per-platform override, mirrors runtime_footer
+```
+
+A bare string (`response_prefix: "[{model}]"`) is accepted as shorthand for `{enabled: true, template: ...}`. Example: `[openai/gpt-5.4] Hello!`.
+
+The `/prefix [on|off|status]` slash command toggles it at runtime (on Slack, via `/hermes prefix`). When the current platform has its own override, `/prefix on|off` updates both the global flag and that override, and always reports the effective state.
+
 ### Per-platform progress overrides
 
 Different platforms have different verbosity needs. Use `display.platforms` to set per-platform modes:

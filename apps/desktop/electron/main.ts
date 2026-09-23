@@ -205,7 +205,6 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createNativeAppearanceController } from './native-appearance-controller'
 import { registerNativeNotifications } from './notification-ipc'
-import { requestWithOauthFallback } from './oauth-rest-request'
 import { parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {

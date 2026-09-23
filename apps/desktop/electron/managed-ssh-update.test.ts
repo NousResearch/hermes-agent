@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -29,6 +30,11 @@ import {
 import { createBootstrapCoordinator } from './ssh-bootstrap-coordinator'
 
 const CORRELATION = '12345678-1234-4678-9234-567812345678'
+
+// The launcher runs this for real, so it must exist on the HOST: `true` is
+// /bin/true on Linux but /usr/bin/true on macOS, and the missing path made the
+// launcher exit 127 instead of the 0 the status file is asserted on.
+const trueBinary = existsSync('/bin/true') ? '/bin/true' : '/usr/bin/true'
 const exec = promisify(execCallback)
 
 function observation(over: Record<string, unknown> = {}) {
@@ -288,7 +294,7 @@ test('POSIX managed launcher executes the updater command and atomically publish
       {
         ssh: { exec: async () => '' },
         platform: 'Linux',
-        hermesPath: '/bin/true',
+        hermesPath: trueBinary,
         hermesHome: home
       },
       CORRELATION

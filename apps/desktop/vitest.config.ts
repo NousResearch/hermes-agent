@@ -27,7 +27,13 @@ const electronNative: TestProjectConfiguration = {
     // ignores the same pattern so they run in exactly one runner.
     include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts'],
     // These use node:test and have dedicated npm scripts, not Vitest suites.
-    exclude: ['scripts/run-short-session-hang-repro.test.mjs', 'scripts/tasks-scroll.test.mjs']
+    exclude: ['scripts/run-short-session-hang-repro.test.mjs', 'scripts/tasks-scroll.test.mjs'],
+    // These shell out to real `git`/`ssh` in temp repos, so they are slower
+    // than the jsdom cold start above — and `npm run check` runs them AFTER
+    // the 100s+ ui project, when the runner is already loaded. On the 5000ms
+    // default that made git-worktree-ops/git-review-ops fail the aggregate
+    // gate while passing standalone. Same headroom, same reasoning as ui.
+    testTimeout: 15_000
   }
 }
 

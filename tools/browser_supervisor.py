@@ -17,7 +17,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from tools.browser_supervisor_dialogs import (
@@ -209,7 +209,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> Dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         route: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
@@ -223,6 +224,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _fail("supervisor is not active")
         if not session_id:
             return _fail("supervisor has no attached page session")
+        if route is not None:
+            # The route is minted for one selected top page + child document.
+            # A detach, re-focus, or replacement execution context may not
+            # inherit authority from that earlier discovery.
+            with self._state_lock:
+                frame = self._frames.get(route.get("frame_id", ""))
+                if (session_id != route.get("page_session_id") or frame is None
+                        or not frame.is_oopif
+                        or frame.cdp_session_id != route.get("frame_session_id")
+                        or not frame.loader_id
+                        or frame.loader_id != route.get("frame_loader_id")):
+                    return _fail("vault frame route is no longer attached")
+                session_id = frame.cdp_session_id
 
         def _run_eval(by_value: bool) -> Dict[str, Any]:
             # userGesture: clipboard / fullscreen APIs need user activation.
@@ -309,16 +323,41 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         # never become a credential destination.
                         tree = await self._cdp("Page.getFrameTree", session_id=sid, timeout=timeout)
 
-                        def _child_ids(node: Dict[str, Any]) -> list[str]:
-                            ids: list[str] = []
+                        def _child_ids(node: Dict[str, Any]) -> dict[str, str]:
+                            ids: dict[str, str] = {}
                             for child in node.get("childFrames") or []:
-                                frame_id = str((child.get("frame") or {}).get("id") or "")
+                                child_frame = child.get("frame") or {}
+                                frame_id = str(child_frame.get("id") or "")
                                 if frame_id:
-                                    ids.append(frame_id)
-                                ids.extend(_child_ids(child))
+                                    ids[frame_id] = str(child_frame.get("loaderId") or "")
+                                ids.update(_child_ids(child))
                             return ids
 
-                        frame_ids = _child_ids((tree.get("result") or {}).get("frameTree") or {})
+                        top_tree = (tree.get("result") or {}).get("frameTree") or {}
+                        top_frame_id = str((top_tree.get("frame") or {}).get("id") or "")
+                        frame_loaders = _child_ids(top_tree)
+                        # Chrome's top-level Page.getFrameTree omits remote
+                        # OOPIFs on some versions.  Page.frameAttached is
+                        # delivered on the top session before Target attaches
+                        # the OOPIF, so use only its descendants of this exact
+                        # top frame—not every attached iframe target.
+                        with self._state_lock:
+                            all_frames = dict(self._frames)
+
+                        def _belongs_to_selected_page(candidate_id: str) -> bool:
+                            seen = set()
+                            current = all_frames.get(candidate_id)
+                            while current and current.parent_frame_id and current.frame_id not in seen:
+                                seen.add(current.frame_id)
+                                if current.parent_frame_id == top_frame_id:
+                                    return True
+                                current = all_frames.get(current.parent_frame_id)
+                            return False
+
+                        for candidate_id, candidate in all_frames.items():
+                            if _belongs_to_selected_page(candidate_id):
+                                frame_loaders.setdefault(candidate_id, candidate.loader_id)
+                        frame_ids = list(frame_loaders)
                         child_session = None
                         child_origin = ""
                         with self._state_lock:
@@ -327,6 +366,20 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                             frame = frames.get(frame_id)
                             if frame is None or not frame.is_oopif or not frame.cdp_session_id:
                                 continue
+                            child_tree = await self._cdp(
+                                "Page.getFrameTree", session_id=frame.cdp_session_id, timeout=timeout,
+                            )
+                            child_root = ((child_tree.get("result") or {}).get("frameTree") or {}).get("frame") or {}
+                            loader_id = str(child_root.get("loaderId") or "")
+                            # Bind the route to the selected OOPIF document;
+                            # missing/changed loader provenance fails closed.
+                            if str(child_root.get("id") or "") != frame_id or not loader_id:
+                                continue
+                            with self._state_lock:
+                                current = self._frames.get(frame_id)
+                                if current is None or current.cdp_session_id != frame.cdp_session_id:
+                                    continue
+                                self._frames[frame_id] = replace(current, loader_id=loader_id)
                             child_probe = await self._cdp(
                                 "Runtime.evaluate", {"expression": accept, "returnByValue": True},
                                 session_id=frame.cdp_session_id, timeout=timeout,
@@ -339,13 +392,24 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                                 child_origin = str(origin_probe.get("result", {}).get("result", {}).get("value") or "")
                                 if child_origin:
                                     child_session = frame.cdp_session_id
+                                    child_loader_id = loader_id
                                     break
                         if child_session is None:
                             await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                             continue
                         with self._state_lock:
-                            self._page_session_id = child_session
-                        return {"ok": True, "url": url, "frame_origin": child_origin}
+                            frame = self._frames.get(frame_id)
+                        if frame is None or frame.cdp_session_id != child_session:
+                            await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
+                            continue
+                        # _page_session_id remains the selected top-level page;
+                        # child execution is always explicit and route-bound.
+                        with self._state_lock:
+                            self._page_session_id = sid
+                        return {"ok": True, "url": url, "frame_origin": child_origin,
+                                "route": {"page_session_id": sid, "frame_id": frame_id,
+                                          "frame_session_id": child_session,
+                                          "frame_loader_id": child_loader_id}}
                 with self._state_lock:
                     self._page_session_id = sid
                 return {"ok": True, "url": url}

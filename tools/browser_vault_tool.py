@@ -116,7 +116,7 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str, *, route: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -155,7 +155,7 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
         except _bd_lease.HumanHasControl as exc:
             return {"success": False, "error_type": "human_has_control", "error": str(exc)}
 
-    sup = supervisor.evaluate_runtime(expression)
+    sup = supervisor.evaluate_runtime(expression, route=route)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {
@@ -199,7 +199,7 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[tuple[str, str]]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[tuple[str, str, Optional[Dict[str, str]]]]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns ``(top_level_origin, evaluation_origin)`` when a tab
@@ -223,7 +223,20 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[tuple[
             top_level_origin = normalize_origin(str(focused.get("url") or ""))
         except Exception:
             return None
-    return top_level_origin, str(focused.get("frame_origin") or top_level_origin)
+    child_origin = str(focused.get("frame_origin") or top_level_origin)
+    route = focused.get("route") if child_origin != top_level_origin else None
+    if route is not None and not isinstance(route, dict):
+        return None
+    return top_level_origin, child_origin, route
+
+
+def _eval_js_in_route(task_id: str, expression: str, route: Dict[str, str]) -> Dict[str, Any]:
+    """Evaluate non-secret setup code through the same route validation as the write."""
+    supervisor = _ensure_supervisor(task_id)
+    if supervisor is None:
+        return {"success": False, "error": "supervisor required"}
+    result = supervisor.evaluate_runtime(expression, route=route)
+    return {"success": bool(result.get("ok")), "result": result.get("result"), "error": result.get("error")}
 
 
 # ---------------------------------------------------------------------------
@@ -473,10 +486,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
     fill_origin = None
+    frame_route = None
     for candidate in allowed:
         focused = _focus_bound_origin(effective_task_id, candidate, meta.kind)
         if focused:
-            page_origin, fill_origin = focused
+            page_origin, fill_origin, frame_route = focused
             break
     page_origin = page_origin or _current_page_origin(effective_task_id)
     fill_origin = fill_origin or page_origin
@@ -497,9 +511,30 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             }
         )
 
+    # OOPIF membership is only a discovery constraint.  A login password is
+    # resolved only after the user approves this exact relying-party → child
+    # origin pair, once, for this selected document.  No vault metadata or
+    # wildcard relation is an authorization for the transfer.
+    if meta.kind == "login" and frame_route is not None:
+        from tools.approval_prompt import request_elicitation_consent
+
+        decision = request_elicitation_consent(
+            f"Fill login from {page_origin} into embedded frame {fill_origin}",
+            "This one-time action sends the selected vault login password from the saved top-level site "
+            "to this exact embedded origin. Approve only if you recognize both normalized origins.",
+            surface="vault-cross-origin-login", title="Confirm cross-origin login fill?",
+        )
+        if decision != "accept":
+            return json.dumps({"success": False, "error_type": "cross_origin_declined",
+                               "error": "Cross-origin login fill was not approved. Nothing was resolved or written."})
+    if meta.kind == "login" and fill_origin != page_origin and frame_route is None:
+        return json.dumps({"success": False, "error_type": "cross_origin_route_invalid",
+                           "error": "Could not bind the selected cross-origin frame to its current document."})
+
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
-    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    inspect = (_eval_js_in_route(effective_task_id, build_inspection_js(nonce), frame_route)
+               if frame_route is not None else _eval_js(effective_task_id, build_inspection_js(nonce)))
     if not inspect.get("success"):
         return json.dumps(
             {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
@@ -545,9 +580,12 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         register_vault_redaction_value(value)
 
     try:
-        fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=fill_origin, nonce=nonce)
+        expression = build_fill_js(
+            fills, expected_origin=fill_origin, nonce=nonce,
+            expected_top_level_origin=page_origin if frame_route is not None else None,
         )
+        fill_result = (_eval_js_secret(effective_task_id, expression, route=frame_route)
+                       if frame_route is not None else _eval_js_secret(effective_task_id, expression))
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.
         return json.dumps(
@@ -563,11 +601,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     parsed = _parse_json_result(fill_result.get("result"))
     if isinstance(parsed, str):
         parsed = _parse_json_result(parsed)
-    if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
+    if isinstance(parsed, dict) and parsed.get("refused") in {"origin_changed", "top_level_origin_changed"}:
         return json.dumps(
             {
                 "success": False,
-                "error_type": "origin_changed",
+                "error_type": str(parsed.get("refused")),
                 "error": (
                     "Refused: the page navigated away from the bound origin "
                     f"({page_origin}) before the fill could run "

@@ -36,6 +36,10 @@ class FrameInfo:
     is_oopif: bool
     cdp_session_id: Optional[str] = None
     name: str = ""
+    # CDP changes this for every committed document navigation, even when an
+    # OOPIF keeps its frame id and target session.  It is internal route
+    # provenance, not model-facing frame-tree metadata.
+    loader_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         d = {"frame_id": self.frame_id, "url": self.url, "origin": self.origin, "is_oopif": self.is_oopif}
@@ -75,6 +79,7 @@ class FrameTrackingMixin:
                 origin=str(frame.get("securityOrigin") or frame.get("origin") or ""),
                 parent_frame_id=frame.get("parentId") or old.parent_frame_id, is_oopif=old.is_oopif,
                 cdp_session_id=old.cdp_session_id, name=str(frame.get("name") or old.name),
+                loader_id=str(frame.get("loaderId") or ""),
             )
 
     def _on_frame_detached(self, params: Dict[str, Any], session_id: Optional[str]) -> None:

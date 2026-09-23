@@ -319,11 +319,16 @@ function renderChargeFailed(reason: null | string | undefined, copy = en.setting
 
 // Repaint completed feedback on a locale switch without replaying a charge.
 function localizeChargeOutcome(outcome: ChargeFlowOutcome, b: Translations['settings']['billing']): ChargeFlowOutcome {
-  if (outcome.kind === 'success') {return { ...outcome, message: b.charge.added(outcome.amountUsd ?? '') }}
+  if (outcome.kind === 'success') {
+    return { ...outcome, message: b.charge.added(outcome.amountUsd ?? '') }
+  }
 
   switch (outcome.copy) {
     case 'refusal': {
-      if (!outcome.refusal) {return outcome}
+      if (!outcome.refusal) {
+        return outcome
+      }
+
       const resolved = resolveRefusal(outcome.refusal, b.errors)
 
       return { ...outcome, message: resolved.message, title: resolved.title }

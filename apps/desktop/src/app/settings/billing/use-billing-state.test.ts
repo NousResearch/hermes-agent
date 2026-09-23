@@ -140,9 +140,13 @@ describe('deriveBillingView', () => {
         expect(local.action).toEqual(english.action)
         expect(refusal).toEqual(before)
 
-        if (kind === 'monthly_cap_exceeded') {expect(local.message).toContain('17.42')}
+        if (kind === 'monthly_cap_exceeded') {
+          expect(local.message).toContain('17.42')
+        }
 
-        if (kind === 'stripe_unavailable') {expect(local.message).toContain('2')}
+        if (kind === 'stripe_unavailable') {
+          expect(local.message).toContain('2')
+        }
       }
 
       expect(resolveRefusal({ kind: 'unknown', message: 'Server notice Ω' }, copy).message).toBe('Server notice Ω')

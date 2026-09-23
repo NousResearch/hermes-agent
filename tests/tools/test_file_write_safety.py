@@ -456,6 +456,27 @@ class TestProtectedInstructionFiles:
         assert not target.exists()
         assert len(approvals["calls"]) == 1, "yolo bypassed the protected gate"
 
+    @pytest.mark.parametrize("callback", [
+        "tools.delegate_tool_config:_subagent_auto_approve",
+        "tools.delegate_tool_config:_subagent_auto_deny",
+        "agent.background_review:_bg_review_auto_deny",
+    ])
+    def test_a_callback_that_answers_by_itself_is_no_human(self, tmp_path, callback):
+        """A delegated child or review fork carries an automatic callback, not a person. With
+        delegation.subagent_auto_approve it answered "once" and the child wrote AGENTS.md unasked."""
+        import importlib
+        import tools.file_tools_write_guards as ft
+        from tools.terminal_tool import set_approval_callback
+        module, name = callback.split(":")
+        set_approval_callback(getattr(importlib.import_module(module), name))
+        try:
+            target = tmp_path / "AGENTS.md"
+            res = self._write(target)
+        finally:
+            set_approval_callback(None)
+        assert ft._NO_HUMAN in (res.get("error") or ""), res
+        assert not target.exists()
+
     def test_second_write_prompts_again(self, tmp_path, approvals):
         """One-operation approval: no session stickiness."""
         target = tmp_path / "AGENTS.md"

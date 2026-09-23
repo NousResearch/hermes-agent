@@ -1041,6 +1041,9 @@ def _bg_review_auto_deny(command, description, **kwargs):
     return "deny"
 
 
+_bg_review_auto_deny.non_interactive = True  # no person behind it: see tools/delegate_tool_config.py
+
+
 def _set_thread_approval_callback(callback: Any) -> None:
     from tools.terminal_tool import set_approval_callback
 

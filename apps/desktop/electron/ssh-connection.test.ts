@@ -19,9 +19,9 @@ import {
   createSshProbeConnection,
   forwardSpec,
   hostArgs,
+  parseKnownHostsFingerprints,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
-  parseKnownHostsFingerprints,
   runSsh,
   SSH_ERROR,
   SshConnection,
@@ -1173,6 +1173,7 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
 test('parseKnownHostsFingerprints returns canonical SHA256 fingerprints and deduplicates keys', () => {
   const key = Buffer.from('fixture-host-key-blob').toString('base64')
+
   const fingerprints = parseKnownHostsFingerprints([
     `example.test ssh-ed25519 ${key}`,
     `|1|hashed-host|salt ssh-ed25519 ${key}`

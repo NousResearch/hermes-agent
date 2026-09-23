@@ -6,13 +6,14 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
+import type { RolloutPlan } from '../src/lib/managed-rollout-contract'
+
+import type { TargetResolution } from './managed-rollout-preflight'
 import {
   createManagedRolloutProductionAdapters,
   type ProductionInventoryInspection,
   type ProductionSource
 } from './managed-rollout-production-adapters'
-import type { RolloutPlan } from '../src/lib/managed-rollout-contract'
-import type { TargetResolution } from './managed-rollout-preflight'
 
 const INSTALL_A = 'a'.repeat(32)
 const INSTALL_B = 'b'.repeat(32)
@@ -112,6 +113,7 @@ function resolution(): TargetResolution {
 test('captures a coherent inventory revision and routes Git through the inspected source', async () => {
   const sources = [source(CONNECTION_A, INSTALL_A), source(CONNECTION_B, INSTALL_B)]
   const gitCalls: string[] = []
+
   const adapters = createManagedRolloutProductionAdapters({
     nowMono: () => 1000,
     listSources: () => sources,
@@ -120,6 +122,7 @@ test('captures a coherent inventory revision and routes Git through the inspecte
       : inspection(current, INSTALL_B, SOURCE_B, `${ROOT}-b`),
     git: async (connectionId, args, repositoryRoot) => {
       gitCalls.push(`${connectionId}:${repositoryRoot}:${args.join(' ')}`)
+
       return 'ok'
     },
     reviewManifestPath: 'unused',
@@ -138,6 +141,7 @@ test('captures a coherent inventory revision and routes Git through the inspecte
 
 test('consolidates multiple configured connections to one installation with deterministic alias ownership', async () => {
   const sources = [source(CONNECTION_B, INSTALL_A), source(CONNECTION_A, INSTALL_A)]
+
   const adapters = createManagedRolloutProductionAdapters({
     nowMono: () => 1000,
     listSources: () => sources,
@@ -157,6 +161,7 @@ test('consolidates multiple configured connections to one installation with dete
 
 test('fails closed when distinct installations claim the same canonical repository root', async () => {
   const sources = [source(CONNECTION_A, INSTALL_A), source(CONNECTION_B, INSTALL_B)]
+
   const adapters = createManagedRolloutProductionAdapters({
     nowMono: () => 1000,
     listSources: () => sources,
@@ -167,6 +172,7 @@ test('fails closed when distinct installations claim the same canonical reposito
     reviewManifestPath: 'unused',
     assuranceRoot: 'unused'
   })
+
   const snapshot = await adapters.inventoryReader.capture()
   assert.ok(snapshot)
   assert.equal(snapshot!.observations.length, 2)
@@ -190,12 +196,15 @@ test('resolves only a bounded review manifest matching the requested inventory a
       reviewManifestPath: manifestPath,
       assuranceRoot: directory
     })
+
     assert.equal(adapters.ready(), false)
+
     const result = await adapters.resolveTarget({
       connectionIds: [CONNECTION_A, CONNECTION_B],
       inventoryRevision: revision,
       retryOf: null
     })
+
     assert.equal(result.resolution.id, 'resolution-1')
     assert.equal(result.plan.rows.length, 2)
     await assert.rejects(
@@ -226,6 +235,7 @@ test('assurance custody is keyed by profile, target, and source fingerprint', as
       reviewManifestPath: 'unused',
       assuranceRoot: directory
     })
+
     assert.deepEqual(await adapters.assuranceReader.readProfile('profile-v1'), {
       generation: 1,
       requiredControlIds: ['control-a']

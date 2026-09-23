@@ -219,6 +219,7 @@ function currentWaveAttempts(state: ManagedRolloutState): ManagedRolloutAttempt[
 
 function canFinishWave(state: ManagedRolloutState): boolean {
   const wave = currentWaveAttempts(state)
+
   return wave.length > 0 && wave.every(healthy)
 }
 
@@ -250,9 +251,11 @@ function proofMatchesState(state: ManagedRolloutState, proof: ManagedRolloutEvid
   }
 
   const active = Object.values(state.attempts).filter(attempt => !attempt.excluded)
+
   return active.every(attempt => {
     const admissions = proof.admissions.filter(admission => admission.installId === attempt.installId)
     const admission = admissions[0]
+
     return (
       admissions.length === 1 &&
       admission.installationFingerprint === attempt.installationFingerprint &&
@@ -273,71 +276,88 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
   const attempt = 'installId' in action ? next.attempts[action.installId] : undefined
 
   if (action.kind === 'start') {
-    if (state.phase !== 'queued') return refuse(state, 'rollout-already-started')
+    if (state.phase !== 'queued') {return refuse(state, 'rollout-already-started')}
     next.phase = 'running'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'restart') {
-    if (isTerminal(state.phase)) return refuse(state, 'terminal-rollout-cannot-restart')
+    if (isTerminal(state.phase)) {return refuse(state, 'terminal-rollout-cannot-restart')}
     next.phase = 'reconciling'
     next.continuationRequired = true
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'reconciled') {
-    if (state.phase !== 'reconciling') return refuse(state, 'rollout-is-not-reconciling')
+    if (state.phase !== 'reconciling') {return refuse(state, 'rollout-is-not-reconciling')}
+
     if (action.phase === 'completed' || action.phase === 'completed-with-exclusions') {
       const active = Object.values(next.attempts).filter(row => !row.excluded)
       const hasExclusions = Object.values(next.attempts).some(row => row.excluded)
-      if (!active.length || !active.every(healthy)) return refuse(state, 'reconciled-terminal-not-proven')
+
+      if (!active.length || !active.every(healthy)) {return refuse(state, 'reconciled-terminal-not-proven')}
+
       if ((action.phase === 'completed-with-exclusions') !== hasExclusions) {
         return refuse(state, 'reconciled-terminal-exclusion-mismatch')
       }
+
       next.continuationRequired = false
     }
+
     next.phase = action.phase
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'reconcile-unknown') {
-    if (!attempt) return refuse(state, 'unknown-installation')
+    if (!attempt) {return refuse(state, 'unknown-installation')}
+
     if (state.phase !== 'reconciling' || !['authorized', 'observed'].includes(attempt.state)) {
       return refuse(state, 'unknown-reconciliation-not-admissible')
     }
+
     attempt.state = 'unverified'
     next.phase = 'attention-required'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'pause') {
-    if (!['running', 'awaiting-promotion'].includes(state.phase)) return refuse(state, 'rollout-cannot-pause')
+    if (!['running', 'awaiting-promotion'].includes(state.phase)) {return refuse(state, 'rollout-cannot-pause')}
     next.phase = 'paused'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'resume') {
-    if (state.phase !== 'paused') return refuse(state, 'rollout-is-not-paused')
+    if (state.phase !== 'paused') {return refuse(state, 'rollout-is-not-paused')}
     next.continuationRequired = false
     next.phase = 'running'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'stop') {
-    if (isTerminal(state.phase)) return refuse(state, 'rollout-already-terminal')
+    if (isTerminal(state.phase)) {return refuse(state, 'rollout-already-terminal')}
+
     for (const row of Object.values(next.attempts)) {
       if (pending(row)) {
         row.state = row.state === 'intent-recorded' ? 'cancelled-before-launch' : 'skipped'
         row.reason = 'stopped'
       }
     }
+
     next.stopRequested = true
     next.phase = Object.values(next.attempts).some(committed) ? 'paused' : 'stopped'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'record-intent') {
-    if (!attempt) return refuse(state, 'unknown-installation')
+    if (!attempt) {return refuse(state, 'unknown-installation')}
+
     if (
       state.phase !== 'running' ||
       attempt.wave !== state.currentWave ||
@@ -346,75 +366,97 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
     ) {
       return refuse(state, 'intent-not-admissible')
     }
+
     attempt.state = 'intent-recorded'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'authorization-refused') {
-    if (!attempt) return refuse(state, 'unknown-installation')
+    if (!attempt) {return refuse(state, 'unknown-installation')}
+
     if (state.phase !== 'running' || attempt.state !== 'intent-recorded') {
       return refuse(state, 'authorization-refusal-not-admissible')
     }
+
     attempt.state = action.outcome
     attempt.reason = action.reason
     next.phase = 'attention-required'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'launch-authorized') {
-    if (!attempt) return refuse(state, 'unknown-installation')
-    if (state.phase !== 'running' || attempt.state !== 'intent-recorded') return refuse(state, 'authorization-not-admissible')
+    if (!attempt) {return refuse(state, 'unknown-installation')}
+
+    if (state.phase !== 'running' || attempt.state !== 'intent-recorded') {return refuse(state, 'authorization-not-admissible')}
     attempt.state = 'authorized'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'launch-observed') {
-    if (!attempt) return refuse(state, 'unknown-installation')
-    if (attempt.state !== 'authorized') return refuse(state, 'observation-not-admissible')
+    if (!attempt) {return refuse(state, 'unknown-installation')}
+
+    if (attempt.state !== 'authorized') {return refuse(state, 'observation-not-admissible')}
     attempt.state = 'observed'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'terminal') {
-    if (!attempt) return refuse(state, 'unknown-installation')
-    if (!['authorized', 'observed', 'unverified'].includes(attempt.state)) return refuse(state, 'terminal-correlation-not-admissible')
+    if (!attempt) {return refuse(state, 'unknown-installation')}
+
+    if (!['authorized', 'observed', 'unverified'].includes(attempt.state)) {return refuse(state, 'terminal-correlation-not-admissible')}
     attempt.state = action.outcome
-    if (!healthy(attempt)) next.phase = 'attention-required'
+
+    if (!healthy(attempt)) {next.phase = 'attention-required'}
     else if (state.phase === 'paused') {
-      if (next.stopRequested && !Object.values(next.attempts).some(committed)) next.phase = 'stopped'
+      if (next.stopRequested && !Object.values(next.attempts).some(committed)) {next.phase = 'stopped'}
     }
     else if (canFinishWave(next)) {
-      if (hasLaterWork(next)) next.phase = 'awaiting-promotion'
-      else next.phase = Object.values(next.attempts).some(row => row.excluded) ? 'completed-with-exclusions' : 'completed'
+      if (hasLaterWork(next)) {next.phase = 'awaiting-promotion'}
+      else {next.phase = Object.values(next.attempts).some(row => row.excluded) ? 'completed-with-exclusions' : 'completed'}
     }
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'promote') {
-    if (state.phase !== 'awaiting-promotion') return refuse(state, 'promotion-not-admissible')
-    if (!canFinishWave(state)) return refuse(state, 'unhealthy-wave-cannot-promote')
-    if (state.currentWave === 0 && action.auto) return refuse(state, 'canary-requires-manual-promotion')
+    if (state.phase !== 'awaiting-promotion') {return refuse(state, 'promotion-not-admissible')}
+
+    if (!canFinishWave(state)) {return refuse(state, 'unhealthy-wave-cannot-promote')}
+
+    if (state.currentWave === 0 && action.auto) {return refuse(state, 'canary-requires-manual-promotion')}
+
     if (action.auto && (!state.canaryApproved || state.continuationRequired || state.policy !== 'auto-after-canary')) {
       return refuse(state, 'auto-promotion-not-admissible')
     }
-    if (state.currentWave === 0) next.canaryApproved = true
-    if (!action.auto) next.continuationRequired = false
+
+    if (state.currentWave === 0) {next.canaryApproved = true}
+
+    if (!action.auto) {next.continuationRequired = false}
     next.currentWave += 1
     next.phase = 'running'
+
     return { ok: true, state: next }
   }
 
   if (action.kind === 'exclude') {
-    if (!attempt) return refuse(state, 'unknown-installation')
+    if (!attempt) {return refuse(state, 'unknown-installation')}
+
     if (attempt.wave < state.currentWave || attempt.state !== 'none') {
       return refuse(state, 'only-uncommitted-next-wave-work-can-be-excluded')
     }
+
     const remaining = Object.values(next.attempts).filter(row => row.wave === attempt.wave && !row.excluded && row.installId !== attempt.installId)
-    if (remaining.length === 0) return refuse(state, 'cannot-exclude-every-target-in-wave')
+
+    if (remaining.length === 0) {return refuse(state, 'cannot-exclude-every-target-in-wave')}
     attempt.excluded = true
     attempt.state = 'skipped'
     attempt.reason = 'excluded'
     next.queueGeneration += 1
+
     return { ok: true, state: next }
   }
 
@@ -427,14 +469,17 @@ function classifyAuthorizationFailure(
 ): { outcome: 'refused' | 'unverified'; reason: string } | null {
   const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : null
   const message = record && typeof record.message === 'string' ? record.message : String(error)
+
   const code = record?.code === 'foreign-update-owner' || message.includes('foreign-update-owner')
     ? 'foreign-update-owner'
     : null
-  if (!code) return null
+
+  if (!code) {return null}
 
   const correlated = record?.correlated === false
     ? false
     : record?.correlated === true || record?.correlationId === expectedCorrelationId
+
   return {
     outcome: correlated ? 'refused' : 'unverified',
     reason: code
@@ -448,6 +493,7 @@ export function createManagedRolloutState(plan: ManagedRolloutPlan): ManagedRoll
       { ...target, state: 'none' as const, reprobeCount: 0, reprobeCooldownUntilMono: null }
     ])
   )
+
   return {
     id: plan.id,
     revision: plan.revision,
@@ -475,12 +521,15 @@ export function createManagedRolloutCoordinator(
   const admit = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = queue.then(operation, operation)
     queue = next.then(() => undefined, () => undefined)
+
     return next
   }
 
   const apply = (action: ManagedRolloutAction): ManagedRolloutTransition => {
     const transition = reduceManagedRollout(state, action)
-    if (transition.ok) state = transition.state
+
+    if (transition.ok) {state = transition.state}
+
     return transition
   }
 
@@ -499,7 +548,8 @@ export function createManagedRolloutCoordinator(
   const authorize = (installId: string) =>
     admit(async () => {
       const intent = apply({ kind: 'record-intent', installId })
-      if (!intent.ok) return intent
+
+      if (!intent.ok) {return intent}
       const attempt = state.attempts[installId]
       const authorization = authorizationFor(attempt)
 
@@ -509,9 +559,12 @@ export function createManagedRolloutCoordinator(
         await deps.journal.persistAuthorization(authorization)
       } catch (error) {
         const foreignOwner = classifyAuthorizationFailure(error, authorization.correlationId)
+
         if (foreignOwner) {
           const refusal = apply({ kind: 'authorization-refused', installId, ...foreignOwner })
-          if (!refusal.ok) return refusal
+
+          if (!refusal.ok) {return refusal}
+
           try {
             await deps.journal.persistEvent?.({
               kind: 'authorization-refused',
@@ -527,46 +580,56 @@ export function createManagedRolloutCoordinator(
               reason: `authorization-refusal-event-failed:${String(eventError)}`
             }
           }
+
           return { ok: false, state: refusal.state, reason: foreignOwner.reason }
         }
+
         return { ok: false, state, reason: `authorization-persist-failed:${String(error)}` }
       }
 
       const committed = apply({ kind: 'launch-authorized', installId })
-      if (!committed.ok) return committed
+
+      if (!committed.ok) {return committed}
 
       const settleUnverified = (reason: string): ManagedRolloutTransition => {
         const unresolved = apply({ kind: 'terminal', installId, outcome: 'unverified' })
+
         return unresolved.ok
           ? { ok: false, state: unresolved.state, reason }
           : unresolved
       }
 
       let capability: ManagedRolloutLaunchCapability
+
       try {
         capability = deps.service.issueCapability(authorization)
       } catch (error) {
         return settleUnverified(`capability-issue-failed:${String(error)}`)
       }
+
       if (!capability || typeof capability !== 'object') {
         return settleUnverified('capability-issue-failed:invalid-capability')
       }
 
       let launch: Promise<void>
+
       try {
         launch = deps.service.launch(authorization, capability)
       } catch (error) {
         return settleUnverified(`service-handoff-failed:${String(error)}`)
       }
+
       if (!launch || typeof launch.then !== 'function') {
         return settleUnverified('service-handoff-failed:invalid-promise')
       }
+
       void launch.then(
         () => undefined,
         () => {
           void admit(async () => apply({ kind: 'terminal', installId, outcome: 'unverified' }))
         }
       )
+
       return committed
     })
 
@@ -575,76 +638,101 @@ export function createManagedRolloutCoordinator(
 
   const start = (requestId: string) => {
     const duplicate = acceptedStarts.get(requestId)
-    if (duplicate) return duplicate
+
+    if (duplicate) {return duplicate}
+
     const accepted = admit(async () => {
       const transition = apply({ kind: 'start' })
-      if (!transition.ok) throw new Error(transition.reason)
+
+      if (!transition.ok) {throw new Error(transition.reason)}
+
       return cloneState(state)
     })
+
     acceptedStarts.set(requestId, accepted)
+
     return accepted
   }
 
   const promote = async (auto = false): Promise<ManagedRolloutTransition> => {
     const snapshot = cloneState(state)
     const proof = await deps.evidence.sweep(snapshot)
+
     return admit(async () => {
       if (!proofMatchesState(state, proof, processGeneration)) {
         return refuse(state, 'promotion-proof-is-stale-or-invalid')
       }
+
       return apply({ kind: 'promote', auto })
     })
   }
 
   const terminal = (installId: string, correlationId: string, outcome: Extract<ManagedRolloutAction, { kind: 'terminal' }>['outcome']) =>
     admit(async () => {
-      if (state.attempts[installId]?.correlationId !== correlationId) return refuse(state, 'terminal-correlation-mismatch')
+      if (state.attempts[installId]?.correlationId !== correlationId) {return refuse(state, 'terminal-correlation-mismatch')}
+
       return apply({ kind: 'terminal', installId, outcome })
     })
 
   const reprobe = (installId: string) =>
     admit(async () => {
       const attempt = state.attempts[installId]
+
       if (!attempt || !['authorized', 'observed', 'unverified', 'recovery-required'].includes(attempt.state)) {
         return refuse(state, 'reprobe-not-admissible')
       }
-      if (!deps.recovery) return refuse(state, 'recovery-adapter-unavailable')
+
+      if (!deps.recovery) {return refuse(state, 'recovery-adapter-unavailable')}
       const currentMono = nowMono()
-      if (!Number.isFinite(currentMono) || currentMono < 0) return refuse(state, 'reprobe-clock-invalid')
+
+      if (!Number.isFinite(currentMono) || currentMono < 0) {return refuse(state, 'reprobe-clock-invalid')}
+
       if (attempt.reprobeCooldownUntilMono !== null) {
-        if (currentMono < attempt.reprobeCooldownUntilMono) return refuse(state, 'reprobe-cooldown')
+        if (currentMono < attempt.reprobeCooldownUntilMono) {return refuse(state, 'reprobe-cooldown')}
         attempt.reprobeCount = 0
         attempt.reprobeCooldownUntilMono = null
       }
+
       const observation = await deps.recovery.reprobe(authorizationFor(attempt))
-      if (observation.correlationId !== attempt.correlationId) return refuse(state, 'reprobe-correlation-mismatch')
+
+      if (observation.correlationId !== attempt.correlationId) {return refuse(state, 'reprobe-correlation-mismatch')}
+
       if (!observation.terminal) {
         attempt.reprobeCount += 1
+
         if (attempt.reprobeCount >= MAX_INCONCLUSIVE_REPROBES) {
           attempt.reprobeCooldownUntilMono = currentMono + REPROBE_COOLDOWN_MS
         }
+
         return { ok: true, state: cloneState(state) }
       }
+
       const settled = apply({ kind: 'terminal', installId, outcome: observation.outcome })
+
       if (settled.ok) {
         const current = state.attempts[installId]
         current.reprobeCount = 0
         current.reprobeCooldownUntilMono = null
       }
+
       return settled
     })
 
   const recover = (installId: string) =>
     admit(async () => {
       const attempt = state.attempts[installId]
+
       if (!attempt || !['unverified', 'recovery-required'].includes(attempt.state)) {
         return refuse(state, 'recovery-not-admissible')
       }
-      if (!deps.recovery) return refuse(state, 'recovery-adapter-unavailable')
+
+      if (!deps.recovery) {return refuse(state, 'recovery-adapter-unavailable')}
       const result = await deps.recovery.recover(authorizationFor(attempt))
+
       if (result.correlationId !== attempt.correlationId || !result.clearanceProved) {
         return refuse(state, 'recovery-clearance-not-proved')
       }
+
       return { ok: true, state: cloneState(state) }
     })
 

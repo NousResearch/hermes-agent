@@ -25,6 +25,7 @@ describe('managed rollout section', () => {
       maxConcurrency: 0,
       maxInstallations: 0
     })
+
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: { connections: { managedRollouts: { capabilities } } }

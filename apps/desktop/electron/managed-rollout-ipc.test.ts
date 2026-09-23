@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { createManagedRolloutIpcHandler, MAX_PAGE_SIZE, type ManagedRolloutIpcAdapter } from './managed-rollout-ipc'
+import { createManagedRolloutIpcHandler, type ManagedRolloutIpcAdapter, MAX_PAGE_SIZE } from './managed-rollout-ipc'
 
 const ID = '12345678-1234-4678-9234-567812345678'
 const REQUEST = '22345678-1234-4678-9234-567812345678'
 
 function adapter(): { value: ManagedRolloutIpcAdapter; calls: string[] } {
   const calls: string[] = []
+
   return {
     calls,
     value: {
@@ -18,6 +19,7 @@ function adapter(): { value: ManagedRolloutIpcAdapter; calls: string[] } {
       get: async id => ({ id }),
       command: async command => {
         calls.push(command.kind)
+
         return { ok: true, id: command.id, revision: command.revision }
       },
       history: async page => ({ page }),
@@ -44,11 +46,13 @@ test('command accepts only exact typed commands and never forwards extra rendere
     'command',
     { id: ID, expectedRevision: 4, requestId: REQUEST, action: 'pause', installId: null, reason: null, promotionPolicy: null }
   )
+
   const forged = await handler(
     { sender: {} },
     'command',
     { id: ID, expectedRevision: 4, requestId: REQUEST, action: 'pause', installId: null, reason: null, promotionPolicy: null, targetSha: 'a'.repeat(40) }
   )
+
   const acceptedExclude = await handler(
     { sender: {} },
     'command',
@@ -62,6 +66,7 @@ test('command accepts only exact typed commands and never forwards extra rendere
       promotionPolicy: null
     }
   )
+
   const acceptedPolicy = await handler(
     { sender: {} },
     'command',
@@ -75,6 +80,7 @@ test('command accepts only exact typed commands and never forwards extra rendere
       promotionPolicy: 'manual'
     }
   )
+
   assert.equal(accepted.ok, true)
   assert.equal(acceptedExclude.ok, true)
   assert.equal(acceptedPolicy.ok, true)
@@ -97,11 +103,13 @@ test('new provider routes are explicit and fail closed when the provider method 
   const handler = createManagedRolloutIpcHandler(fixture.value, () => true)
 
   const inventory = await handler({ sender: {} }, 'inventory', undefined)
+
   const target = await handler(
     { sender: {} },
     'resolveTarget',
     { connectionIds: [ID], inventoryRevision: 'inventory-1', retryOf: null }
   )
+
   const preflight = await handler({ sender: {} }, 'preflight', { draft: {} })
   const start = await handler({ sender: {} }, 'start', { token: 'token-1', requestId: REQUEST })
 
@@ -133,6 +141,7 @@ test('read accepts only a bounded sinceRevision and preserves the revision ackno
 test('oversized requests fail before an adapter can mutate state', async () => {
   const fixture = adapter()
   const handler = createManagedRolloutIpcHandler(fixture.value, () => true)
+
   const payload = {
     id: ID,
     expectedRevision: 4,

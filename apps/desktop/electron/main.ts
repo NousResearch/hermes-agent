@@ -282,6 +282,9 @@ import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { registerManagedRolloutIpc } from './managed-rollout-ipc-runtime'
+import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
+import { createManagedRolloutProvider } from './managed-rollout-provider'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -295,9 +298,6 @@ import {
   waitForManagedSshBootstrapFence
 } from './managed-ssh-update'
 import { createManagedSshUpdateService } from './managed-ssh-update-service'
-import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
-import { createManagedRolloutProvider } from './managed-rollout-provider'
-import { registerManagedRolloutIpc } from './managed-rollout-ipc-runtime'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
@@ -10218,6 +10218,7 @@ let managedUpdateQuitWaitDone = false
 function assertCanMutateManagedPrimaryRouting() {
   managedSshUpdateService.assertCanMutatePrimaryRouting()
 }
+
 function readManagedSshRecoveryRecords(): any[] {
   try {
     const stat = fs.lstatSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH)
@@ -10578,40 +10579,52 @@ async function readVerifiedHostKeyFingerprint(sshConfig) {
     process.platform === 'win32'
       ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
       : 'ssh'
+
   const target = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
   const args = ['-G']
 
-  if (sshConfig.port) args.push('-p', String(sshConfig.port))
-  if (sshConfig.keyPath) args.push('-i', sshConfig.keyPath)
+  if (sshConfig.port) {args.push('-p', String(sshConfig.port))}
+
+  if (sshConfig.keyPath) {args.push('-i', sshConfig.keyPath)}
   args.push('--', target)
 
   const expanded = await execText(sshBinary, args, { timeout: 10_000 })
   const knownHosts = new Set<string>()
   let resolvedHost = String(sshConfig.host)
   let resolvedPort = Number(sshConfig.port || 22)
+
   for (const line of String(expanded || '').split(/\r?\n/)) {
     const fields = line.trim().split(/\s+/)
-    if (fields[0] === 'hostname' && fields[1]) resolvedHost = fields[1]
-    if (fields[0] === 'port' && /^\d+$/.test(fields[1] || '')) resolvedPort = Number(fields[1])
-    if (fields.length < 2 || !['userknownhostsfile', 'globalknownhostsfile'].includes(fields[0])) continue
+
+    if (fields[0] === 'hostname' && fields[1]) {resolvedHost = fields[1]}
+
+    if (fields[0] === 'port' && /^\d+$/.test(fields[1] || '')) {resolvedPort = Number(fields[1])}
+
+    if (fields.length < 2 || !['userknownhostsfile', 'globalknownhostsfile'].includes(fields[0])) {continue}
+
     for (const candidate of fields.slice(1)) {
-      if (!candidate || candidate === 'none' || candidate.includes('%')) continue
+      if (!candidate || candidate === 'none' || candidate.includes('%')) {continue}
+
       const resolved = candidate.startsWith('~/')
         ? path.join(os.homedir(), candidate.slice(2))
         : path.resolve(candidate)
+
       knownHosts.add(resolved)
     }
   }
 
   const hostNames = new Set<string>([String(sshConfig.host), resolvedHost])
   const ports = new Set<number>([Number(sshConfig.port || 22), resolvedPort])
+
   for (const port of ports) {
     if (port !== 22) {
       hostNames.add(`[${resolvedHost}]:${port}`)
       hostNames.add(`[${sshConfig.host}]:${port}`)
     }
   }
+
   const outputs: string[] = []
+
   for (const knownHostsFile of knownHosts) {
     for (const hostName of hostNames) {
       try {
@@ -10624,9 +10637,11 @@ async function readVerifiedHostKeyFingerprint(sshConfig) {
   }
 
   const fingerprints = parseKnownHostsFingerprints(outputs)
+
   if (fingerprints.length !== 1) {
     throw new Error(`Managed rollout host-key evidence is ambiguous (${fingerprints.length} fingerprints).`)
   }
+
   return fingerprints[0]
 }
 
@@ -12029,6 +12044,7 @@ async function ensureManagedSshBackendAtKey(source, profile, key, correlationId,
 async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
   return managedSshUpdateService.restorePrimary(source, profile, correlationId, async () => {
     backendConnectionState.invalidate()
+
     return startHermes()
   })
 }
@@ -16404,6 +16420,7 @@ const managedRolloutIntegration = createManagedRolloutMainIntegration({
   assuranceRoot: DESKTOP_MANAGED_ROLLOUT_ASSURANCE_ROOT,
   journalRoot: DESKTOP_MANAGED_ROLLOUT_JOURNAL_ROOT
 })
+
 const managedRolloutProvider = createManagedRolloutProvider({
   ...managedRolloutIntegration.adapters,
   journal: managedRolloutIntegration.journal,
@@ -16412,6 +16429,7 @@ const managedRolloutProvider = createManagedRolloutProvider({
   evidence: managedRolloutIntegration.evidence,
   ready: managedRolloutIntegration.adapters.ready
 })
+
 registerManagedRolloutIpc(
   ipcMain,
   sender => Boolean(mainWindow && !mainWindow.isDestroyed() && sender === mainWindow.webContents),

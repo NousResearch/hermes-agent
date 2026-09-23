@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest'
+import { expect, test } from 'vitest'
 
 import { registerManagedRolloutIpc, UNAVAILABLE_MESSAGE } from './managed-rollout-ipc-runtime'
 

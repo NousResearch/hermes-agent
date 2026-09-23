@@ -1,12 +1,14 @@
-import { useEffect } from 'react'
 import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
+
 import { useI18n } from '@/i18n'
 import { getManagedRolloutMessages } from '@/i18n/managed-rollouts'
 import {
   $managedRollouts,
-  startManagedRolloutPolling,
-  type ManagedRolloutsState
+  type ManagedRolloutsState,
+  startManagedRolloutPolling
 } from '@/store/managed-rollouts'
+
 import { RolloutHistory, type RolloutHistoryEntry } from './rollout-history'
 
 function bridgeAvailable(): boolean {
@@ -21,7 +23,8 @@ function snapshotLabel(
   noActive: string,
   activePhase: (phase: string) => string
 ): string {
-  if (!state.snapshot) return noActive
+  if (!state.snapshot) {return noActive}
+
   return activePhase(state.snapshot.phase)
 }
 
@@ -38,11 +41,12 @@ export function ManagedRolloutsSection({
   const available = bridgeAvailable()
 
   useEffect(() => {
-    if (!available) return
+    if (!available) {return}
+
     return startManagedRolloutPolling()
   }, [available])
 
-  if (!available) return null
+  if (!available) {return null}
 
   const unsupported = state.status === 'unsupported'
 

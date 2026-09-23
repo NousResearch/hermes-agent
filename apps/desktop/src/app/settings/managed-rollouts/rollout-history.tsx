@@ -22,6 +22,7 @@ export function RolloutHistory({
   const { locale, t } = useI18n()
   const copy = getManagedRolloutMessages(t, locale)
   const [selected, setSelected] = useState<string | null>(null)
+
   const select = (id: string) => {
     setSelected(id)
     onSelect(id)

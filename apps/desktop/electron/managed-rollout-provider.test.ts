@@ -6,26 +6,27 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import {
-  createManagedRolloutProvider,
-  type ManagedRolloutProviderDependencies,
-  type ManagedRolloutObservation
-} from './managed-rollout-provider'
-import { createManagedRolloutJournal } from './managed-rollout-journal'
+import type {
+  HealthEvidence,
+  ReviewedSourceBinding,
+  RolloutPlan,
+  RolloutTarget
+} from '../src/lib/managed-rollout-contract'
+
+import type { TrustedSourceReader } from './managed-rollout-assurance'
 import {
   installationFingerprint,
   sourceFingerprint,
   type SourceFingerprintInput
 } from './managed-rollout-identity'
-import type { TrustedSourceReader } from './managed-rollout-assurance'
 import type { TrustedInventorySnapshot } from './managed-rollout-inventory'
+import { createManagedRolloutJournal } from './managed-rollout-journal'
 import type { TargetResolution } from './managed-rollout-preflight'
-import type {
-  HealthEvidence,
-  RolloutPlan,
-  RolloutTarget,
-  ReviewedSourceBinding
-} from '../src/lib/managed-rollout-contract'
+import {
+  createManagedRolloutProvider,
+  type ManagedRolloutObservation,
+  type ManagedRolloutProviderDependencies
+} from './managed-rollout-provider'
 
 const NOW = 1_700_000_000_000
 const NOW_ISO = new Date(NOW).toISOString()
@@ -59,6 +60,7 @@ function assuranceEnvelope(): Uint8Array {
       }
     ]
   }
+
   return new TextEncoder().encode(JSON.stringify(document))
 }
 
@@ -159,12 +161,17 @@ function sourceReader(origin = ORIGIN): TrustedSourceReader {
   return {
     nowMono: () => NOW_MONO,
     async git(args) {
-      if (args[0] === 'rev-parse') return CODE_ROOT
-      if (args[0] === 'remote') return origin
-      if (args[0] === 'symbolic-ref') return 'main'
-      if (args[0] === 'cat-file') return 'commit'
-      if (args[0] === 'merge-base') return ''
-      if (args[0] === 'show') return '{"protocol":1}'
+      if (args[0] === 'rev-parse') {return CODE_ROOT}
+
+      if (args[0] === 'remote') {return origin}
+
+      if (args[0] === 'symbolic-ref') {return 'main'}
+
+      if (args[0] === 'cat-file') {return 'commit'}
+
+      if (args[0] === 'merge-base') {return ''}
+
+      if (args[0] === 'show') {return '{"protocol":1}'}
       throw new Error(`unexpected git probe: ${args.join(' ')}`)
     }
   }
@@ -203,21 +210,26 @@ function makeDependencies(options: { origin?: string } = {}): {
   launchCalls: string[]
 } {
   const journalDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-rollout-provider-'))
+
   const journal = createManagedRolloutJournal({
     directory: journalDirectory,
     clock: () => NOW_ISO,
     retentionLimit: 20
   })
+
   const launchCalls: string[] = []
+
   const fakeService = {
     issueLaunchCapability: (connectionId: string) => {
       assert.equal(connectionId, CONNECTION_ID)
+
       return { internal: 'not-for-ipc' }
     },
     request: async (connectionId: string, input: { mode: string; correlationId: string }) => {
       assert.equal(connectionId, CONNECTION_ID)
       assert.equal(input.mode, 'coordinator')
       launchCalls.push(`${connectionId}:${input.correlationId}`)
+
       return {
         connectionId,
         correlationId: input.correlationId,
@@ -270,6 +282,7 @@ function makeDependencies(options: { origin?: string } = {}): {
     resolveTarget: async request => {
       assert.deepEqual(request.connectionIds, [CONNECTION_ID])
       assert.equal(request.inventoryRevision, INVENTORY.inventoryRevision)
+
       return { plan: BASE_PLAN, resolution: RESOLUTION }
     },
     journal,
@@ -287,6 +300,7 @@ function makeDependencies(options: { origin?: string } = {}): {
     nowMono: () => NOW_MONO,
     processGeneration: 1
   }
+
   return { dependencies, journalDirectory, launchCalls }
 }
 
@@ -310,6 +324,7 @@ test('fails closed without trusted local rollout dependencies', async () => {
 
 test('runs an injected trusted rollout without exposing the launch capability', async () => {
   const { dependencies, journalDirectory, launchCalls } = makeDependencies()
+
   try {
     const provider = createManagedRolloutProvider(dependencies)
     assert.equal((await provider.capabilities()).available, true)
@@ -319,6 +334,7 @@ test('runs an injected trusted rollout without exposing the launch capability', 
       inventoryRevision: INVENTORY.inventoryRevision,
       retryOf: null
     }) as Record<string, unknown>
+
     assert.equal(resolution.resolutionId, RESOLUTION.id)
     assert.equal('cachePath' in resolution, false)
 
@@ -330,6 +346,7 @@ test('runs an injected trusted rollout without exposing the launch capability', 
       promotionPolicy: 'auto-if-healthy',
       retryOf: null
     }) as Record<string, unknown>
+
     assert.equal(typeof preflight.token, 'string')
     assert.equal(typeof preflight.requestId, 'string')
     assert.equal(typeof preflight.rolloutId, 'string')
@@ -343,6 +360,7 @@ test('runs an injected trusted rollout without exposing the launch capability', 
       token: preflight.token as string,
       requestId: preflight.requestId as string
     }) as Record<string, unknown>
+
     assert.equal(started.ok, true)
     assert.equal('capability' in started, false)
     assert.equal(JSON.stringify(started).includes('not-for-ipc'), false)
@@ -370,6 +388,7 @@ test('runs an injected trusted rollout without exposing the launch capability', 
       reason: 'retained for test evidence',
       promotionPolicy: null
     }
+
     const archived = await provider.command(command)
     assert.equal((archived as Record<string, unknown>).ok, true)
     assert.deepEqual(await provider.command(command), archived)
@@ -387,6 +406,7 @@ test('runs an injected trusted rollout without exposing the launch capability', 
 
 test('rejects exact-source drift before issuing a review token', async () => {
   const { dependencies, journalDirectory } = makeDependencies({ origin: 'https://github.com/NousResearch/other.git' })
+
   try {
     const provider = createManagedRolloutProvider(dependencies)
     await assert.rejects(

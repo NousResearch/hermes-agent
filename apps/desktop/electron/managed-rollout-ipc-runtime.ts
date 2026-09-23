@@ -55,6 +55,7 @@ export function registerManagedRolloutIpc(
   adapter: ManagedRolloutIpcAdapter = createUnavailableManagedRolloutAdapter()
 ): void {
   const handler = createManagedRolloutIpcHandler(adapter, isTrustedSender)
+
   for (const method of METHODS) {
     ipcMain.handle(`hermes:managed-rollouts:${method}`, (event, payload) =>
       handler({ sender: event.sender }, method, payload)

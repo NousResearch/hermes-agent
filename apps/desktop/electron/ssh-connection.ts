@@ -175,16 +175,22 @@ function parseKnownHostsFingerprints(outputs: readonly string[]): string[] {
   for (const output of outputs) {
     for (const rawLine of String(output || '').split(/\r?\n/)) {
       const line = rawLine.trim()
-      if (!line || line.startsWith('#')) continue
+
+      if (!line || line.startsWith('#')) {continue}
       const fields = line.split(/\s+/)
+
       const index = fields.findIndex((field, position) =>
         keyType.test(field) && position + 1 < fields.length && base64.test(fields[position + 1])
       )
-      if (index < 0) continue
+
+      if (index < 0) {continue}
       const keyBlob = Buffer.from(fields[index + 1], 'base64')
-      if (keyBlob.length === 0) continue
+
+      if (keyBlob.length === 0) {continue}
+
       const digest = crypto.createHash('sha256').update(keyBlob).digest('base64')
         .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
+
       fingerprints.add(`SHA256:${digest}`)
     }
   }
@@ -1203,8 +1209,8 @@ export {
   DEFAULT_FORWARD_TIMEOUT_MS,
   forwardSpec,
   hostArgs,
-  pickLocalPort,
   parseKnownHostsFingerprints,
+  pickLocalPort,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,

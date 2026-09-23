@@ -3,12 +3,20 @@ import crypto from 'node:crypto'
 
 import type { ReviewedSourceBinding, RolloutTarget } from '../src/lib/managed-rollout-contract'
 import { validateReviewedSourceBinding, validateRolloutTarget } from '../src/lib/managed-rollout-contract'
+
 import { canonicalCodeRoot, canonicalRepositoryId } from './managed-rollout-identity'
 
 const SHA256 = /^[0-9a-f]{64}$/
 const REQUIRED_CONTROL_RESULTS = new Set(['pass'])
 const verifiedEvidence = new WeakSet<object>()
 const verifiedSources = new WeakMap<object, { inventoryRevision: string; verifiedMono: number }>()
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some(character => {
+    const code = character.charCodeAt(0)
+    return code <= 0x1f || code === 0x7f
+  })
+}
 export const REVIEWED_SOURCE_FRESHNESS_MS = 10_000
 
 export interface TrustedSourceReader {
@@ -73,8 +81,9 @@ function exactObject(value: unknown, keys: readonly string[]): value is Record<s
 }
 
 function validInstant(value: unknown): number | null {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return null
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) {return null}
   const instant = Date.parse(value)
+
   return Number.isFinite(instant) ? instant : null
 }
 
@@ -87,36 +96,49 @@ export async function verifyReviewedGitSource(
   const source = Object.freeze(validateReviewedSourceBinding(value))
   const target = validateRolloutTarget(expected.target)
   const ref = `refs/remotes/origin/${expected.branch}`
+
   if (source.targetSha !== target.sha || source.resolvedRef !== ref || expected.branch !== target.branch)
-    refusal('reviewed-target-or-ref-mismatch')
+    {refusal('reviewed-target-or-ref-mismatch')}
+
   if (source.originUrl !== expected.trustedOriginUrl || canonicalRepositoryId(source.originUrl) !== target.repositoryId)
-    refusal('reviewed-origin-mismatch')
+    {refusal('reviewed-origin-mismatch')}
+
   if (canonicalCodeRoot(source.repositoryRoot) !== canonicalCodeRoot(expected.repositoryRoot))
-    refusal('reviewed-repository-mismatch')
+    {refusal('reviewed-repository-mismatch')}
 
   const query = async (...args: string[]): Promise<string> => text(await reader.git(args, source.repositoryRoot)).trim()
+
   const [actualRoot, actualOrigin, branch, objectType] = await Promise.all([
     query('rev-parse', '--show-toplevel'),
     query('remote', 'get-url', 'origin'),
     query('symbolic-ref', '--quiet', '--short', 'HEAD'),
     query('cat-file', '-t', source.targetSha)
   ])
-  if (canonicalCodeRoot(actualRoot) !== canonicalCodeRoot(source.repositoryRoot)) refusal('reviewed-repository-mismatch')
-  if (actualOrigin !== source.originUrl) refusal('reviewed-origin-mismatch')
-  if (branch !== expected.branch) refusal('reviewed-branch-mismatch')
-  if (objectType !== 'commit') refusal('reviewed-object-unavailable')
+
+  if (canonicalCodeRoot(actualRoot) !== canonicalCodeRoot(source.repositoryRoot)) {refusal('reviewed-repository-mismatch')}
+
+  if (actualOrigin !== source.originUrl) {refusal('reviewed-origin-mismatch')}
+
+  if (branch !== expected.branch) {refusal('reviewed-branch-mismatch')}
+
+  if (objectType !== 'commit') {refusal('reviewed-object-unavailable')}
+
   try {
     await reader.git(['merge-base', '--is-ancestor', source.targetSha, ref], source.repositoryRoot)
   } catch {
     refusal('reviewed-object-not-on-origin-ref')
   }
+
   const { parseProtocolMetadata, PROTOCOL_RESOURCE_PATH } = await import('./managed-rollout-preflight')
   const protocol = await reader.git(['show', `${source.targetSha}:${PROTOCOL_RESOURCE_PATH}`], source.repositoryRoot)
   parseProtocolMetadata(typeof protocol === 'string' ? new TextEncoder().encode(protocol) : protocol)
   const verifiedMono = reader.nowMono()
+
   if (!Number.isFinite(verifiedMono) || verifiedMono < 0 || !expected.inventoryRevision)
-    refusal('reviewed-source-clock-or-revision-invalid')
+    {refusal('reviewed-source-clock-or-revision-invalid')}
+
   verifiedSources.set(source, { inventoryRevision: expected.inventoryRevision, verifiedMono })
+
   return source
 }
 
@@ -138,27 +160,34 @@ export async function verifyApplicableAssurance(
     reader.readEvidence(expected.profile, expected.targetSha, expected.sourceFingerprint),
     reader.readProfile(expected.profile)
   ])
+
   const requiredControlIds = profile?.requiredControlIds
+
   if (
     !profile || !Number.isSafeInteger(profile.generation) || profile.generation !== expected.generation ||
     !requiredControlIds || !Array.isArray(requiredControlIds) || requiredControlIds.length === 0 ||
-    requiredControlIds.some(id => typeof id !== 'string' || !id || /[\x00-\x1f\x7f]/.test(id)) ||
+    requiredControlIds.some(id => typeof id !== 'string' || !id || hasControlCharacter(id)) ||
     new Set(requiredControlIds).size !== requiredControlIds.length
-  ) refusal('assurance-profile-unavailable')
-  if (!raw || raw.byteLength === 0 || raw.byteLength > 64 * 1024) refusal('assurance-evidence-missing')
+  ) {refusal('assurance-profile-unavailable')}
+
+  if (!raw || raw.byteLength === 0 || raw.byteLength > 64 * 1024) {refusal('assurance-evidence-missing')}
   let document: unknown
+
   try {
     document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw))
   } catch {
     refusal('assurance-evidence-malformed')
   }
+
   const keys = [
     'schema', 'profile', 'generation', 'repositoryId', 'targetSha',
     'sourceFingerprint', 'observedAt', 'expiresAt', 'controls'
   ]
-  if (!exactObject(document, keys) || document.schema !== 1) refusal('assurance-evidence-malformed')
+
+  if (!exactObject(document, keys) || document.schema !== 1) {refusal('assurance-evidence-malformed')}
   const observedAt = validInstant(document.observedAt)
   const expiresAt = validInstant(document.expiresAt)
+
   if (
     document.profile !== expected.profile || document.repositoryId !== expected.repositoryId ||
     document.targetSha !== expected.targetSha || document.sourceFingerprint !== expected.sourceFingerprint ||
@@ -166,28 +195,37 @@ export async function verifyApplicableAssurance(
     !Number.isSafeInteger(document.generation) ||
     !Number.isSafeInteger(expected.now) || observedAt === null || expiresAt === null ||
     observedAt > expected.now || expiresAt <= expected.now || expiresAt <= observedAt
-  ) refusal('assurance-evidence-stale-or-mismatched')
-  if (!Array.isArray(document.controls) || document.controls.length === 0) refusal('assurance-controls-missing')
+  ) {refusal('assurance-evidence-stale-or-mismatched')}
+
+  if (!Array.isArray(document.controls) || document.controls.length === 0) {refusal('assurance-controls-missing')}
   const ids = new Set<string>()
   const results = new Map<string, { required: boolean; result: string }>()
   let requiredCount = 0
+
   for (const entry of document.controls) {
-    if (!exactObject(entry, ['id', 'required', 'result', 'receiptSha256'])) refusal('assurance-control-malformed')
+    if (!exactObject(entry, ['id', 'required', 'result', 'receiptSha256'])) {refusal('assurance-control-malformed')}
+
     if (
       typeof entry.id !== 'string' || !entry.id || ids.has(entry.id) ||
       typeof entry.required !== 'boolean' || typeof entry.result !== 'string' ||
       typeof entry.receiptSha256 !== 'string' || !SHA256.test(entry.receiptSha256)
-    ) refusal('assurance-control-malformed')
+    ) {refusal('assurance-control-malformed')}
+
     ids.add(entry.id)
     results.set(entry.id, { required: entry.required, result: entry.result })
+
     if (entry.required) {
       requiredCount += 1
-      if (!REQUIRED_CONTROL_RESULTS.has(entry.result)) refusal('assurance-required-control-not-passed')
+
+      if (!REQUIRED_CONTROL_RESULTS.has(entry.result)) {refusal('assurance-required-control-not-passed')}
     }
   }
-  if (requiredCount === 0) refusal('assurance-controls-missing')
+
+  if (requiredCount === 0) {refusal('assurance-controls-missing')}
+
   if (requiredControlIds.some(id => !results.get(id)?.required || results.get(id)?.result !== 'pass'))
-    refusal('assurance-required-control-not-passed')
+    {refusal('assurance-required-control-not-passed')}
+
   const proof = Object.freeze({
     profile: expected.profile,
     evidenceSha256: crypto.createHash('sha256').update(raw).digest('hex'),
@@ -197,7 +235,9 @@ export async function verifyApplicableAssurance(
     sourceFingerprint: expected.sourceFingerprint,
     expiresAt
   })
+
   verifiedEvidence.add(proof)
+
   return proof
 }
 

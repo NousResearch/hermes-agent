@@ -8,9 +8,9 @@ vi.mock('./managed-ssh-update', () => ({
   observeManagedRemoteUpdate: vi.fn()
 }))
 
-import { observeManagedRemoteUpdate } from './managed-ssh-update'
-import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
 import { installationFingerprint } from './managed-rollout-identity'
+import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
+import { observeManagedRemoteUpdate } from './managed-ssh-update'
 
 const INSTALL_ID = 'a'.repeat(32)
 const TARGET_SHA = 'b'.repeat(40)
@@ -23,30 +23,40 @@ const temporaryDirectories: string[] = []
 
 afterEach(() => {
   vi.restoreAllMocks()
-  for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+
+  for (const directory of temporaryDirectories.splice(0)) {fs.rmSync(directory, { recursive: true, force: true })}
 })
 
 function makeIntegration(headSha = TARGET_SHA) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-rollout-main-integration-'))
   temporaryDirectories.push(directory)
   let inspectionHeadReads = 0
+
   const ssh = {
     exec: vi.fn(async (command: string) => {
-      if (command.includes("'--show-toplevel'")) return ROOT
-      if (command.includes("'remote' 'get-url'")) return 'https://github.com/nousresearch/hermes-agent.git'
-      if (command.includes("'rev-parse' 'HEAD'")) return inspectionHeadReads++ === 0 ? TARGET_SHA : headSha
-      if (command.includes('echo "${HERMES_HOME:-$HOME/.hermes}"')) return '~/.hermes'
-      if (command.includes('if [ -f')) return INSTALL_ID
+      if (command.includes("'--show-toplevel'")) {return ROOT}
+
+      if (command.includes("'remote' 'get-url'")) {return 'https://github.com/nousresearch/hermes-agent.git'}
+
+      if (command.includes("'rev-parse' 'HEAD'")) {return inspectionHeadReads++ === 0 ? TARGET_SHA : headSha}
+
+      if (command.includes('echo "${HERMES_HOME:-$HOME/.hermes}"')) {return '~/.hermes'}
+
+      if (command.includes('if [ -f')) {return INSTALL_ID}
+
       return headSha
     })
   }
+
   const target = {
     platform: 'Linux',
     hermesPath: `${ROOT}/.venv/bin/hermes`,
     hermesHome: '~/.hermes',
     ssh
   }
+
   const source = { id: CONNECTION_ID, kind: 'ssh', label: 'test-source' }
+
   const integration = createManagedRolloutMainIntegration({
     nowMono: () => 1000,
     listSources: () => [source],
@@ -60,6 +70,7 @@ function makeIntegration(headSha = TARGET_SHA) {
     assuranceRoot: path.join(directory, 'assurance'),
     journalRoot: path.join(directory, 'journal')
   })
+
   return { integration, source, ssh }
 }
 

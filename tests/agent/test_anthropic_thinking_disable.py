@@ -7,7 +7,7 @@ thinking off is trying to stop paying for.  The disable has to be sent:
 
     thinking: {"type": "disabled"}
 
-Reasoning-mandatory families (claude-fable) reject that with an HTTP 400
+Reasoning-mandatory families (claude-fable, Opus 5.5) reject that with an HTTP 400
 ("Thinking is mandatory for this model"), so they keep the omission — a
 silently-ignored disable is a much better failure than a dead turn.
 
@@ -64,9 +64,18 @@ class TestThinkingOffIsSentExplicitly:
         assert kwargs["thinking"] == {"type": "disabled"}
         assert "output_config" not in kwargs
 
-    def test_mandatory_thinking_models_keep_the_omission(self) -> None:
-        """claude-fable answers a disable with HTTP 400, so don't send one."""
-        kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": False})
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-fable-5",
+            "claude-opus-5-5",
+            "anthropic/claude-opus-5.5",
+            "anthropic.claude-opus-5-5",
+        ],
+    )
+    def test_mandatory_thinking_models_keep_the_omission(self, model: str) -> None:
+        """claude-fable and Opus 5.5 answer a disable with HTTP 400, so don't send one."""
+        kwargs = _kwargs(model, {"enabled": False})
         assert "thinking" not in kwargs
 
     def test_legacy_manual_thinking_models_keep_the_omission(self) -> None:

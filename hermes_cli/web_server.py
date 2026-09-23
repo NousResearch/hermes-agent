@@ -1211,12 +1211,44 @@ def _best_effort(what: str, fn) -> None:
         _log.debug("%s skipped: %s", what, exc)
 
 
+def _publish_host_record(host: str, port: int) -> None:
+    """Publish a bound shared backend for other profile launches to attach to."""
+    from gateway import host_rendezvous as hr
+
+    outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
+    if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
+        _log.warning(
+            "Host backend lock could not be opened (%s); this backend is not discoverable. "
+            "This is NOT another backend holding it.", error)
+        return
+    if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
+        owner = hr.read_record(hr.ROLE_SERVE)
+        _log.warning(
+            "Another backend already owns this host (%s); this one bound anyway "
+            "(observe-only). Multiplex-only expects exactly one backend per host.",
+            hr.describe(owner) if owner else "owner unknown",
+        )
+        return
+    hr.publish_record(
+        hr.ROLE_SERVE,
+        host=host,
+        port=port,
+        profiles=hr.served_profiles(),
+        # The live session token, so an attaching client of the same OS user can
+        # authenticate even when the backend is gated and `GET /` withholds it.
+        token=_SESSION_TOKEN,
+    )
+    # SIGTERM included: it is the normal stop, and it does not run atexit here.
+    hr.cleanup_on_exit(hr.ROLE_SERVE)
+
+
 def _on_server_started(
     server,
     *,
     host: str,
     port: int,
     headless: bool,
+    isolated: bool,
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
@@ -1284,36 +1316,8 @@ def _on_server_started(
     # for any profile find this process and attach instead of binding a second port. Published
     # after the bind so the record carries the real port, and beside — not instead of — the
     # spawn-ledger entry above, which Desktop's attach ladder reads.
-    def _publish_host_record() -> None:
-        from gateway import host_rendezvous as hr
-
-        outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
-        if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
-            _log.warning(
-                "Host backend lock could not be opened (%s); this backend is not discoverable. "
-                "This is NOT another backend holding it.", error)
-            return
-        if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
-            owner = hr.read_record(hr.ROLE_SERVE)
-            _log.warning(
-                "Another backend already owns this host (%s); this one bound anyway "
-                "(observe-only). Multiplex-only expects exactly one backend per host.",
-                hr.describe(owner) if owner else "owner unknown",
-            )
-            return
-        hr.publish_record(
-            hr.ROLE_SERVE,
-            host=host,
-            port=actual_port,
-            profiles=hr.served_profiles(),
-            # The live session token, so an attaching client of the same OS user can
-            # authenticate even when the backend is gated and `GET /` withholds it.
-            token=_SESSION_TOKEN,
-        )
-        # SIGTERM included: it is the normal stop, and it does not run atexit here.
-        hr.cleanup_on_exit(hr.ROLE_SERVE)
-
-    _best_effort("host rendezvous publish", _publish_host_record)
+    if not isolated:
+        _best_effort("host rendezvous publish", lambda: _publish_host_record(host, actual_port))
 
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn (matches either
@@ -1422,6 +1426,7 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
@@ -1431,6 +1436,7 @@ def start_server(
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
     (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
     JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    ``isolated`` opts out of the shared host rendezvous on both attach and publish.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state, never persisted or exported to children.
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
@@ -1516,6 +1522,7 @@ def start_server(
                 host=host,
                 port=port,
                 headless=headless,
+                isolated=isolated,
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,

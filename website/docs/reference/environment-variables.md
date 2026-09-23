@@ -56,6 +56,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `KILOCODE_BASE_URL` | Override Kilo Code base URL (default: `https://api.kilo.ai/api/gateway`) |
 | `XIAOMI_API_KEY` | Xiaomi MiMo API key ([platform.xiaomimimo.com](https://platform.xiaomimimo.com)) |
 | `XIAOMI_BASE_URL` | Override Xiaomi MiMo base URL (default: `https://api.xiaomimimo.com/v1`) |
+| `XIAOMI_TOKEN_PLAN_API_KEY` | Xiaomi MiMo Token Plan key ([Token Plan](https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription)); separate from `XIAOMI_API_KEY` |
+| `XIAOMI_TOKEN_PLAN_BASE_URL` | Token Plan regional OpenAI-compatible URL from your plan page (China, Singapore, or Europe) |
 | `UPSTAGE_API_KEY` | Upstage API key for Solar models ([console.upstage.ai](https://console.upstage.ai/api-keys)) |
 | `UPSTAGE_BASE_URL` | Override Upstage base URL (default: `https://api.upstage.ai/v1`) |
 | `TOKENHUB_API_KEY` | Tencent TokenHub API key ([tokenhub.tencentmaas.com](https://tokenhub.tencentmaas.com)) |

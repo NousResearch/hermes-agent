@@ -92,6 +92,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Ramp Router | `router` | `RAMP_ROUTER_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
+| Xiaomi MiMo Token Plan | `xiaomi-token-plan` | `XIAOMI_TOKEN_PLAN_API_KEY` (and regional `XIAOMI_TOKEN_PLAN_BASE_URL`) |
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | GMI Cloud | `gmi` | `GMI_API_KEY` |
 | Nebius Token Factory | `nebius-token-factory` | `NEBIUS_API_KEY` |

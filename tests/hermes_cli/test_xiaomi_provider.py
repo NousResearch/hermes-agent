@@ -27,6 +27,93 @@ class TestXiaomiProviderRegistry:
         assert PROVIDER_REGISTRY["xiaomi"].inference_base_url == "https://api.xiaomimimo.com/v1"
 
 
+def test_token_plan_is_a_distinct_picker_and_credential_provider():
+    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_MODELS
+    from hermes_cli.models_catalog_static import group_providers
+    from hermes_cli.main_provider_setup import _GENERIC_API_KEY_PROVIDERS
+
+    plan = PROVIDER_REGISTRY["xiaomi-token-plan"]
+    assert plan.api_key_env_vars == ("XIAOMI_TOKEN_PLAN_API_KEY",)
+    assert plan.base_url_env_var == "XIAOMI_TOKEN_PLAN_BASE_URL"
+    assert "xiaomi-token-plan" in _GENERIC_API_KEY_PROVIDERS
+    assert "mimo-v2.6-pro" in _PROVIDER_MODELS["xiaomi-token-plan"]
+    assert "xiaomi-token-plan" in {entry.slug for entry in CANONICAL_PROVIDERS}
+    assert group_providers(["xiaomi", "xiaomi-token-plan"]) == [
+        {"kind": "group", "group_id": "xiaomi", "label": "Xiaomi MiMo",
+         "description": "Pay-as-you-go API or Token Plan", "members": ["xiaomi", "xiaomi-token-plan"]}
+    ]
+
+
+def test_token_plan_routes_its_own_key_to_selected_region(tmp_path, monkeypatch):
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XIAOMI_API_KEY", "sk-standard-test")
+    monkeypatch.setenv("XIAOMI_TOKEN_PLAN_API_KEY", "tp-plan-test")
+    monkeypatch.setenv("XIAOMI_TOKEN_PLAN_BASE_URL", "https://token-plan-ams.xiaomimimo.com/v1")
+    resolved = resolve_runtime_provider(requested="xiaomi-token-plan", target_model="mimo-v2.6-pro")
+
+    assert resolved["provider"] == "xiaomi-token-plan"
+    assert resolved["api_key"] == "tp-plan-test"
+    assert resolved["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+    assert resolved["api_mode"] == "chat_completions"
+
+
+@pytest.mark.parametrize("region,url", [
+    ("China", "https://token-plan-cn.xiaomimimo.com/v1"),
+    ("Singapore", "https://token-plan-sgp.xiaomimimo.com/v1"),
+    ("Europe", "https://token-plan-ams.xiaomimimo.com/v1"),
+])
+def test_token_plan_setup_offers_each_official_region(monkeypatch, region, url):
+    from hermes_cli.model_setup_flows import _select_xiaomi_token_plan_endpoint
+
+    def choose(choices, **kwargs):
+        return next(i for i, choice in enumerate(choices) if choice.startswith(region))
+
+    monkeypatch.setattr("hermes_cli.main_provider_setup._prompt_provider_choice", choose)
+    assert _select_xiaomi_token_plan_endpoint("") == url
+
+
+def test_token_plan_normalizes_mimo_model_names():
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    assert normalize_model_for_provider("xiaomi-token-plan/MiMo-V2.6-Pro", "xiaomi-token-plan") == "mimo-v2.6-pro"
+
+
+def test_token_plan_chat_picker_excludes_non_chat_models(monkeypatch):
+    from hermes_cli.model_setup_flows import _api_key_provider_model_list
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **kw: [
+        "mimo-v2.6-pro", "mimo-v2.5-tts", "mimo-v2.5-asr"])
+    models = _api_key_provider_model_list(
+        "xiaomi-token-plan", PROVIDER_REGISTRY["xiaomi-token-plan"],
+        "tp-test", "XIAOMI_TOKEN_PLAN_API_KEY", "https://token-plan-sgp.xiaomimimo.com/v1")
+
+    assert "mimo-v2.6-pro" in models
+    assert all("tts" not in model and "asr" not in model for model in models)
+
+
+def test_token_plan_setup_persists_provider_and_region(tmp_path, monkeypatch):
+    from hermes_cli.config import get_env_value, load_config
+    from hermes_cli.model_setup_flows import _model_flow_api_key_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XIAOMI_TOKEN_PLAN_API_KEY", "tp-setup-test")
+    monkeypatch.setattr("hermes_cli.main_provider_setup._prompt_api_key", lambda *a, **kw: ("tp-setup-test", False))
+    monkeypatch.setattr("hermes_cli.main_provider_setup._prompt_provider_choice", lambda *a, **kw: 0)
+    monkeypatch.setattr("hermes_cli.model_setup_flows._api_key_provider_model_list", lambda *a: ["mimo-v2.6-pro"])
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *a, **kw: "mimo-v2.6-pro")
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
+
+    _model_flow_api_key_provider(load_config(), "xiaomi-token-plan")
+
+    model = load_config()["model"]
+    assert model["provider"] == "xiaomi-token-plan"
+    assert model["default"] == "mimo-v2.6-pro"
+    assert model["base_url"] == "https://token-plan-cn.xiaomimimo.com/v1"
+    assert get_env_value("XIAOMI_TOKEN_PLAN_BASE_URL") == model["base_url"]
+
+
 # =============================================================================
 # Aliases
 # =============================================================================
@@ -303,6 +390,7 @@ class TestXiaomiDoctor:
     def test_provider_env_hints(self):
         from hermes_cli.doctor import _PROVIDER_ENV_HINTS
         assert "XIAOMI_API_KEY" in _PROVIDER_ENV_HINTS
+        assert "XIAOMI_TOKEN_PLAN_API_KEY" in _PROVIDER_ENV_HINTS
 
 
 class TestXiaomiAgentInit:

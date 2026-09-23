@@ -791,6 +791,32 @@ def _select_zai_endpoint(current_base: str) -> str:
     return override.rstrip("/")
 
 
+def _select_xiaomi_token_plan_endpoint(current_base: str) -> str | None:
+    """Choose the OpenAI-compatible cluster shown on the user's Token Plan page."""
+    from hermes_cli.main_provider_setup import _prompt_provider_choice
+
+    endpoints = (
+        ("China", "https://token-plan-cn.xiaomimimo.com/v1"),
+        ("Singapore", "https://token-plan-sgp.xiaomimimo.com/v1"),
+        ("Europe", "https://token-plan-ams.xiaomimimo.com/v1"),
+    )
+    current = (current_base or "").rstrip("/")
+    default = next((i for i, (_, url) in enumerate(endpoints) if url == current), len(endpoints))
+    choices = [f"{region} ({url})" for region, url in endpoints] + ["Enter the Base URL from my Token Plan page"]
+    selected = _prompt_provider_choice(choices, default=default, title="Select Xiaomi MiMo Token Plan endpoint:")
+    if selected is None:
+        return None
+    if selected < len(endpoints):
+        return endpoints[selected][1]
+    override = _ask(f"Base URL [{current_base}]: ", cancel_msg="")
+    if not override:
+        return None
+    if not override.startswith("https://"):
+        print("  Invalid URL — use the HTTPS Base URL from your Token Plan page.")
+        return None
+    return override.rstrip("/")
+
+
 _GEMINI_FREE_TIER_NOTICE = (
     "", "❌ This Google API key is on the free tier (<= 250 requests/day for gemini-2.5-flash).",
     "   Hermes typically makes 3-10 API calls per user turn (tool iterations + auxiliary tasks),",
@@ -858,11 +884,19 @@ def _novita_models(pconfig, curated, api_key, base_url):
     return curated
 
 
+def _xiaomi_token_plan_models(_pconfig, curated, _api_key, _base_url):
+    # /models can include ASR, TTS, and pay-as-you-go-only ids. The chat picker
+    # offers the Token Plan language models; custom model entry remains available.
+    _show_curated(curated)
+    return curated
+
+
 # provider id -> (pconfig, curated, api_key_for_probe, effective_base) -> model list
 _SPECIAL_MODEL_LISTS = {
     "lmstudio": _lmstudio_models,
     "ollama-cloud": _ollama_cloud_models,
-    "novita": _novita_models}
+    "novita": _novita_models,
+    "xiaomi-token-plan": _xiaomi_token_plan_models}
 
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
@@ -942,7 +976,15 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         if isinstance(model_cfg, dict) and normalize_provider(str(model_cfg.get("provider") or "")) == provider_id:
             effective_base = str(model_cfg.get("base_url") or "").strip() or effective_base
 
-    if provider_id == "zai":
+    if provider_id == "xiaomi-token-plan":
+        chosen_base = _select_xiaomi_token_plan_endpoint(effective_base)
+        if chosen_base is None:
+            print("No change.")
+            return
+        if chosen_base != effective_base and base_url_env:
+            save_env_value(base_url_env, chosen_base)
+        effective_base = chosen_base
+    elif provider_id == "zai":
         # Four official endpoints with separate billing paths — a picker lets users match
         # the endpoint to their key type.
         chosen_base = _select_zai_endpoint(effective_base)

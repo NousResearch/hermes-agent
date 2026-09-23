@@ -151,7 +151,6 @@ describe('migrateQueuedPrompts', () => {
     expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
     expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
   })
-
 })
 
 describe('shouldAutoDrain', () => {
@@ -172,7 +171,6 @@ describe('shouldAutoDrain', () => {
     // HALT — the park must hold the head back until they resume.
     expect(shouldAutoDrain({ isBusy: false, parked: true, queueLength: 1 })).toBe(false)
   })
-
 })
 
 describe('parked queue sessions', () => {

@@ -22,5 +22,4 @@ describe('compaction store', () => {
 
     expect($compactingSessions.get()).toEqual({ 'session-b': true })
   })
-
 })

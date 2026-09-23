@@ -2,11 +2,7 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import {
-  customWindowControlsEnabled,
-  performWindowControl,
-  registerWindowControlIpc
-} from './window-controls'
+import { customWindowControlsEnabled, performWindowControl, registerWindowControlIpc } from './window-controls'
 
 class FakeWindow {
   closed = false

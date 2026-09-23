@@ -2,11 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { ANNOTATE_CROP_PAD } from '@/lib/preview-annotate'
 
-import {
-  bindPreviewExecuteJavaScript,
-  captureAnnotateCrop,
-  overlayInstallScript
-} from './preview-annotate-host'
+import { bindPreviewExecuteJavaScript, captureAnnotateCrop, overlayInstallScript } from './preview-annotate-host'
 
 describe('preview annotate host', () => {
   it('does not evaluate guest template interpolations while wrapping the overlay source', () => {

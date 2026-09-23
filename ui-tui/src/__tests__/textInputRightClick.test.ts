@@ -31,5 +31,4 @@ describe('decideRightClickAction', () => {
       text: '你好'
     })
   })
-
 })

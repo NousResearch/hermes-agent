@@ -31,7 +31,6 @@ describe('resolveCursorLayout', () => {
 
     expect(result).toEqual(expected)
   })
-
 })
 
 describe('fastBackspaceEffect', () => {
@@ -47,7 +46,6 @@ describe('fastBackspaceEffect', () => {
     expect(effect.write).toBe('\b \b')
     expect(effect.advanceDelta).toBe(-1)
   })
-
 })
 
 describe('fastAppendEffect', () => {
@@ -61,5 +59,4 @@ describe('fastAppendEffect', () => {
     expect(effect.write).toBe(' world')
     expect(effect.advanceDelta).toBe(' world'.length)
   })
-
 })

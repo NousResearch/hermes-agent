@@ -48,7 +48,6 @@ describe('formatAbandonedClarify', () => {
 
     expect(out.split('\n')[0]).toBe('ask trailing space')
   })
-
 })
 
 describe('formatAbandonedClarifyBatch', () => {

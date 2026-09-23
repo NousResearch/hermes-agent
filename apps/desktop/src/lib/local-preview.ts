@@ -93,7 +93,12 @@ export function isLoopbackPreviewUrl(value: string): boolean {
       return false
     }
 
-    return LOOPBACK_HOST_RE.test(url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, ''))
+    return LOOPBACK_HOST_RE.test(
+      url.hostname
+        .toLowerCase()
+        .replace(/^\[|\]$/g, '')
+        .replace(/\.$/, '')
+    )
   } catch {
     return false
   }

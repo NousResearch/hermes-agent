@@ -47,5 +47,4 @@ describe('active work bridge', () => {
 
     expect(setActiveWork).toHaveBeenLastCalledWith({ count: 0, titles: [] })
   })
-
 })

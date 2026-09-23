@@ -154,7 +154,6 @@ describe('applyDisplay', () => {
 
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
   })
-
 })
 
 describe('normalizeStatusBar', () => {
@@ -275,7 +274,6 @@ describe('applyDisplay → busy_input_mode', () => {
     applyDisplay({ config: { display: { busy_input_mode: 'steer' } } }, setBell)
     expect($uiState.get().busyInputMode).toBe('steer')
   })
-
 })
 
 describe('applyDisplay → tui_status_indicator', () => {
@@ -292,7 +290,6 @@ describe('applyDisplay → tui_status_indicator', () => {
     applyDisplay({ config: { display: { tui_status_indicator: 'unicode' } } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('unicode')
   })
-
 })
 
 // Regressions from Copilot review on #19835: the config-hydration path

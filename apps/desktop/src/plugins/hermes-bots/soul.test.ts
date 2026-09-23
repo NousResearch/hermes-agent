@@ -77,7 +77,6 @@ describe('appending the protocol to an existing SOUL', () => {
     expect(twice).toBe(once.trim())
     expect(sectionCount(twice)).toBe(1)
   })
-
 })
 
 describe('composeSoul', () => {

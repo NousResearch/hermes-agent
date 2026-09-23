@@ -19,5 +19,4 @@ describe('DialogContent close button', () => {
     fireEvent.click(screen.getByRole('button', { name: /close/i }))
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
-
 })

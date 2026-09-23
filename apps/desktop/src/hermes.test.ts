@@ -627,7 +627,9 @@ describe('Hermes REST helpers', () => {
 
   it('bounds blocking transcription timeouts by payload length', () => {
     expect(audioTranscribeRequestTimeoutMs('data:audio/webm;base64,AA==')).toBe(AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS)
-    expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBeGreaterThan(AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS)
+    expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBeGreaterThan(
+      AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS
+    )
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBeLessThan(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(9_000_000))).toBe(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
   })

@@ -257,9 +257,7 @@ describe('/billing slash command (overlay-driven)', () => {
 
   // ── CF-4: revoked-terminal UX (kill the "15-minute zombie button") ──
 
-  it.each([
-    ['admin', 'An admin stopped remote spending for this terminal']
-  ])(
+  it.each([['admin', 'An admin stopped remote spending for this terminal']])(
     'ctx.charge remote_spending_revoked (%s) → clears the overlay (no zombie button) + actor copy',
     async (actor, copy) => {
       const { run, sys } = buildCtx({
@@ -384,5 +382,4 @@ describe('/billing slash command (overlay-driven)', () => {
     expect(ok).toBe(false)
     expect(printed(sys)).toContain('Monthly spend cap reached.')
   })
-
 })

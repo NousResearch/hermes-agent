@@ -81,7 +81,6 @@ describe('canFastAppendShape', () => {
     expect(canFastAppendShape('hello', 5, '\t', COLS, 5)).toBe(false)
     expect(canFastAppendShape('hello', 5, '\x7f', COLS, 5)).toBe(false)
   })
-
 })
 
 describe('canFastBackspaceShape', () => {
@@ -137,7 +136,6 @@ describe('canFastBackspaceShape', () => {
     expect(canFastBackspaceShape('hello world', 'hello world'.length, 20)).toBe(true)
     expect(canFastBackspaceShape('abcdefghi', 9, 6)).toBe(true) // visual line 1, col 3 → ok
   })
-
 })
 
 describe('colorizeEcho', () => {
@@ -194,7 +192,6 @@ describe('colorizeHint / hintCursorCell', () => {
       colorize(colorize('T', '#ffffff', 'foreground'), '#8a8094', 'background')
     )
   })
-
 })
 
 describe('supportsFastEchoTerminal', () => {
@@ -256,5 +253,4 @@ describe('supportsFastEchoTerminal', () => {
       } as NodeJS.ProcessEnv)
     ).toBe(true)
   })
-
 })

@@ -47,5 +47,4 @@ describe('composer pop-out preference', () => {
       position: { bottom: 48, right: 64 }
     })
   })
-
 })

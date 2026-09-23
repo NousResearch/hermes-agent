@@ -105,5 +105,4 @@ describe('/usage slash command', () => {
     expect(body).toContain('$12.00')
     expect(body.toLowerCase()).not.toContain('credits')
   })
-
 })

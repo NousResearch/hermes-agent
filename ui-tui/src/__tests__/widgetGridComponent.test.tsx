@@ -126,5 +126,4 @@ describe('GridStreamsDemo', () => {
   it('keeps the panel count in lockstep with the input handler focus wrap', () => {
     expect(STREAM_DEFS.length).toBe(GRID_STREAM_COUNT)
   })
-
 })

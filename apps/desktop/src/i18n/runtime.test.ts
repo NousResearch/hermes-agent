@@ -24,7 +24,9 @@ describe('desktop i18n runtime translator', () => {
   })
 
   it('passes arguments to function translations', () => {
-    expect(translateNow('notifications.updateReadyMessage', 2)).toBe(TRANSLATIONS.en.notifications.updateReadyMessage(2))
+    expect(translateNow('notifications.updateReadyMessage', 2)).toBe(
+      TRANSLATIONS.en.notifications.updateReadyMessage(2)
+    )
     expect(translateNow('notifications.updateReadyMessage', 2)).toContain('2')
   })
 

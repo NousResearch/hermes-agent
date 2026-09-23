@@ -25,4 +25,3 @@ describe('theme typography emoji fallback (#40364)', () => {
     expect(stack).toMatch(/Apple Color Emoji|Segoe UI Emoji|Noto Color Emoji|(^|,\s*)emoji\b/)
   })
 })
-

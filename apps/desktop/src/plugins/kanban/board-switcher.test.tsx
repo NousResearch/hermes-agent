@@ -48,5 +48,4 @@ describe('board switcher', () => {
 
     expect(await screen.findByText('Shipping')).toBeTruthy()
   })
-
 })

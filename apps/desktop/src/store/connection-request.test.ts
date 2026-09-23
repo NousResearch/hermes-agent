@@ -214,5 +214,4 @@ describe('connection-request store', () => {
     expect(await skipConnectionRequest('a')).toBe(true)
     expect(rpc.mock.calls[0][1].result).toEqual({ settled_by: 'continue' })
   })
-
 })

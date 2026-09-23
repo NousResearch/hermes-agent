@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  fetchRuntimeReadinessSignals,
-  interpretRuntimeReadiness,
-  runtimeReadinessDisplay
-} from './runtime-readiness'
+import { fetchRuntimeReadinessSignals, interpretRuntimeReadiness, runtimeReadinessDisplay } from './runtime-readiness'
 
 describe('interpretRuntimeReadiness', () => {
   it('prefers runtime_check when both signals exist', () => {

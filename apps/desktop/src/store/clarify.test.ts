@@ -160,7 +160,6 @@ describe('normalizeChoices', () => {
     const ok = 'y'.repeat(200)
     expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
   })
-
 })
 
 describe('normalizeQuestions', () => {

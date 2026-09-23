@@ -956,7 +956,6 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(getConnectionFor.mock.calls.length).toBe(before + 2)
   })
-
 })
 
 describe('rejected secondary authentication', () => {

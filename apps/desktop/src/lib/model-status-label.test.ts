@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  currentPickerSelection,
-  displayModelName,
-  formatModelPillLabel,
-  modelDisplayParts
-} from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
 
 describe('model-status-label', () => {
   it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {

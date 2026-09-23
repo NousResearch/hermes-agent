@@ -40,5 +40,4 @@ describe('deleteWordForward', () => {
   it('is a no-op when the cursor is already at the end', () => {
     expect(deleteWordForward('foo bar', 7)).toEqual({ cursor: 7, value: 'foo bar' })
   })
-
 })

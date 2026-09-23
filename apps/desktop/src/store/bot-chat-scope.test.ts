@@ -70,5 +70,4 @@ describe('the bot-chat set moves independently of session state', () => {
 
     expect(isBotChatSession('runtime-1')).toBe(true)
   })
-
 })

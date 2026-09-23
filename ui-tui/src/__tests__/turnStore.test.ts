@@ -54,5 +54,4 @@ describe('turnStore live progress helpers', () => {
     expect(archiveTodosAtTurnEnd()).toEqual([])
     expect(archiveDoneTodos()).toEqual([])
   })
-
 })

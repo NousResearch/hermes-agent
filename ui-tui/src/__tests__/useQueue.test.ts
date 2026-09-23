@@ -17,7 +17,6 @@ describe('removeAtInPlace', () => {
     removeAtInPlace(arr, 5)
     expect(arr).toEqual(['a', 'b'])
   })
-
 })
 
 describe('queue items', () => {

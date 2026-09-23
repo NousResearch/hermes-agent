@@ -50,5 +50,4 @@ describe('visible interpolation combined with a collapsed paste', () => {
     expect(submission.display).not.toContain('{!')
     expect(submission.text).toBe('Tue for line one\nline two')
   })
-
 })

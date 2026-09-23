@@ -53,7 +53,9 @@ describe('markdown surface survives stack-overflow content', () => {
   // three render through this component. Guarding only one of them is what let
   // the bug survive an earlier fix attempt.
   it('survives on the reasoning (disableArtifacts) path', () => {
-    const { container } = renderQuietly(<MarkdownTextContent disableArtifacts isRunning={false} text={DEGENERATE_UNK} />)
+    const { container } = renderQuietly(
+      <MarkdownTextContent disableArtifacts isRunning={false} text={DEGENERATE_UNK} />
+    )
 
     expect(container.textContent).toBeTruthy()
   })

@@ -103,5 +103,4 @@ describe('composer suggestion bus', () => {
 
     offerSuggestions('s8', 'test', [])
   })
-
 })

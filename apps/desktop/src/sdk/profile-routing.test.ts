@@ -1230,7 +1230,6 @@ describe('profile-aware plugin session opens', () => {
 
     expect(unhandled).toEqual([])
   })
-
 })
 
 describe('shared-remote hydration gate (#89843)', () => {

@@ -357,7 +357,6 @@ describe('scanVenvBlockers', () => {
     const o = await scanVenvBlockers('/r', execReturn('bad json'), stubVenv)
     assert.equal(o.kind, 'probe-failure')
   })
-
 })
 
 describe('stopSafeVenvBlockers', () => {

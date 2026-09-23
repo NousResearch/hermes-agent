@@ -28,8 +28,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   return { ...sdk, host: { ...sdk.host, request } }
 })
 
-const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows } =
-  await import('./cron')
+const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows } = await import('./cron')
 
 const activeJob: RoutineJob = {
   deliver: 'bot-chat',

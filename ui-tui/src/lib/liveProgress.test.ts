@@ -24,7 +24,6 @@ describe('tool shelf helpers', () => {
     expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', tools: ['one ✓'] })).toBe(true)
     expect(canHoldToolShelf({ role: 'assistant', text: 'done' })).toBe(false)
   })
-
 })
 
 describe('appendToolShelfMessage', () => {

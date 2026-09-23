@@ -332,10 +332,30 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
+    backend = backend_for_handle(handle) if handle else None
+    allowed_origins = []
+    if backend is not None:
+        try:
+            meta = backend.get_meta(handle)
+        except Exception:
+            meta = None
+        if meta is not None:
+            allowed_origins = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
+
+    if allowed_origins:
+        for candidate in allowed_origins:
+            if _focus_bound_origin(effective_task_id, candidate, "otp"):
+                break
+    else:
+        # Without a handle there is no vault origin to bind, so retain the
+        # current-tab behavior for user-provided codes.
+        _focus_bound_origin(effective_task_id, "", "otp")
     origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
+    if allowed_origins and origin not in allowed_origins:
+        return json.dumps({"success": False, "error_type": "origin_mismatch",
+                           "error": "Refused: the current page does not match the vault item's bound origin."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -351,7 +371,6 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
     if backend is not None:
         try:
             code = backend.resolve_otp(handle)

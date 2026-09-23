@@ -765,6 +765,35 @@ def test_every_vault_tool_is_in_the_browser_toolset():
 
 
 class TestTwoFactor:
+    def test_handle_focuses_otp_form_on_its_bound_origin(self, store):
+        """A supplied login handle must not let an OTP form on another tab win the probe."""
+        from tools import browser_vault_tool
+
+        meta = store.add_item("login", "github", {"identifier_type": "username", "identifier": "tek", "password": "pw",
+                                                   "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://github.com")
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Authentication code", "autocomplete": "one-time-code"}]
+        focused = []
+        selected_origin = {"value": ""}
+
+        def fake_focus(task_id, origin, kind):
+            focused.append((origin, kind))
+            selected_origin["value"] = origin or "https://other.example"
+            return selected_origin["value"]
+
+        def fake_eval(task_id, expr):
+            result = json.dumps(controls) if "querySelectorAll" in expr else f"{selected_origin['value']}/two-factor"
+            return {"success": True, "result": result}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", side_effect=fake_focus), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", return_value={"success": True, "result": json.dumps({"filled": 1})}):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+
+        assert out["success"]
+        assert out["origin"] == "https://github.com"
+        assert focused == [("https://github.com", "otp")]
+
     def test_totp_matches_rfc6238_vector_and_seed_normalisation(self):
         from agent.vault_store import VaultError, normalize_otp_secret, totp_now
 

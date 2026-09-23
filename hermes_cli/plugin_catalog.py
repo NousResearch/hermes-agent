@@ -14,6 +14,7 @@ in-tree copy silently.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -406,12 +407,11 @@ def _live_generated_time(data: Dict[str, Any]) -> Optional[float]:
 
 
 def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tree_is_newer: Optional[bool]) -> bool:
-    """For one entry present in both sources that differs (a new pin, or new metadata such as ``title`` or
-    ``onboarding`` at the same pin): the newer catalog wins. Newer is
+    """For one entry present in both sources with a different pin: the newer catalog wins. Newer is
     decided by the checkout's catalog commit time vs the doc's ``generated_at`` when both resolve;
     otherwise by the entries' ``version`` labels when both parse; otherwise the live doc wins (a release
     install's in-tree copy is frozen at release time)."""
-    if tree == live:
+    if tree.sha == live.sha:
         return False
     if tree_is_newer is not None:
         return tree_is_newer
@@ -425,8 +425,8 @@ def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tr
 
 
 def load_catalog_live() -> List[PluginCatalogEntry]:
-    """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry and
-    disagree the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
+    """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
+    different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
     a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
     data = fetch_live_catalog()
     if data is None:
@@ -438,8 +438,24 @@ def load_catalog_live() -> List[PluginCatalogEntry]:
     in_tree = {e.name: e for e in load_catalog()}
     live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
     tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer) else e
+    raw_by_name = {str(raw.get("name")): raw for raw in data["entries"] if isinstance(raw, dict)}
+    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
+            else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
             for e in entries]
+
+
+# Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
+# docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
+# the field; a doc that has the key (even ``false``) decides.
+_CURATED_FIELDS = ("onboarding", "title")
+
+
+def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: Dict[str, Any]
+                         ) -> PluginCatalogEntry:
+    if tree is None or tree.sha != live.sha:
+        return live
+    missing = {key: getattr(tree, key) for key in _CURATED_FIELDS if key not in raw}
+    return dataclasses.replace(live, **missing) if missing else live
 
 
 def live_removed_list() -> List[RemovedEntry]:

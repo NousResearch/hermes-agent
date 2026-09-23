@@ -691,10 +691,12 @@ def _apply_tool_selection(
 
     tool_names = [t[0] for t in probed]
 
-    # Non-interactive callers (the dashboard's serve worker) and non-TTY
-    # shells skip the checklist; both use the same selection priority.
+    # Non-interactive callers (the dashboard's serve worker), non-TTY shells and worker threads
+    # skip the checklist: the console belongs to the main thread, so a checklist opened anywhere
+    # else blocks forever on stdin nobody is watching. Same priority as the interactive pre-check.
     import sys as _sys
-    if not interactive or not _sys.stdin.isatty():
+    import threading as _threading
+    if not interactive or not _sys.stdin.isatty() or _threading.current_thread() is not _threading.main_thread():
         preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or None)
         _write_tools_filter(
             name, "include", None if preferred is None else [n for n in preferred if n in tool_names]

@@ -6,7 +6,9 @@ import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  HELD_DRAIN_RETRY_MS,
   isQueueParked,
+  markQueuedPromptHeld,
   MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
@@ -287,5 +289,47 @@ describe('useComposerQueue park integration', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+  })
+
+  it('retries a held entry on the patient schedule instead of the fast budget', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held recoverable' })!
+      markQueuedPromptHeld(SESSION_KEY, entry.id)
+      const { hook, onSubmit } = renderQueueHook({ busy: true })
+      onSubmit.mockResolvedValue(false)
+      hook.rerender({ busy: false })
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+
+      // Held entries never burn the fast budget: no 750ms retries.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000)
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+
+      // The patient cadence checks back once; still refused.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HELD_DRAIN_RETRY_MS)
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(2)
+
+      // The chat frees → the next patient attempt delivers.
+      onSubmit.mockResolvedValue(true)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HELD_DRAIN_RETRY_MS)
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(3)
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

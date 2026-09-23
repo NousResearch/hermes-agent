@@ -15,6 +15,14 @@ export interface QueuedPromptEntry {
   displayKind?: 'hidden'
   attachments: ComposerAttachment[]
   queuedAt: number
+  /** Set when the chat refused a send because another surface holds it
+   *  (SESSION_NOT_OWNED, #106217): the entry waits for the chat to free and
+   *  retries on the patient schedule ({@link HELD_DRAIN_RETRY_MS}) instead of
+   *  burning the fast auto-drain budget. Persisted with the entry so an app
+   *  restart keeps waiting instead of toasting "queue stuck" after four fast
+   *  retries. Cleared when a drain succeeds, the wait cap is reached, or the
+   *  user acts on the queue manually. */
+  held?: { reason: 'not_owned'; since: number }
 }
 
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
@@ -189,6 +197,72 @@ export const removeQueuedPrompt = (key: string | null | undefined, id: string): 
 
   return true
 }
+
+/**
+ * Flip an entry to the patient wait for a chat held by another surface
+ * (SESSION_NOT_OWNED). Keeps the ORIGINAL hold time when the entry is already
+ * held: re-marking must not reset the clock, or an app restarting half-way
+ * through a long wait would grant a fresh hour forever.
+ */
+export const markQueuedPromptHeld = (key: string | null | undefined, id: string): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+  const index = queue.findIndex(e => e.id === id)
+
+  if (index < 0) {
+    return false
+  }
+
+  const entry = queue[index]!
+
+  if (isQueuedPromptHeld(entry)) {
+    return true
+  }
+
+  const next = [...queue]
+  next[index] = { ...entry, held: { reason: 'not_owned', since: Date.now() } }
+  writeSession(sid, next)
+
+  return true
+}
+
+/** Drop the held marker (a drain succeeded, the wait cap was reached, or the
+ *  user acted on the entry manually). No-op when the entry isn't held. */
+export const clearQueuedPromptHeld = (key: string | null | undefined, id: string): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+  const index = queue.findIndex(e => e.id === id)
+
+  if (index < 0 || !isQueuedPromptHeld(queue[index]!)) {
+    return false
+  }
+
+  const next = [...queue]
+  const { held: _held, ...rest } = queue[index]!
+  next[index] = rest
+  writeSession(sid, next)
+
+  return true
+}
+
+/** An entry parked on the patient wait, with its hold time narrowed in. */
+type HeldQueuedPromptEntry = QueuedPromptEntry & { held: { reason: 'not_owned'; since: number } }
+
+/** True when the entry waits for a chat another surface holds (SESSION_NOT_OWNED).
+ *  A type guard so every drain path can read {@link HeldQueuedPromptEntry.held}
+ *  without re-checking the reason literal. */
+export const isQueuedPromptHeld = (entry: QueuedPromptEntry): entry is HeldQueuedPromptEntry =>
+  entry.held?.reason === 'not_owned'
 
 export const promoteQueuedPrompt = (key: string | null | undefined, id: string): boolean => {
   const sid = sidOf(key)
@@ -370,3 +444,16 @@ export const shouldAutoDrain = ({ isBusy, parked, queueLength }: AutoDrainInput)
 /** Auto-drain attempts for one entry before we stop retrying and toast. The
  * entry stays queued for a manual send; a remount/reconnect resets the count. */
 export const MAX_AUTO_DRAIN_ATTEMPTS = 4
+
+/** Patient retry cadence for a held entry: the chat is owned by another surface
+ *  (a hidden delivery turn, another window), so a refusal is expected — check
+ *  back with a light touch instead of hammering the gateway. */
+export const HELD_DRAIN_RETRY_MS = 20_000
+
+/** How long a held entry keeps retrying before it stops and toasts, leaving the
+ *  entry in the panel for a manual send. */
+export const HELD_DRAIN_MAX_WAIT_MS = 60 * 60 * 1000
+
+/** Hard cap on patient attempts (belt and braces alongside the time cap, so a
+ *  clock that never advances can't spin the retry loop). */
+export const MAX_HELD_DRAIN_ATTEMPTS = 240

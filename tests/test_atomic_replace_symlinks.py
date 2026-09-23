@@ -313,6 +313,7 @@ def fast_replace_retries(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── cross-platform: the retry/fallback state machine ──────────────────────
 
 
+@pytest.mark.windows_only
 @pytest.mark.parametrize("winerror", [5, 32, 33])
 def test_contended_rename_retries_then_rewrites_in_place(
     tmp_path: Path,
@@ -339,7 +340,6 @@ def test_contended_rename_retries_then_rewrites_in_place(
         raise _sharing_error(winerror)
 
     monkeypatch.setattr("utils.os.replace", always_contended)
-    monkeypatch.setattr("utils._IS_WINDOWS", True)
 
     assert Path(atomic_replace(tmp, target)) == target
     assert len(attempts) == 1 + utils_mod._REPLACE_RETRY_ATTEMPTS
@@ -347,6 +347,7 @@ def test_contended_rename_retries_then_rewrites_in_place(
     assert not tmp.exists()
 
 
+@pytest.mark.windows_only
 def test_contended_rename_retry_wins_keeps_write_atomic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
 ) -> None:
@@ -369,7 +370,6 @@ def test_contended_rename_retry_wins_keeps_write_atomic(
         raise AssertionError("no fallback may run when a retry succeeds")
 
     monkeypatch.setattr("utils.os.replace", contended_twice)
-    monkeypatch.setattr("utils._IS_WINDOWS", True)
     monkeypatch.setattr("utils._rewrite_in_place", forbid)
     monkeypatch.setattr("utils.shutil.copyfile", forbid)
 
@@ -379,6 +379,7 @@ def test_contended_rename_retry_wins_keeps_write_atomic(
     assert not tmp.exists()
 
 
+@pytest.mark.windows_only
 def test_genuine_denial_propagates_after_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
 ) -> None:
@@ -392,7 +393,6 @@ def test_genuine_denial_propagates_after_budget(
     monkeypatch.setattr(
         "utils.os.replace", MagicMock(side_effect=_sharing_error(5))
     )
-    monkeypatch.setattr("utils._IS_WINDOWS", True)
 
     denial = PermissionError(errno.EACCES, "access is denied")
 
@@ -409,6 +409,7 @@ def test_genuine_denial_propagates_after_budget(
     assert tmp.exists(), "the pending write must survive for the caller"
 
 
+@pytest.mark.windows_only
 def test_contended_retry_switching_to_exdev_uses_copy_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
 ) -> None:
@@ -422,7 +423,6 @@ def test_contended_retry_switching_to_exdev_uses_copy_fallback(
         side_effect=[_sharing_error(5), OSError(errno.EXDEV, "cross-device")]
     )
     monkeypatch.setattr("utils.os.replace", replace)
-    monkeypatch.setattr("utils._IS_WINDOWS", True)
 
     def forbid_rewrite(*_a: object, **_k: object) -> None:
         raise AssertionError("EXDEV must use the copy fallback, not a rewrite")
@@ -446,7 +446,6 @@ def test_non_contended_oserror_propagates_without_retry(
 
     replace = MagicMock(side_effect=OSError(errno.ENOSPC, "no space"))
     monkeypatch.setattr("utils.os.replace", replace)
-    monkeypatch.setattr("utils._IS_WINDOWS", True)
 
     with pytest.raises(OSError) as excinfo:
         atomic_replace(tmp, target)
@@ -507,6 +506,7 @@ def test_in_place_rewrite_never_exposes_a_truncated_file(
     assert observed == [5000]
 
 
+@pytest.mark.windows_only
 @pytest.mark.require_symlinks
 def test_symlinked_target_survives_a_contended_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
@@ -522,7 +522,6 @@ def test_symlinked_target_survives_a_contended_rename(
     monkeypatch.setattr(
         "utils.os.replace", MagicMock(side_effect=_sharing_error(5))
     )
-    monkeypatch.setattr("utils._IS_WINDOWS", True)
 
     assert Path(atomic_replace(tmp, link)) == real
     assert link.is_symlink(), "symlink must survive the rewrite fallback"

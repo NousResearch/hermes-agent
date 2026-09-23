@@ -128,6 +128,51 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+def test_loop_stops_on_judge_transport_failure(monkeypatch):
+    """Regression #91264: judge transport failure must stop the loop instead of
+    being coerced to continue via WAIT."""
+    def _failing_judge(*args, **kwargs):
+        # 5-tuple: verdict, reason, parse_failed, wait, transport_failed
+        return "wait", "judge transport unreachable", False, None, True
+
+    monkeypatch.setattr(goals, "judge_goal", _failing_judge)
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: turns.append(p) or "x",
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: pytest.fail("should not block"),
+        first_response="first attempt",
+    )
+    assert res["outcome"] == "stopped"
+    assert "judge transport failure" in res["reason"]
+    assert turns == []
+
+
+def test_loop_stops_on_worker_failed_flag(monkeypatch):
+    """Regression #91264: worker returning {'failed': True} stops the loop
+    immediately with the failure reason."""
+    _patch_judge(monkeypatch, ["continue", "continue"])
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: {
+            "response": "crashed mid-execution",
+            "failed": True,
+            "failure_reason": "context_window_exceeded",
+        },
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: pytest.fail("should not block"),
+        first_response="first attempt",
+    )
+    assert res["outcome"] == "stopped"
+    assert res["reason"] == "worker failed: context_window_exceeded"
+
+
+
 
 
 

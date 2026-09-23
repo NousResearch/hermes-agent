@@ -505,7 +505,7 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         if notify_session_finalize:
             cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
             if _should_emit_cleanup_session_finalize(cleanup_session_id):
-                _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown")
+                _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown", agent=_active_agent_ref)
         try:
             _shutdown_agent_memory_provider(_active_agent_ref)
         except Exception as e:
@@ -1251,7 +1251,15 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not plugin_handler:
             return
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            from hermes_cli.plugins_command import invoke_plugin_command, plugin_command_context
+
+            agent = getattr(self, "agent", None)
+            stored_id = getattr(self, "session_id", None)
+            context = plugin_command_context(
+                session_id=getattr(agent, "session_id", None) or stored_id,
+                task_id=getattr(agent, "_current_task_id", None) or None,
+                stored_session_id=stored_id, surface="cli")
+            result = resolve_plugin_command_result(invoke_plugin_command(plugin_handler, user_args, **context))
             if result:
                 _cprint(str(result))
         except Exception as e:

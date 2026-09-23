@@ -307,6 +307,10 @@ class CLIInitMixin:
         self._pending_title: Optional[str] = None
         self._resumed = bool(resume)
         self.session_id = resume or new_session_id(self.session_start)
+        from hermes_cli.session_hook_context import capture_session_identity
+        self._plugin_session_identity = capture_session_identity(
+            session_id=self.session_id, stored_session_id=self.session_id,
+            source="cli", surface="cli", session_origin="resume" if resume else "fresh")
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         self._history_file = _hermes_home / ".hermes_history"

@@ -275,7 +275,7 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_plugin_slash_command_sees_session_env(monkeypatch):
+async def test_plugin_slash_command_sees_session_env(monkeypatch, tmp_path):
     """A plugin-registered slash command handler must see the same HERMES_SESSION_*
     contextvars an agent turn would for that event (#108698): the agent-turn path binds
     them via _set_session_env before running, but plugin command dispatch is a separate,
@@ -286,8 +286,12 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
 
+    from gateway.session import SessionStore
+
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+    # Plugin dispatch resolves the conversation's durable owner before calling the handler.
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     runner._draining = False
 
     source = SessionSource(
@@ -315,4 +319,5 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     assert seen["chat_id"] == "c1"
     # Bound only for the handler call, not leaked past dispatch
     assert get_session_env("HERMES_SESSION_KEY") == ""
+    runner.session_store.close_all_db_handles()
 

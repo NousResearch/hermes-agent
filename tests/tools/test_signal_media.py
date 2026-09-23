@@ -202,3 +202,29 @@ class TestSendSignalConfigLoading:
         """Platform.SIGNAL should be a valid platform."""
         assert hasattr(Platform, "SIGNAL")
         assert Platform.SIGNAL.value == "signal"
+
+
+class TestSendSignalUnreachableDaemon:
+    """A daemon that refuses connections is a transport failure, not a rate limit."""
+
+    def test_connection_failure_reports_real_cause_not_rate_limit(self, monkeypatch):
+        from tools.send_message_tool import _send_signal
+
+        class RefusingClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, *args, **kwargs):
+                raise ConnectionError("All connection attempts failed")
+
+        monkeypatch.setattr(sys.modules["httpx"], "AsyncClient", lambda timeout=None: RefusingClient())
+        extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
+
+        result = asyncio.run(_send_signal(extra, "+155****9999", "Hello world"))
+
+        assert "error" in result
+        assert "rate limit" not in result["error"].lower()
+        assert "All connection attempts failed" in result["error"]

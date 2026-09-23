@@ -26,6 +26,9 @@ def _isolate_update(isolated_update_runtime, monkeypatch):
     monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kw: shutil.which("uv"))
     monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kw: None)
     monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
+    # The fetch has its own seam now; the @patch("subprocess.run") fakes must still see the same argv.
+    monkeypatch.setattr(update_cmd, "_fetch_with_progress",
+                        lambda git_cmd, branch, **kw: subprocess.run([*git_cmd, "fetch", "origin", branch]))
 
 
 def _make_run_side_effect(

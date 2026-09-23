@@ -202,7 +202,14 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
-_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
+# EADDRINUSE retries while a restart's predecessor releases the port (#91547). A wall-clock budget,
+# not a fixed attempt count: the old 5 attempts with 0.2*(n+1) sleeps gave up after ~3s, which loses
+# every restart race that takes a predecessor longer than that to drain — and the failure is then
+# classified non-retryable, so the port stays dark for the life of the process. Seconds of retry are
+# cheap; a permanently unbound contract surface is not.
+_BIND_RETRY_BUDGET_SECONDS = 30.0
+_BIND_RETRY_INITIAL_SLEEP = 0.2
+_BIND_RETRY_MAX_SLEEP = 2.0
 
 
 def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
@@ -4226,17 +4233,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             try:
                 # aiohttp registers a site with its runner before binding, so a failed start leaves the
                 # site registered: rebuild the runner per attempt rather than reach into its internals.
-                for attempt in range(_BIND_ATTEMPTS):
+                _bind_deadline = time.monotonic() + _BIND_RETRY_BUDGET_SECONDS
+                _bind_sleep = _BIND_RETRY_INITIAL_SLEEP
+                while True:
                     try:
                         self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
                         break
                     except OSError as exc:
-                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
+                        _remaining = _bind_deadline - time.monotonic()
+                        if exc.errno != errno.EADDRINUSE or _remaining <= 0:
                             raise
                         await self._runner.cleanup()
                         self._runner = web.AppRunner(self._app)
                         await self._runner.setup()
-                        await asyncio.sleep(0.2 * (attempt + 1))
+                        await asyncio.sleep(min(_bind_sleep, _remaining))
+                        _bind_sleep = min(_bind_sleep * 2, _BIND_RETRY_MAX_SLEEP)
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

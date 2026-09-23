@@ -1,13 +1,6 @@
 ---
 name: kicad-pcb
-description: Design KiCad PCBs headless: pcbnew Python + kicad-cli.
-version: 1.0.0
-author: pantojinho
-license: MIT
-platforms: [linux, windows, macos]
-metadata:
-  hermes:
-    tags: [kicad, pcb, easyeda, hardware, electronics, freerouting, jlcpcb, lcsc]
+description: 'Headless KiCad PCB automation using pcbnew Python, kicad-cli and optional Freerouting DSN/SES on Linux, Windows and macOS. Use for an existing, electrically reviewed KiCad design when scripting board placement/routing, running ERC/DRC, importing EasyEDA PCB geometry or exporting manufacturing files after the project release gate. This skill does not select circuits, certify electrical safety or replace RF, mechanical and fab review.'
 ---
 
 # KiCad PCB automation (headless, cross-platform)
@@ -187,6 +180,28 @@ Every board iteration MUST be checked with vision against reality, not just DRC:
 3. Compare against REAL photos of commercial equivalents (vendor docs, review photos). Known-good baselines: Espressif ESP32-DevKitC V4 (EN + Boot buttons, USB-UART bridge, power LED, dual I/O headers), official datasheet layout guidance (docs.espressif.com PCB Layout Design).
 4. Copy proven blocks from real designs (open-source dev boards, vendor EVMs) and modify — a layout pattern that already shipped beats a novel one.
 5. Record the gap list found by comparison and use it as the next iteration's task list.
+
+## Project deliverables contract (mandatory for every board)
+
+Every board project — KiCad-only or KiCad+EasyEDA — must ship the SAME
+software-independent package. The source of parts (official KiCad libs, EasyEDA/LCSC
+import) never changes the deliverable format: a consumer of the project needs only KiCad.
+
+1. **Validated design**: native `.kicad_sch` + `.kicad_pcb` + `.kicad_pro` (ERC/DRC/
+   unconnected/parity reviewed; exceptions documented with fab justification).
+2. **Board 3D**: package-verified 3D models on every footprint
+   (`attach_easyeda_3d.py` with LCSC STEP, or kicad-library-3d) + board-level **STEP**.
+3. **Project document**: `make_report.py --project DIR --lcsc REF=Cxxxxx ...` writes
+   `REPORT.md` with the standard prints: schematic figure, 3D renders top+bottom,
+   fabrication-ready **BOM** (refs/qty/value/package/LCSC/JLCPCB Basic-Extended),
+   validation summary and a pre-order review checklist.
+4. **Fabrication pack**: gerbers + drill + CPL (pos) + BOM CSV, zipped against the
+   selected fab's rules (`references/jlcpcb-rules.md`).
+
+The Visual feedback loop (above) gates the release of this package — run it BEFORE
+declaring the project done, and attach the gap list found by comparison as the next
+iteration's task list. A generated 3D model set and the report document are part of
+"done", not optional extras.
 
 ## EasyEDA 3D models
 

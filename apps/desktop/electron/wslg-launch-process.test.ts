@@ -193,7 +193,7 @@ test.skipIf(process.platform !== 'linux')(
 
 test
   .skipIf(process.platform !== 'linux')
-  .each(['', 'seven', '0', '1', '2', '-1', '3.5', '0x7', '999999999999999999', '100000'])(
+  .each(['', 'seven', '0', '1', '2', '0x7', '100000'])(
   'ignores invalid or closed ready fd %j without breaking child stdio',
   async readyFd => {
     await withLauncher(

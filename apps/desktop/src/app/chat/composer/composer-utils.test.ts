@@ -7,7 +7,6 @@ import {
   isPendingDraftPersistCurrent,
   liveComposerDraft,
   type PendingDraftPersist,
-  pickPlaceholder,
   shouldDisableComposerInput,
   slashArgStage,
   slashChipKindForItem,
@@ -137,13 +136,6 @@ describe('implicitSlashAcceptIndex', () => {
 
   it('matches an arg-stage prefix against the full completion text', () => {
     expect(implicitSlashAcceptIndex('personality alic', ['/personality alice', '/personality none'], 0, false)).toBe(0)
-  })
-})
-
-describe('pickPlaceholder', () => {
-  it('returns a member of the pool', () => {
-    const pool = ['a', 'b', 'c'] as const
-    expect(pool).toContain(pickPlaceholder(pool))
   })
 })
 

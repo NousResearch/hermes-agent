@@ -300,16 +300,43 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     return path, None
 
 
+def _resolve_script_bash() -> tuple[Optional[str], Optional[str]]:
+    """``(bash, error)`` for a ``.sh``/``.bash`` job script.
+
+    On Windows a bare ``shutil.which("bash")`` is wrong: the only Git directory on the native
+    PATH is ``Git\\cmd``, which ships ``git.exe`` and no ``bash.exe``, so the lookup resolves to
+    ``C:\\Windows\\System32\\bash.exe`` — the WSL stub launcher. That launcher runs bash inside
+    WSL's *default* distro; when the default is a minimal one (``docker-desktop``) there is no
+    ``/bin/bash`` and the job dies with ``WSL ... execvpe(/bin/bash) failed: No such file or
+    directory`` even though Git Bash is installed and healthy. ``_find_bash`` is the canonical
+    resolver (``HERMES_GIT_BASH_PATH`` → portable/known Git installs → PATH, skipping the
+    System32/WindowsApps stubs and validating that the candidate can actually start) — the same
+    fix ``gateway/platforms/webhook_filters.py`` took for #116818. POSIX keeps the previous
+    ``which`` / ``/bin/bash`` contract unchanged.
+    """
+    if sys.platform == "win32":
+        # Late import: keeps cron import-light and matches the other _find_bash callers
+        # (agent/shell_hooks.py, agent/skill_preprocessing.py, hermes_constants.py).
+        from tools.environments.local import _find_bash
+        try:
+            return _find_bash(), None
+        except RuntimeError as exc:  # no usable Git Bash — report it, never crash the tick
+            return None, str(exc)
+    return (
+        shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None),
+        None,
+    )
+
+
 def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
     else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
-        # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
-        _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        _bash, error = _resolve_script_bash()
         if _bash is None:
             return None, {}, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                f"Cannot run .sh/.bash script {path.name!r}: {error or 'bash not found on PATH'}. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )

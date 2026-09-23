@@ -76,7 +76,7 @@
   },
   {
     "path": "cron/scheduler_script.py",
-    "symbol": "_script_argv",
+    "symbol": "_resolve_script_bash",
     "kind": "bare_which"
   },
   {

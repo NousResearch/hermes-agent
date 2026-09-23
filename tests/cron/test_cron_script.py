@@ -233,6 +233,50 @@ class TestRunJobScript:
         assert env["VIRTUAL_ENV"] == str(venv)
         assert str(site_packages) in env["PYTHONPATH"]
 
+    @pytest.mark.windows_only
+    def test_sh_script_never_resolves_to_the_wsl_stub_bash(self, cron_env, tmp_path, monkeypatch):
+        """A ``.sh`` cron script must not be launched through ``C:\\Windows\\System32\\bash.exe``.
+
+        That path is the WSL stub launcher, not a shell: on a host whose default WSL distro has
+        no ``/bin/bash`` it dies with ``execvpe(/bin/bash) failed`` while Git Bash is installed
+        and healthy. Regression for the bare ``shutil.which("bash")`` lookup, which picked the
+        stub because ``Git\\cmd`` is the only Git dir on a native PATH and ships no ``bash.exe``.
+        """
+        from cron.scheduler_script import _script_argv
+        from tools.environments import local as local_env
+
+        git_bash = r"C:\Program Files\Git\bin\bash.exe"
+        monkeypatch.setattr("shutil.which", lambda name: r"C:\Windows\System32\bash.exe")
+        monkeypatch.setattr(local_env, "_find_bash", lambda: git_bash)
+        script = tmp_path / "job.sh"
+        script.write_text("echo hi\n", encoding="utf-8")
+
+        argv, _env, err = _script_argv(script)
+
+        assert err is None
+        assert argv[0] == git_bash
+
+    @pytest.mark.windows_only
+    def test_sh_script_without_git_bash_reports_the_reason(self, cron_env, tmp_path, monkeypatch):
+        """No usable Git Bash → the actionable message, and the ticker is not raised into."""
+        from cron.scheduler_script import _script_argv
+        from tools.environments import local as local_env
+
+        def _no_bash():
+            raise RuntimeError(
+                "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
+                "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
+            )
+
+        monkeypatch.setattr(local_env, "_find_bash", _no_bash)
+        script = tmp_path / "job.sh"
+        script.write_text("echo hi\n", encoding="utf-8")
+
+        argv, _env, err = _script_argv(script)
+
+        assert argv is None
+        assert err and "Git Bash not found" in err
+
     def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
         """The bootstrap must process .pth files — the whole reason the
         overlay mode exists is that PYTHONPATH alone cannot (editable

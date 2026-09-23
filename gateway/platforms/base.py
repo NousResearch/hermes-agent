@@ -1949,6 +1949,9 @@ class BasePlatformAdapter(ABC):
         # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
         # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
         self._shared_listener_profile: Optional[str] = None
+        # Actual host:port sockets owned by this adapter. Port-binding helpers populate this only
+        # after a successful bind; shared-listener secondaries deliberately keep it empty.
+        self._bound_listener_endpoints: tuple[str, ...] = ()
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
@@ -2129,12 +2132,14 @@ class BasePlatformAdapter(ABC):
 
     def _mark_disconnected(self) -> None:
         self._running = False
+        self._bound_listener_endpoints = ()
         if not self.has_fatal_error:
             self._write_runtime_status_safe(
                 "disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
+        self._bound_listener_endpoints = ()
         self._fatal_error_code, self._fatal_error_message = code, message
         self._fatal_error_retryable = retryable
         self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)

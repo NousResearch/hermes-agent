@@ -232,14 +232,15 @@ class WebhookAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         try:
-            await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
+            site = await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
             logger.error("[webhook] Could not bind %s:%d: %s. Set a different host or port in config.yaml under "
                          "platforms.webhook.extra.", self._host or "all IPv4+IPv6 interfaces", self._port, exc)
             return False
-        from gateway.platforms.shared_ingress import listener_base_url
+        from gateway.platforms.shared_ingress import bound_site_endpoints, listener_base_url
+        self._bound_listener_endpoints = bound_site_endpoints(site, self._host, self._port)
         self._mark_connected(listener_base=listener_base_url(self._host, self._port))
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")

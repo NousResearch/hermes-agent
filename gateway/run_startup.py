@@ -1342,9 +1342,33 @@ class GatewayStartupMixin:
         )
         return False
 
+    def _log_startup_listeners(self) -> None:
+        """Emit one cold-start summary for sockets actually owned by connected adapters.
+
+        Shared-listener secondaries bind no socket and therefore contribute no row. Reconnects
+        happen outside this startup phase, so the operator gets one concise boot summary instead
+        of a success-looking line every time a transport heals.
+        """
+        rows = []
+        adapters = getattr(self, "adapters", None) or {}
+        for platform, adapter in sorted(
+            adapters.items(), key=lambda item: str(getattr(item[0], "value", item[0]))
+        ):
+            endpoints = tuple(getattr(adapter, "_bound_listener_endpoints", ()) or ())
+            if not endpoints:
+                continue
+            name = str(getattr(platform, "value", platform))
+            rows.append(f"{name}={', '.join(endpoints)}")
+        if rows:
+            logger.info(
+                "Gateway listeners: %s", "; ".join(rows),
+                extra={"gateway_console_notice": True},
+            )
+
     async def _start_post_connect_services(self, connected_count: int) -> None:
         """Room worker, heartbeat, gateway:startup hook, channel directory, /update notice."""
         from gateway.run import _hermes_home
+        self._log_startup_listeners()
         try:
             await self._ensure_hosted_room_worker()
         except Exception:

@@ -4322,7 +4322,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "config.yaml: platforms.api_server.port",
                     self.name, self._host, self._port, exc)
                 return False
-            from gateway.platforms.shared_ingress import listener_base_url
+            from gateway.platforms.shared_ingress import bound_site_endpoints, listener_base_url
+            self._bound_listener_endpoints = bound_site_endpoints(self._site, self._host, self._port)
             self._mark_connected(listener_base=listener_base_url(self._host, self._port))
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",

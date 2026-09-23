@@ -4971,6 +4971,17 @@ def _gateway_stderr_formatter() -> logging.Formatter:
     return RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+class _GatewayDefaultStderrFilter(logging.Filter):
+    """Default console policy: warnings/errors plus explicit operator INFO notices.
+
+    File logging keeps semantic levels unchanged: an operator notice remains INFO, so successful
+    startup state never pollutes errors.log. -v/-vv use the ordinary INFO/DEBUG streams instead.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING or bool(getattr(record, "gateway_console_notice", False))
+
+
 # ownership guard inserted below (PR #93084)
 def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     """Return True when ``--replace`` must refuse to signal ``existing_pid``.
@@ -5240,15 +5251,19 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 
     _best_effort(_security_audit, "Startup security audit failed (non-fatal): %s")
 
-    # Optional stderr handler from -v/-q: None (quiet) = none; 0 = WARNING; 1 = INFO; 2+ = DEBUG.
+    # Optional stderr handler from -v/-q: None (quiet) = none; 0 = warnings/errors plus
+    # explicit operator INFO notices; 1 = INFO; 2+ = DEBUG. Keeping notices at INFO means
+    # they land in gateway.log/agent.log but never in errors.log.
     if verbosity is not None:
-        _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+        _stderr_level = logging.INFO if verbosity in {0, 1} else logging.DEBUG
         _stderr_handler = logging.StreamHandler(_safe_stderr())
         _stderr_handler.setLevel(_stderr_level)
+        if verbosity == 0:
+            _stderr_handler.addFilter(_GatewayDefaultStderrFilter())
         _stderr_handler.setFormatter(_gateway_stderr_formatter())
         root = logging.getLogger()
         root.addHandler(_stderr_handler)
-        if _stderr_level < root.level:  # so DEBUG records can reach the handler
+        if _stderr_level < root.level:  # so INFO/DEBUG records can reach the handler
             root.setLevel(_stderr_level)
 
 

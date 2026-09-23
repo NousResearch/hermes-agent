@@ -8,11 +8,13 @@ the live gateway writer and corrupt B-tree pages (#45383).
 
 import sqlite3
 import logging
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_common import AUTO_VACUUM_MIN_FREELIST_RATIO
 
 
 class TrackingConnection:
@@ -172,6 +174,22 @@ class TestVacuumUsesPassive:
     def test_optimize_storage_uses_passive_after_vacuum(self, db):
         """optimize_fts_storage() checkpoints PASSIVE after its VACUUM."""
         real_conn = db._conn
+
+        # optimize_fts_storage only VACUUMs when the freelist is worth reclaiming
+        # (AUTO_VACUUM_MIN_FREELIST_RATIO); make the DB genuinely sparse so the VACUUM this
+        # test is about actually runs. Without this the fixture DB is dense and the pass
+        # legitimately skips the VACUUM.
+        sid = db.create_session(session_id=str(uuid.uuid4()), source="cli")
+        for i in range(400):
+            db.append_message(sid, role="user", content=f"pad-{i} " + "payload " * 200)
+        real_conn.execute("DELETE FROM messages WHERE id % 10 != 0")
+        real_conn.commit()
+        pages = int(real_conn.execute("PRAGMA page_count").fetchone()[0])
+        free = int(real_conn.execute("PRAGMA freelist_count").fetchone()[0])
+        ratio = free / pages if pages else 0.0
+        if ratio <= AUTO_VACUUM_MIN_FREELIST_RATIO:
+            pytest.skip(f"could not build a sparse enough DB (freelist ratio {ratio:.3f})")
+
         tracking_conn = TrackingConnection(real_conn)
         db._conn = tracking_conn
 

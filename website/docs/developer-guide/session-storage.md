@@ -327,6 +327,15 @@ PENDING/RESERVED/SHARED). The open-descriptor scan cannot make this distinction
 because every Hermes process has the DB open. Look for that line in
 `~/.hermes/logs/errors.log` next to the `database is locked` failure.
 
+Lock contention is recognised by SQLite result code (`SQLITE_BUSY` /
+`SQLITE_LOCKED`, `hermes_state_errors.is_sqlite_lock_error`), not by message
+text. In rollback-journal (`delete`) mode a lock lost inside FTS5's table
+constructor arrives as `SQLITE_BUSY` with the text `vtable constructor failed:
+messages_fts`; it is treated like `database is locked`. Opening a writable
+`SessionDB` waits up to `_WRITE_PATIENCE_S`; a read-only open retries the busy
+timeout a bounded number of times. If the lock outlasts that, the dashboard
+answers 503 (busy), not 500.
+
 
 ## Common Operations
 

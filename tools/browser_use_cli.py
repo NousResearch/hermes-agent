@@ -514,6 +514,9 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
     a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
     endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
+    from agent.vault_backends.base import browser_vault_enabled
+    if not browser_vault_enabled():
+        return
     cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
     if not cdp:
         return
@@ -607,6 +610,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
+    from agent.vault_backends.base import browser_vault_enabled
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -658,18 +662,20 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    # browser_vault_fill registers injected values with this forced model-egress
-    # boundary. Preserve raw stdout only for screenshot-path detection below.
+    # Vault opt-in forces redaction; otherwise honor security.redact_secrets.
+    # CLI stderr can echo user code/page values, so it follows the same policy.
+    # Preserve raw stdout for screenshot-path detection below.
+    force_redaction = browser_vault_enabled()
     result = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "output": redact_sensitive_text(proc.stdout, force=True),
+        "output": redact_sensitive_text(proc.stdout, force=force_redaction),
     }
     if workspace:
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
+    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=force_redaction)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
@@ -733,7 +739,7 @@ _HELPERS_DIGEST = (
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
     "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
     "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
-    "credentials; see the vault note below if present, otherwise stop and ask the user."
+    "credentials. Use the user's configured login workflow, or ask them how to proceed."
 )
 
 

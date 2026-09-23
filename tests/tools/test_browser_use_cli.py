@@ -240,6 +240,8 @@ class TestVaultSupervisorAttach:
     def test_exec_attaches_supervisor_to_the_browser_it_drives(self, tmp_path, monkeypatch, _fake_supervisor_registry):
         """browser_vault_fill injects secrets only over the supervisor's CDP WebSocket. Without this attach the
         default (Browser Use) backend had no supervisor at all and every fill failed with supervisor_required."""
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / "config.yaml").write_text("vault:\n  enabled: true\n", encoding="utf-8")
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"backend": "browser-use"}})
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho ok\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -255,6 +257,9 @@ class TestVaultEgressRedaction:
     def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
         """A browser_exec page read must not return a vault-filled value to model history."""
         from agent import redact
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text("vault:\n  enabled: true\n", encoding="utf-8")
 
         secret = "vault-filled-password-112693"
         cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "stdout={secret}"\necho "stderr={secret}" >&2\n')

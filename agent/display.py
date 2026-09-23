@@ -306,11 +306,13 @@ def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
     """Replace every occurrence of a secret-looking browser_type value with its redacted form.
 
     Backends echo the attempted input in error strings/metadata, so it is swapped before
-    reaching logs, callbacks, the model, or chat history. Forced regardless of
-    ``security.redact_secrets``: a leaked typed credential is a security boundary.
+    reaching logs, callbacks, the model, or chat history. Vault opt-in forces
+    redaction; otherwise the profile's ``security.redact_secrets`` applies.
     """
+    from agent.vault_backends.base import browser_vault_enabled
+
     needle = "" if typed_text is None else str(typed_text)
-    redacted = redact_sensitive_text(needle, force=True) if needle else needle
+    redacted = redact_sensitive_text(needle, force=browser_vault_enabled()) if needle else needle
     if redacted == needle:
         return value
     if isinstance(value, str):
@@ -329,7 +331,8 @@ def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | No
     if not isinstance(args, dict):
         return args
     if tool_name == "browser_type" and isinstance(args.get("text"), str):
-        return {**args, "text": redact_sensitive_text(args["text"], force=True)}
+        from agent.vault_backends.base import browser_vault_enabled
+        return {**args, "text": redact_sensitive_text(args["text"], force=browser_vault_enabled())}
     return args
 
 

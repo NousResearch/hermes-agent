@@ -445,6 +445,28 @@ _VAULT_NO_PASSWORD_NOTE = (" Vault note: on a login/checkout form call browser_v
                            "user shows it.")
 
 
+def apply_browser_vault_opt_in(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """An explicit opt-out outranks a resumed/prefix-preserved tool snapshot.
+
+    Registry membership alone cannot restore vault policy after opt-out. Copy only
+    changed descriptions so a previous conversation snapshot is never mutated.
+    """
+    from agent.vault_backends.base import browser_vault_enabled
+    if browser_vault_enabled():
+        return tool_defs
+    out = []
+    for td in tool_defs:
+        fn = td.get("function", {})
+        name = fn.get("name", "")
+        if name.startswith("browser_vault_"):
+            continue
+        description = fn.get("description", "")
+        if name in ("browser_exec", "browser_type") and _VAULT_NO_PASSWORD_NOTE in description:
+            td = {**td, "function": {**fn, "description": description.replace(_VAULT_NO_PASSWORD_NOTE, "")}}
+        out.append(td)
+    return out
+
+
 def _rewrite_input_tool_for_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
     """The model reads the input tool's description at the moment it decides how to fill a password field; the
     vault tools' own descriptions are too far away to win that decision (live: it typed a demo password shown on

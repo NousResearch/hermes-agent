@@ -8,7 +8,7 @@ Covers:
 - origin-binding refusal (pre-check + in-script TOCTOU assert)
 - fail-closed secret eval (no argv fallback)
 - vault-value redaction registry (browser_cdp read-back regression)
-- tool gating: check_fn False when the vault is empty
+- tool gating: after explicit opt-in, available even when the vault is empty
 """
 
 from __future__ import annotations
@@ -43,6 +43,12 @@ from agent.vault_store import (  # noqa: E402
 @pytest.fixture()
 def store(tmp_path):
     return VaultStore(base_dir=tmp_path / "vault")
+
+
+@pytest.fixture(autouse=True)
+def vault_opt_in():
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text("vault:\n  enabled: true\n", encoding="utf-8")
 
 
 def _add_login(store, origin="https://example.com", password="s3cret-pw"):
@@ -536,8 +542,8 @@ class TestBrowserVaultTools:
             assert canary not in json.dumps(scrubbed)
             assert "«redacted-vault-secret»" in json.dumps(scrubbed, ensure_ascii=False)
 
-            # And the generic browser-result scrub catches it too, even with
-            # user-level redaction preferences irrelevant (unconditional).
+            # With vault opted in, the generic scrub catches it independently
+            # of security.redact_secrets.
             assert canary not in redact_sensitive_text(f"page text: {canary}")
         finally:
             redact.clear_vault_redaction_values()

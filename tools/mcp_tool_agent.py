@@ -183,13 +183,13 @@ def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_side_agent_tools(agent, merged, merged_names)
     with _agent_tools_lock:
-        if merged == fresh_defs:
-            return False
-        agent.tools = merged
-        agent.valid_tool_names = merged_names
+        changed = merged != fresh_defs
+        if changed:
+            agent.tools = merged
+            agent.valid_tool_names = merged_names
     if [_def_name(t) for t in merged] != list(saved_names):
         persist_agent_tool_names(agent)
-    return True
+    return changed
 
 
 def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:
@@ -215,6 +215,10 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
         elif name and name in registered_names:
             merged.append(entry)
     merged.extend(fresh.values())
+    # A config opt-out is not a transient availability failure. Resuming after
+    # restart or refreshing a pinned snapshot must not re-enable vault policy.
+    from model_tools import apply_browser_vault_opt_in
+    merged = apply_browser_vault_opt_in(merged)
     return merged, {_def_name(t) for t in merged}
 
 

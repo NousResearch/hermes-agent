@@ -35,15 +35,16 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
 
     Mirrors ``web_tools._store_full_text``: cache/web is mounted read-only into
     remote backends, so read_file can page through the complete tree on any
-    backend. The stored copy is force-redacted (page-rendered secrets must not
-    hit disk unmasked) and named by content hash so identical snapshots dedupe.
+    backend. The stored copy follows the browser output redaction policy and is
+    named by content hash so identical snapshots dedupe.
     """
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
         from agent.redact import redact_sensitive_text
+        from agent.vault_backends.base import browser_vault_enabled
 
-        content = redact_sensitive_text(snapshot_text, force=True)
+        content = redact_sensitive_text(snapshot_text, force=browser_vault_enabled())
         if len(content) > _bt.MAX_STORED_SNAPSHOT_CHARS:
             content = (
                 content[:_bt.MAX_STORED_SNAPSHOT_CHARS]
@@ -109,13 +110,12 @@ def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> s
 
 
 def _redact_browser_output(value: Any) -> Any:
-    """Force-redact secrets in browser-originated data (snapshots, console, eval
-    results can carry page-rendered keys/cookies/tokens). Tool output is a model
-    boundary, so this applies even when global log redaction is disabled."""
+    """Redact browser data under the profile's policy, forced only for vault opt-in."""
     from agent.redact import redact_sensitive_text
+    from agent.vault_backends.base import browser_vault_enabled
 
     if isinstance(value, str):
-        return redact_sensitive_text(value, force=True)
+        return redact_sensitive_text(value, force=browser_vault_enabled())
     if isinstance(value, list):
         return [_redact_browser_output(item) for item in value]
     if isinstance(value, tuple):

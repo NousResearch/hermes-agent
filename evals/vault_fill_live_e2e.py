@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 HOME = Path(tempfile.mkdtemp(prefix="hermes-vault-e2e-"))
 os.environ["HERMES_HOME"] = str(HOME)
+(HOME / "config.yaml").write_text("vault:\n  enabled: true\n", encoding="utf-8")
 
 PAGES = {
     "/login": b"""<!doctype html><title>login</title>

@@ -129,9 +129,12 @@ class _NonStreamRequest:
         wd = self.wd
         try:
             last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
-            activity_ts = retry_started_ts if retry_started_ts is not None else last_event_ts
-            # Only undo a notice this request owns, promptly rather than at the
-            # next heartbeat: reasoning callbacks do not reset the CLI spinner.
+            pre_progress = bool(wd.progress_timeout and last_event_ts is not None and last_progress_ts is None)
+            attempt_started_ts = retry_started_ts if retry_started_ts is not None else self.call_start
+            activity_ts = attempt_started_ts if pre_progress else (
+                last_event_ts if last_event_ts is not None else retry_started_ts)
+            # Lifecycle chatter is not progress: once pre-progress begins it must not
+            # clear/reset this notice. Real progress changes phase and clears it.
             if (self.wait_notice_started_ts is not None and activity_ts is not None
                     and activity_ts > self.wait_notice_started_ts):
                 self.agent._emit_wait_notice("")
@@ -147,7 +150,9 @@ class _NonStreamRequest:
                     if retry_started_ts is not None else "waiting for provider response")
                 return
             phase = "first_event"
-            if retry_started_ts is not None:
+            if pre_progress:
+                phase = "pre_progress"
+            elif retry_started_ts is not None:
                 phase = "reconnect"
             elif last_event_ts is not None:
                 phase = "post_event"
@@ -156,7 +161,7 @@ class _NonStreamRequest:
                 last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
                 retry_started_ts=retry_started_ts,
                 call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
-                idle_requires_progress=wd.idle_requires_progress,
+                idle_requires_progress=wd.idle_requires_progress, progress_timeout=wd.progress_timeout,
                 elapsed=elapsed)
             # One neutral notice per silence; repeating it every heartbeat made
             # healthy long calls read as provider trouble (#92550).
@@ -188,6 +193,21 @@ class _NonStreamRequest:
             f"Codex stream produced no parsed stream event within {int(elapsed)}s "
             f"(TTFB threshold: {int(wd.ttfb_timeout)}s)"
             + (f". {silent_hint}" if silent_hint else ""))
+
+    def _progress_kill(self, elapsed: float) -> None:
+        """The stream opened, but this physical attempt never made model progress."""
+        agent, wd = self.agent, self.wd
+        h.logger.warning("Codex stream produced lifecycle events but no substantive model progress "
+            "for %.0fs (threshold %.0fs, model=%s, context=~%s tokens). Reconnecting.",
+            elapsed, wd.progress_timeout, self._model(), f"{wd.est_tokens:,}")
+        agent._buffer_diagnostic_status(
+            f"⚠️ Codex stream opened but made no model progress for {int(elapsed)}s "
+            f"(model: {self._model()}). Reconnecting.")
+        self._abort_request("codex_progress_kill")
+        agent._touch_activity(f"codex stream killed after {int(elapsed)}s without model progress")
+        self._await_worker_after_kill(
+            f"Codex stream produced no substantive model progress for {int(elapsed)}s "
+            f"(progress threshold: {int(wd.progress_timeout)}s)")
 
     def _idle_kill(self, event_stale_elapsed: float) -> None:
         """SSE events stopped after the phase-specific idle arm point.
@@ -263,13 +283,14 @@ class _NonStreamRequest:
             elapsed = now - self.call_start
             self._emit_wait_notice(elapsed, heartbeat=poll_count % 100 == 0)
             last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
-            retry_ttfb_elapsed = now - retry_started_ts if retry_started_ts is not None else None
-            if wd.ttfb_enabled and retry_ttfb_elapsed is not None and retry_ttfb_elapsed > wd.ttfb_timeout:
-                self._ttfb_kill(retry_ttfb_elapsed)
+            attempt_started_ts = retry_started_ts if retry_started_ts is not None else self.call_start
+            attempt_elapsed = now - attempt_started_ts
+            if (wd.ttfb_enabled and last_event_ts is None and attempt_elapsed > wd.ttfb_timeout):
+                self._ttfb_kill(attempt_elapsed)
                 break
-            if (retry_started_ts is None and wd.ttfb_enabled
-                    and elapsed > wd.ttfb_timeout and last_event_ts is None):
-                self._ttfb_kill(elapsed)
+            if (wd.progress_timeout > 0 and last_event_ts is not None and last_progress_ts is None
+                    and attempt_elapsed > wd.progress_timeout):
+                self._progress_kill(attempt_elapsed)
                 break
             idle_elapsed = now - last_event_ts if last_event_ts is not None else None
             if (retry_started_ts is None and wd.idle_enabled and idle_elapsed is not None

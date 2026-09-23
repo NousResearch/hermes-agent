@@ -1,3 +1,5 @@
+import { INTENTIONAL_DESKTOP_SHUTDOWN_MESSAGE } from './local-backend-lifecycle'
+
 /**
  * Last-chance forensics for the Electron main process.
  *
@@ -42,6 +44,10 @@ export function describeCrashReason(reason: unknown): string {
  */
 export function installCrashForensics({ flush, log, target = process }: CrashForensicsOptions): void {
   const record = (label: string) => (reason: unknown) => {
+    if (reason instanceof Error && reason.message === INTENTIONAL_DESKTOP_SHUTDOWN_MESSAGE) {
+      return
+    }
+
     log(`[main] ${label}: ${describeCrashReason(reason)}`)
     flush()
   }

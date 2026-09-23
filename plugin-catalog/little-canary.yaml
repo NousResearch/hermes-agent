@@ -1,9 +1,10 @@
 name: little-canary
 repo: https://github.com/hermes-labs-ai/little-canary
-sha: f1ced5beb450b994e1430b63d20242c408a86dc2
+sha: b67c7292679f202e6378e439307dea1f82cbf243
+subdir: integrations/hermes-agent
 version: "0.3.8"
 description: Screens user turns and blocks downstream tools on a BLOCK verdict; the original prompt still reaches the model.
-maintainer: Hermes Labs
+maintainer: roli-lpci (Hermes Labs; independent of Nous Research)
 tier: community
 category: general
 requires_hermes: ">=0.21.3"

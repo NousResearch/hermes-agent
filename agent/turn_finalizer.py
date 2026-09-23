@@ -54,7 +54,21 @@ def _record_kanban_budget_exhausted(
     This is a bounded fallback (#87096): the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``)
     guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
     from multiple exit paths.
+
+    That CAS guards the *current* run, not this worker's: a worker that already completed or handed off to
+    review exhausts its budget writing the final summary, and by then ``current_run_id`` may be a reviewer's
+    live run (or NULL). The failure is therefore fenced to this worker's own ``HERMES_KANBAN_RUN_ID``; a worker
+    that cannot name its run records nothing (same fail-closed rule as the lifecycle tools' ``_worker_guard``).
     """
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    try:
+        run_id = int(raw_run_id)
+    except ValueError:
+        logger.warning(
+            "Not recording budget exhaustion for task %s: worker run id unresolvable (%r)",
+            kanban_task, raw_run_id,
+        )
+        return
     try:
         from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_connect as _kbc
@@ -72,6 +86,7 @@ def _record_kanban_budget_exhausted(
                 release_claim=True,
                 end_run=True,
                 event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+                expected_run_id=run_id,
             )
         finally:
             with suppress(Exception):

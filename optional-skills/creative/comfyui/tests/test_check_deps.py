@@ -1,4 +1,4 @@
-"""Tests for check_deps.py — focuses on parsing logic that doesn't need a server."""
+"""Tests for check_deps.py: focuses on parsing logic that doesn't need a server."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class TestModelPresent:
     def test_extension_difference(self):
         # User said "model" but installed is "model.safetensors"
         assert model_present("model", {"model.safetensors"}) is True
-        # Reverse direction — also matches
+        # Reverse direction: also matches
         assert model_present("model.safetensors", {"model"}) is True
 
     def test_subfolder_match(self):

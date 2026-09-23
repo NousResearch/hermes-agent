@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-auto_fix_deps.py — Run check_deps.py, then attempt to install whatever is missing.
+auto_fix_deps.py: Run check_deps.py, then attempt to install whatever is missing.
 
 For local servers:
   - Missing custom nodes → `comfy node install <package>`

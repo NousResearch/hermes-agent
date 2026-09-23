@@ -51,13 +51,13 @@ Relative power values (sum ≈ 1.0 across all bands):
 ## Core Composite Scores (0–1 Scale)
 
 ### Focus
-- **Formula**: σ(β / (α + θ)) — beta dominance over slow waves, sigmoid-mapped
+- **Formula**: σ(β / (α + θ)), beta dominance over slow waves, sigmoid-mapped
 - **> 0.70**: Deep concentration, flow state, task absorption
 - **0.40–0.69**: Moderate attention, some mind-wandering
 - **< 0.40**: Distracted, fatigued, difficulty concentrating
 
 ### Relaxation
-- **Formula**: σ(α / (β + θ)) — alpha dominance, sigmoid-mapped
+- **Formula**: σ(α / (β + θ)), alpha dominance, sigmoid-mapped
 - **> 0.70**: Calm, stress-free, parasympathetic dominant
 - **0.40–0.69**: Mild tension present
 - **< 0.30**: Stressed, anxious, sympathetic dominant
@@ -79,7 +79,7 @@ Relative power values (sum ≈ 1.0 across all bands):
 - **< 0.40**: Low mood, withdrawal tendency
 
 ### Cognitive Load
-- **Formula**: (P_θ_frontal / P_α_temporal) · f(FAA, TBR) — working memory usage
+- **Formula**: (P_θ_frontal / P_α_temporal) · f(FAA, TBR), working memory usage
 - **> 0.70**: Working memory near capacity, complex processing
 - **0.40–0.69**: Moderate mental effort
 - **< 0.40**: Task is easy or automatic
@@ -201,12 +201,12 @@ Based on 5-second epochs using relative band-power ratios and AASM heuristics:
 
 | Pattern | Key Metrics | Interpretation |
 |---------|-------------|----------------|
-| **Flow State** | Focus > 0.75, Engagement > 0.70, Cognitive Load 0.50–0.70, HR steady | Optimal performance zone — protect it |
+| **Flow State** | Focus > 0.75, Engagement > 0.70, Cognitive Load 0.50–0.70, HR steady | Optimal performance zone, protect it|
 | **Mental Fatigue** | Focus < 0.40, Drowsiness > 0.60, TBR > 1.5, Theta elevated | Rest or break needed |
 | **Anxiety** | Relaxation < 0.30, HR elevated, high Beta, high BAR, stress_index high | Calming intervention helpful |
 | **Peak Alert** | Focus > 0.80, Engagement > 0.70, Drowsiness < 0.20 | Best time for hard tasks |
 | **Recovery** | Relaxation > 0.70, HRV (RMSSD) rising, Alpha dominant | Integration, light tasks only |
-| **Creative Mode** | High Theta, high Alpha, low Beta, moderate focus | Ideation — don't force structure |
+| **Creative Mode** | High Theta, high Alpha, low Beta, moderate focus | Ideation, don't force structure|
 | **Withdrawal** | FAA < 0, low Mood, low Engagement | Approach motivation needed |
 
 ---

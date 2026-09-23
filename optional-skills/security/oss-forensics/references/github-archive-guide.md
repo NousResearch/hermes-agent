@@ -1,6 +1,6 @@
 # GitHub Archive Query Guide (BigQuery)
 
-GitHub Archive records every public event on GitHub as immutable JSON records. This data is accessible via Google BigQuery and is the most reliable source for forensic investigation — events cannot be deleted or modified after recording.
+GitHub Archive records every public event on GitHub as immutable JSON records. This data is accessible via Google BigQuery and is the most reliable source for forensic investigation, events cannot be deleted or modified after recording.
 
 ## Public Dataset
 
@@ -155,7 +155,7 @@ ORDER BY event_count DESC
 
 1. **Always dry run first**: Add `--dry_run` flag to `bq query` to see estimated bytes scanned before executing.
 2. **Use `_TABLE_SUFFIX`**: Narrow the date range as much as possible. `day.*` tables are cheapest for narrow windows; `month.*` for broader sweeps.
-3. **Select only needed columns**: Avoid `SELECT *`. The `payload` column is large — only select specific JSON paths.
+3. **Select only needed columns**: Avoid `SELECT *`. The `payload` column is large, only select specific JSON paths.
 4. **Add LIMIT**: Use `LIMIT 1000` during exploration. Remove only for final exhaustive queries.
 5. **Column filtering in WHERE**: Filter on indexed columns (`type`, `repo.name`, `actor.login`) before payload extraction.
 
@@ -181,4 +181,4 @@ for row in results:
 ```
 
 **Option C: No GCP credentials available**
-If BigQuery is unavailable, document this limitation in the report. Use the other 4 investigators (Git, GitHub API, Wayback Machine, IOC Enrichment) — they cover most investigation needs without BigQuery.
+If BigQuery is unavailable, document this limitation in the report. Use the other 4 investigators (Git, GitHub API, Wayback Machine, IOC Enrichment), they cover most investigation needs without BigQuery.

@@ -15,7 +15,7 @@ metadata:
 
 Operator guide for the Antigravity CLI, invoked as `agy`. Run all `agy`
 commands through the Hermes `terminal` tool; inspect its config and logs with
-`read_file`. This skill is reference + procedure — it does not wrap a network
+`read_file`. This skill is reference + procedure. It does not wrap a network
 API, so there is nothing to authenticate from Hermes itself.
 
 ## When to Use
@@ -27,11 +27,11 @@ API, so there is nothing to authenticate from Hermes itself.
 
 ## Mental model
 
-Antigravity has two layers — keep them distinct or the guidance will be wrong:
+Antigravity has two layers: keep them distinct or the guidance will be wrong:
 
-1. **Shell wrapper commands** — `agy help`, `agy install`, `agy plugin`,
+1. **Shell wrapper commands**: `agy help`, `agy install`, `agy plugin`,
    `agy update`, `agy changelog`. Run these through the `terminal` tool.
-2. **Interactive in-session slash commands** — `/config`, `/permissions`,
+2. **Interactive in-session slash commands**: `/config`, `/permissions`,
    `/skills`, `/agents`, etc. These only exist inside a running `agy` TUI
    session, not on the shell wrapper.
 
@@ -41,7 +41,7 @@ Antigravity has two layers — keep them distinct or the guidance will be wrong:
 
 - The `agy` binary on PATH. Verify through the `terminal` tool:
   `command -v agy && agy --version`.
-- No env vars or API keys required by this skill — Antigravity manages its own
+- No env vars or API keys required by this skill: Antigravity manages its own
   auth via the OS keyring / browser sign-in (see Authentication below).
 
 ## How to Run
@@ -61,7 +61,7 @@ skills use. For one-shot smoke tests and scripted prompts, prefer
 `agy --print` (non-interactive).
 
 To inspect Antigravity's own files, use `read_file` on the paths under Core
-paths below — do not `cat` them through the terminal.
+paths below. Do not `cat` them through the terminal.
 
 ## Delegation patterns
 
@@ -99,13 +99,13 @@ specific `--conversation <id>`.
 ### Parallel instances (batch sub-issue / worktree fan-out)
 
 Create one git worktree per task and launch an independent `agy -p` in each
-(background), then collect results — same worktree fan-out the `codex` skill
+(background), then collect results: same worktree fan-out the `codex` skill
 uses for batch issue fixing. Bound concurrency to what the machine and your
 review capacity can absorb.
 
 ### Output + bounding caveat (differs from Claude Code)
 
-- `agy -p` returns **plain text** — there is **no `--output-format json`** and
+- `agy -p` returns **plain text**: there is **no `--output-format json`** and
   no result envelope with `session_id` / cost / turn count. Parse stdout
   directly; don't expect a JSON object.
 - There is **no `--max-turns`**. A print run is bounded by **`--print-timeout`**
@@ -114,7 +114,7 @@ review capacity can absorb.
 
 ### Orchestration boundary
 
-Antigravity is a **worker execution backend or third-opinion reviewer** — an
+Antigravity is a **worker execution backend or third-opinion reviewer**: an
 execution detail owned by the agent/profile running a task, NOT a first-class
 orchestration primitive. Do not put `agy` on a kanban board as its own card or
 treat it as a coordination layer; route work through the normal task graph and
@@ -217,7 +217,7 @@ another agent's plan or diff.
   session-state problems, not browser-only problems.
 - Workspace identity can depend on launch directory and the `.antigravitycli`
   project marker.
-- `agy -p` prints plain text only — no `--output-format json`, no result
+- `agy -p` prints plain text only: no `--output-format json`, no result
   envelope. Don't try to parse a JSON object out of it (unlike `claude-code`).
 - Bound print runs with `--print-timeout` (default `5m`), not `--max-turns`
   (which does not exist on `agy`).
@@ -237,5 +237,5 @@ files with `read_file`):
 
 ## Support files
 
-- `references/cli-docs.md` — condensed notes from the getting-started, usage,
+- `references/cli-docs.md`: condensed notes from the getting-started, usage,
   and features docs.

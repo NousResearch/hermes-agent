@@ -21,10 +21,10 @@ This skill does NOT cover production deploys (use `wrangler login` + a permanent
 
 Load this skill when the user wants to:
 
-- **Ship agent-written code to a live URL** without first creating a Cloudflare account — "deploy this and give me a link"
+- **Ship agent-written code to a live URL** without first creating a Cloudflare account, "deploy this and give me a link"
 - **Iterate in a background/autonomous session** where a browser OAuth step would be a hard stop
 - **Prototype or evaluate Workers** quickly with a throwaway, claimable target
-- **Build a self-verifying deploy loop** — deploy, `curl` the live URL, confirm output matches the code, redeploy
+- **Build a self-verifying deploy loop**: deploy, `curl` the live URL, confirm output matches the code, redeploy
 
 ## When NOT to Use
 
@@ -35,7 +35,7 @@ Load this skill when the user wants to:
 ## Prerequisites
 
 - **Wrangler 4.102.0 or later.** This is the version that introduced `--temporary`. Earlier versions do not have it. Verify with `npx wrangler@latest --version`.
-- **Node 18+ / npm** (or `npx`, `yarn`, `pnpm`). No global install needed — `npx wrangler@latest` works.
+- **Node 18+ / npm** (or `npx`, `yarn`, `pnpm`). No global install needed, `npx wrangler@latest` works.
 - **No Cloudflare credentials present.** `--temporary` only works when Wrangler is unauthenticated: no OAuth login, no `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_API_KEY` env var, no `~/.wrangler` / `~/.config/.wrangler` cached OAuth. Use the `terminal` tool's environment as-is; do not set those vars.
 - Network egress to `cloudflare.com` and `workers.dev`.
 - Using `--temporary` accepts Cloudflare's Terms of Service and Privacy Policy.
@@ -44,7 +44,7 @@ Load this skill when the user wants to:
 
 Use the `terminal` tool for every step. Always pin the version (`wrangler@latest` or `wrangler@4.102.0` or newer) so you don't accidentally run an old global wrangler that lacks the flag.
 
-1. **Scaffold a minimal Worker** (skip if the project already exists). A Worker needs a `wrangler.toml` (or `wrangler.jsonc`) and an entry script. Minimal TypeScript example — write these with `write_file`:
+1. **Scaffold a minimal Worker** (skip if the project already exists). A Worker needs a `wrangler.toml` (or `wrangler.jsonc`) and an entry script. Minimal TypeScript example, write these with `write_file`:
 
    `wrangler.jsonc`:
    ```jsonc
@@ -76,14 +76,14 @@ Use the `terminal` tool for every step. Always pin the version (`wrangler@latest
    ```
    (Resolve `scripts/parse_deploy_output.py` to this skill's absolute path.) It prints JSON: `{"live_url", "claim_url", "account", "account_state", "expires_minutes", "deployed"}`.
 
-4. **Verify the deploy is actually live** — do not trust the deploy log alone. `curl` the live URL and confirm the body matches what the code returns:
+4. **Verify the deploy is actually live**: do not trust the deploy log alone. `curl` the live URL and confirm the body matches what the code returns:
    ```
    curl -sS <live_url>
    ```
 
 5. **Iterate.** Edit the code, redeploy with the same `npx wrangler@latest deploy --temporary`. Within the 60-minute window Wrangler reuses the cached temporary account (`Account: <name> (reused)`), so the URL stays stable. `curl` again to confirm the change.
 
-6. **Hand the claim URL to the user.** Tell them: open it within 60 minutes to keep the deployment and any resources; if they don't claim it, everything auto-deletes. Treat the claim URL as a secret — it grants ownership of the account.
+6. **Hand the claim URL to the user.** Tell them: open it within 60 minutes to keep the deployment and any resources; if they don't claim it, everything auto-deletes. Treat the claim URL as a secret, it grants ownership of the account.
 
 ## Quick Reference
 
@@ -110,7 +110,7 @@ Use the `terminal` tool for every step. Always pin the version (`wrangler@latest
 
 ## Pitfalls
 
-- **`--temporary` is not in `wrangler deploy --help` and is not a global flag.** It is intentionally hidden and surfaced dynamically: when an unauthenticated `wrangler deploy` fails, Wrangler prints "rerun with `--temporary`". Don't conclude the flag is missing just because `--help` omits it — check the version instead.
+- **`--temporary` is not in `wrangler deploy --help` and is not a global flag.** It is intentionally hidden and surfaced dynamically: when an unauthenticated `wrangler deploy` fails, Wrangler prints "rerun with `--temporary`". Don't conclude the flag is missing just because `--help` omits it, check the version instead.
 - **Old global wrangler.** A stale globally-installed `wrangler` (`< 4.102.0`) silently lacks the flag. Always invoke `npx wrangler@latest` (or a pinned `>=4.102.0`) so you control the version.
 - **Auth present → hard error.** If `wrangler login` was ever run, or `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_API_KEY` is set, `--temporary` errors. Either unset the var for this shell or `wrangler logout`. Never strip a user's real credentials without telling them.
 - **Rate limiting.** Creating temporary accounts too fast fails. Reuse the cached account (just redeploy) within the 60-minute window instead of forcing a new one; if rate-limited, wait or use a permanent account.

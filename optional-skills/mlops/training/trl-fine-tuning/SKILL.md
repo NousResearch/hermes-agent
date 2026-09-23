@@ -54,7 +54,7 @@ trainer.train()
 
 Complete pipeline from base model to human-aligned model.
 
-> **Note (TRL 1.x):** PPO has been **removed** from TRL — `PPOTrainer`, `PPOConfig`, and
+> **Note (TRL 1.x):** PPO has been **removed** from TRL, `PPOTrainer`, `PPOConfig`, and
 > `python -m trl.scripts.ppo` no longer exist. Use an online-RL trainer TRL still ships:
 > **RLOO** (`RLOOTrainer` / `trl rloo`) is the closest drop-in for a reward-model-driven
 > RLHF pipeline, and **GRPO** (`GRPOTrainer` / `trl grpo`, see Workflow 3) is the
@@ -286,7 +286,7 @@ trl dpo \
 
 Train with reinforcement learning using minimal memory.
 
-For in-depth GRPO guidance — reward function design, critical training insights (loss behavior, mode collapse, tuning), and advanced multi-stage patterns — see **[references/grpo-training.md](references/grpo-training.md)**. A production-ready training script is in **[templates/basic_grpo_training.py](templates/basic_grpo_training.py)**.
+For in-depth GRPO guidance, reward function design, critical training insights (loss behavior, mode collapse, tuning), and advanced multi-stage patterns, see **[references/grpo-training.md](references/grpo-training.md)**. A production-ready training script is in **[templates/basic_grpo_training.py](templates/basic_grpo_training.py)**.
 
 Copy this checklist:
 
@@ -466,7 +466,7 @@ config = RLOOConfig(
 
 **Online RL methods**: See [references/online-rl.md](references/online-rl.md) for PPO, GRPO, RLOO, and OnlineDPO with detailed configurations.
 
-**GRPO deep dive**: See [references/grpo-training.md](references/grpo-training.md) for expert-level GRPO patterns — reward function design philosophy, training insights (why loss increases, mode collapse detection), hyperparameter tuning, multi-stage training, and troubleshooting. Production-ready template in [templates/basic_grpo_training.py](templates/basic_grpo_training.py).
+**GRPO deep dive**: See [references/grpo-training.md](references/grpo-training.md) for expert-level GRPO patterns, reward function design philosophy, training insights (why loss increases, mode collapse detection), hyperparameter tuning, multi-stage training, and troubleshooting. Production-ready template in [templates/basic_grpo_training.py](templates/basic_grpo_training.py).
 
 ## Hardware requirements
 

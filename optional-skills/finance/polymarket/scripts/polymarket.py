@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Polymarket CLI helper — query prediction market data.
+"""Polymarket CLI helper: query prediction market data.
 
 Usage:
     python3 polymarket.py search "bitcoin"

@@ -1,4 +1,4 @@
-"""Tests for run_workflow.py — focuses on logic that doesn't require a server."""
+"""Tests for run_workflow.py: focuses on logic that doesn't require a server."""
 
 from __future__ import annotations
 

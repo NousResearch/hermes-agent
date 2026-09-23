@@ -12,7 +12,7 @@ metadata:
     category: productivity
 ---
 
-# Memento Flashcards — Spaced-Repetition Flashcard Skill
+# Memento Flashcards, Spaced-Repetition Flashcard Skill
 
 ## Overview
 
@@ -20,12 +20,12 @@ Memento gives you a local, file-based flashcard system with spaced-repetition sc
 Users can chat with their flashcards by answering in free text and having the agent grade the response before scheduling the next review.
 Use it whenever the user wants to:
 
-- **Remember a fact** — turn any statement into a Q/A flashcard
-- **Study with spaced repetition** — review due cards with adaptive intervals and agent-graded free-text answers
-- **Quiz from a YouTube video** — fetch a transcript and generate a 5-question quiz
-- **Manage decks** — organise cards into collections, export/import CSV
+- **Remember a fact**: turn any statement into a Q/A flashcard
+- **Study with spaced repetition**: review due cards with adaptive intervals and agent-graded free-text answers
+- **Quiz from a YouTube video**: fetch a transcript and generate a 5-question quiz
+- **Manage decks**: organise cards into collections, export/import CSV
 
-All card data lives in a single JSON file. No external API keys are required — you (the agent) generate flashcard content and quiz questions directly.
+All card data lives in a single JSON file. No external API keys are required, you (the agent) generate flashcard content and quiz questions directly.
 
 User-facing response style for Memento Flashcards:
 - Use plain text only. Do not use Markdown formatting in replies to the user.
@@ -46,7 +46,7 @@ Do not use this skill for general Q&A, coding help, or non-memory tasks.
 | User intent | Action |
 |---|---|
 | "Remember that X" / "save this as a flashcard" | Generate a Q/A card, call `memento_cards.py add` |
-| Sends a fact without mentioning flashcards | Ask "Want me to save this as a Memento flashcard?" — only create if confirmed |
+| Sends a fact without mentioning flashcards | Ask "Want me to save this as a Memento flashcard?", only create if confirmed|
 | "Create a flashcard" | Ask for Q, A, collection; call `memento_cards.py add` |
 | "Review my cards" | Call `memento_cards.py due`, present cards one-by-one |
 | "Quiz me on [YouTube URL]" | Call `youtube_quiz.py fetch VIDEO_ID`, generate 5 questions, call `memento_cards.py add-quiz` |
@@ -76,9 +76,9 @@ The file is created automatically on first use.
 
 Not every factual statement should become a flashcard. Use this three-tier check:
 
-1. **Explicit intent** — the user mentions "memento", "flashcard", "remember this", "save this card", "add a card", or similar phrasing that clearly requests a flashcard → **create the card directly**, no confirmation needed.
-2. **Implicit intent** — the user sends a factual statement without mentioning flashcards (e.g. "The speed of light is 299,792 km/s") → **ask first**: "Want me to save this as a Memento flashcard?" Only create the card if the user confirms.
-3. **No intent** — the message is a coding task, a question, instructions, normal conversation, or anything that is clearly not a fact to memorize → **do NOT activate this skill at all**. Let other skills or default behavior handle it.
+1. **Explicit intent**: the user mentions "memento", "flashcard", "remember this", "save this card", "add a card", or similar phrasing that clearly requests a flashcard → **create the card directly**: no confirmation needed.
+2. **Implicit intent**: the user sends a factual statement without mentioning flashcards (e.g. "The speed of light is 299,792 km/s") → **ask first**: "Want me to save this as a Memento flashcard?" Only create the card if the user confirms.
+3. **No intent**: the message is a coding task, a question, instructions, normal conversation, or anything that is clearly not a fact to memorize → **do NOT activate this skill at all**. Let other skills or default behavior handle it.
 
 When activation is confirmed (tier 1 directly, tier 2 after confirmation), generate a flashcard:
 
@@ -115,7 +115,7 @@ The script outputs JSON confirming the created card.
 When the user explicitly asks to create a flashcard, ask them for:
 1. The question (front of card)
 2. The answer (back of card)
-3. The collection name (optional — default to `"General"`)
+3. The collection name (optional, default to `"General"`)
 
 Then call `memento_cards.py add` as above.
 
@@ -256,7 +256,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
   --collection "Quiz - Episode Title"
 ```
 
-The script deduplicates by `video_id` — if cards for that video already exist, it skips creation and reports the existing cards.
+The script deduplicates by `video_id`, if cards for that video already exist, it skips creation and reports the existing cards.
 
 **Step 6:** Present questions one-by-one using the same free-text grading flow:
 1. Show "Question 1/5: ..." and wait for the user's answer. Never include the answer or any hint about revealing it.
@@ -304,11 +304,11 @@ Returns JSON with:
 
 ## Pitfalls
 
-- **Never edit `cards.json` directly** — always use the script subcommands to avoid corruption
-- **Transcript failures** — some YouTube videos have no English transcript or have transcripts disabled; inform the user and suggest another video
-- **Optional dependency** — `youtube_quiz.py` needs `youtube-transcript-api`; use the PM preparation and interpreter check above if missing.
-- **Large imports** — CSV imports with thousands of rows work fine but the JSON output may be verbose; summarize the result for the user
-- **Video ID extraction** — support both `youtube.com/watch?v=ID` and `youtu.be/ID` URL formats
+- **Never edit `cards.json` directly**: always use the script subcommands to avoid corruption
+- **Transcript failures**: some YouTube videos have no English transcript or have transcripts disabled; inform the user and suggest another video
+- **Optional dependency**: `youtube_quiz.py` needs `youtube-transcript-api`; use the PM preparation and interpreter check above if missing.
+- **Large imports**: CSV imports with thousands of rows work fine but the JSON output may be verbose; summarize the result for the user
+- **Video ID extraction**: support both `youtube.com/watch?v=ID` and `youtu.be/ID` URL formats
 
 ## Verification
 

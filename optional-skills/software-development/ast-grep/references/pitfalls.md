@@ -1,4 +1,4 @@
-# Pitfalls — what breaks patterns and how to fix them
+# Pitfalls: what breaks patterns and how to fix them
 
 This is the failure-mode field guide. The `scripts/ast_grep_helper.py validate` subcommand mechanically checks for the items in §1 before calling `sg`; the rest are lower-frequency but still common.
 
@@ -13,7 +13,7 @@ ast-grep does **not** interpret regex inside patterns. The following all fail:
 | `foo\|bar` | `\|` is regex alternation. ast-grep does not alternate. | Two separate calls, OR `any: [pattern: foo, pattern: bar]` in a YAML rule, OR `rg -e foo -e bar`. |
 | `foo.*bar` | `.*` is a regex wildcard. | `foo($$$) bar` if the gap is a list of nodes; otherwise switch to `rg`. |
 | `\w+`, `\d+`, `\s` | Regex character classes. | `$VAR` to capture any identifier. For digits-only, use `kind: number_literal`. |
-| `[a-z]+` | Regex character class. | No AST equivalent — switch to `rg`. |
+| `[a-z]+` | Regex character class. | No AST equivalent, switch to `rg`.|
 | `^foo$` | Regex anchors. | Anchor by AST: use `kind: program > expression_statement` or use `inside`/`not has`. |
 
 **Why this happens**: LLMs default to regex thinking. The mental switch is "ast-grep patterns are *code*, not *strings*."
@@ -27,7 +27,7 @@ rule:
     - regex: '^[A-Z][a-z]+$'   # CamelCase identifiers only
 ```
 
-Note: `regex` matches the **whole node text** — no partial matches. Combine with `kind` or `pattern` for performance.
+Note: `regex` matches the **whole node text**: no partial matches. Combine with `kind` or `pattern` for performance.
 
 ---
 
@@ -72,11 +72,11 @@ If a pattern returns 0 matches and looks correct, run `sg run -p '<pattern>' --l
 A class field initializer `a = 123` *also* parses as an assignment expression. If you want only field definitions, you must disambiguate:
 
 ```yaml
-# WRONG — pattern parses as assignment_expression, not field_definition
+# WRONG: pattern parses as assignment_expression, not field_definition
 pattern: a = 123
 kind: field_definition
 
-# CORRECT — use pattern object with context + selector
+# CORRECT: use pattern object with context + selector
 pattern:
   context: 'class C { a = 123 }'
   selector: field_definition
@@ -103,7 +103,7 @@ rule:
     - pattern: bar
 ```
 
-In TypeScript union types (`A | B`), `|` is part of the type syntax — `pattern: A | B` correctly parses as a union type and matches that.
+In TypeScript union types (`A | B`), `|` is part of the type syntax, `pattern: A | B` correctly parses as a union type and matches that.
 
 ---
 
@@ -208,7 +208,7 @@ sg run -p 'foo()' -r 'bar()' --update-all .
 `all` and `any` evaluate against **one target node** at a time:
 
 ```yaml
-# WRONG — wants "node has BOTH a number child AND a string child"
+# WRONG: wants "node has BOTH a number child AND a string child"
 has:
   all:
     - kind: number       # impossible: one node cannot be both at once
@@ -298,6 +298,6 @@ stderr shows the parsed pattern; stdout shows the JSON match result. If the patt
 
 ## See also
 
-- `references/patterns.md` — meta-variables, strictness, naming rules.
-- `references/recipes.md` — known-good patterns by language.
-- `references/cli.md` — `--debug-query`, `--strictness`, `--update-all`.
+- `references/patterns.md`: meta-variables, strictness, naming rules.
+- `references/recipes.md`: known-good patterns by language.
+- `references/cli.md`, `--debug-query`, `--strictness`, `--update-all`.

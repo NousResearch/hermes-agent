@@ -1560,6 +1560,89 @@ class TestADCFallback:
         assert "google_chat_service_account_json" in msg
 
 
+class TestWifExternalAccountCredentials:
+    """WIF external_account files must not be parsed as SA keys."""
+
+    def _ensure_sa_module(self, monkeypatch):
+        sa_mod = _gc_mod.service_account or MagicMock()
+        monkeypatch.setattr(_gc_mod, "service_account", sa_mod)
+        return sa_mod
+
+    def _install_google_auth_package(self, monkeypatch, **attrs):
+        """Make `import google.auth` work even when tests stub google as MagicMock."""
+        google_pkg = types.ModuleType("google")
+        google_pkg.__path__ = []
+        auth_mod = types.ModuleType("google.auth")
+        for key, value in attrs.items():
+            setattr(auth_mod, key, value)
+        google_pkg.auth = auth_mod
+        monkeypatch.setitem(sys.modules, "google", google_pkg)
+        monkeypatch.setitem(sys.modules, "google.auth", auth_mod)
+        return auth_mod
+
+    def test_service_account_uses_sa_parser(self, monkeypatch):
+        fake = MagicMock(name="sa_creds")
+        sa_mod = self._ensure_sa_module(monkeypatch)
+        monkeypatch.setattr(
+            sa_mod.Credentials,
+            "from_service_account_info",
+            MagicMock(return_value=fake),
+        )
+        info = {
+            "type": "service_account",
+            "client_email": "bot@example.iam.gserviceaccount.com",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        assert _gc_mod._credentials_from_info(info) is fake
+
+    def test_external_account_uses_wif_loader(self, monkeypatch):
+        fake = object()
+        loader = MagicMock(return_value=(fake, "proj"))
+        self._install_google_auth_package(monkeypatch, load_credentials_from_dict=loader)
+        sa_mod = self._ensure_sa_module(monkeypatch)
+        sa_parser = MagicMock(side_effect=AssertionError("SA parser must not run for WIF"))
+        monkeypatch.setattr(sa_mod.Credentials, "from_service_account_info", sa_parser)
+        info = {
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/p",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:mtls",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {"file": "/dev/null"},
+        }
+        assert _gc_mod._credentials_from_info(info) is fake
+        sa_parser.assert_not_called()
+        loader.assert_called_once()
+        args, kwargs = loader.call_args
+        assert args[0] is info
+        assert kwargs.get("scopes") == _gc_mod._CHAT_SCOPES
+
+    def test_unknown_type_explains_supported_formats(self):
+        with pytest.raises(_gc_mod._SACredentialError) as ei:
+            _gc_mod._credentials_from_info({"type": "authorized_user"})
+        assert ei.value.kind == "unsupported_type"
+
+    def test_load_sa_credentials_from_wif_file_does_not_use_sa_parser(
+        self, monkeypatch, tmp_path
+    ):
+        wif = tmp_path / "wif.json"
+        wif.write_text(json.dumps({
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/p",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:mtls",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {"file": "/dev/null"},
+        }), encoding="utf-8")
+        fake = object()
+        loader = MagicMock(return_value=(fake, None))
+        self._install_google_auth_package(monkeypatch, load_credentials_from_dict=loader)
+        sa_mod = self._ensure_sa_module(monkeypatch)
+        sa_parser = MagicMock(side_effect=AssertionError("SA parser must not run for WIF"))
+        monkeypatch.setattr(sa_mod.Credentials, "from_service_account_info", sa_parser)
+        assert _gc_mod._load_sa_credentials_from(str(wif)) is fake
+        sa_parser.assert_not_called()
+        loader.assert_called_once()
+
+
 class TestGoogleChatInteractiveSetup:
     def test_interactive_setup_uses_shared_cli_prompt_helpers(self, monkeypatch):
         """Google Chat setup should not import prompt helpers from config.py."""

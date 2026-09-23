@@ -124,6 +124,32 @@ export class CDP {
     }
 
     this.listeners.get(method).push(handler)
+    let subscribed = true
+
+    return () => {
+      if (!subscribed) {
+        return
+      }
+
+      subscribed = false
+      const handlers = this.listeners.get(method)
+
+      if (!handlers) {
+        return
+      }
+
+      const index = handlers.indexOf(handler)
+
+      if (index === -1) {
+        return
+      }
+
+      handlers.splice(index, 1)
+
+      if (handlers.length === 0) {
+        this.listeners.delete(method)
+      }
+    }
   }
 
   /** Evaluate an expression in the page and return its value (awaits promises). */

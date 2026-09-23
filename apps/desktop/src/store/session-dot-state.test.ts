@@ -15,13 +15,15 @@ import {
 } from './session'
 import {
   $delegatingSessionIds,
+  $runningArcsAnimated,
   $sessionDotStateById,
   $unreadSessionCount,
   hasLiveTurn,
+  MAX_ANIMATED_RUNNING_ARCS,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
-import { clearAllSessionStates, publishSessionState } from './session-states'
+import { clearAllSessionStates, publishSessionState, setSessionStalled } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 
@@ -238,5 +240,76 @@ describe('$unreadSessionCount (titlebar badge)', () => {
 
     expect($unreadSessionCount.get()).toBe(0)
     expect($sessionDotStateById.get()['cron-1']).not.toBe('unread')
+  })
+})
+
+describe('$runningArcsAnimated', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+  })
+
+  const runRows = (n: number) => {
+    setSessions(Array.from({ length: n }, (_, i) => storedRow(`run-${i}`)))
+
+    for (let i = 0; i < n; i++) {
+      publishSessionState(`rt-${i}`, { ...createClientSessionState(`run-${i}`), busy: true })
+    }
+  }
+
+  it('animates while only a few rows are running', () => {
+    runRows(MAX_ANIMATED_RUNNING_ARCS)
+
+    expect($runningArcsAnimated.get()).toBe(true)
+  })
+
+  it('does not count stalled working rows twice toward the animation cap', () => {
+    runRows(MAX_ANIMATED_RUNNING_ARCS - 1)
+
+    for (let i = 0; i < MAX_ANIMATED_RUNNING_ARCS - 1; i++) {
+      setSessionStalled(`run-${i}`, true)
+    }
+
+    expect($runningArcsAnimated.get()).toBe(true)
+
+    for (let i = 0; i < MAX_ANIMATED_RUNNING_ARCS - 1; i++) {
+      expect($sessionDotStateById.get()[`run-${i}`]).toBe('stalled')
+      expect(showsRunningArc($sessionDotStateById.get()[`run-${i}`]!)).toBe(true)
+    }
+  })
+
+  it('goes still once more rows run than the cap allows without disabling their running state', () => {
+    // The cost this guards is not the running cue itself but the animation's
+    // compositing layers (and their overlap promotion). Every row remains a
+    // working session with its ring; only the ring motion is withdrawn.
+    runRows(MAX_ANIMATED_RUNNING_ARCS + 1)
+
+    expect($runningArcsAnimated.get()).toBe(false)
+
+    for (let i = 0; i <= MAX_ANIMATED_RUNNING_ARCS; i++) {
+      expect($sessionDotStateById.get()[`run-${i}`]).toBe('working')
+      expect(showsRunningArc($sessionDotStateById.get()[`run-${i}`]!)).toBe(true)
+    }
+  })
+
+  it('animates again once the extra turns finish', () => {
+    runRows(MAX_ANIMATED_RUNNING_ARCS + 4)
+    expect($runningArcsAnimated.get()).toBe(false)
+
+    clearAllSessionStates()
+    runRows(2)
+
+    expect($runningArcsAnimated.get()).toBe(true)
+  })
+
+  it('animates when nothing is running at all', () => {
+    runRows(0)
+
+    expect($runningArcsAnimated.get()).toBe(true)
   })
 })

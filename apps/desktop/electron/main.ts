@@ -141,6 +141,7 @@ import { createDesktopUpdateCheckRuntime } from './desktop-update-check-runtime'
 import { createDesktopWindowEventsRuntime } from './desktop-window-events-runtime'
 import { registerDesktopWindowIpcRuntime } from './desktop-window-ipc-runtime'
 import { createDesktopWindowWiringRuntime } from './desktop-window-wiring-runtime'
+import { createDesktopWorkspaceCwdRuntime } from './desktop-workspace-cwd-runtime'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
@@ -323,7 +324,6 @@ import {
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
-import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 import {
   DEFAULT_ZOOM_LEVEL,
@@ -1454,114 +1454,15 @@ const { resolveWebDist, resolveRendererIndexWithMissing, resolveRendererIndex } 
 // Packaged Electron's process.cwd() (and npm's INIT_CWD when dev tooling
 // leaked into a release build) often resolve here — e.g. win-unpacked on
 // Windows — which is exactly where PR #37536 item 16 said we must NOT run.
-function isPackagedInstallPath(dir) {
-  return isPackagedInstallPathUnderRoots(dir, {
-    isPackaged: IS_PACKAGED,
-    installRoots: [
-      APP_ROOT,
-      path.dirname(process.execPath),
-      resolveRemovableAppPath(process.execPath, process.platform, process.env)
-    ]
+const { resolveHermesCwd, sanitizeWorkspaceCwd, readDefaultProjectDir, writeDefaultProjectDir } =
+  createDesktopWorkspaceCwdRuntime({
+    app,
+    APP_ROOT,
+    SOURCE_REPO_ROOT,
+    IS_PACKAGED,
+    directoryExists,
+    rememberLog
   })
-}
-
-function resolveHermesCwd() {
-  // In a packaged build, `process.cwd()` resolves to the install root (e.g.
-  // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
-  // on macOS). Sessions spawned there leave files inside the app bundle
-  // and bewilder users when "where did my files go?" is the install dir.
-  // The user-configurable default project directory wins over everything,
-  // followed by env hints (only honored when packaged if they point at a
-  // real directory), then the home dir.
-  const candidates = [
-    readDefaultProjectDir(),
-    process.env.HERMES_DESKTOP_CWD,
-    IS_PACKAGED ? null : process.env.INIT_CWD,
-    IS_PACKAGED ? null : process.cwd(),
-    !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
-    app.getPath('home')
-  ]
-
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue
-    }
-
-    const resolved = path.resolve(String(candidate))
-
-    if (isPackagedInstallPath(resolved)) {
-      continue
-    }
-
-    if (directoryExists(resolved)) {
-      return resolved
-    }
-  }
-
-  return app.getPath('home')
-}
-
-function sanitizeWorkspaceCwd(cwd) {
-  const trimmed = typeof cwd === 'string' ? cwd.trim() : ''
-
-  if (!trimmed || isPackagedInstallPath(trimmed)) {
-    return { cwd: resolveHermesCwd(), sanitized: Boolean(trimmed) }
-  }
-
-  try {
-    const resolved = path.resolve(trimmed)
-
-    if (directoryExists(resolved)) {
-      return { cwd: resolved, sanitized: false }
-    }
-  } catch {
-    // Fall through to the resolved default.
-  }
-
-  return { cwd: resolveHermesCwd(), sanitized: Boolean(trimmed) }
-}
-
-// Persisted "Default project directory" — surfaced as a setting in the
-// renderer (see app/settings/sessions-settings.tsx). Stored as JSON in
-// userData so it survives self-updates without bleeding into the new
-// install. `null` means "no preference, fall back to the usual chain".
-const DEFAULT_PROJECT_DIR_CONFIG_FILENAME = 'project-dir.json'
-
-function defaultProjectDirConfigPath() {
-  return path.join(app.getPath('userData'), DEFAULT_PROJECT_DIR_CONFIG_FILENAME)
-}
-
-function readDefaultProjectDir() {
-  try {
-    const raw = fs.readFileSync(defaultProjectDirConfigPath(), 'utf8')
-    const parsed = JSON.parse(raw)
-
-    if (parsed && typeof parsed.dir === 'string' && parsed.dir.trim()) {
-      const resolved = path.resolve(parsed.dir)
-
-      if (directoryExists(resolved)) {
-        return resolved
-      }
-    }
-  } catch {
-    // Missing / unreadable / malformed → fall through to the rest of the
-    // candidate chain.
-  }
-
-  return null
-}
-
-function writeDefaultProjectDir(dir) {
-  const target = defaultProjectDirConfigPath()
-  const payload = dir ? JSON.stringify({ dir: path.resolve(dir) }, null, 2) : JSON.stringify({}, null, 2)
-
-  try {
-    fs.mkdirSync(path.dirname(target), { recursive: true })
-    fs.writeFileSync(target, payload, 'utf8')
-  } catch (error) {
-    rememberLog(`[settings] write default project dir failed: ${error.message}`)
-  }
-}
 
 const desktopLocalRuntime = createDesktopLocalRuntime({
   hermesHome: HERMES_HOME,

@@ -293,7 +293,8 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     The managed section spans MIGRATION_MARKER through MIGRATION_END_MARKER inclusive; user text
     outside it is preserved verbatim. If the start marker exists without an end marker (older
     writers), swallow lines until a section that is not [mcp_servers.*]/[plugins.*]/[permissions]
-    so prior-version configs still migrate.
+    so prior-version configs still migrate. Discard an orphan end marker left by Codex's
+    permissions picker without claiming the surrounding user settings.
     """
     out: list[str] = []
     in_managed = False
@@ -301,6 +302,10 @@ def _strip_existing_managed_block(toml_text: str) -> str:
         bare = line.rstrip("\n")
         if bare == MIGRATION_MARKER:
             in_managed = True
+            continue
+        if bare == MIGRATION_END_MARKER and not in_managed:
+            # Codex's permissions picker can remove the opening marker while leaving
+            # this comment behind. It no longer marks a managed section.
             continue
         if in_managed:
             if bare == MIGRATION_END_MARKER:
@@ -429,7 +434,8 @@ def migrate(
     ``discover_plugins`` spawns the live codex CLI (set False in tests); discovery is best-effort
     and never blocks the migration. ``default_permission_profile`` (default ":workspace"; built-ins
     carry a leading ":", user profiles do not; None leaves codex's read-only default) avoids an
-    approval prompt on every write. ``expose_hermes_tools`` registers Hermes' own tool surface
+    approval prompt on every write when the user has not set ``default_permissions`` or
+    ``sandbox_mode``. ``expose_hermes_tools`` registers Hermes' own tool surface
     (agent/transports/hermes_tools_mcp_server.py, launched on demand by codex over stdio) as an MCP
     server so the codex subprocess can call back for tools it lacks.
     """
@@ -466,8 +472,6 @@ def migrate(
         # re-render and may strip pre-existing tables outside the managed block.
         plugin_query_succeeded = not plugin_err
         report.migrated_plugins += [f"{p['name']}@{p['marketplace']}" for p in plugins]
-    if default_permission_profile:
-        report.wrote_permissions_default = default_permission_profile
     if expose_hermes_tools:
         translated[HERMES_TOOLS_MCP_SERVER_NAME] = _build_hermes_tools_mcp_entry()
         if HERMES_TOOLS_MCP_SERVER_NAME not in report.migrated:
@@ -490,12 +494,23 @@ def migrate(
         without_managed = _strip_existing_managed_block(existing)
         if plugin_query_succeeded:
             without_managed = _strip_unmanaged_plugin_tables(without_managed)
+        try:
+            user_config = tomllib.loads(without_managed)
+        except tomllib.TOMLDecodeError:
+            user_config = {}  # final TOML validation below reports the actual error
+        if "default_permissions" in user_config or "sandbox_mode" in user_config:
+            # Codex treats these as alternatives. A setting outside our block
+            # belongs to the user, so don't replace it with Hermes' workspace
+            # default on every migration.
+            default_permission_profile = None
         # Preserve-user policy: a name the user already declares outside the managed block is
         # theirs; skip our projection for it instead of emitting a duplicate table header.
         for name in sorted(_unmanaged_mcp_server_names(without_managed) & set(translated)):
             del translated[name]
             report.migrated.remove(name)
             report.preserved_user_servers.append(name)
+    if default_permission_profile:
+        report.wrote_permissions_default = default_permission_profile
     managed_block = render_codex_toml_section(
         translated, plugins=plugins, default_permission_profile=default_permission_profile)
     new_text = _insert_managed_block_at_top_level(without_managed, managed_block)

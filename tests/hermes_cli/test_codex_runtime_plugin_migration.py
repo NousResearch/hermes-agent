@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import tomllib
 
 import pytest
 
@@ -142,6 +143,10 @@ class TestStripExistingManagedBlock:
         text = "[other]\nfoo = 1\n"
         assert _strip_existing_managed_block(text) == text
 
+    def test_orphan_end_marker_is_removed(self):
+        text = f'approval_policy = "never"\n{MIGRATION_END_MARKER}\n'
+        assert _strip_existing_managed_block(text) == 'approval_policy = "never"\n'
+
 
     def test_preserves_user_content_above_managed_block(self):
         text = (
@@ -161,6 +166,47 @@ class TestStripExistingManagedBlock:
 # ---- end-to-end migrate(, expose_hermes_tools=False) ----
 
 class TestMigrate:
+
+    @pytest.mark.parametrize("user_setting", [
+        'sandbox_mode = "danger-full-access"',
+        'default_permissions = ":danger-full-access"',
+    ])
+    def test_preserves_user_permission_setting_on_repeated_migration(
+        self, tmp_path, user_setting
+    ):
+        target = tmp_path / "config.toml"
+        target.write_text(f'{user_setting}\napproval_policy = "never"\n')
+        for _ in range(2):
+            report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                             expose_hermes_tools=False)
+            assert report.written
+            assert report.wrote_permissions_default is None
+            text = target.read_text()
+            assert text.count(user_setting) == 1
+            assert ':workspace' not in text
+            assert text.count(MIGRATION_MARKER) == 1
+            assert text.count(MIGRATION_END_MARKER) == 1
+            assert tomllib.loads(text)["approval_policy"] == "never"
+
+    def test_recovers_config_after_permissions_picker_removes_opening_marker(self, tmp_path):
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'approval_policy = "never"\n'
+            'sandbox_mode = "danger-full-access"\n'
+            '[mcp_servers.hermes-tools]\ncommand = "python"\n'
+            f'{MIGRATION_END_MARKER}\n'
+        )
+        report = migrate({"mcp_servers": {"hermes-tools": {"command": "python"}}},
+                         codex_home=tmp_path, discover_plugins=False,
+                         expose_hermes_tools=False)
+        text = target.read_text()
+        assert report.written
+        assert report.preserved_user_servers == ["hermes-tools"]
+        assert text.count("[mcp_servers.hermes-tools]") == 1
+        assert text.count(MIGRATION_MARKER) == 1
+        assert text.count(MIGRATION_END_MARKER) == 1
+        assert ':workspace' not in text
+        assert tomllib.loads(text)["sandbox_mode"] == "danger-full-access"
 
 
 

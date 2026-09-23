@@ -544,8 +544,8 @@ def _collapse_one_skill_copies(name: str, candidates, all_dirs) -> list:
 
 
 def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
-    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
+    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, identical-copy
+    collapse, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
     skill_md set iff no error."""
     if not all_dirs:
         return _fail(

@@ -455,6 +455,17 @@ _server_connect_retry_after: Dict[Any, float] = {}   # connection key -> monoton
 _server_connect_failures: Dict[Any, int] = {}        # connection key -> consecutive failures
 _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 
+# Per-server reconnect grace: ``MCPServerTask.session`` flips to ``None`` during a normal HTTP
+# keepalive/reconnect gap. The reconcile loop treats that as "stale" and removes the profile's
+# overlay (see ``_register_connected_into_current_scope``); without a grace window the profile's
+# MCP tools disappear for the rest of the process's life the first time the keepalive misses.
+# Stamped monotonic time of the first ``session is None`` observation per connection key; once
+# the value is older than ``_SESSION_NONE_GRACE_SECONDS`` the eviction is allowed. A live
+# session clears the stamp so a future None starts a fresh window. Matches the registry's
+# ``check_fn`` TTL so the two knobs age together (#109798).
+_server_session_none_at: Dict[Any, float] = {}
+_SESSION_NONE_GRACE_SECONDS: float = 30.0
+
 # Per-server circuit breaker: closed -> open (calls short-circuit until the cooldown) ->
 # half-open (next call probes). Mutate only via _bump_server_error / _reset_server_error.
 # After _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns a "server unreachable" message

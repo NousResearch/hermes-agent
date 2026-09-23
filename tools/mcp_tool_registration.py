@@ -463,16 +463,30 @@ def _register_connected_into_current_scope(servers: dict) -> int:
 
     with _core._lock:
         stale = []
+        now = _core.time.monotonic()
+        grace = getattr(_core, "_SESSION_NONE_GRACE_SECONDS", 30.0)
         for key, scopes in _core._server_tool_scopes.items():
             if scope not in scopes:
                 continue
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
             cross_profile = _key_scope(key) != scope
-            if (config is None or not mcp_server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None
-                    or not _same_server_route(server, config, cross_profile=cross_profile)):
+            session = getattr(server, "session", None)
+            if session is not None:
+                _core._server_session_none_at.pop(key, None)
+            elif server is None:
                 stale.append(key)
+            elif (config is None or not mcp_server_enabled(config)
+                  or not _same_server_route(server, config, cross_profile=cross_profile)):
+                _core._server_session_none_at.pop(key, None)
+                stale.append(key)
+            else:
+                first_seen = _core._server_session_none_at.get(key)
+                if first_seen is None:
+                    _core._server_session_none_at[key] = now
+                elif now - first_seen >= grace:
+                    _core._server_session_none_at.pop(key, None)
+                    stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
 

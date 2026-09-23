@@ -905,9 +905,15 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
-                    break
+                value = normalized.get(alias)
+                # A value here is a price only if it is a scalar. ``/models`` payloads are
+                # arbitrary remote JSON, and a common shape (``modalities: {"input": [...]}``)
+                # puts a list under a pricing alias — the previous set-membership test hashed
+                # it, raised TypeError, and took the whole endpoint's metadata down with it.
+                if value is None or value == "" or not isinstance(value, (int, float, str)):
+                    continue
+                pricing[target] = value
+                break
         if pricing:
             return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}

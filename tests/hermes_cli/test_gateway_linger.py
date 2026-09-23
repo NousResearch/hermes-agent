@@ -1,5 +1,6 @@
 """Tests for gateway linger auto-enable behavior on headless Linux installs."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,12 +8,34 @@ import pytest
 import hermes_cli.gateway as gateway
 
 
+def _stub_linger_file(monkeypatch, *, exists: bool) -> None:
+    """Stub only the linger-file probe, leaving service-name Paths functional."""
+    linger_dir = Path("/var/lib/systemd/linger")
+
+    def fake_path(path):
+        candidate = Path(path)
+        if candidate.parent == linger_dir:
+            return SimpleNamespace(exists=lambda: exists)
+        return candidate
+
+    monkeypatch.setattr(gateway, "Path", fake_path)
+
+
+def _force_service_name_path_rendering(monkeypatch) -> None:
+    """Exercise the root/system-unit Path branch used by warning rendering."""
+    monkeypatch.setenv("HERMES_HOME", "/tmp/hermes-linger-test-home")
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        gateway, "_hermes_home_pinned_by_unit", lambda _unit_path: "/tmp/hermes-linger-system-home"
+    )
+
+
 class TestEnsureLingerEnabled:
     def test_linger_already_enabled_via_file(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: True))
+        _stub_linger_file(monkeypatch, exists=True)
 
         calls = []
         monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
@@ -28,7 +51,7 @@ class TestEnsureLingerEnabled:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, exists=False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
 
@@ -52,7 +75,8 @@ class TestEnsureLingerEnabled:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, exists=False)
+        _force_service_name_path_rendering(monkeypatch)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
         monkeypatch.setattr(
@@ -70,7 +94,7 @@ class TestEnsureLingerEnabled:
     def test_system_scope_enables_target_user_without_logout_messaging(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, exists=False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
         run_calls = []
@@ -90,7 +114,8 @@ class TestEnsureLingerEnabled:
     def test_system_scope_warning_uses_system_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, exists=False)
+        _force_service_name_path_rendering(monkeypatch)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
         monkeypatch.setattr(

@@ -20,6 +20,9 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Optional exact provider/model USD-per-million overrides. Schema v1 requires
+    # input/output; cache_read/cache_write are optional and never inferred.
+    "model_pricing": {},
     "providers": {},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset

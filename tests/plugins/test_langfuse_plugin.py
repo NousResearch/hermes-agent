@@ -195,6 +195,8 @@ class TestTurnTraceIsolation:
             def start_as_current_observation(self, **kw):
                 started.append(kw.get("trace_context", {}).get("trace_id"))
                 return _RootCM()
+            def start_observation(self, **kw):
+                return self.start_as_current_observation(**kw).__enter__()
 
             def flush(self):
                 pass
@@ -297,8 +299,8 @@ class TestTurnTraceIsolation:
         surviving = sorted(int(k.rsplit("turn", 1)[1]) for k in mod._TRACE_STATE)
         assert surviving == list(range(42, 50))
 
-    def test_finish_trace_exits_root_context_manager(self, monkeypatch):
-        """_finish_trace must call root_ctx.__exit__(), not just root_span.end().
+    def test_root_is_manual_observation_not_context_bound(self, monkeypatch):
+        """Root must be a manual observation; historically it was a context manager and
 
         Regression for the "Exception ignored in: <generator>" traceback
         on CLI exit.  The plugin enters the root observation's context
@@ -336,6 +338,8 @@ class TestTurnTraceIsolation:
             def start_as_current_observation(self, **kw):
                 started.append(kw.get("trace_context", {}).get("trace_id"))
                 return _TrackingRootCM()
+            def start_observation(self, **kw):
+                return self.start_as_current_observation(**kw).__enter__()
             def flush(self):
                 pass
 
@@ -343,13 +347,13 @@ class TestTurnTraceIsolation:
 
         self._run_turn(mod, session="sess-exit", turn_n=1, finalize=True)
 
-        assert exited, (
-            "_finish_trace did not call root_ctx.__exit__; the generator is "
-            "left suspended and will raise TypeError on GC at interpreter "
-            "teardown when opentelemetry.trace.Span is None"
-        )
-        assert len(exited) == 1
-        assert exited[0] == (None, None, None)
+        # Root is a MANUAL observation now (start_observation, no OTel context token):
+        # the root is opened and ended in different hook calls that run on different
+        # threads/contexts on the gateway, and exiting a context-manager there raised
+        # "Token was created in a different Context" on every turn. So the CM must
+        # never be entered/exited at all.
+        assert not exited, "root must not be bound to the OTel context (start_as_current_observation)"
+        assert not mod._TRACE_STATE, "trace state must be popped after finish"
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +860,7 @@ class TestModelAttribution:
         class _Client:
             def create_trace_id(self, seed=None): return "t"
             def start_as_current_observation(self, **kw): return _RootCM()
+            def start_observation(self, **kw): return _Span()
             def flush(self): pass
 
         return _Client()
@@ -1917,6 +1922,8 @@ class TestFinishTraceUsesUpdateTrace:
 
             def start_as_current_observation(self, **kw):
                 return _RootCM()
+            def start_observation(self, **kw):
+                return self.start_as_current_observation(**kw).__enter__()
 
             def flush(self):
                 pass
@@ -1994,6 +2001,8 @@ class TestFinishTraceUsesUpdateTrace:
 
             def start_as_current_observation(self, **kw):
                 return _RootCM()
+            def start_observation(self, **kw):
+                return self.start_as_current_observation(**kw).__enter__()
 
             def flush(self):
                 pass

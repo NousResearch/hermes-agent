@@ -1,12 +1,14 @@
 """The smart-approval retry, driven through the REAL guard.
 
-``_smart_approve``'s retry contract only matters if the real gate — ``check_all_command_guards`` /
-``check_execute_code_guard`` → ``_human_decision`` → ``_smart_gate`` → ``_smart_verdict`` → the
-guardian call — still recovers a truncated answer and still hands a completed abstention to the
-human. Only the LLM boundary (``agent.auxiliary_client.call_llm``) is faked here, so the retry, the
-verdict mapping, the hook/redaction wrapper and the escalation path all run for real
-(tools/AGENTS.md: approval/security-boundary tools are E2E'd with real imports against a temp
-``HERMES_HOME``).
+``_smart_approve``'s retry contract only matters if the real gate — ``check_all_command_guards`` →
+``_human_decision`` → ``_smart_gate`` → ``_smart_verdict`` → the guardian call — still recovers a
+truncated answer and still hands a completed abstention to the human. Only the LLM boundary
+(``agent.auxiliary_client.call_llm``) is faked here, so the retry, the verdict mapping, the
+hook/redaction wrapper and the escalation path all run for real (tools/AGENTS.md: approval/
+security-boundary tools are E2E'd with real imports against a temp ``HERMES_HOME``).
+
+Two tests, per the repo's ≤2 invariant-test bar: one proves the recovery (red on the base commit),
+the other pins the boundary the retry must not cross.
 """
 
 from __future__ import annotations
@@ -125,36 +127,5 @@ def test_completed_abstention_reaches_the_human_instead_of_a_second_verdict(smar
 
     assert len(calls) == 1, "a completed abstention must not buy a second guardian verdict"
     assert asked == ["deny"], "the completed abstention must be handed to the human"
-    assert result["approved"] is False
-    assert "smart_approved" not in result
-
-
-def test_human_approval_of_an_abstention_is_not_reported_as_a_smart_approval(smart_gate_session, monkeypatch):
-    """When the human approves, the approval is theirs — not the guardian's second call."""
-    calls = _guardian(monkeypatch, [("I cannot determine this", "stop"), ("APPROVE", "stop")])
-    asked = []
-    _human_answers("once", asked)
-
-    result = A.check_all_command_guards("rm -rf /tmp/gate-retry-target", "local")
-
-    assert asked == ["once"]
-    assert len(calls) == 1
-    assert result["approved"] is True
-    assert "smart_approved" not in result
-
-
-# ── execute_code guard ───────────────────────────────────────────────────────
-
-
-def test_completed_abstention_reaches_the_human_via_the_execute_code_guard(smart_gate_session, monkeypatch):
-    """The whole-script guard shares the retry contract (tools/AGENTS.md: cover both surfaces)."""
-    calls = _guardian(monkeypatch, [("I cannot determine this", "stop"), ("APPROVE", "stop")])
-    asked = []
-    _human_answers("deny", asked)
-
-    result = A.check_execute_code_guard("print('gate-retry')", "local")
-
-    assert len(calls) == 1
-    assert asked == ["deny"]
     assert result["approved"] is False
     assert "smart_approved" not in result

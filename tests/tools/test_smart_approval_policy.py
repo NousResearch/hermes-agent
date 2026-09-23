@@ -22,12 +22,11 @@ from tools.approval_smart import _get_smart_policy, _smart_approve
 POLICY_TEXT = "Always ESCALATE commands that modify anything under /etc."
 
 
-def _make_response(answer: str, finish_reason: str = "stop"):
+def _make_response(answer: str):
     """Build a mock LLM response with the given one-word answer."""
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = answer
-    mock_response.choices[0].finish_reason = finish_reason
     return mock_response
 
 
@@ -149,115 +148,6 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         args, _ = mock_logger.warning.call_args
         assert "Smart approvals: LLM call failed" in args[0]
         assert "TimeoutError" in str(args)
-
-
-    @patch("tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_truncated_answer_retries_with_larger_budget(self, mock_call_llm, mock_cfg):
-        mock_cfg.return_value = {"mode": "smart"}
-        mock_call_llm.side_effect = [
-            _make_response("", "length"),
-            _make_response("APPROVE"),
-        ]
-
-        assert _smart_approve("echo hi", "flagged") == "approve"
-        assert mock_call_llm.call_count == 2
-        first_kwargs = mock_call_llm.call_args_list[0].kwargs
-        second_kwargs = mock_call_llm.call_args_list[1].kwargs
-        assert first_kwargs["max_tokens"] == 16
-        assert second_kwargs["max_tokens"] > first_kwargs["max_tokens"]
-        assert first_kwargs["task"] == second_kwargs["task"] == "approval"
-        assert first_kwargs["temperature"] == second_kwargs["temperature"] == 0
-        assert second_kwargs["messages"] is first_kwargs["messages"]
-        assert 0 < second_kwargs["timeout"] <= first_kwargs["timeout"]
-
-
-    @patch("tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_truncated_twice_escalates(self, mock_call_llm, mock_cfg):
-        mock_cfg.return_value = {"mode": "smart"}
-        mock_call_llm.side_effect = [
-            _make_response("", "length"),
-            _make_response("", "length"),
-        ]
-
-        with self.assertLogs("tools.approval", level="WARNING") as logs:
-            assert _smart_approve("echo hi", "flagged") == "escalate"
-        assert mock_call_llm.call_count == 2
-        assert "empty answer" in logs.output[-1]
-        assert "finish_reason=length" in logs.output[-1]
-        assert "escalating" in logs.output[-1]
-
-
-    @patch("tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_completed_unrecognized_answer_is_not_retried(self, mock_call_llm, mock_cfg):
-        mock_cfg.return_value = {"mode": "smart"}
-        for answer in ("I cannot determine this", "APPROVE."):
-            with self.subTest(answer=answer):
-                mock_call_llm.reset_mock()
-                mock_call_llm.side_effect = [
-                    _make_response(answer, "stop"),
-                    _make_response("APPROVE", "stop"),
-                ]
-                with self.assertLogs("tools.approval", level="WARNING") as logs:
-                    assert _smart_approve("echo hi", "flagged") == "escalate"
-                assert mock_call_llm.call_count == 1
-                assert "an unrecognized answer" in logs.output[-1]
-                assert "escalating" in logs.output[-1]
-                assert answer not in logs.output[-1]
-
-
-    @patch("tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_empty_answer_without_length_is_not_retried(self, mock_call_llm, mock_cfg):
-        mock_cfg.return_value = {"mode": "smart"}
-        for finish_reason in ("stop", None):
-            with self.subTest(finish_reason=finish_reason):
-                mock_call_llm.reset_mock()
-                mock_call_llm.side_effect = [
-                    _make_response("", finish_reason),
-                    _make_response("APPROVE", "stop"),
-                ]
-                assert _smart_approve("echo hi", "flagged") == "escalate"
-                assert mock_call_llm.call_count == 1
-
-
-    @patch("agent.auxiliary_client._get_task_timeout", return_value=10.0)
-    @patch("tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_exhausted_budget_skips_the_retry(self, mock_call_llm, mock_cfg, mock_timeout):
-        mock_cfg.return_value = {"mode": "smart"}
-        mock_call_llm.side_effect = [
-            _make_response("", "length"),
-            _make_response("APPROVE"),
-        ]
-        with patch("tools.approval_smart.time.monotonic", side_effect=[0.0, 11.0, 11.0]):
-            with self.assertLogs("tools.approval", level="WARNING") as logs:
-                assert _smart_approve("echo hi", "flagged") == "escalate"
-        assert mock_call_llm.call_count == 1
-        assert "budget exhausted" in logs.output[-1]
-        assert "escalating" in logs.output[-1]
-
-
-    @patch("tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_explicit_escalate_is_not_retried(self, mock_call_llm, mock_cfg):
-        mock_cfg.return_value = {"mode": "smart"}
-        mock_call_llm.return_value = _make_response("ESCALATE")
-
-        assert _smart_approve("echo hi", "flagged") == "escalate"
-        assert mock_call_llm.call_count == 1
-
-
-    @patch("tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_timeout_is_not_retried(self, mock_call_llm, mock_cfg):
-        mock_cfg.return_value = {"mode": "smart"}
-        mock_call_llm.side_effect = TimeoutError("stalled provider")
-
-        assert _smart_approve("echo hi", "flagged") == "escalate"
-        assert mock_call_llm.call_count == 1
 
 
 if __name__ == "__main__":

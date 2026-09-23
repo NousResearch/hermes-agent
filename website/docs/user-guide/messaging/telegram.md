@@ -856,10 +856,12 @@ Both features can coexist on the same bot — you'd run `/topic` from a user's D
 
 ### Prerequisites
 
-In **@BotFather**, open your bot → **Bot Settings → Threads Settings**:
+In the **BotFather Mini App**, open **My bots** → your bot → **Bot Settings → Threads Settings**:
 
 1. Turn on **Threaded Mode** (enables `has_topics_enabled`)
 2. Do **not** disable users creating topics (keeps `allows_users_to_create_topics` on)
+
+The classic `/mybots` text menu in the BotFather chat does not expose Threads Settings; launch the Mini App from the @BotFather search result instead.
 
 When the user first runs `/topic`, Hermes calls `getMe` to verify both flags. If either is off, Hermes sends a screenshot of the BotFather Threads Settings page and explains what to toggle — no activation happens until prerequisites are met.
 

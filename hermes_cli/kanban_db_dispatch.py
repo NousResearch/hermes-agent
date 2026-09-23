@@ -152,6 +152,13 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    stranded_by_mount_loss: list[str] = field(default_factory=list)
+    """Persisted volatile workspaces missing at startup/admission."""
+    workspace_refused: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` mount-admission refusals before task claim."""
+
+
+_workspace_startup_scanned: set[str] = set()
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
@@ -1988,6 +1995,40 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _release_claim_for_workspace_refusal(conn, task_id, result, reason):
+    task = _kb.get_task(conn, task_id)
+    if task is None:
+        return
+    if not any(item[0] == task_id for item in result.workspace_refused):
+        result.workspace_refused.append((task_id, reason))
+    stranded = bool(task.workspace_path) and reason.startswith((
+        "stranded_by_mount_loss:", "workspaces_root_unmounted:",
+    ))
+    if stranded and task_id not in result.stranded_by_mount_loss:
+        result.stranded_by_mount_loss.append(task_id)
+    with _kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        run_id = row["current_run_id"] if row else None
+        retry_status = _kb._retry_status_for_run(conn, task_id, run_id)
+        conn.execute(
+            "UPDATE tasks SET status=?, claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL WHERE id=? AND current_run_id=?",
+            (retry_status, task_id, run_id),
+        )
+        closed_run_id = _kb._end_run(
+            conn, task_id, outcome="workspace_refused",
+            status="workspace_refused", error=reason[:500],
+            metadata={"retry_status": retry_status},
+        )
+        _kb._append_event(
+            conn, task_id,
+            "stranded_by_mount_loss" if stranded else "workspace_refused",
+            {"reason": reason}, run_id=closed_run_id,
+        )
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2038,6 +2079,11 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
+    if _kbw.workspace_admission_refused(
+        conn, task_id, result, board=board, dry_run=dry_run,
+    ):
+        return False
+
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
@@ -2052,12 +2098,29 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    from hermes_cli.kanban_workspace_policy import (
+        WorkspaceUnavailable, validate_mount, validate_persisted, validate_target,
+    )
     try:
+        protected = _kbw._validate_workspace_admission(
+            claimed, board=board, conn=conn,
+        )
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
             workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
+        if protected is not None:
+            validate_mount(
+                protected.root, expected_mount=protected.mount_path,
+            )
+            validate_target(protected.root, workspace)
+            validate_persisted(workspace)
+    except WorkspaceUnavailable as exc:
+        _release_claim_for_workspace_refusal(
+            conn, claimed.id, result, str(exc),
+        )
+        return False
     except Exception as exc:
         if _record_task_failure(
             conn, claimed.id, f"workspace: {exc}",
@@ -2299,6 +2362,19 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    # First process tick only: reconcile vanished persisted volatile paths.
+    # Spawnable candidates are rechecked before claim every tick below.
+    startup_key = str(_kb.kanban_db_path(board))
+    if dry_run or startup_key not in _workspace_startup_scanned:
+        for row in conn.execute(
+            "SELECT id FROM tasks WHERE workspace_path IS NOT NULL "
+            "AND status IN ('todo', 'ready', 'running', 'review')"
+        ).fetchall():
+            _kbw.workspace_admission_refused(
+                conn, row["id"], result, board=board, dry_run=dry_run,
+            )
+        if not dry_run:
+            _workspace_startup_scanned.add(startup_key)
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,

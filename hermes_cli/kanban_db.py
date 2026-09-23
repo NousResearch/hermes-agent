@@ -232,7 +232,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "workspace_refused",
 )
 
 
@@ -511,9 +511,28 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:
-    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
-    ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
-    return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
+    """Per-board scratch root with optional fail-closed mount admission."""
+    from hermes_cli.kanban_workspace_policy import (
+        WorkspaceUnavailable, configured_root, validate_mount,
+    )
+
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    root, require_mount = configured_root()
+    if root is not None:
+        if require_mount:
+            validate_mount(root)
+        resolved = root / slug
+        if override and Path(override).expanduser() != resolved:
+            raise WorkspaceUnavailable("workspaces_root_invalid: board pin disagrees with config")
+        return resolved
+    if override:
+        return Path(override).expanduser()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "workspaces"
+    return board_dir(slug) / "workspaces"
 
 
 def attachments_root(board: Optional[str] = None) -> Path:
@@ -981,6 +1000,12 @@ CREATE TABLE IF NOT EXISTS task_comments (
     author     TEXT NOT NULL,
     body       TEXT NOT NULL,
     created_at INTEGER NOT NULL
+);
+
+-- Retained across config rollback so old volatile paths stay fenced.
+CREATE TABLE IF NOT EXISTS workspace_mount_roots (
+    root       TEXT PRIMARY KEY,
+    mount_path TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_events (

@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import time
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -536,6 +537,121 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     return requested, branch_name
 
 
+@dataclass(frozen=True)
+class _WorkspaceAdmission:
+    root: Path
+    mount_path: Path
+
+
+def _validate_workspace_admission(
+    task: Task, *, board: Optional[str] = None, conn=None, dry_run: bool = False,
+) -> Optional[_WorkspaceAdmission]:
+    """Validate configured and historically volatile paths before claim/spawn."""
+    from hermes_cli.kanban_workspace_policy import (
+        WorkspaceUnavailable, configured_root, validate_mount,
+        validate_persisted, validate_target,
+    )
+
+    root, require_mount = configured_root()
+    if conn is None:
+        from hermes_cli.kanban_db_connect import connect_closing
+        with connect_closing(board=board) as owned:
+            return _validate_workspace_admission(
+                task, board=board, conn=owned, dry_run=dry_run,
+            )
+    roots = {
+        Path(row["root"]): Path(row["mount_path"])
+        for row in conn.execute("SELECT root, mount_path FROM workspace_mount_roots")
+    }
+    if root is not None and require_mount:
+        expected_mount = roots.get(root)
+        mount_path = validate_mount(root, expected_mount=expected_mount)
+        if expected_mount is None:
+            roots[root] = mount_path
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO workspace_mount_roots(root, mount_path) "
+                        "VALUES (?, ?)",
+                        (str(root), str(mount_path)),
+                    )
+
+    def resolved(candidate: Path) -> Path:
+        try:
+            return candidate.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise WorkspaceUnavailable(
+                f"workspaces_root_invalid: cannot resolve: {candidate}"
+            ) from exc
+
+    if task.workspace_path:
+        path = Path(task.workspace_path).expanduser()
+        for protected, mount_path in sorted(
+            roots.items(), key=lambda item: len(item[0].parts), reverse=True,
+        ):
+            path_resolved = resolved(path)
+            protected_resolved = resolved(protected)
+            if (path.is_relative_to(protected)
+                    or path_resolved.is_relative_to(protected_resolved)):
+                validate_mount(protected, expected_mount=mount_path)
+                if (not path.is_relative_to(protected)
+                        or path_resolved != path.absolute()):
+                    raise WorkspaceUnavailable(
+                        "workspaces_root_invalid: workspace symlink escape"
+                    )
+                validate_target(protected, path)
+                validate_persisted(path)
+                return _WorkspaceAdmission(protected, mount_path)
+    elif task.workspace_kind in (None, "scratch"):
+        target = _kb.workspaces_root(board=board) / task.id
+        if require_mount:
+            assert root is not None
+            validate_target(root, target)
+            return _WorkspaceAdmission(root, roots[root])
+    return None
+
+
+def workspace_admission_refused(
+    conn, task_id: str, result, *, board: Optional[str], dry_run: bool,
+) -> bool:
+    """Record a benign fail-closed refusal without charging worker failures."""
+    from hermes_cli.kanban_workspace_policy import WorkspaceUnavailable
+
+    task = _kb.get_task(conn, task_id)
+    if task is None:
+        return False
+    try:
+        _validate_workspace_admission(
+            task, board=board, conn=conn, dry_run=dry_run,
+        )
+    except WorkspaceUnavailable as exc:
+        reason = str(exc)
+        spawnable_lane = task.status in ("ready", "review")
+        if spawnable_lane and not any(
+            item[0] == task_id for item in result.workspace_refused
+        ):
+            result.workspace_refused.append((task_id, reason))
+        stranded = bool(task.workspace_path) and reason.startswith((
+            "stranded_by_mount_loss:", "workspaces_root_unmounted:",
+        ))
+        if stranded and task_id not in result.stranded_by_mount_loss:
+            result.stranded_by_mount_loss.append(task_id)
+        event_kind = "stranded_by_mount_loss" if stranded else "workspace_refused"
+        _kb._log.warning("kanban dispatch: %s task=%s", reason, task_id)
+        if not dry_run:
+            with _kb.write_txn(conn):
+                previous = conn.execute(
+                    "SELECT payload FROM task_events WHERE task_id=? "
+                    "AND kind=? ORDER BY id DESC LIMIT 1",
+                    (task_id, event_kind),
+                ).fetchone()
+                payload = {"reason": reason}
+                if previous is None or __import__('json').loads(previous[0]) != payload:
+                    _kb._append_event(conn, task_id, event_kind, payload)
+        return True
+    return False
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -547,6 +663,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     a concrete path is created/reused, none -> the board's ``default_workdir``
     (raises if unset rather than guessing). Persist via ``set_workspace_path``.
     """
+    protected = _validate_workspace_admission(task, board=board)
     kind = task.workspace_kind or "scratch"
     if kind == "worktree":
         return _resolve_worktree_workspace(task, board=board)[0]
@@ -573,7 +690,13 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             )
     else:
         raise ValueError(f"unknown workspace_kind: {kind}")
-    p.mkdir(parents=True, exist_ok=True)
+    if protected is not None and not task.workspace_path:
+        from hermes_cli.kanban_workspace_policy import create_scratch
+        create_scratch(
+            protected.root, p, expected_mount=protected.mount_path,
+        )
+    elif protected is None:
+        p.mkdir(parents=True, exist_ok=True)
     return p
 
 

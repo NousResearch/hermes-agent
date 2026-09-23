@@ -10,10 +10,12 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
 
@@ -28,6 +30,94 @@ def _kbd():
     return kanban_db_dispatch
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
+_WORKSPACE_REFUSAL_LOGGED: dict[str, tuple[str, float]] = {}
+
+
+def _format_workspace_refused_summary(refused) -> str:
+    entries = list(refused or [])
+    if not entries:
+        return "workspace_refused=0"
+    grouped: dict[str, list[str]] = {}
+    for task_id, detail in entries:
+        grouped.setdefault(str(detail).split(":", 1)[0], []).append(str(task_id))
+    summary = "; ".join(
+        f"{reason}: {', '.join(sorted(task_ids))}"
+        for reason, task_ids in sorted(grouped.items())
+    )
+    return f"workspace_refused={len(entries)} ({summary})"
+
+
+class _WorkspaceRefusalOutageNotifier:
+    """Latch one successfully delivered page per board outage."""
+
+    def __init__(self) -> None:
+        self._delivered: set[str] = set()
+
+    def observe(self, board: str, refused, send: Callable[[str, str], bool]) -> bool:
+        entries = list(refused or [])
+        if not entries:
+            self._delivered.discard(board)
+            return False
+        if board in self._delivered:
+            return False
+        if not send(board, _format_workspace_refused_summary(entries)):
+            return False
+        self._delivered.add(board)
+        return True
+
+
+def _send_workspace_refusal_alert(board: str, summary: str) -> bool:
+    """Best-effort #alerts page through the fleet notify boundary."""
+    candidates = (
+        Path.home() / ".hermes" / "scripts" / "notify.py",
+        Path.home() / ".hermes" / "skills-shared" / "general" / "scheduler" / "scripts" / "notify.py",
+        Path.home() / ".hermes" / "skills" / "devops" / "scheduler" / "scripts" / "notify.py",
+    )
+    script = next((path for path in candidates if path.is_file()), None)
+    if script is None:
+        logger.error("kanban dispatcher: notify.py unavailable; workspace outage page not delivered")
+        return False
+    message = (
+        "🛑 **Kanban dispatcher** · Workspace admission refused\n"
+        f"Board: `{board}`\n{summary}\n"
+        "The dispatcher refused before spawn; inspect the configured workspace mount. "
+        "No durable-disk fallback was created."
+    )
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable, str(script), "--send", message,
+                "--channel", "discord", "--profile", "default", "--sev", "error",
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except Exception:
+        logger.exception("kanban dispatcher: workspace outage page failed")
+        return False
+    if proc.returncode != 0:
+        logger.error(
+            "kanban dispatcher: workspace outage page not delivered (rc=%d)",
+            proc.returncode,
+        )
+        return False
+    return True
+
+
+def _observe_workspace_refusal_outages(notifier, results) -> int:
+    """Process one full dispatcher tick; skipped boards do not imply recovery."""
+    delivered = 0
+    for board, result in results or []:
+        if result is None:
+            continue
+        refused = getattr(result, "workspace_refused", None) or []
+        delivered += int(
+            notifier.observe(board, refused, _send_workspace_refusal_alert)
+        )
+    return delivered
 
 
 @dataclass
@@ -320,6 +410,14 @@ def _log_spawn_results(results: Optional[list]) -> bool:
     """Log per-board spawn summaries; returns whether any board spawned."""
     any_spawned = False
     for slug, res in (results or []):
+        refused = getattr(res, "workspace_refused", None) if res is not None else None
+        if refused:
+            rendered = _format_workspace_refused_summary(refused)
+            previous, previous_at = _WORKSPACE_REFUSAL_LOGGED.get(slug, ("", 0.0))
+            now = time.monotonic()
+            if rendered != previous or now - previous_at >= 300:
+                logger.error("kanban dispatcher tick [%s]: %s", slug, rendered)
+                _WORKSPACE_REFUSAL_LOGGED[slug] = (rendered, now)
         if res is not None and getattr(res, "spawned", None):
             any_spawned = True
             # Quiet by default: an idle gateway stays silent.

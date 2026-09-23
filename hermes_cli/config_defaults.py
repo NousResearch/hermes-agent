@@ -1845,6 +1845,11 @@ DEFAULT_CONFIG = {
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
     # claimable task. Run ONE dispatcher per profile; two on the same kanban.db race for claims.
     "kanban": {
+        # Optional base for board-qualified scratch workspaces. When mount
+        # admission is required the dispatcher refuses, rather than falling
+        # back to durable storage, if this root is unavailable.
+        "workspaces_root": None,
+        "workspaces_root_require_mount": False,
         # Auto-subscribe the originating gateway/TUI session to completion + block events when
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.

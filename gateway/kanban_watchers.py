@@ -27,7 +27,9 @@ from gateway.kanban_watchers_common import (
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
+    _WorkspaceRefusalOutageNotifier,
     _log_spawn_results,
+    _observe_workspace_refusal_outages,
     _resolve_dispatcher_settings,
 )
 
@@ -274,6 +276,7 @@ class GatewayKanbanWatchersMixin:
         last_warn_at = 0
         results: Optional[list] = None
         dispatcher = _KanbanDispatcher(_kb, settings)
+        workspace_refusal_notifier = _WorkspaceRefusalOutageNotifier()
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -300,6 +303,13 @@ class GatewayKanbanWatchersMixin:
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
                     results = await _to_thread_process_service(dispatcher.tick_once)
+                    # Failed delivery remains unlatched and retries next tick;
+                    # an empty successful board result rearms after recovery.
+                    await _to_thread_process_service(
+                        _observe_workspace_refusal_outages,
+                        workspace_refusal_notifier,
+                        results,
+                    )
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0

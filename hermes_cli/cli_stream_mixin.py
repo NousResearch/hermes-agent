@@ -651,6 +651,8 @@ class CLIStreamMixin:
             self._flush_stream()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        if getattr(self, "_focus_view_enabled", False) or self.tool_progress_mode == "off":
+            return
         announced = self.__dict__.setdefault("_tool_gen_announced", set())
         if tool_name in announced:
             return

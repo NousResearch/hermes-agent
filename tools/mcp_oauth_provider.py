@@ -480,6 +480,15 @@ class HermesProviderMixin:
                 token_response.refresh_token = prior.refresh_token
             if token_response.scope is None:
                 token_response.scope = prior.scope
+        if token_response.refresh_token is None:
+            try:
+                persisted = await self.context.storage.get_tokens()
+            except Exception:
+                # A successful refresh must not become a failure when durable
+                # token recovery is unavailable.
+                persisted = None
+            if persisted is not None and persisted.refresh_token is not None:
+                token_response.refresh_token = persisted.refresh_token
         await self._store_tokens(token_response)
         return True
 

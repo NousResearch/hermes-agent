@@ -506,6 +506,12 @@ def get_pricing_for_provider(
     prewarm fills the same caches for later opens."""
     from hermes_cli.models import normalize_provider
     normalized = normalize_provider(provider)
+    # A config-defined twin of a priced aggregator (`custom:openrouter` → openrouter.ai) has no
+    # fetcher under the full slug: fall back to the suffix — re-normalized so alias spellings
+    # (`custom:vercel` → ai-gateway) resolve too; suffixes with no fetcher still price as ``{}``.
+    if normalized.startswith("custom:"):
+        suffix = normalized.split(":", 1)[1]
+        normalized = normalize_provider(suffix) if suffix else ""
     if cached_only:
         return _cached_only_pricing(normalized)
     fetcher = _PRICING_FETCHERS.get(normalized)

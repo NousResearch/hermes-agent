@@ -433,12 +433,38 @@ def test_read_only_tool_may_quote_current_context_prune_marker():
     dispatch.assert_called_once()
 
 
-def test_legacy_pruned_tail_is_guarded_only_for_historical_sized_effectful_values():
+def test_legacy_pruned_tail_blocks_observed_short_effectful_writes():
     from agent.tool_dispatch_helpers import _context_pruned_argument_paths
 
-    assert _context_pruned_argument_paths("mcp_write", {"body": "x" * 201 + "...[truncated]"}) == ["$.body"]
-    assert _context_pruned_argument_paths("mcp_write", {"body": "literal ...[truncated]"}) == []
-    assert _context_pruned_argument_paths("web_search", {"query": "x" * 201 + "...[truncated]"}) == []
+    for total_len in (182, 188):
+        suffix = "...[truncated]"
+        value = "x" * (total_len - len(suffix)) + suffix
+        assert len(value) == total_len
+        assert _context_pruned_argument_paths("mcp_write", {"body": value}) == ["$.body"]
+
+    # The incident signature is a poison TAIL. Ordinary prose may discuss the marker.
+    assert _context_pruned_argument_paths(
+        "mcp_write", {"body": "literal ...[truncated] quote followed by complete content"}
+    ) == []
+    assert _context_pruned_argument_paths(
+        "web_search", {"query": "x" * 170 + "...[truncated]"}
+    ) == []
+
+
+def test_context_pruned_effectful_call_blocks_in_concurrent_path():
+    agent = _make_agent("mcp_write")
+    args = _compressed_args("body")
+    tc = _mock_tool_call("mcp_write", json.dumps(args, ensure_ascii=False), "c-pruned-concurrent")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch:
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    payload = json.loads(messages[0]["content"])
+    assert payload["error"] == "suspected_pruned_tool_arguments"
+    assert payload["argument_paths"] == ["$.body"]
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

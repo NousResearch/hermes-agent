@@ -114,16 +114,18 @@ class TestProcFallback:
         mock_ps.assert_not_called()  # /proc dir existed, so ps not called
 
 
+@pytest.mark.linux_only
 class TestPsFallbackBsdCompat:
     """The ps fallback must use flags BSD/macOS ps accepts (#73626, #74075).
 
     ``ps -A eww`` fails on macOS (BSD ``e`` is not the procps flag), which
     made gateway discovery silently return nothing whenever /proc is absent.
+    Linux-only like ``TestProcFallback``: the real host selects the POSIX arm
+    and only /proc's absence is faked, to force the ps rung.
     """
 
     def test_ps_fallback_uses_bsd_compatible_flags_and_columns(self):
         with (
-            patch("hermes_cli.gateway.is_windows", return_value=False),
             patch("os.path.isdir", side_effect=lambda p: p != "/proc"),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_run,

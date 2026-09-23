@@ -25,6 +25,25 @@ import pytest
 pytestmark = [pytest.mark.windows_only, pytest.mark.spawns_gateway_lookalike]
 
 
+def _wait_until(predicate, timeout: float = 15.0, interval: float = 0.05) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
+def _argv_visible(pid: int, marker: str) -> bool:
+    """True once the process table shows *pid* with *marker* in its argv."""
+    import psutil
+
+    try:
+        return marker in " ".join(psutil.Process(pid).cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
 def test_plan_reconciliation_live_windows(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -43,9 +62,8 @@ def test_plan_reconciliation_live_windows(tmp_path, monkeypatch):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
-        time.sleep(0.5)
-        assert child.poll() is None
-        assert foreign.poll() is None
+        assert _wait_until(lambda: _argv_visible(child.pid, "gateway")), "stand-in argv never visible"
+        assert _wait_until(lambda: _argv_visible(foreign.pid, "time.sleep(120)")), "sleeper never visible"
 
         import psutil
 

@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -31,6 +33,35 @@ import pytest
 pytestmark = pytest.mark.windows_only
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _wait_until(predicate, timeout: float = 15.0, interval: float = 0.05) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
+def _readline(stream, timeout: float = 60.0) -> str:
+    """``stream.readline()`` bounded by *timeout* (a hung child fails, not hangs)."""
+    got: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: got.put(stream.readline()), daemon=True).start()
+    try:
+        return got.get(timeout=timeout)
+    except queue.Empty:
+        return ""
+
+
+def _argv_visible(pid: int, marker: str) -> bool:
+    """True once the process table shows *pid* with *marker* in its argv."""
+    import psutil
+
+    try:
+        return marker in " ".join(psutil.Process(pid).cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 _CHILD_CODE = r"""
 import asyncio, os, sys
@@ -65,10 +96,10 @@ def live_server(tmp_path: Path):
         text=True,
         cwd=str(PROJECT_ROOT),
     )
-    line = proc.stdout.readline().strip()
+    line = _readline(proc.stdout).strip()
     if not line.startswith("SERVER_STARTED"):
         err = proc.stderr.read() if proc.poll() is not None else ""
-        proc.kill()
+        _kill_tree(proc)
         pytest.fail(f"pipe server child failed to start: {line!r} {err}")
     server_pid = int(line.split()[1])
     yield proc, home, server_pid
@@ -126,9 +157,10 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
 
     assert identify_gateway(home, timeout=5.0) is not None
     _kill_tree(proc)
-    time.sleep(0.5)
 
-    assert identify_gateway(home, timeout=2.0) is None
+    # taskkill /T returns once the tree is signalled; the pipe disappears when
+    # the kernel tears the server's handles down.
+    assert _wait_until(lambda: identify_gateway(home, timeout=0.5) is None)
 
     # Consumer falls back to the state file. That file is a claim, not an
     # identity: its sha classifies a row only when live_gateway_pid_for_home
@@ -163,8 +195,7 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
         stderr=subprocess.DEVNULL,
     )
     try:
-        time.sleep(0.5)
-        assert standin.poll() is None
+        assert _wait_until(lambda: _argv_visible(standin.pid, "gateway")), "stand-in argv never visible"
         _write_state(standin.pid)
         fleet = ur.collect_fleet_versions()
         assert len(fleet) == 1, fleet

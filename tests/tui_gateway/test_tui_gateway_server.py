@@ -16383,7 +16383,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     save_credential.assert_called_once_with(env_var, fake_key)
 
 
-def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch):
+def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch, tmp_path):
     """The gated picker's own chat waits on ``setup.status``, which answers from the boot record:
     a key saved for the launch profile must flip a ``False`` record (+ ``setup.ready``) at once;
     a key saved for another profile (``profile`` param) must leave the launch record alone."""
@@ -16399,6 +16399,9 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     monkeypatch.setattr(fb, "_resolve_inference", lambda: "test-provider")
     broadcasts = []
     monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+    other_home = tmp_path / "profiles" / "other"  # model.save_key is profile scoped: "other" must exist
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
     fb.reset_for_tests()
     stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
                            has_identity=False, other_providers=False)

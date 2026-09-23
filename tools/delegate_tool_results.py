@@ -6,7 +6,8 @@ import logging
 import json
 import threading
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit, urlunsplit
+
+from tools.delegate_inspect import sanitize_input_summary, summarize_tool_arguments
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -72,64 +73,15 @@ def _extract_output_tail(result: Dict[str, Any], *, max_entries: int = 12, max_c
     tail.reverse()
     return tail
 
-_TOOL_INPUT_TARGET_KEYS = frozenset({
-    "cwd", "destination_path", "directory", "dst", "endpoint", "file_path", "new_path", "old_path", "path",
-    "source_path", "src", "target_path", "url", "urls",
-})
-_TOOL_INPUT_URL_KEYS = frozenset({"endpoint", "url", "urls"})
-
-def _sanitize_tool_target(key: str, value: Any) -> Any:
-    """Keep bounded side-effect targets while dropping URL secrets."""
-    if isinstance(value, list):
-        cleaned = [item for item in (_sanitize_tool_target(key, item) for item in value[:16]) if item is not None]
-        return cleaned or None
-    if not isinstance(value, str) or not value:
-        return None
-    bounded = value[:1024]
-    if key in _TOOL_INPUT_URL_KEYS:
-        try:
-            parsed = urlsplit(bounded)
-            if parsed.scheme and parsed.netloc:
-                hostname = parsed.hostname
-                if not hostname:
-                    return None
-                # ``SplitResult.netloc`` includes ``user:password@``. Rebuild the authority from parsed host/port so
-                # hook-visible history cannot carry URL credentials. Bracket IPv6 literals before appending a
-                # validated port.
-                host = f"[{hostname}]" if ":" in hostname else hostname
-                netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
-                return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
-        except ValueError:
-            return None
-    return bounded
-
-def _sanitize_targets(mapping: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep only known side-effect target keys, each sanitized (URL secrets dropped)."""
-    targets: Dict[str, Any] = {}
-    for raw_key, value in mapping.items():
-        key = str(raw_key).lower()
-        if key in _TOOL_INPUT_TARGET_KEYS:
-            cleaned = _sanitize_tool_target(key, value)
-            if cleaned is not None:
-                targets[key] = cleaned
-    return targets
-
 def _input_summary(keys: Any, targets: Any) -> Dict[str, Any]:
-    """``{argument_keys, targets}`` with bounded, sanitized contents (empty on bad shapes)."""
-    return {
-        "argument_keys": [str(key)[:128] for key in keys[:64]] if isinstance(keys, list) else [],
-        "targets": _sanitize_targets(targets) if isinstance(targets, dict) else {},
-    }
+    """Compatibility wrapper around the single inspect/privacy sanitizer."""
+    return sanitize_input_summary({"argument_keys": keys, "targets": targets})
 
-def _summarize_tool_arguments(arguments: Any) -> Dict[str, Any]:
-    """Summarize argument names and side-effect targets without raw payloads."""
-    try:
-        parsed = json.loads(arguments) if isinstance(arguments, str) else None
-    except (TypeError, ValueError):
-        parsed = None
-    if not isinstance(parsed, dict):
-        return _input_summary([], {})
-    return _input_summary(sorted(str(key)[:128] for key in parsed), parsed)
+
+# Kept under the historical private name for existing callers/tests. The
+# implementation lives in delegate_inspect so stop hooks and live inspect share
+# exactly one URL/privacy policy.
+_summarize_tool_arguments = summarize_tool_arguments
 
 def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
     """Detached, metadata-only tool history for lifecycle hooks (input summaries re-sanitized)."""

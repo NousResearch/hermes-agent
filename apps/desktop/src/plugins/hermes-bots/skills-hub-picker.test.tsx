@@ -178,8 +178,24 @@ describe('hub pick messages', () => {
       postPick({ identifier, name: 'Web Research', type: 'hermes-skill-pick' }, { source: frame.contentWindow })
     }
 
-    // The empty identifier falls back to `name`, which is also off-charset.
+    // Empty identifiers are rejected; picker cards must carry the exact
+    // source-qualified target instead of falling back to their display name.
     expect(installCalls()).toEqual([])
+  })
+
+  it('reports a pick with no identifier even when its display name is valid', () => {
+    const frame = openHubBrowser()
+
+    postPick(
+      { name: 'humanizer', type: 'hermes-skill-pick' },
+      { source: frame.contentWindow }
+    )
+
+    expect(installCalls()).toEqual([])
+    expect(mocks.notify).toHaveBeenCalledWith({
+      kind: 'error',
+      message: 'Install unavailable: missing canonical identifier'
+    })
   })
 
   it('ignores messages that are not a skill pick', () => {

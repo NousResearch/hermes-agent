@@ -5,6 +5,11 @@ import os
 import sys
 import time
 import importlib.util
+import contextlib
+import io
+import re
+import shutil
+import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +25,87 @@ from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
 from hermes_constants import is_termux as _is_termux
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_NORMAL_STATUS_WIDTH = 80
+
+
+def _narrow_terminal_width() -> int | None:
+    """Return the terminal width only when status needs compact rendering.
+
+    At ordinary widths the status command retains its established byte-for-byte layout.
+    """
+    columns = shutil.get_terminal_size((80, 24)).columns
+    return columns if 0 < columns < _NORMAL_STATUS_WIDTH else None
+
+
+def _display_width(text: str) -> int:
+    """Return a conservative terminal-column width, excluding ANSI controls."""
+    width = 0
+    for char in _ANSI_ESCAPE_RE.sub("", text):
+        if unicodedata.combining(char) or char == "\u200d":
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+    return width
+
+
+def _wrap_status_line(line: str, width: int) -> list[str]:
+    """Wrap a status line at visible terminal columns without dropping text or ANSI style."""
+    if _display_width(line) <= width:
+        return [line]
+
+    parts = _ANSI_ESCAPE_RE.split(line)
+    escapes = _ANSI_ESCAPE_RE.findall(line)
+    tokens: list[tuple[str, int, bool]] = []
+    for index, part in enumerate(parts):
+        if index:
+            tokens.append((escapes[index - 1], 0, False))
+        for char in part:
+            char_width = _display_width(char)
+            tokens.append((char, char_width, char.isspace()))
+
+    lines: list[str] = []
+    current: list[tuple[str, int, bool]] = []
+    current_width = 0
+    last_space: int | None = None
+
+    def emit(items: list[tuple[str, int, bool]]) -> None:
+        lines.append("".join(token for token, _, _ in items))
+
+    for token in tokens:
+        text, token_width, is_space = token
+        if token_width and current_width + token_width > width and current:
+            if last_space is not None:
+                emit(current[:last_space])
+                current = current[last_space + 1:]
+                current_width = sum(item_width for _, item_width, _ in current)
+            else:
+                emit(current)
+                current = []
+                current_width = 0
+            last_space = next((i for i in range(len(current) - 1, -1, -1) if current[i][2]), None)
+        current.append(token)
+        current_width += token_width
+        if is_space:
+            last_space = len(current) - 1
+
+    if current:
+        emit(current)
+    return lines or [""]
+
+
+def _wrap_status_output(output: str, width: int) -> str:
+    """Wrap every physical status line while preserving its original newline convention."""
+    wrapped: list[str] = []
+    for raw_line in output.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        ending = raw_line[len(line):]
+        parts = _wrap_status_line(line, width)
+        for index, part in enumerate(parts):
+            wrapped.append(part)
+            wrapped.append(ending if index == len(parts) - 1 else "\n")
+    return "".join(wrapped)
 
 
 def check_mark(ok: bool) -> str:
@@ -136,9 +222,14 @@ def _banner(lines, *styles) -> None:
 
 
 def _render_header(ctx):
-    _banner(("┌─────────────────────────────────────────────────────────┐",
-             "│                 ☤ Hermes Agent Status                  │",
-             "└─────────────────────────────────────────────────────────┘"), Colors.CYAN)
+    if width := _narrow_terminal_width():
+        inner = width - 2
+        lines = (f"┌{'─' * inner}┐", f"│{'☤ Hermes Agent Status':^{inner}}│", f"└{'─' * inner}┘")
+    else:
+        lines = ("┌─────────────────────────────────────────────────────────┐",
+                 "│                 ☤ Hermes Agent Status                  │",
+                 "└─────────────────────────────────────────────────────────┘")
+    _banner(lines, Colors.CYAN)
     paused = _estop_status_line()
     if paused:
         _banner((paused,), Colors.YELLOW, Colors.BOLD)
@@ -348,7 +439,8 @@ def _render_deep(ctx):
 
 
 def _render_footer(ctx):
-    _banner(("─" * 60, "  Run 'hermes doctor' for detailed diagnostics", "  Run 'hermes setup' to configure"),
+    width = _narrow_terminal_width()
+    _banner(("─" * (width or 60), "  Run 'hermes doctor' for detailed diagnostics", "  Run 'hermes setup' to configure"),
             Colors.DIM)
     print()
 
@@ -360,7 +452,7 @@ _SECTIONS = (
     _render_sessions, _render_deep, _render_footer)
 
 
-def show_status(args):
+def _render_status(args) -> None:
     """Show status of all Hermes Agent components."""
     # Shared by section renderers: config, --deep, and the Nous login facts Auth Providers derives
     # for the later Nous Tool Gateway section.
@@ -368,6 +460,20 @@ def show_status(args):
                           nous_inference_present=False, nous_account_info=None)
     for render in _SECTIONS:
         render(ctx)
+
+
+def show_status(args):
+    """Show status of all Hermes Agent components, compacting safely on narrow terminals."""
+    width = _narrow_terminal_width()
+    if width is None:
+        _render_status(args)
+        return
+
+    destination = sys.stdout
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        _render_status(args)
+    destination.write(_wrap_status_output(buffer.getvalue(), width))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

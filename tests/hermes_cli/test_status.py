@@ -1,7 +1,36 @@
 from types import SimpleNamespace
+import re
 
 from hermes_cli.status import show_status
 import subprocess
+
+
+def test_show_status_wraps_visible_lines_to_terminal_columns(monkeypatch, capsys):
+    """Narrow terminals retain complete status values without overflowing."""
+    from hermes_cli import status as status_mod
+
+    error = "error: remote terminal provider returned an unexpectedly detailed diagnosis"
+    detail = "detail value with a full recovery command and no safe truncation point"
+    monkeypatch.setenv("COLUMNS", "40")
+    monkeypatch.setattr(
+        status_mod,
+        "_SECTIONS",
+        (
+            status_mod._render_header,
+            lambda ctx: status_mod._row("Remote backend", False, error),
+            lambda ctx: status_mod._detail("Failure detail:", detail),
+            status_mod._render_footer,
+        ),
+    )
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    visible_lines = [re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line) for line in output.splitlines()]
+    assert all(len(line) <= 40 for line in visible_lines)
+    visible_output = " ".join(" ".join(visible_lines).split())
+    assert " ".join(error.split()) in visible_output
+    assert " ".join(detail.split()) in visible_output
 
 
 def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):

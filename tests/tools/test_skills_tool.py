@@ -1107,6 +1107,126 @@ class TestSameRootDuplicationResolves:
         assert len(result["matches"]) == 2
 
 
+class TestCrossRootIdenticalCopiesResolve:
+    """One skill delivered by TWO roots: the canonical corpus reaches a profile both through its
+    own tree and through an ``external_dirs`` mount, so a bare name finds byte-identical copies
+    in different search dirs. They are the same skill and shadow nothing, so the name stays
+    loadable — a refusal here kills every worker that force-loads a skill by bare name at init.
+    The winner is the documented search order (project dirs, the local tree, then the mounts in
+    config order); DIFFERENT content in two roots still refuses, exactly as before."""
+
+    def _patch_dirs(self, local_dir, external_dirs=()):
+        return (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=list(external_dirs)),
+        )
+
+    def _two_roots_with_one_skill(self, tmp_path, local_body, mount_body):
+        """The fleet shape: profile tree + canonical mount, one skill name under a category."""
+        local_dir = tmp_path / "profile" / "skills"
+        mount = tmp_path / "canonical"
+        local_dir.mkdir(parents=True)
+        mount.mkdir()
+        _make_skill(local_dir, "sdlc-review", category="devops", body=local_body)
+        _make_skill(mount, "sdlc-review", category="devops", body=mount_body)
+        return local_dir, mount
+
+    def test_identical_copy_in_two_roots_keeps_the_bare_name_loadable(self, tmp_path):
+        """The regression: identical copies collapse across roots instead of refusing."""
+        local_dir, mount = self._two_roots_with_one_skill(
+            tmp_path, local_body="IDENTICAL COPY", mount_body="IDENTICAL COPY")
+
+        p1, p2 = self._patch_dirs(local_dir, [mount])
+        with p1, p2:
+            result = json.loads(skill_view("sdlc-review"))
+
+        assert result["success"] is True, result
+        assert result["path"] == "devops/sdlc-review/SKILL.md"
+        assert "IDENTICAL COPY" in result["content"]
+        # Deterministic winner: the local tree comes before the mounts in the search order.
+        assert result["skill_dir"] == str(local_dir / "devops" / "sdlc-review")
+
+    def test_categorized_path_also_resolves_across_roots(self, tmp_path):
+        """The remedy the refusal advertises ('load one explicitly by its categorized path')
+        has to work too — both roots expose the same categorized path."""
+        local_dir, mount = self._two_roots_with_one_skill(
+            tmp_path, local_body="IDENTICAL COPY", mount_body="IDENTICAL COPY")
+
+        p1, p2 = self._patch_dirs(local_dir, [mount])
+        with p1, p2:
+            result = json.loads(skill_view("devops/sdlc-review"))
+
+        assert result["success"] is True, result
+        assert "IDENTICAL COPY" in result["content"]
+
+    def test_mount_wins_when_the_profile_tree_holds_no_copy(self, tmp_path):
+        """The ordinary fleet case after the writer-side guard: the tree is empty, so the mount
+        is the only root and the name resolves through it."""
+        local_dir = tmp_path / "profile" / "skills"
+        mount = tmp_path / "canonical"
+        local_dir.mkdir(parents=True)
+        mount.mkdir()
+        _make_skill(mount, "sdlc-review", category="devops", body="CANONICAL COPY")
+
+        p1, p2 = self._patch_dirs(local_dir, [mount])
+        with p1, p2:
+            result = json.loads(skill_view("sdlc-review"))
+
+        assert result["success"] is True, result
+        # External skills report a path relative to their own category dir.
+        assert result["path"] == "sdlc-review/SKILL.md"
+        assert result["skill_dir"] == str(mount / "devops" / "sdlc-review")
+
+    def test_two_mounts_with_identical_copies_resolve_to_the_first(self, tmp_path):
+        local_dir = tmp_path / "profile" / "skills"
+        ext_a = tmp_path / "mount-a"
+        ext_b = tmp_path / "mount-b"
+        for d in (local_dir, ext_a, ext_b):
+            d.mkdir(parents=True)
+        _make_skill(ext_a, "arxiv", body="IDENTICAL COPY")
+        _make_skill(ext_b, "arxiv", body="IDENTICAL COPY")
+
+        p1, p2 = self._patch_dirs(local_dir, [ext_a, ext_b])
+        with p1, p2:
+            result = json.loads(skill_view("arxiv"))
+
+        assert result["success"] is True, result
+        assert result["skill_dir"] == str(ext_a / "arxiv")
+
+    def test_differing_copies_across_roots_still_refuse(self, tmp_path):
+        """The guard the collapse must never weaken: two DIFFERENT skills sharing a name."""
+        local_dir, mount = self._two_roots_with_one_skill(
+            tmp_path, local_body="PROFILE VERSION", mount_body="CANONICAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [mount])
+        with p1, p2:
+            result = json.loads(skill_view("sdlc-review"))
+
+        assert result["success"] is False, result
+        assert "Ambiguous skill name 'sdlc-review'" in result["error"]
+        assert len(result["matches"]) == 2
+
+    def test_one_differing_copy_among_identical_ones_still_refuses(self, tmp_path):
+        """All candidates must be provably the same skill: a third, differing copy keeps the
+        refusal, so a same-named stranger can never be collapsed away."""
+        local_dir = tmp_path / "profile" / "skills"
+        ext_a = tmp_path / "mount-a"
+        ext_b = tmp_path / "mount-b"
+        for d in (local_dir, ext_a, ext_b):
+            d.mkdir(parents=True)
+        _make_skill(local_dir, "sdlc-review", category="devops", body="IDENTICAL COPY")
+        _make_skill(ext_a, "sdlc-review", category="devops", body="IDENTICAL COPY")
+        _make_skill(ext_b, "sdlc-review", category="devops", body="A DIFFERENT SKILL")
+
+        p1, p2 = self._patch_dirs(local_dir, [ext_a, ext_b])
+        with p1, p2:
+            result = json.loads(skill_view("sdlc-review"))
+
+        assert result["success"] is False, result
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 3
+
+
 class TestTrustWarningSymlinkAware:
     """The trust check is on the RESOLVED path: a symlink whose target lives under a registered
     search dir is quiet, a SKILL.md symlinked to a file outside every root still warns."""

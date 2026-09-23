@@ -488,6 +488,29 @@ def _rank_same_root_candidate(candidate, root: Path) -> tuple:
     return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
 
 
+def _search_dir_position(root: Optional[Path], all_dirs) -> int:
+    """Index of *root* in the configured search order — project dirs, then the local tree, then
+    the external mounts in config order. That is the order ``_skill_search_dirs`` documents and
+    ``_find_all_skills`` scans first-wins, so a resolution made here agrees with the listing. A
+    path under no search dir sorts last."""
+    for i, search_dir in enumerate(all_dirs):
+        if Path(search_dir) == root:
+            return i
+    return len(all_dirs)
+
+
+def _rank_one_skill_candidate(candidate, all_dirs) -> tuple:
+    """Winner order among copies of ONE skill: the earliest search dir wins, then the same-root
+    rules (real SKILL.md before a legacy flat ``<name>.md``, then the shallower path). A total
+    order over the candidates, so the winner never depends on filesystem order."""
+    _skill_dir, skill_md = candidate
+    root = _owning_search_dir(skill_md, all_dirs)
+    # An unowned path is ranked against its own parent dir: it sorts last by search-dir position
+    # already, and must never tie its way past a candidate that does belong to a search dir.
+    return (_search_dir_position(root, all_dirs),
+            *_rank_same_root_candidate(candidate, root or skill_md.parent))
+
+
 def _provably_same_skill(candidates) -> bool:
     """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
     or byte-identical content (copy). Anything else is two different skills sharing a name,
@@ -498,6 +521,23 @@ def _provably_same_skill(candidates) -> bool:
         return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
     except OSError:
         return False
+
+
+def _collapse_one_skill_copies(name: str, candidates, all_dirs) -> list:
+    """*candidates* reduced to the single winner when they are provably ONE skill — a same-dir
+    symlink view (``<root>/x`` + ``<root>/cat/x``), or one corpus reaching a profile through both
+    its own tree and an ``external_dirs`` mount — else returned unchanged for the caller's
+    refusal. ``_provably_same_skill`` is the gate, so an identical copy can never shadow a
+    different skill: DIFFERENT content sharing a name still refuses, as does an exact rank tie."""
+    if not _provably_same_skill(candidates):
+        return candidates
+    ranked = sorted(candidates, key=lambda c: _rank_one_skill_candidate(c, all_dirs))
+    if _rank_one_skill_candidate(ranked[0], all_dirs) == _rank_one_skill_candidate(ranked[1], all_dirs):
+        return candidates  # an exact tie: no deterministic winner, so keep refusing
+    logger.info("Skill '%s': %d identical copies, resolved to %s (duplicates: %s)",
+                name, len(candidates), ranked[0][1],
+                "; ".join(str(smd) for _sd, smd in ranked[1:]))
+    return [ranked[0]]
 
 
 def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
@@ -514,18 +554,11 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
     if len(candidates) > 1:
         # The refusal below guards against one skill silently shadowing another. Copies of ONE
-        # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
-        # shadow nothing, so rank them instead; different content, an equal-rank tie or a
-        # cross-tier spread still refuses.
-        roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
-        if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
-            root = roots.pop()
-            ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
-            if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
-                logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
-                            name, len(candidates), ranked[0][1],
-                            "; ".join(str(smd) for _sd, smd in ranked[1:]))
-                candidates = [ranked[0]]
+        # skill shadow nothing — whether they sit inside one search dir (``<root>/x`` symlink
+        # view + ``<root>/cat/x`` copy) or in different ones (one corpus delivered by both the
+        # local tree and an ``external_dirs`` mount) — so rank them instead. Different content,
+        # an exact rank tie or an unowned path still refuses.
+        candidates = _collapse_one_skill_copies(name, candidates, all_dirs)
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))

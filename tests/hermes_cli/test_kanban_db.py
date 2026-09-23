@@ -554,6 +554,48 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+@pytest.mark.parametrize(
+    "failure_text",
+    [
+        # Measured on the HYPEST board 2026-09-23: the provider's own 429 text
+        # is echoed back in the crashed worker's captured output.
+        "pid 1 exited with code 1. Worker's last output: "
+        "'Error: 429 rate limit exceeded, cooling down'",
+        # Same shape, the bare status code inside a longer transcript tail.
+        "pid 1 killed by signal 15. Worker's last output: "
+        "'provider returned HTTP 429; retrying'",
+    ],
+)
+def test_crashed_run_with_rate_limit_text_still_respawns(kanban_home, failure_text):
+    """A crash whose captured output merely *mentions* a quota wall must respawn.
+
+    Measured: cards t_d3bd9369 (62 skipped dispatch ticks) and t_60a33489 (37)
+    sat ``ready`` for over an hour because a transient provider 429 crashed the
+    worker and the stamped output kept matching ``_RESPAWN_BLOCKER_RE``. Only a
+    manual block/unblock — which clears ``last_failure_error`` — freed them.
+    The latest outcome being ``crashed`` is the discriminator: the text is the
+    worker's transcript tail, not the dispatcher's diagnosis.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="quota crash", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='failed', ended_at=? "
+            "WHERE id=?",
+            (5_000_000, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (failure_text, tid),
+        )
+        conn.commit()
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

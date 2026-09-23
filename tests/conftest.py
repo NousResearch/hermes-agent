@@ -324,6 +324,14 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION",
+    # Sibling of HERMES_CRON_SESSION (both are set by the one-shot entrypoints
+    # in hermes_cli/oneshot.py and cli_single_query.py, and both are read by
+    # tools/approval_context.py to classify the approval context). A suite run
+    # from a `hermes chat -q` session — which every kanban worker is — inherits
+    # this and makes `_is_single_query_approval_context()` true, so approval
+    # tests that register a transport get the unattended single-query verdict
+    # instead of their transport's answer.
+    "HERMES_SINGLE_QUERY_SESSION",
     "_HERMES_GATEWAY",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
@@ -341,6 +349,23 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
+    # Service-supervisor markers. These are NOT Hermes' own, but systemd
+    # (INVOCATION_ID/JOURNAL_STREAM/SYSTEMD_EXEC_PID) and launchd
+    # (XPC_SERVICE_NAME) stamp them on the gateway and every descendant — so a
+    # suite launched from a supervised gateway (a kanban worker, a cron job)
+    # inherits them, while CI never does. Code under test reads them to decide
+    # it must wrap children in a restart-safe systemd scope
+    # (``restart_safe_gateway_child_argv``), which turns a mocked
+    # ``subprocess.Popen`` spawn test into a real ``systemd-run`` topology
+    # probe and fails it with ``RestartSafeScopeUnavailable``. Tests of the
+    # supervised paths set these explicitly with ``monkeypatch.setenv``.
+    "INVOCATION_ID",
+    "JOURNAL_STREAM",
+    "SYSTEMD_EXEC_PID",
+    "XPC_SERVICE_NAME",
+    "HERMES_SUPERVISED_CHILD",
+    "HERMES_S6_SUPERVISED_CHILD",
+    "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.

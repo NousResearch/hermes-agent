@@ -442,6 +442,11 @@ def _roundtrip_load(path: Path):
     yaml_rt.allow_unicode = True
     yaml_rt.default_flow_style = False
     yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    # Never line-fold scalars on write. Folding a double-quoted scalar at a point right after an
+    # escaped backslash ("D:\\" + line break) reloads with an extra space at that position, so a
+    # no-op save silently mutated stored values (long Windows paths in approvals.smart_policy).
+    # A wide-enough width keeps every scalar on one line, which is always value-preserving (#119844).
+    yaml_rt.width = 1 << 20
     # PyYAML (every reader in the tree) tolerates duplicate keys (last wins); refusing them here
     # would turn a file the CLI can read into one it cannot write.
     yaml_rt.allow_duplicate_keys = True

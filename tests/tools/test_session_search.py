@@ -10,7 +10,7 @@ All run zero LLM calls.
 """
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -71,6 +71,28 @@ class TestFormatTimestamp:
         assert "2023" in _format_timestamp(1700000000)
         assert _format_timestamp(None) == "unknown"
         assert _format_timestamp("not-a-number-string") == "not-a-number-string"
+
+    def test_formats_iso_timestamps_like_unix_timestamps(self):
+        timestamp = 1700000000
+        expected = _format_timestamp(timestamp)
+        iso_utc = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+        iso_z = iso_utc.replace("+00:00", "Z")
+        iso_offset = datetime.fromtimestamp(
+            timestamp, timezone(timedelta(hours=5, minutes=30))
+        ).isoformat()
+        iso_naive = iso_utc.removesuffix("+00:00")
+
+        assert _format_timestamp(iso_utc) == expected
+        assert _format_timestamp(iso_z) == expected
+        assert _format_timestamp(iso_offset) == expected
+        assert _format_timestamp(iso_naive) == expected
+
+    def test_formats_iso_date_as_utc_midnight(self):
+        expected = _format_timestamp(
+            datetime(2023, 11, 14, tzinfo=timezone.utc).timestamp()
+        )
+
+        assert _format_timestamp("2023-11-14") == expected
 
 
 # =========================================================================

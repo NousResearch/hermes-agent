@@ -94,6 +94,13 @@ class TurnFacadeMixin:
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
+            if lease is not None and not persist_user_display_kind and isinstance(user_message, (str, list)):
+                from agent.turn_facade_lease import attach_pending_delivery_context
+                original_message = user_message
+                user_message, persist_user_display_metadata = attach_pending_delivery_context(
+                    self, user_message, persist_user_display_metadata)
+                if user_message is not original_message and persist_user_message is None:
+                    persist_user_message = original_message
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
                 self,

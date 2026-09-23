@@ -10,14 +10,19 @@ describe('plugins in the handoff runbook', () => {
   it('names every settled outcome and never tells the build agent to install', () => {
     const text = pluginsRunbook({
       pluginOutcomes: {
-        blender: { detail: '', state: 'installed', tools: ['mcp__blender__a', 'mcp__blender__b'] },
-        'nvidia-app': { detail: 'unavailable on darwin', state: 'failed', tools: [] },
-        'nvidia-broadcast': { detail: '', state: 'skipped', tools: [] }
+        blender: {
+          detail: '',
+          skill: 'agent-plugin-blender-1a2b:blender',
+          state: 'installed',
+          tools: ['mcp__blender__a', 'mcp__blender__b']
+        },
+        'nvidia-app': { detail: 'unavailable on darwin', skill: '', state: 'failed', tools: [] },
+        'nvidia-broadcast': { detail: '', skill: '', state: 'skipped', tools: [] }
       },
       plugins: ['blender', 'nvidia-app', 'nvidia-broadcast', 'extra']
     })
 
-    expect(text).toContain('ready in this chat now: blender (2 tools)')
+    expect(text).toContain('ready in this chat now: blender (2 tools, skill agent-plugin-blender-1a2b:blender)')
     expect(text).toMatch(/not installed: nvidia-app \(failed: unavailable on darwin\), nvidia-broadcast \(skipped/)
     expect(text).toContain('not offered for install: extra')
     expect(text).not.toMatch(/manage_catalog|hermes plugins install/)

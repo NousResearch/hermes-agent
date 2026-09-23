@@ -196,9 +196,10 @@ export function pluginsRunbook(answers: Pick<OnboardingAnswers, 'pluginOutcomes'
   const notOffered = names.filter(name => !outcomes[name])
 
   const ready = installed.map(name => {
-    const count = outcomes[name].tools.length
+    const { skill, tools } = outcomes[name]
+    const parts = [tools.length ? `${tools.length} tools` : '', skill ? `skill ${skill}` : ''].filter(Boolean)
 
-    return count ? `${name} (${count} tools)` : name
+    return parts.length ? `${name} (${parts.join(', ')})` : name
   })
 
   const missed = offered.map(name => {
@@ -210,7 +211,7 @@ export function pluginsRunbook(answers: Pick<OnboardingAnswers, 'pluginOutcomes'
   return [
     'PLUGINS FROM ONBOARDING.',
     ready.length
-      ? `Installed during onboarding and ready in this chat now: ${ready.join(', ')}. Discover their tools with tool_search and use them when the task benefits; a tool whose app is not running reports that, say so plainly.`
+      ? `Installed during onboarding and ready in this chat now: ${ready.join(', ')}. Discover their tools with tool_search and use them when the task benefits; read a named skill with skill_view using that exact name. A tool whose app is not running reports that; say so plainly.`
       : '',
     missed.length ? `Offered during onboarding and not installed: ${missed.join(', ')}.` : '',
     notOffered.length ? `Picked during onboarding but not offered for install: ${notOffered.join(', ')}.` : '',

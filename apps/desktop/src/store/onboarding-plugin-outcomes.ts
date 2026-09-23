@@ -28,7 +28,15 @@ export function pluginOutcomesFrom(request: ConnectionRequest): null | Record<st
   }
 
   return Object.fromEntries(
-    rows.map(target => [target.name, { detail: target.detail, state: outcomeState(target.state), tools: target.tools }])
+    rows.map(target => [
+      target.name,
+      {
+        detail: target.detail,
+        skill: target.catalog?.skill ?? '',
+        state: outcomeState(target.state),
+        tools: target.tools
+      }
+    ])
   )
 }
 

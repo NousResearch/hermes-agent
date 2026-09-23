@@ -23,6 +23,8 @@ export interface OnboardingAnswers {
 export interface PluginOutcome {
   state: 'failed' | 'installed' | 'skipped'
   detail: string
+  /** The plugin's qualified skill name (`<plugin key>:<skill>`), the only name skill_view resolves. */
+  skill: string
   tools: string[]
 }
 

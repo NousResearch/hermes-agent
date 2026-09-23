@@ -54,6 +54,25 @@ afterEach(() => {
 })
 
 describe('focusComposerInput', () => {
+  it('does not clear a non-collapsed transcript selection', () => {
+    const input = mountInput()
+    const transcript = document.createElement('div')
+    transcript.textContent = 'text the user is selecting'
+    document.body.append(transcript)
+
+    const range = document.createRange()
+    range.selectNodeContents(transcript)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    focusComposerInput(input)
+
+    expect(selection.isCollapsed).toBe(false)
+    expect(transcript.contains(selection.anchorNode)).toBe(true)
+    expect(document.activeElement).not.toBe(input)
+  })
+
   it('does not steal the caret from another live composer', () => {
     const foreground = mountInput()
     const background = mountInput()

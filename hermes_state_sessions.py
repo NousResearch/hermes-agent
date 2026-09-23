@@ -16,7 +16,7 @@ from agent.session_activity import (
 )
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
+    _COMPRESSION_CHILD_SQL, _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
     _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
@@ -34,6 +34,23 @@ def workspace_key(row: Dict[str, Any]) -> Optional[str]:
 
 def _delegate_from_json(col: str = "model_config") -> str:
     return _sql_json_extract(col, "$._delegate_from")
+
+
+def _candidate_listable_child_sql() -> str:
+    """Default-listable rows plus the compression continuations that rank their root.
+
+    A rich-list candidate may include a physical compression continuation before
+    the outer projection maps it to its logical root.  Other hidden children
+    must not consume that bounded slot: delegates/subagents have their own
+    marker predicate in ``_session_filter_where``; tool continuations and reset
+    children are excluded from this extra arm while branch/reset visibility
+    remains governed by ``_LISTABLE_CHILD_SQL``.
+    """
+    return (
+        f"({_LISTABLE_CHILD_SQL} OR ({_COMPRESSION_CHILD_SQL.format(a='s')}"
+        f" AND NOT ({_RESET_CHILD_SQL.format(a='s')})"
+        " AND COALESCE(s.source, '') != 'tool'))"
+    )
 
 
 # _merge_model_config_json's "no such row" result — distinct from the legal None
@@ -94,6 +111,7 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    include_compression_candidates: bool = False,
 ) -> Tuple[List[str], List[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -101,7 +119,10 @@ def _session_filter_where(
     where: List[str] = []
     params: List[Any] = []
     if exclude_children:
-        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
+        where += [
+            _candidate_listable_child_sql() if include_compression_candidates else _LISTABLE_CHILD_SQL,
+            f"{_delegate_from_json('s.model_config')} IS NULL",
+        ]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
     # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd
@@ -1296,8 +1317,17 @@ class SessionSessionsMixin:
             )
             # A recent compression continuation is not listable itself, but it must first map back to its
             # logical root.  Rank logical roots by their indexed physical members before the page LIMIT so
-            # a multi-hop chain cannot consume several candidate slots.
-            candidate_where = _where_sql(where_clauses[2:] if not include_children else where_clauses)
+            # a multi-hop chain cannot consume several candidate slots.  Rebuild the predicate explicitly:
+            # positional slicing would also admit hidden delegate/subagent children.
+            candidate_clauses, candidate_params = _session_filter_where(
+                exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
+                exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
+                archived_only=archived_only, include_archived=include_archived,
+                include_compression_candidates=not include_children,
+            )
+            if not include_hidden and not archived_only:
+                candidate_clauses.append("s.hidden = 0")
+            candidate_where = _where_sql(candidate_clauses)
             candidate_limit = -1 if (id_query or search_query or limit < 0) else limit + offset
             query = f"""
                 WITH RECURSIVE candidate_sessions(id, activity, started_at) AS MATERIALIZED (
@@ -1368,7 +1398,7 @@ class SessionSessionsMixin:
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            params = params + [candidate_limit] + params + id_params + [limit, offset]
+            params = candidate_params + [candidate_limit] + params + id_params + [limit, offset]
         else:
             query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active

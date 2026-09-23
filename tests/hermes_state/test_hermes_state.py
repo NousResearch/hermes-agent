@@ -3126,6 +3126,24 @@ class TestSessionListPreviewHydration:
 
         assert [row["id"] for row in rows] == ["child-a2", "logical-b"]
 
+    def test_hidden_delegate_does_not_consume_bounded_candidate_slot(self, db):
+        """A recent delegate child stays hidden before the logical candidate limit applies."""
+        db.create_session("root-old", "cli")
+        db.append_message("root-old", "user", "root-old", timestamp=100.0)
+        db.create_session("root-new", "cli")
+        db.append_message("root-new", "user", "root-new", timestamp=200.0)
+        db.create_session(
+            "delegate", "subagent", parent_session_id="root-old",
+            model_config={"_delegate_from": "root-old"},
+        )
+        db.append_message("delegate", "user", "hidden", timestamp=300.0)
+
+        rows = db.list_sessions_rich(
+            limit=2, order_by_last_active=True, project_compression_tips=False,
+        )
+
+        assert [row["id"] for row in rows] == ["root-new", "root-old"]
+
     def test_append_message_advances_activity_without_regressing_heartbeat(self, db):
         db.create_session("session", "cli")
         db.append_message("session", "user", "known timestamp", timestamp=200.0)

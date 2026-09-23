@@ -115,6 +115,7 @@ import { createDesktopLogRuntime, rotateLogIfNeededSync } from './desktop-log-ru
 import { createDesktopNativeChromeRuntime } from './desktop-native-chrome-runtime'
 import { createDesktopOauthSessionRuntime } from './desktop-oauth-session-runtime'
 import { createDesktopPetOverlayRuntime } from './desktop-pet-overlay-runtime'
+import { createDesktopPowerRuntime } from './desktop-power-runtime'
 import { createDesktopPrimaryBackendRuntime } from './desktop-primary-backend-runtime'
 import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
 import {
@@ -2346,79 +2347,15 @@ function sendBackendExit(payload) {
   webContents.send('hermes:backend-exit', payload)
 }
 
-// Tell the renderer the machine just woke. Sleep silently drops the
-// renderer's WebSocket to the local backend; the renderer reconnects on this
-// signal so the chat composer doesn't stay stuck on "Starting Hermes...".
-function sendPowerResume() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:power-resume')
-}
-
-let powerResumeRegistered = false
-
-// Mirror of powerMonitor's AC/battery state, broadcast to every window so
-// renderer backstop polls can slow down on battery (see store/power.ts).
-// `null` until the first powerMonitor read after app ready.
-let onBatteryPower: boolean | null = null
-
-// Renderer-side battery gating seeds from this and stays current via the
-// 'hermes:power-battery' push below.
-ipcMain.handle('hermes:power-battery:get', () => onBatteryPower === true)
-
-function broadcastBatteryState(next: boolean) {
-  if (onBatteryPower === next) {
-    return
-  }
-
-  onBatteryPower = next
-
-  for (const win of BrowserWindow.getAllWindows()) {
-    const { webContents } = win
-
-    if (webContents && !webContents.isDestroyed()) {
-      webContents.send('hermes:power-battery', next)
-    }
-  }
-}
-
-function registerPowerResumeListeners() {
-  if (powerResumeRegistered) {
-    return
-  }
-
-  powerResumeRegistered = true
-
-  try {
-    // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
-    // full suspend. Either can drop an idle socket.
-    powerMonitor.on('resume', sendPowerResume)
-    powerMonitor.on('unlock-screen', sendPowerResume)
-    powerMonitor.on('on-battery', () => broadcastBatteryState(true))
-    powerMonitor.on('on-ac', () => broadcastBatteryState(false))
-    onBatteryPower = powerMonitor.isOnBatteryPower()
-    // Pooled remote/SSH backends are also suspect after a wake (#93910): the
-    // renderer nudge above only re-drives the PRIMARY socket, while pooled
-    // tunnels have no renderer loop of their own. Bounded + coalesced inside;
-    // never a hot loop.
-    attachPowerResumeRemoteRevalidation({
-      log: rememberLog,
-      powerMonitor,
-      revalidate: () => revalidateSuspectPoolAfterResume()
-    })
-  } catch {
-    // powerMonitor is unavailable before app 'ready' on some platforms; the
-    // caller registers after 'ready', so this should not normally throw.
-  }
-}
+const { registerPowerResumeListeners } = createDesktopPowerRuntime({
+  BrowserWindow,
+  attachPowerResumeRemoteRevalidation,
+  getMainWindow: () => mainWindow,
+  ipcMain,
+  powerMonitor,
+  rememberLog,
+  revalidateSuspectPoolAfterResume
+})
 
 function getAppIconPath() {
   // Fail-soft: skip candidates that exist but don't decode (truncated PNG in a

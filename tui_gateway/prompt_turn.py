@@ -447,6 +447,14 @@ def _run_post_turn_followups(
                 return  # user already sent something — their turn wins
             session["running"] = True
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+    # A live poller owns this session's completion drain, including its shutdown pass.
+    # Competing here can take the rest of a ready backlog after the poller popped its
+    # first event but before it snapshots the queue (#104671). Keep the safety net for
+    # sessions without a live poller; a stale stop token alone is not proof of liveness.
+    notif_stop = session.get("_notif_stop")
+    if notif_stop is not None and any(
+            stop is notif_stop and thread.is_alive() for stop, thread in _notification_pollers):
+        return
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.

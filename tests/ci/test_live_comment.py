@@ -88,6 +88,17 @@ def test_parse_watch_workflows_keeps_commas_inside_a_name():
     assert _mod.parse_watch_workflows("") == []
 
 
+def test_ci_only_comment_update_skips_sibling_workflows():
+    assert _mod.configured_watch_workflows({
+        "WATCH_WORKFLOWS": f"{DOCKER}\n",
+        "SKIP_WATCH_WORKFLOWS": "true",
+    }) == []
+    assert _mod.configured_watch_workflows({
+        "WATCH_WORKFLOWS": f"{DOCKER}\n",
+        "SKIP_WATCH_WORKFLOWS": "false",
+    }) == [DOCKER]
+
+
 def test_workflow_watch_list_names_a_workflow_that_exists():
     """The names the workflow passes must match real workflow ``name:`` values.
 

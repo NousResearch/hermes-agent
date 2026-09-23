@@ -945,6 +945,20 @@ class TestPinnedGuard:
         # Skill still exists
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    def test_delete_by_categorized_name_still_refuses_pinned_and_essential(self, tmp_path):
+        """_find_skill accepts `category/name` too; the pin and essential guards must still see the
+        skill, or naming it by its categorized path deletes a pinned or essential skill."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="research")
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT, category="autonomous-ai-agents")
+            with self._pin("my-skill"):
+                pinned = _delete_skill("research/my-skill")
+                essential = _delete_skill("autonomous-ai-agents/hermes-agent")
+        assert pinned["success"] is False and "pinned" in pinned["error"].lower()
+        assert essential["success"] is False and "essential" in essential["error"].lower()
+        assert (tmp_path / "research" / "my-skill" / "SKILL.md").exists()
+        assert (tmp_path / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
+
     def test_broken_sidecar_fails_open(self, tmp_path):
         """If skill_usage.get_record raises, we allow delete through.
 

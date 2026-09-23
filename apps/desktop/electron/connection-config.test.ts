@@ -617,6 +617,27 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
   )
 })
 
+test('pathForRegistryBackendRequest scopes a delegated local backend to the profile', () => {
+  // The registry local source's delegated backend follows the v1 routing
+  // table: one shared `hermes serve` host can serve every profile, so a bare
+  // request would read/write the launch profile's skills + config (#119894).
+  assert.equal(
+    pathForRegistryBackendRequest('/api/skills', 'orchestrator', { delegatedLocal: true }),
+    '/api/skills?profile=orchestrator'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/skills/toggle', 'orchestrator', { delegatedLocal: true }, { requestMethod: 'PUT' }),
+    '/api/skills/toggle?profile=orchestrator'
+  )
+  // An explicit profile query still wins.
+  assert.equal(
+    pathForRegistryBackendRequest('/api/skills?profile=all', 'orchestrator', { delegatedLocal: true }),
+    '/api/skills?profile=all'
+  )
+  // An isolated backend that owns its profile still gets no invented scope.
+  assert.equal(pathForRegistryBackendRequest('/api/skills', 'acme', {}), '/api/skills')
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {

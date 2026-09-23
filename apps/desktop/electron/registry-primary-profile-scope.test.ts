@@ -23,6 +23,17 @@ describe('primary-remote descriptor reuse keeps profile scope', () => {
     )
   })
 
+  it('marks the delegated local descriptor so the router scopes shared-host requests', () => {
+    const branchStart = mainSource.indexOf('if (localRoute.delegate)')
+    expect(branchStart).toBeGreaterThan(-1)
+    const branch = mainSource.slice(branchStart, branchStart + 800)
+
+    // The local delegate must decorate the v1 descriptor with
+    // delegatedLocal: true so the router scopes its REST paths per request —
+    // the shared host backend serves every profile from its launch home.
+    expect(branch).toContain('delegatedLocal: true')
+  })
+
   it('marks the reused primary-remote descriptor sharedRemote so the router scopes it', () => {
     const branchStart = mainSource.indexOf("if (id === registry.primary && source.kind !== 'local'")
     expect(branchStart).toBeGreaterThan(-1)

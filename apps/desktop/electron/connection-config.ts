@@ -969,6 +969,11 @@ function pathWithProfileScope(path, profile) {
 export interface RegistryBackendRequestScope {
   remoteProfile?: null | string
   sharedRemote?: boolean
+  /** Set on the registry 'local' source's delegated backend: it follows the v1
+   *  routing table, which may resolve to the shared host backend (one
+   *  `hermes serve` per host serving every profile) rather than a backend that
+   *  owns the requested profile outright. */
+  delegatedLocal?: boolean
 }
 
 /**
@@ -977,10 +982,28 @@ export interface RegistryBackendRequestScope {
  * isolated SSH backends already own one profile but may translate a Desktop
  * alias in an existing self-profile filter.
  */
-function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
-  return backend.sharedRemote
-    ? pathWithProfileScope(path, profile)
-    : translateSelfProfileQuery(path, profile, backend.remoteProfile)
+function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope, opts: ProfileRouteOptions = {}) {
+  if (backend.sharedRemote) {
+    return pathWithProfileScope(path, profile)
+  }
+
+  if (backend.remoteProfile != null) {
+    return translateSelfProfileQuery(path, profile, backend.remoteProfile)
+  }
+
+  // A delegated local backend is THIS machine's runtime, routed by the v1
+  // table: one shared `hermes serve` host can serve every profile, and a bare
+  // request resolves against that process's launch home — so a scoped
+  // read/write for ANOTHER profile silently lands on the launch profile's
+  // skills and config.yaml (#119894). Take the v1 table's scope decision
+  // (`?profile=` where the handler reads it) instead of assuming the backend
+  // process owns the profile outright.
+  if (backend.delegatedLocal) {
+    return pathWithGlobalRemoteProfile(path, profile, { ...opts, requestPath: path })
+  }
+
+  // An isolated backend owns one profile; never invent a scope for it.
+  return path
 }
 
 /**

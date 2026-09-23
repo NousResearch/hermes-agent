@@ -8506,7 +8506,7 @@ function gatewayFileRequestPath(
   requestPath: string
 ) {
   return connectionId
-    ? pathForRegistryBackendRequest(requestPath, profile, connection)
+    ? pathForRegistryBackendRequest(requestPath, profile, connection, profileRouteOptions(profile))
     : pathWithGlobalRemoteProfile(requestPath, profile, profileRouteOptions(profile))
 }
 
@@ -11646,7 +11646,14 @@ async function ensureRegistryBackend(
     })
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { passive, spawnPriority })
+      const delegated = await ensureBackend(profile, { passive, spawnPriority })
+
+      // The v1 route can hand back the SHARED host backend (multiplex: one
+      // `hermes serve` per host serving every profile). Flag it so the
+      // registry request router scopes its REST paths with ?profile= instead
+      // of reading/writing the launch profile's skills + config (#119894) —
+      // same decoration pattern as the reused primary-remote descriptor below.
+      return { ...delegated, delegatedLocal: true }
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -17190,7 +17197,12 @@ async function dispatchRegistryApiRequest(
         ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
       )
 
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
+  const requestPath = pathForRegistryBackendRequest(
+    request.path,
+    requestProfile,
+    connection,
+    profileRouteOptions(requestProfile, request)
+  )
 
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,

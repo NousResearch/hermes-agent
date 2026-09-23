@@ -385,7 +385,10 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             if drift_err:
                 return content, 0, None, drift_err
 
-        effective_new = _maybe_unescape_new_string(new_string, content, matches)
+        effective_new = (
+            new_string if strategy_name == "exact"
+            else _maybe_unescape_new_string(new_string, content, matches)
+        )
         if strategy_name == "unicode_normalized":
             effective_new = _preserve_unicode_in_replacement(content, matches, old_string, effective_new)
         new_content = _apply_replacements(

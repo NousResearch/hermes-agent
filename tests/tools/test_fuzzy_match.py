@@ -468,17 +468,14 @@ class TestFormatNoMatchHint:
 
 
 class TestEscapeNormalizedNewString:
-    """Regression tests for unescaping common sequences in new_string when
-    the matched region of the file contains real control characters.
+    """Regression tests for unescaping common sequences on fuzzy matches.
 
-    Issue #33733: LLMs overwhelmingly represent tabs as the two-character
-    sequence ``\\t`` (backslash + t) in JSON tool-call arguments. When the
-    file already contains real tab bytes (0x09), writing new_string
-    verbatim leaves literal ``\\t`` characters and corrupts the file.
+    Issue #33733: non-exact matches can normalize tab and carriage-return
+    escapes emitted by the model when the matched region uses those controls.
+    Exact matches instead preserve the caller's replacement bytes verbatim.
 
-    The fix unescapes ``\\t`` -> tab and ``\\r`` -> CR in new_string when
-    the matched file region actually contains those control characters,
-    regardless of which match strategy fired. ``\\n`` is excluded because
+    Non-exact matches may normalize serialized control escapes, but an exact
+    match preserves ``new_string`` verbatim. ``\\n`` is excluded because
     newlines serialize correctly through JSON.
     """
 
@@ -497,22 +494,26 @@ class TestEscapeNormalizedNewString:
         assert "\tprint(\"after\")" in new
         assert "\\t" not in new
 
-    def test_tab_in_new_string_unescaped_under_exact(self):
-        """File has real tab, old_string has real tab too (matches via
-        ``exact``), but new_string still arrives with literal ``\\t``.
-
-        This is the issue's headline reproduction — the previous fix that
-        gated on ``strategy_name == "escape_normalized"`` missed this case.
-        """
-        content = "def hello():\n\tprint(\"before\")\n"
-        old_string = "\tprint(\"before\")"           # real tab
-        new_string = "\\tprint(\"after\")"           # literal backslash + t
-        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
-        assert err is None, f"Unexpected error: {err}"
-        assert count == 1
-        assert strategy == "exact"
-        assert "\tprint(\"after\")" in new
-        assert "\\t" not in new
+    def test_exact_match_preserves_replacement_escapes_verbatim(self):
+        """An exact match uses str.replace semantics for literal ``\\t``/``\\r``."""
+        cases = (
+            (
+                'def folder():\n\treturn r"C:\\old"\n',
+                '\treturn r"C:\\old"',
+                '\treturn r"C:\\temp"',
+            ),
+            (
+                'name = r"C:\\old"\r\nactive = True',
+                'name = r"C:\\old"\r\nactive = True',
+                'name = r"C:\\results"\r\nactive = False',
+            ),
+        )
+        for content, old_string, new_string in cases:
+            new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+            assert err is None, f"Unexpected error: {err}"
+            assert count == 1
+            assert strategy == "exact"
+            assert new == content.replace(old_string, new_string)
 
     def test_carriage_return_in_new_string_unescaped(self):
         """File has real CR, model sends literal \\r in new_string."""
@@ -542,13 +543,14 @@ class TestEscapeNormalizedNewString:
         assert "alpha\nbeta" not in new
 
     def test_mixed_tab_and_newline_only_tab_unescaped(self):
-        """When new_string contains both \\t and \\n, only \\t is converted."""
+        """Fuzzy matching still unescapes \\t while leaving literal \\n alone."""
         content = "def foo():\n\tpass\n"
-        old_string = "def foo():\n\tpass\n"
+        old_string = "def foo():\\n\\tpass\\n"
         new_string = "def bar():\\n\\treturn 1\\n"
-        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
+        assert strategy == "escape_normalized"
         # \t -> real tab
         assert "\treturn 1" in new
         assert "\\t" not in new

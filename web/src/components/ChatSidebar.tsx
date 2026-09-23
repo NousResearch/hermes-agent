@@ -32,6 +32,7 @@ import { Card } from '@nous-research/ui/ui/components/card'
 import { ModelPickerDialog } from '@/components/ModelPickerDialog'
 import { ModelReloadConfirm } from '@/components/ModelReloadConfirm'
 import { ReasoningPicker } from '@/components/ReasoningPicker'
+import { SkillPicker } from '@/components/SkillPicker'
 import { GatewayClient, type ConnectionState } from '@/lib/gatewayClient'
 import { EventsFeedClient } from '@/lib/eventsFeedClient'
 import { api } from '@/lib/api'
@@ -85,6 +86,8 @@ interface ChatSidebarProps {
   className?: string
   onDashboardNewSessionRequest?: () => void
   onSessionTitleChange?: (title: string | null) => void
+  /** Inject a slash-skill command into the chat PTY. Optional: picker still renders. */
+  onSendToTerminal?: (cmd: string) => void
 }
 
 /** Build the ``session.create`` params for the sidecar session.
@@ -107,7 +110,8 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
-  onSessionTitleChange
+  onSessionTitleChange,
+  onSendToTerminal
 }: ChatSidebarProps) {
   const navigate = useNavigate()
   // `version` bumps on reconnect (manual button, profile/channel switch) and
@@ -407,6 +411,8 @@ export function ChatSidebar({
           {STATE_LABEL[state]}
         </Badge>
       </Card>
+
+      <SkillPicker profile={profile} onLaunch={onSendToTerminal} />
 
       {supportsReasoning && (
         <Card className="py-0">

@@ -29,9 +29,90 @@ from __future__ import annotations
 import json
 import secrets
 import logging
+import threading
+import time
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Trusted SMS/email retrieval code is held only in this process. The model sees
+# the random handle, never the code, and the browser boundary atomically removes
+# the code before injecting it. Task IDs are Hermes session-scoped for browser
+# tools, so binding the handle to one prevents cross-task use in multiplexed runs.
+_CODE_HANDOFF_TTL_SECONDS = 300
+_CODE_HANDOFFS: Dict[str, tuple[str, str, Optional[str], float]] = {}
+_USED_CODE_HANDOFFS: Dict[str, float] = {}
+_CODE_HANDOFF_LOCK = threading.Lock()
+
+
+def _prune_code_handoffs(now: float) -> None:
+    """Remove expired secrets and replay markers while holding the handoff lock."""
+    for handle, (_, _, _, expires_at) in list(_CODE_HANDOFFS.items()):
+        if expires_at <= now:
+            del _CODE_HANDOFFS[handle]
+    for handle, expires_at in list(_USED_CODE_HANDOFFS.items()):
+        if expires_at <= now:
+            del _USED_CODE_HANDOFFS[handle]
+
+
+def register_browser_vault_code(
+    code: str, *, task_id: str, origin: Optional[str] = None, ttl_seconds: int = _CODE_HANDOFF_TTL_SECONDS,
+) -> str:
+    """Register a trusted SMS/email code and return its opaque browser-vault handle.
+
+    This is an internal bridge for trusted retrieval tools, not a model-facing
+    tool. Callers must pass the current browser task ID; optional origins are
+    normalized and matched exactly at injection. The code is never persisted,
+    logged, or returned by this function.
+    """
+    from agent.redact import register_vault_redaction_value
+    from agent.vault_store import normalize_origin
+
+    normalized_code = str(code).strip().replace(" ", "").replace("-", "")
+    if not normalized_code:
+        raise ValueError("a non-empty verification code is required")
+    effective_task_id = str(task_id or "").strip()
+    if not effective_task_id:
+        raise ValueError("a browser task ID is required")
+    if ttl_seconds <= 0:
+        raise ValueError("handoff TTL must be positive")
+    bound_origin = normalize_origin(origin) if origin else None
+    # Register before the handle can reach a model-visible tool result.
+    register_vault_redaction_value(code)
+    register_vault_redaction_value(normalized_code)
+    now = time.monotonic()
+    handle = f"otp_{secrets.token_urlsafe(24)}"
+    with _CODE_HANDOFF_LOCK:
+        _prune_code_handoffs(now)
+        _CODE_HANDOFFS[handle] = (normalized_code, effective_task_id, bound_origin, now + ttl_seconds)
+    return handle
+
+
+def _consume_browser_vault_code(handle: str, *, task_id: str, origin: str) -> tuple[Optional[str], Optional[str]]:
+    """Atomically resolve a valid handoff, returning only a safe failure category."""
+    now = time.monotonic()
+    with _CODE_HANDOFF_LOCK:
+        entry = _CODE_HANDOFFS.get(handle)
+        # Check this handle before global expiry cleanup so callers receive a
+        # deterministic expiry refusal rather than an indistinguishable miss.
+        if entry is not None and entry[3] <= now:
+            del _CODE_HANDOFFS[handle]
+            _prune_code_handoffs(now)
+            return None, "handoff_expired"
+        _prune_code_handoffs(now)
+        if entry is None:
+            return None, "handoff_replayed" if handle in _USED_CODE_HANDOFFS else "handoff_invalid"
+        code, bound_task_id, bound_origin, expires_at = entry
+        if bound_task_id != task_id:
+            return None, "handoff_task_mismatch"
+        if bound_origin is not None and bound_origin != origin:
+            return None, "handoff_origin_mismatch"
+        # Remove the secret before browser injection; retain only a short-lived
+        # replay marker so a second use cannot fall through to a user prompt.
+        del _CODE_HANDOFFS[handle]
+        _USED_CODE_HANDOFFS[handle] = expires_at
+    return code, None
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +402,7 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
-def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
+def browser_vault_enter_code(handle: str = "", code_handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
@@ -351,14 +432,21 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
-    if backend is not None:
-        try:
-            code = backend.resolve_otp(handle)
-        except Exception:
-            code = None
-        if code:
-            source = backend.name
+    if code_handle:
+        code, handoff_error = _consume_browser_vault_code(code_handle, task_id=effective_task_id, origin=origin)
+        if handoff_error:
+            return json.dumps({"success": False, "error_type": handoff_error,
+                               "error": "The trusted verification-code handoff is unavailable. Retrieve a new code handle."})
+        source = "trusted_handoff"
+    else:
+        backend = backend_for_handle(handle) if handle else None
+        if backend is not None:
+            try:
+                code = backend.resolve_otp(handle)
+            except Exception:
+                code = None
+            if code:
+                source = backend.name
     if not code:
         prompt = get_code_prompt_callback()
         if prompt is None or not can_prompt_here():
@@ -655,21 +743,26 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
     "description": (
         "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
         "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
-        "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
+        "for the code in their UI (they read it from their phone, email or authenticator app). A trusted SMS/email "
+        "retrieval tool can instead provide its opaque code_handle; never use a raw code. The code never enters "
         "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
         "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
         "for the page to move on."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."}},
+        "properties": {
+            "handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."},
+            "code_handle": {"type": "string", "description": "Opaque, single-use handle returned by a trusted SMS/email code retrieval tool. Never pass a raw verification code."},
+        },
         "required": [],
     },
 }
 
 
 def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id"))
+    return browser_vault_enter_code(handle=str(args.get("handle") or ""), code_handle=str(args.get("code_handle") or ""),
+                                   task_id=kwargs.get("task_id"))
 
 
 def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:

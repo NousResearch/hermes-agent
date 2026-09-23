@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+# First, like every entry point: stdio, import-path and environ-lifetime fixes (hermes_bootstrap).
+import hermes_bootstrap  # noqa: F401
+
 import argparse
 import concurrent.futures
 import contextlib

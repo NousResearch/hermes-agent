@@ -8556,6 +8556,24 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_set_yolo_stale_session_id_is_refused_not_process_scoped(monkeypatch):
+    """A runtime id the backend no longer holds must answer 4001 so the client resumes, not flip
+    the process HERMES_YOLO_MODE that every child spawned afterwards inherits."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "0")  # setenv, not delenv: undo must also drop a leaked "1"
+
+    with patch.dict(server._sessions, {}, clear=True):
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "reaped-sid", "key": "yolo", "value": "1"},
+            }
+        )
+
+    assert resp.get("error", {}).get("code") == 4001, resp
+    assert os.environ["HERMES_YOLO_MODE"] == "0"
+
+
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
     import yaml

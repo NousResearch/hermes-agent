@@ -154,6 +154,64 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "script_timeout_seconds: 600" in _read_config(_isolated_hermes_home)
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("high", {"enabled": True, "effort": "high"}),
+            ("xhigh", {"enabled": True, "effort": "xhigh"}),
+            ("off", {"enabled": False}),
+            ("no", {"enabled": False}),
+            ("", None),
+        ],
+    )
+    def test_global_reasoning_effort_round_trips_to_runtime(
+        self, _isolated_hermes_home, capsys, value, expected
+    ):
+        """The public setter recognizes the key and both runtime loaders honor it."""
+        from hermes_cli.config import load_config
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_constants import resolve_reasoning_config
+
+        set_config_value("agent.reasoning_effort", value)
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["reasoning_effort"] == value
+        for load in (load_config, load_user_config_effective):
+            assert resolve_reasoning_config(load()) == expected
+
+    def test_reasoning_schema_preserves_unset_and_model_fallback(
+        self, _isolated_hermes_home
+    ):
+        """Registering the global key must not inject an effort or override a model."""
+        from hermes_cli.config import load_config
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_constants import resolve_reasoning_config
+
+        for load in (load_config, load_user_config_effective):
+            assert resolve_reasoning_config(load()) is None
+
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"agent": {"reasoning_overrides": {"example-model": "low"}}}),
+            encoding="utf-8",
+        )
+        for global_effort in (None, "high"):
+            if global_effort is not None:
+                set_config_value("agent.reasoning_effort", global_effort)
+            for load in (load_config, load_user_config_effective):
+                cfg = load()
+                assert resolve_reasoning_config(cfg, "example-model") == {
+                    "enabled": True,
+                    "effort": "low",
+                }
+                expected = (
+                    None
+                    if global_effort is None
+                    else {"enabled": True, "effort": global_effort}
+                )
+                assert resolve_reasoning_config(cfg, "another-model") == expected
+
     def test_memory_nudge_interval_is_recognized(self, _isolated_hermes_home, capsys):
         """The documented background-memory review interval is runtime config."""
         set_config_value("memory.nudge_interval", "0")
@@ -625,6 +683,7 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "agent.reasoning_effort",
         # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).

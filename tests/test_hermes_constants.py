@@ -443,11 +443,16 @@ class TestParseReasoningEffort:
 
     @pytest.mark.parametrize(
         "value",
-        ["bogus", "very-high", "0", "off", "true", "default"],
+        ["bogus", "very-high", "0", "true", "default"],
     )
     def test_unknown_levels_return_none(self, value):
         """Unrecognized strings fall back to the caller default (None)."""
         assert parse_reasoning_effort(value) is None
+
+    @pytest.mark.parametrize("value", ["off", "no"])
+    def test_string_disable_aliases(self, value):
+        """CLI strings retain the same disable semantics as YAML booleans."""
+        assert parse_reasoning_effort(value) == {"enabled": False}
 
     def test_known_supported_levels_are_documented(self):
         """Guard against silently dropping a documented level.
@@ -602,6 +607,21 @@ class TestReasoningOverridesDefaultConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         assert "reasoning_overrides" in DEFAULT_CONFIG["agent"]
         assert DEFAULT_CONFIG["agent"]["reasoning_overrides"] == {}
+
+
+    def test_default_config_has_reasoning_effort_key(self):
+        """DEFAULT_CONFIG['agent'] contains the global 'reasoning_effort' key.
+
+        The runtime reads ``agent.reasoning_effort`` via
+        ``hermes_constants.resolve_reasoning_config()``, but DEFAULT_CONFIG
+        omitted the declaration, so ``hermes config set agent.reasoning_effort``
+        emitted a false "not a recognized config key" warning.  The empty-string
+        default is the sentinel for "unset / provider default", matching every
+        other reasoning_effort leaf in DEFAULT_CONFIG.
+        """
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert "reasoning_effort" in DEFAULT_CONFIG["agent"]
+        assert DEFAULT_CONFIG["agent"]["reasoning_effort"] == ""
 
 
     def test_spelling_tolerant_lookup_works_with_user_config(self):

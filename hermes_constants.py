@@ -1266,7 +1266,8 @@ def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
     ``None`` for empty/unrecognized input (caller uses the default); ``{"enabled": False}`` for
-    "none"/"false"/"disabled"/YAML False — ``reasoning_effort: false`` must mean disabled.
+    "none"/"false"/"disabled"/"off"/"no"/YAML False. CLI string aliases and YAML booleans
+    must both disable reasoning.
 
     The dict form ``{"enabled": true, "effort": "<level>"}`` passes ``effort`` through verbatim so
     providers with bespoke thinking tiers (``fast``/``thinking`` relays) can be asked for their real
@@ -1282,7 +1283,7 @@ def parse_reasoning_effort(effort) -> dict | None:
         level = str(effort.get("effort") or "").strip()
         return {"enabled": True, "effort": level} if level else None
     effort = str(effort).strip().lower()  # False -> "false" -> disabled; "" matches neither set
-    if effort in {"none", "false", "disabled"}:
+    if effort in {"none", "false", "disabled", "off", "no"}:
         return {"enabled": False}
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}

@@ -257,6 +257,8 @@ DEFAULT_CONFIG = {
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Global effort when no per-model override matches; "" preserves runtime defaults.
+        "reasoning_effort": "",
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},

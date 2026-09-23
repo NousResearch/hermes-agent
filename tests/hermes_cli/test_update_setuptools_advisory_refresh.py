@@ -86,12 +86,7 @@ def _setuptools_version(python: Path) -> str:
     ).strip()
 
 
-def test_updater_setuptools_pin_upgrades_stale_venv(tmp_path):
-    pins = _setuptools_pins_for_install_group("all")
-    assert pins, (
-        ".[all] does not request setuptools; cannot prove a stale venv upgrades"
-    )
-    spec = f"setuptools=={max(pins, key=Version)}"
+def test_editable_all_install_upgrades_stale_setuptools(tmp_path):
     venv = tmp_path / "venv"
     subprocess.run(["uv", "venv", str(venv)], check=True, cwd=REPO_ROOT)
     python = _venv_python(venv)
@@ -102,7 +97,7 @@ def test_updater_setuptools_pin_upgrades_stale_venv(tmp_path):
     )
     assert _setuptools_version(python) == _STALE_SETUPTOOLS
     subprocess.run(
-        ["uv", "pip", "install", "--python", str(python), spec],
+        ["uv", "pip", "install", "--python", str(python), "-e", ".[all]"],
         check=True,
         cwd=REPO_ROOT,
     )

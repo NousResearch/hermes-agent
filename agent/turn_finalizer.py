@@ -223,12 +223,35 @@ def _recover_final_from_stream(agent, final_response, interrupted, failed) -> Tu
     return final_response, False
 
 
+def _stage_cli_interrupt_context_notice(agent, interrupted) -> None:
+    """Stage one API-only follow-up note for a CLI-interrupted turn.
+
+    The transcript must stay untouched: the next turn's context builder consumes this
+    sidecar into ``api_content``, while persistence retains the user's original text.
+    Gateway and desktop recovery have their own resume paths and must not receive this
+    CLI-specific notice.
+    """
+    if interrupted is not True or getattr(agent, "platform", None) != "cli":
+        return
+    reason = getattr(agent, "_tool_interrupt_reason", None)
+    if not isinstance(reason, str) or not reason.strip():
+        return
+    note = (
+        f"[System note: Your previous turn was interrupted ({reason.strip()}). "
+        "Resume from the first step without a recorded result. Do not re-run tools whose "
+        "results already appear in the conversation history.]"
+    )
+    existing = getattr(agent, "_gateway_turn_context_notes", "")
+    agent._gateway_turn_context_notes = f"{existing}\n\n{note}" if existing else note
+
+
 def _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream) -> None:
     """Shape the transcript tail before the durable snapshot (scaffolding already dropped
     and ``final_response`` already stream-recovered by the caller)."""
     # An interrupt can leave a tool result as the tail; close the sequence so strict
     # providers don't see ``tool → user`` (placeholder: final_response is usually empty).
     if interrupted:
+        _stage_cli_interrupt_context_notice(agent, interrupted)
         from agent.message_sanitization import close_interrupted_tool_sequence
         close_interrupted_tool_sequence(messages, final_response)
 

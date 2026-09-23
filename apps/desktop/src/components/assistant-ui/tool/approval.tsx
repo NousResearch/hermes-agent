@@ -275,6 +275,9 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   const allowAlways = choices ? choices.includes('always') : allowPermanent
   const hasMoreOptions = allowSession || allowAlways
   const hasCommand = request.command.trim().length > 0
+  // The backend's own reason for asking (a Safety Gate verdict, "commands flagged", ...).
+  // Without it the card shows only the command and the user has to guess why.
+  const reason = request.description.trim()
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -325,6 +328,14 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           </span>
         )}
       </div>
+      {reason && (
+        <p
+          className="m-0 px-2.5 pb-1 text-xs leading-relaxed text-(--ui-text-secondary)"
+          data-slot="tool-approval-reason"
+        >
+          {reason}
+        </p>
+      )}
       {hasCommand && (
         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
           {request.command}

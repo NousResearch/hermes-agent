@@ -41,8 +41,9 @@ export interface Contribution {
   when?: () => boolean
   /** Soft disable without unregistering. `false` hides it. */
   enabled?: boolean
-  /** Renders the contribution's content (UI contributions). */
-  render?: () => ReactNode
+  /** Renders the contribution's content (UI contributions). Area-specific
+   *  contracts may narrow this to a callback with host-supplied props. */
+  render?: (...args: never[]) => ReactNode
   /**
    * Declarative payload for data contributions (Family B): layout presets,
    * themes, commands — anything consumed by an engine rather than rendered.

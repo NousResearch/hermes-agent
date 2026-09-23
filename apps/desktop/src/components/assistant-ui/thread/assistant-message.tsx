@@ -28,6 +28,7 @@ import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactio
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
+import { TranscriptMessageSlot } from '@/components/assistant-ui/thread/transcript-message-slot'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
 import { isApprovalActivity, isCurrentTurnMessage } from '@/components/assistant-ui/tool/approval-activity'
@@ -101,6 +102,7 @@ interface MessageActionProps {
 interface AssistantMessageProps {
   onBranchInNewChat?: (messageId: string) => void
   onDismissError?: (messageId: string) => void
+  sessionId?: string | null
 }
 
 export const AssistantMessage: FC<AssistantMessageProps> = props => {
@@ -208,7 +210,8 @@ const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }>
 const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null | ReactNode }> = ({
   collapsedNotice = null,
   onBranchInNewChat,
-  onDismissError
+  onDismissError,
+  sessionId: containingSessionId = null
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
@@ -329,6 +332,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
               onBranchInNewChat={onBranchInNewChat}
             />
           )}
+          <AssistantMessageFooterSlot sessionId={containingSessionId} />
           {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
           <SettledChangedFiles />
@@ -336,6 +340,33 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         </>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+/** Keeps completion/latest subscriptions out of the assistant-message root,
+ * so stream flushes only wake this small contribution leaf. */
+const AssistantMessageFooterSlot: FC<{ sessionId: string | null }> = ({ sessionId }) => {
+  const footerState = useAuiState(s => {
+    if (s.message.status?.type !== 'complete' || s.message.metadata?.custom?.interim === true) {
+      return ''
+    }
+
+    const isLast = s.thread.messages[s.thread.messages.length - 1]?.id === s.message.id
+
+    return `${isLast ? '1' : '0'}:${s.message.id}`
+  })
+
+  if (!footerState) {
+    return null
+  }
+
+  return (
+    <TranscriptMessageSlot
+      isLast={footerState.startsWith('1:')}
+      kind="assistant-footer"
+      messageId={footerState.slice(2)}
+      sessionId={sessionId}
+    />
   )
 }
 

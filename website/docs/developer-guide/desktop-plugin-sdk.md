@@ -223,6 +223,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Transcript message | `TRANSCRIPT_MESSAGE_AREA` (`'chat.transcript-message'`) | `data.match(props)` + `render(props)` |
 
 ### Panes
 
@@ -411,6 +412,55 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 `middleware`) let a plugin add controls around the message composer, provide an
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
+
+### Transcript-message placements
+
+`TRANSCRIPT_MESSAGE_AREA` is the single contribution area for UI attached to a
+transcript message. `data.match(props)` selects placements and `render(props)`
+renders them. The supported `kind` values are `slash-result` and
+`assistant-footer`.
+
+For a slash-result row, contributions are checked in registry `order` and only
+the first match renders. The contribution replaces that row's native text, but
+matcher failures are isolated and selection continues. If nothing safely
+matches, rendering fails, or the plugin unloads, the native text remains. This
+does not intercept command execution or ordinary system rows:
+
+```javascript
+import { TRANSCRIPT_MESSAGE_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'browse-result',
+  area: TRANSCRIPT_MESSAGE_AREA,
+  order: 10,
+  data: {
+    match: ({ kind, command }) => kind === 'slash-result' && command === '/catalog browse featured'
+  },
+  render: props => jsx(BrowseCard, props)
+})
+```
+
+For an assistant footer, every matching contribution renders in registry
+`order` after a completed, non-interim, non-collapsed assistant message. Return
+`null` to add no UI. A renderer failure is isolated to that contribution and
+leaves the assistant content intact.
+
+Both placements receive the same typed contract:
+
+```ts
+interface TranscriptMessageProps {
+  kind: 'slash-result' | 'assistant-footer'
+  messageId: string
+  sessionId: string | null // runtime id of the thread containing the row
+  isLast: boolean          // whether this is the latest row in the thread
+  command?: string         // slash-result only; includes slash and arguments
+  output?: string          // slash-result only; existing native text
+}
+```
+
+`sessionId` belongs to the containing thread; it is not the app-global focused
+session and remains correct in tiled/background chats. `command` and `output`
+are provided only when `kind === 'slash-result'`.
 
 ### Transcript directives — inline components the model addresses
 

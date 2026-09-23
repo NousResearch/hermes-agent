@@ -577,6 +577,10 @@ def _run_agent(
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
+            # external_process providers (opencode-cli, copilot-acp, …) resolve ACP command/args
+            # in runtime; without these AIAgent falls back to `copilot` and chat fails.
+            acp_command=runtime.get("command"),
+            acp_args=runtime.get("args"),
             model=choice.model,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,

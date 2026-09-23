@@ -42,6 +42,7 @@ from cron.jobs import (
     remove_job,
     resolve_job_ref,
     resume_job,
+    trigger_job,
     update_job)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
 from tools.cronjob_job_args import (
@@ -152,6 +153,55 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
             "This job targets a relay-fronted platform, which has no "
             "standalone sender. Start the gateway — its ticker will "
             "deliver the job on schedule via the live relay adapter."),
+    })
+
+
+def _primary_routed_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Delivery-platform names this satellite profile reaches only through the primary gateway's
+    ``profile_routes``: routed here, with no credential of its own to send standalone."""
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+        from cron.scheduler_preflight import _delivery_platform_routed_from_primary_gateway
+        routed = {t["platform"] for t in _resolve_delivery_targets(job) or []
+                  if t.get("platform") and _delivery_platform_routed_from_primary_gateway(t["platform"])}
+        if not routed:
+            return set()
+        from gateway.config import load_gateway_config
+        return routed - {p.value for p in load_gateway_config().get_connected_platforms()}
+    except Exception:
+        return set()
+
+
+def _hand_off_primary_routed_run(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Optional[str]:
+    """Queue a manual run for the gateway ticker when the job delivers through the primary gateway's
+    profile route: only the gateway process holding the primary's bot can send it, so an in-process
+    run would spend the whole turn and then record ``delivery_failed`` (#120330). Returns a JSON
+    result string when the hand-off engages, else None (normal in-process run)."""
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    if callable(runner_ref) and runner_ref() is not None:
+        return None  # inside the gateway: its live adapter delivers (#89302)
+    if not is_job_runnable(job):
+        return None  # keep the normal paused refusal; trigger_job would resume the job
+    routed = _primary_routed_delivery_platforms(job)
+    if not routed:
+        return None
+    from hermes_cli.cron import _builtin_gateway_liveness
+    if _builtin_gateway_liveness() is False:
+        return _dumps({
+            "success": False,
+            "error": (
+                f"This job delivers to {', '.join(sorted(routed))} through the primary "
+                "gateway's profile route, which has no standalone sender. Start the "
+                "gateway — its ticker will deliver the job on schedule."),
+        })
+    updated = trigger_job(job["id"], extra_prompt=extra_prompt)
+    _notify_provider_jobs_changed_safe()
+    return _dumps({
+        "success": True,
+        "job": _format_job(updated),
+        "note": (
+            "This job delivers through the primary gateway's profile route; it was "
+            "queued for that gateway's next scheduler tick, which runs and delivers it."),
     })
 
 
@@ -677,6 +727,10 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         scan_error = _scan_cron_prompt(extra_prompt)
         if scan_error:
             return tool_error(scan_error, success=False)
+    # Primary-routed satellite delivery has no sender outside the gateway: hand the run to its ticker.
+    handed_off = _hand_off_primary_routed_run(job, extra_prompt=extra_prompt)
+    if handed_off is not None:
+        return handed_off
     # A manual run must actually run even with no ticker active. Preferred: background
     # dispatch (handle now, outcome as a completion event); inline fallback otherwise.
     bg = _try_dispatch_background_run(job, session_id=a["session_id"], extra_prompt=extra_prompt)

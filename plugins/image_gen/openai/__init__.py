@@ -1,0 +1,246 @@
+"""OpenAI GPT Image 2 and 2.5 Flare/Sunburst quality tiers;
+base64 output → image cache. Selection: ``OPENAI_IMAGE_MODEL`` → ``image_gen.openai.model`` →
+``image_gen.model`` → :data:`DEFAULT_MODEL`; an id outside the catalog is sent verbatim.
+Endpoint: ``image_gen.openai.base_url`` → the named endpoint ``image_gen.openai.provider`` →
+``OPENAI_BASE_URL`` → SDK default; key: env named by ``image_gen.openai.key_env`` → the named
+endpoint's credential → ``OPENAI_API_KEY``."""
+
+from __future__ import annotations
+
+import io
+import logging
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+from agent.secret_scope import get_secret, get_secret_str
+from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
+from plugins.image_gen._common import (
+    GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
+    StaticImageGenProvider, collect_source_images, error_factory, import_openai, load_image_gen_config,
+    materialize_image, openai_importable, prompt_required_error, record_token_usage, resolve_static_model,
+    size_for)
+
+logger = logging.getLogger(__name__)
+
+# Keep subscription routing independent: Codex does not verify explicit image model selection.
+MODELS = {
+    **{key: {**meta, "api_model": API_MODEL} for key, meta in GPT_IMAGE_2_TIERS.items()},
+    **{
+        model if quality == "auto" else f"{model}-{quality}": {
+            "display": f"GPT Image 2.5 {name} ({quality.title()})",
+            "speed": speed,
+            "strengths": strengths,
+            "api_model": model,
+            "quality": quality,
+        }
+        for model, name, speed, strengths in (
+            ("gpt-image-2.5-flare", "Flare", "Fast", "Everyday image generation and editing"),
+            ("gpt-image-2.5-sunburst", "Sunburst", "Slower", "Precision generation and editing"),
+        )
+        for quality in ("auto", "low", "medium", "high", "xhigh", "max")
+    },
+}
+
+
+def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+    return resolve_static_model(
+        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai", passthrough=True)
+
+
+def _named_endpoint(name: str) -> Tuple[str, str]:
+    """``(base_url, api_key)`` of the user-declared custom endpoint *name* (``providers:`` /
+    ``custom_providers:``), so image generation reuses a chat endpoint's URL and credential without
+    duplicating the key into OpenAI variables (#83080). Unknown name → ``("", "")`` with a warning."""
+    from hermes_cli.runtime_provider import _get_named_custom_provider
+
+    entry = _get_named_custom_provider(name)
+    if not entry:
+        logger.warning("image_gen.openai.provider %r matches no custom endpoint in providers:", name)
+        return "", ""
+    key_env = str(entry.get("key_env") or "").strip()
+    api_key = str(entry.get("api_key") or "").strip() or (get_secret(key_env) if key_env else None) or ""
+    return str(entry.get("base_url") or "").strip().rstrip("/"), api_key
+
+
+def _resolve_endpoint() -> Tuple[str, str]:
+    """``(base_url, api_key)`` — ``image_gen.openai.base_url`` → ``OPENAI_BASE_URL`` → ``""`` (SDK default);
+    the env var named by ``image_gen.openai.key_env`` → ``OPENAI_API_KEY``. Only the var NAME lives in
+    config.yaml; ``is_available()`` and ``generate()`` share this so they cannot disagree (#65309)."""
+    cfg = load_image_gen_config("openai")
+    named = str(cfg.get("provider") or "").strip()
+    named_base, named_key = _named_endpoint(named) if named else ("", "")
+    base_url = (str(cfg.get("base_url") or "").strip().rstrip("/") or named_base
+                or get_secret_str("OPENAI_BASE_URL").strip())
+    key_env = str(cfg.get("key_env") or "").strip()
+    api_key = (get_secret(key_env) if key_env else None) or named_key or get_secret("OPENAI_API_KEY") or ""
+    return base_url, api_key
+
+
+def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
+    """``openai.OpenAI`` on Hermes' env-only-proxy httpx client, so a local/custom endpoint never
+    routes through a macOS system proxy whose ExceptionsList httpx cannot see (#64888). The project
+    header is blanked: an ``OPENAI_PROJECT_ID`` set for chat makes ``/images/generations`` 403 on
+    projects with a model allow-list, and the key already carries the project (#60748)."""
+    from agent.process_bootstrap import build_keepalive_http_client
+
+    kwargs: Dict[str, Any] = {"api_key": api_key, "default_headers": {"OpenAI-Project": ""}}
+    if base_url:
+        kwargs["base_url"] = base_url
+    http_client = build_keepalive_http_client(base_url)
+    if http_client is not None:
+        kwargs["http_client"] = http_client
+    return openai.OpenAI(**kwargs)
+
+
+def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
+    """Load ``(data, filename)`` from a URL, data URI or local path; raises on IO/network error."""
+    ref = ref.strip()
+    lower = ref.lower()
+    if lower.startswith(("http://", "https://")):
+        from tools.url_safety import create_ssrf_safe_client, is_safe_url
+
+        if not is_safe_url(ref):
+            raise ValueError(f"Image reference URL failed the SSRF safety check: {ref}")
+        with create_ssrf_safe_client(timeout=60, follow_redirects=True) as client:
+            resp = client.get(ref)
+        resp.raise_for_status()
+        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
+        return resp.content, name
+    if lower.startswith("data:"):
+        import base64
+
+        header, _, b64 = ref.partition(",")
+        ext = (header.split("image/", 1)[1].split(";", 1)[0] if "image/" in header else "") or "png"
+        return base64.b64decode(b64), f"image.{ext}"
+    from agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
+
+    raise_if_read_blocked(ref)
+    with open(ref, "rb") as fh:
+        data = fh.read()
+    return data, os.path.basename(ref) or "image.png"
+
+
+def _named_bytes_io(ref: str) -> io.BytesIO:
+    """``images.edit()`` expects named file-like objects for correct multipart."""
+    data, fname = _load_image_bytes(ref)
+    bio = io.BytesIO(data)
+    bio.name = fname
+    return bio
+
+
+class OpenAIImageGenProvider(StaticImageGenProvider):
+    """OpenAI ``images.generate`` / ``images.edit`` backend with selectable API models."""
+
+    provider_id = "openai"
+    label = "OpenAI"
+    models = MODELS
+    default_model_id = DEFAULT_MODEL
+    price = "varies"
+    setup = dict(
+        name="OpenAI", badge="paid",
+        tag="GPT Image 2 / 2.5 Flare / 2.5 Sunburst — text-to-image & image editing",
+        key="OPENAI_API_KEY", prompt="OpenAI API key", url="https://platform.openai.com/api-keys")
+
+    def is_available(self) -> bool:
+        return bool(_resolve_endpoint()[1]) and openai_importable()
+
+    def capabilities(self) -> Dict[str, Any]:
+        # images.edit() accepts up to 16 source images.
+        return {"modalities": ["text", "image"], "max_reference_images": 16}
+
+    def generate(
+        self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
+        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        prompt = (prompt or "").strip()
+        aspect = resolve_aspect_ratio(aspect_ratio)
+        if not prompt:
+            return prompt_required_error("openai", aspect)
+        base_url, api_key = _resolve_endpoint()
+        if not api_key:
+            return error_factory("openai", aspect)(
+                "OPENAI_API_KEY not set (or the variable named by image_gen.openai.key_env is empty). "
+                "Run `hermes tools` → Image Generation → OpenAI to configure, or `hermes setup` "
+                "to add the key.",
+                "auth_required")
+
+        openai, err = import_openai("openai", aspect)
+        if err:
+            return err
+        tier_id, meta = _resolve_model()
+        size = size_for(aspect)
+        sources = collect_source_images(image_url, reference_image_urls, limit=16)
+        is_edit = bool(sources)
+        fail = error_factory("openai", aspect, model=tier_id, prompt=prompt)
+        client = _build_client(openai, base_url, api_key)
+
+        # gpt-image-2 returns b64_json unconditionally and REJECTS
+        # ``response_format`` as an unknown parameter. Don't send it.
+        # A custom (non-catalog) model id carries no quality tier: gateways reject unknown enum values.
+        request: Dict[str, Any] = dict(model=meta["api_model"], prompt=prompt, size=size, n=1)
+        if meta["quality"] is not None:
+            request["quality"] = meta["quality"]
+        if is_edit:
+            try:
+                files = [_named_bytes_io(ref) for ref in sources]
+            except Exception as exc:
+                return fail(f"Could not load source image for editing: {exc}", "io_error")
+            request["image"] = files if len(files) > 1 else files[0]
+        verb, call = ("edit", client.images.edit) if is_edit else ("generation", client.images.generate)
+        try:
+            response = call(**request)
+        except Exception as exc:
+            logger.debug("OpenAI image %s failed", verb, exc_info=True)
+            return fail(f"OpenAI image {'editing' if is_edit else 'generation'} failed: {exc}", "api_error")
+
+        # gpt-image bills per text/image token; the tier id is a Hermes label, the API model prices.
+        # Recorded before extraction/save: the tokens are billed whether or not an image came back.
+        record_token_usage(getattr(response, "usage", None), model=meta["api_model"], provider="openai")
+        data = getattr(response, "data", None) or []
+        if not data:
+            return fail("OpenAI returned no image data", "empty_response")
+        first = data[0]
+        image_ref, err = materialize_image(
+            getattr(first, "b64_json", None), getattr(first, "url", None),
+            prefix=f"openai_{tier_id}", label="OpenAI", provider="openai",
+            model=tier_id, prompt=prompt, aspect=aspect, log=logger)
+        if err:
+            return err
+        extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        if getattr(first, "revised_prompt", None):
+            extra["revised_prompt"] = first.revised_prompt
+        return success_response(
+            image=image_ref, model=tier_id, prompt=prompt, aspect_ratio=aspect, provider="openai",
+            modality="image" if is_edit else "text", extra=extra)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — wire ``OpenAIImageGenProvider`` into the registry."""
+    ctx.register_image_gen_provider(OpenAIImageGenProvider())
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'ImageGenProvider': ('agent.image_gen_provider', 'ImageGenProvider'),
+    'error_response': ('agent.image_gen_provider', 'error_response'),
+    'normalize_reference_images': ('agent.image_gen_provider', 'normalize_reference_images'),
+    'save_b64_image': ('agent.image_gen_provider', 'save_b64_image'),
+    'save_url_image': ('agent.image_gen_provider', 'save_url_image'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

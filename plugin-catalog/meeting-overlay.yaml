@@ -1,0 +1,14 @@
+name: meeting-overlay
+repo: https://github.com/taxbax/meeting-overlay
+sha: 2c7859f1407f516c543d4409abab98d9b2e8928a
+description: "Disclosure — sends meeting transcripts to Nous inference with your Hermes login (fallback OpenRouter key from ~/.hermes/.env; optional OCTOPUS_DESK_URL); installs a launchd agent that records mic/system audio; writes and deletes under your Obsidian vault; macOS + source install only. Native desktop pane showing the live meeting transcript, answer, and daemon status."
+maintainer: taxbax
+tier: community
+category: desktop
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+platforms:
+- macos

@@ -1,0 +1,348 @@
+"""Tests for hermes claw commands."""
+
+from argparse import Namespace
+import subprocess
+from types import ModuleType
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from hermes_cli import claw as claw_mod
+
+
+# ---------------------------------------------------------------------------
+# _find_migration_script
+# ---------------------------------------------------------------------------
+
+
+class TestFindMigrationScript:
+    """Test script discovery in known locations."""
+
+    def test_finds_project_root_script(self, tmp_path):
+        script = tmp_path / "openclaw_to_hermes.py"
+        script.write_text("# placeholder", encoding="utf-8")
+        with patch.object(claw_mod, "_OPENCLAW_SCRIPT", script):
+            assert claw_mod._find_migration_script() == script
+
+
+# ---------------------------------------------------------------------------
+# _find_openclaw_dirs
+# ---------------------------------------------------------------------------
+
+
+class TestFindOpenclawDirs:
+    """Test discovery of OpenClaw directories."""
+
+    def test_finds_openclaw_dir(self, tmp_path):
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            found = claw_mod._find_openclaw_dirs()
+        assert openclaw in found
+
+    def test_finds_legacy_dirs(self, tmp_path):
+        clawdbot = tmp_path / ".clawdbot"
+        clawdbot.mkdir()
+        moltbot = tmp_path / ".moltbot"
+        moltbot.mkdir()
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            found = claw_mod._find_openclaw_dirs()
+        assert len(found) == 2
+        assert clawdbot in found
+        assert moltbot in found
+
+
+# ---------------------------------------------------------------------------
+# _scan_workspace_state
+# ---------------------------------------------------------------------------
+
+
+class TestScanWorkspaceState:
+    """Test scanning for workspace state files."""
+
+    def test_finds_root_state_files(self, tmp_path):
+        (tmp_path / "todo.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "sessions").mkdir()
+        findings = claw_mod._scan_workspace_state(tmp_path)
+        descs = [desc for _, desc in findings]
+        assert any("todo.json" in d for d in descs)
+        assert any("sessions" in d for d in descs)
+
+
+    def test_ignores_hidden_dirs(self, tmp_path):
+        scan_dir = tmp_path / "scan_target"
+        scan_dir.mkdir()
+        hidden = scan_dir / ".git"
+        hidden.mkdir()
+        (hidden / "todo.json").write_text("{}", encoding="utf-8")
+        findings = claw_mod._scan_workspace_state(scan_dir)
+        assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# _archive_directory
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveDirectory:
+    """Test directory archival (rename)."""
+
+    def test_renames_to_pre_migration(self, tmp_path):
+        source = tmp_path / ".openclaw"
+        source.mkdir()
+        (source / "test.txt").write_text("data", encoding="utf-8")
+
+        archive_path = claw_mod._archive_directory(source)
+        assert archive_path == tmp_path / ".openclaw.pre-migration"
+        assert archive_path.is_dir()
+        assert not source.exists()
+        assert (archive_path / "test.txt").read_text(encoding="utf-8") == "data"
+
+    def test_adds_timestamp_when_archive_exists(self, tmp_path):
+        source = tmp_path / ".openclaw"
+        source.mkdir()
+        # Pre-existing archive
+        (tmp_path / ".openclaw.pre-migration").mkdir()
+
+        archive_path = claw_mod._archive_directory(source)
+        assert ".pre-migration-" in archive_path.name
+        assert archive_path.is_dir()
+        assert not source.exists()
+
+    def test_dry_run_does_not_rename(self, tmp_path):
+        source = tmp_path / ".openclaw"
+        source.mkdir()
+
+        archive_path = claw_mod._archive_directory(source, dry_run=True)
+        assert archive_path == tmp_path / ".openclaw.pre-migration"
+        assert source.is_dir()  # Still exists
+
+
+# ---------------------------------------------------------------------------
+# claw_command routing
+# ---------------------------------------------------------------------------
+
+
+
+
+# ---------------------------------------------------------------------------
+# _cmd_migrate
+# ---------------------------------------------------------------------------
+
+
+class TestCmdMigrate:
+    """Test the migrate command handler."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_openclaw_running(self):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            yield
+
+
+
+
+
+
+
+
+
+    def test_full_preset_does_not_enable_secrets_silently(self, tmp_path, capsys):
+        """The 'full' preset must NOT auto-enable migrate_secrets.
+
+        Users have to opt in to secret import explicitly via --migrate-secrets,
+        even under the 'full' preset.  This mirrors OpenClaw's migrate-hermes
+        posture (two-phase import) and prevents a 'full' run from silently
+        copying API keys.
+        """
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value=set())
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 0, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+
+        args = Namespace(
+            source=str(openclaw_dir),
+            dry_run=True, preset="full", overwrite=False,
+            migrate_secrets=False,  # Not explicitly set by user
+            workspace_target=None,
+            skill_conflict="skip", yes=False,
+            no_backup=False,
+        )
+
+        with (
+            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
+            patch.object(claw_mod, "save_config"),
+            patch.object(claw_mod, "load_config", return_value={}),
+        ):
+            claw_mod._cmd_migrate(args)
+
+        # Migrator should have been called with migrate_secrets=False — the
+        # 'full' preset on its own no longer opts the user into secret import.
+        call_kwargs = fake_mod.Migrator.call_args[1]
+        assert call_kwargs["migrate_secrets"] is False
+
+    def test_full_preset_with_explicit_migrate_secrets_passes_through(self, tmp_path, capsys):
+        """Explicit --migrate-secrets still works under --preset full."""
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value=set())
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 0, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+
+        args = Namespace(
+            source=str(openclaw_dir),
+            dry_run=True, preset="full", overwrite=False,
+            migrate_secrets=True,  # Explicitly requested
+            workspace_target=None,
+            skill_conflict="skip", yes=False,
+            no_backup=False,
+        )
+
+        with (
+            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
+            patch.object(claw_mod, "save_config"),
+            patch.object(claw_mod, "load_config", return_value={}),
+        ):
+            claw_mod._cmd_migrate(args)
+
+        call_kwargs = fake_mod.Migrator.call_args[1]
+        assert call_kwargs["migrate_secrets"] is True
+
+
+# ---------------------------------------------------------------------------
+# _cmd_cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestCmdCleanup:
+    """Test the cleanup command handler."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_openclaw_running(self):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            yield
+
+
+    def test_dry_run_lists_dirs(self, tmp_path, capsys):
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+        ws = openclaw / "workspace"
+        ws.mkdir()
+        (ws / "todo.json").write_text("{}", encoding="utf-8")
+
+        args = Namespace(source=None, dry_run=True, yes=False)
+        with patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]):
+            claw_mod._cmd_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "Would archive" in captured.out
+        assert openclaw.is_dir()  # Not actually archived
+
+
+    def test_explicit_source(self, tmp_path, capsys):
+        custom_dir = tmp_path / "my-openclaw"
+        custom_dir.mkdir()
+        (custom_dir / "todo.json").write_text("{}", encoding="utf-8")
+
+        args = Namespace(source=str(custom_dir), dry_run=False, yes=True)
+        claw_mod._cmd_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "Archived" in captured.out
+        assert not custom_dir.exists()
+
+
+
+
+# ---------------------------------------------------------------------------
+# _print_migration_report
+# ---------------------------------------------------------------------------
+
+
+
+
+class TestDetectOpenclawProcesses:
+
+    @pytest.mark.linux_only
+    def test_live_pgrep_ignores_argv_mentions_but_finds_node_openclaw(self, tmp_path):
+        """A process that merely mentions "openclaw" in argv (the #12648 false positive) is not
+        OpenClaw; a node interpreter running an openclaw script is."""
+        import sys
+        import time
+
+        idle = f'{sys.executable} -c "import time; time.sleep(30)"'
+        # argv mentions openclaw but the binary is not one.
+        bystander = subprocess.Popen(["bash", "-c", f"exec {idle} {tmp_path}/openclaw-notes.txt"])
+        # argv[0] renamed to ``node`` running an openclaw script: the real launch shape.
+        node_like = subprocess.Popen(["bash", "-c", f"exec -a node {idle} {tmp_path}/openclaw/entry.js"])
+        # The gateway sets process.title="openclaw-gateway" (comm truncates to 15 chars); a
+        # copied interpreter with that file name yields the same comm.
+        import shutil
+        titled_bin = tmp_path / "openclaw-gateway"
+        shutil.copy2(sys.executable, titled_bin)
+        titled = subprocess.Popen([str(titled_bin), "-c", "import time; time.sleep(30)"])
+        try:
+            time.sleep(0.3)
+            with patch.object(claw_mod, "_posix_probe", wraps=claw_mod._posix_probe) as probe:
+                result = claw_mod._detect_openclaw_processes()
+            assert not any(a[0][:2] == ["pgrep", "-f"] and a[0][2] == "openclaw" for a, _ in probe.call_args_list)
+            assert len(result) == 1
+            pids = result[0].split("PIDs: ")[1].rstrip(")").split(", ")
+            assert str(node_like.pid) in pids
+            assert str(titled.pid) in pids
+            assert str(bystander.pid) not in pids
+        finally:
+            for proc in (bystander, node_like, titled):
+                proc.kill()
+                proc.wait()
+
+
+    @pytest.mark.windows_only
+    def test_returns_empty_on_windows_when_nothing_found(self):
+        """Faking win32 picked the tasklist/powershell branch on a host that has
+        neither; only a real Windows host resolves those executables.
+
+        ``return_value`` rather than a ``side_effect`` list: the branch's call
+        count is not the assertion, and pinning it breaks whenever the host
+        shells out once more than the dev box did.
+        """
+        with patch.object(claw_mod, "subprocess") as mock_subprocess:
+            mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="")
+            result = claw_mod._detect_openclaw_processes()
+            assert result == []
+
+
+class TestWarnIfOpenclawRunning:
+    def test_noop_when_not_running(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_warns_and_exits_when_running_and_user_declines(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            with patch.object(claw_mod, "prompt_yes_no", return_value=False):
+                with patch.object(claw_mod.sys.stdin, "isatty", return_value=True):
+                    with pytest.raises(SystemExit) as exc_info:
+                        claw_mod._warn_if_openclaw_running(auto_yes=False)
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+

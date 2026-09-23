@@ -1,0 +1,22 @@
+# Termux / Android dependency constraints for Hermes Agent.
+#
+# Usage:
+#   python -m pip install -e '.[termux]' -c constraints-termux.txt
+#
+# These pins keep the tested Android install path stable when upstream packages
+# move faster than Termux-compatible wheels / sdists.
+#
+# NOTE: uvloop is excluded from the Termux install path because libuv's
+# ./configure script does not run on Android (non-FHS layout, bionic libc).
+# uvicorn falls back to the stdlib asyncio event loop automatically when
+# uvloop is absent — no performance-critical codepath depends on it.
+# The [uvloop] optional extra is included in [all] but intentionally omitted
+# from [termux] and [termux-all].  See pyproject.toml for details.
+
+ipython<10
+jedi>=0.18.1,<0.20
+parso>=0.8.4,<0.9
+stack-data>=0.6,<0.7
+pexpect>4.3,<5
+matplotlib-inline>=0.1.7,<0.2
+asttokens>=2.1,<3

@@ -1,0 +1,88 @@
+/*
+ * Hermes Setup — defer entirely to the desktop's styles.css.
+ *
+ * Rather than re-implement the Hermes design system (and inevitably drift
+ * from it), we import apps/desktop/src/styles.css wholesale. The desktop
+ * is the canonical source of truth for fonts, color tokens, button chrome,
+ * scrollbars, layout utilities, and animations. Any change to the
+ * Hermes look propagates here automatically with no copy-paste maintenance.
+ *
+ * Path resolution caveats:
+ *   - Tailwind v4's `@import` resolves relative to this file. The desktop's
+ *     `@source '../../../node_modules/...'` declarations therefore re-resolve
+ *     against apps/bootstrap-installer/src/. Since both apps live two levels
+ *     deep under the same repo root, `../../../node_modules` lands in the
+ *     same place. (Verify if either app ever moves.)
+ *   - The desktop's `@font-face url('../../../node_modules/...')` references
+ *     are baked into the *imported* stylesheet; CSS resolves url()s relative
+ *     to the file that contains them, so they continue to point at the
+ *     correct node_modules path even from here.
+ *
+ * Follows the OS appearance: the installer has no in-app theme switcher, so
+ * src/theme.ts tracks the Tauri window theme and toggles `.dark` on
+ * <html>. The desktop's runtime applyTheme() normally PAINTS the dark seed
+ * colors inline (its imported :root.dark below only flips the per-mode mix
+ * knobs + neutral chrome), so we supply the Nous *dark* seeds ourselves in the
+ * :root.dark block at the end of this file.
+ */
+@import '../../desktop/src/styles.css';
+
+/* Installer-only additions: a fade-in animation and a warm radial glow
+   for the welcome screen. Everything else inherits from the desktop. */
+@keyframes hermes-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hermes-fade-in {
+  animation: hermes-fade-in 0.45s ease-out both;
+}
+
+.hermes-glow {
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--ui-warm) 18%, transparent) 0%,
+    transparent 60%
+  );
+}
+
+/*
+ * Dark appearance — Nous dark seeds.
+ *
+ * The imported desktop :root.dark only flips the per-mode mix knobs + neutral
+ * chrome; the seed COLORS are normally painted at runtime by the desktop's
+ * applyTheme(). The installer has no theme runtime, so we mirror them here from
+ * apps/desktop/src/themes/presets.ts (nousTheme.darkColors). The whole
+ * --ui-* / --dt-* chain in the imported stylesheet derives from these seeds, so
+ * flipping them is enough — we only additionally override the few tokens
+ * applyTheme() sets inline that DON'T derive from a seed (primary-foreground on
+ * the cream accent, destructive). Unlayered on purpose so it wins over the
+ * imported @layer base :root light seeds. Keep in sync with nousTheme.darkColors
+ * if that palette is retuned.
+ */
+:root.dark {
+  color-scheme: dark;
+
+  --theme-foreground: #ffe6cb;
+  --theme-primary: #ffe6cb;
+  --theme-secondary: #1b45a4;
+  --theme-accent-soft: #1540b1;
+  --theme-midground: #0053fd;
+  --theme-warm: #ffe6cb;
+  --theme-background-seed: #0d2f86;
+  --theme-sidebar-seed: #09286f;
+  --theme-card-seed: #12378f;
+  --theme-elevated-seed: #123a96;
+  --theme-bubble-seed: #143b91;
+
+  /* Non-derived shadcn tokens applyTheme() paints inline (Nous dark values). */
+  --dt-primary-foreground: #0d2f86;
+  --dt-destructive: #c0473a;
+  --dt-destructive-foreground: #fef2f2;
+}

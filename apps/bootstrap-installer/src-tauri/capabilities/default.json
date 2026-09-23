@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Capabilities required by Hermes Setup. Narrowly scoped: we don't write user files outside HERMES_HOME, we don't read arbitrary paths, and the only external network call goes through reqwest (Rust side, not exposed to the webview).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-theme",
+    "core:event:default",
+    "opener:default",
+    "dialog:default",
+    "process:default",
+    "shell:default"
+  ]
+}

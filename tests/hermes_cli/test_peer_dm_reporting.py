@@ -79,6 +79,12 @@ def test_the_real_urllib_stack_raises_the_signatures_the_branch_relies_on(monkey
     for var in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(peer_mod, "DM_TIMEOUT_S", 0.5)
+    # Bound the whole exchange, not just the first read: the replay re-issues the
+    # POST with its own ceiling, and a host whose config sets peer.dm_wait_seconds
+    # would otherwise inflate the POST timeout to minutes. Pin both so the
+    # response phase cannot outlast the runner's file cap.
+    monkeypatch.setattr(peer_mod, "_DM_REPLAY_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(peer_mod, "_peer_value", lambda key, default: None)
 
     server = socket.socket()
     server.bind(("127.0.0.1", 0))

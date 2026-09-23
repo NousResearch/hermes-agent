@@ -349,7 +349,7 @@ export const ru = defineLocale({
       'view.nextTerminal': 'Следующий терминал',
       'view.prevTerminal': 'Предыдущий терминал',
       'view.closeTerminal': 'Закрыть терминал',
-      'view.terminalSelection': 'Отправить выделенное из терминала в композер',
+      'view.selectionToComposer': 'Отправить выделенный текст в композер',
       'view.terminalCopy': 'Копировать выделенное из терминала',
       'view.terminalPaste': 'Вставить в терминал',
       'view.closeTab': 'Закрыть вкладку',
@@ -1449,12 +1449,12 @@ export const ru = defineLocale({
       moaTitle: 'Смесь агентов',
       tasks: {
         vision: { label: 'Зрение', hint: 'Анализ изображений' },
-        web_extract: { label: 'Веб-извлечение', hint: 'Суммаризация страниц' },
         compression: { label: 'Сжатие', hint: 'Компрессия контекста' },
         skills_hub: { label: 'Хаб навыков', hint: 'Поиск навыков' },
         approval: { label: 'Одобрение', hint: 'Умное авто-одобрение' },
         mcp: { label: 'MCP', hint: 'Маршрутизация MCP-инструментов' },
         title_generation: { label: 'Ген. заголовка', hint: 'Заголовки сеансов' },
+        review: { label: 'Ревью', hint: '/review — субагент-рецензент' },
         curator: { label: 'Куратор', hint: 'Просмотр использования навыков' }
       }
     },
@@ -1743,7 +1743,7 @@ export const ru = defineLocale({
     importMap: 'Импортировать карту',
     importBtn: 'Загрузить',
     importEmpty: 'Вставьте код карты для загрузки.',
-    importSuccess: nodes => `Загружена карта с ${nodes} ${RU_NOUN(nodes, 'узлом', 'узла', 'узлов')}.`,
+    importSuccess: nodes => `Загружена карта с ${nodes} ${RU_NOUN(nodes, 'узлом', 'узлами', 'узлами')}.`,
     importedBadge: 'импортированная карта',
     resetToMine: 'Вернуться к моей карте'
   },

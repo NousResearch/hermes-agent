@@ -57,6 +57,8 @@ describe('desktop i18n runtime translator', () => {
 
     expect(translateNow('settings.model.moaTitle')).toBe('Смесь агентов')
     expect(translateNow('common.bots')).toBe('Боты')
+    expect(translateNow('settings.model.tasks.review.label')).toBe('Ревью')
+    expect(translateNow('starmap.importSuccess', 21)).toBe('Загружена карта с 21 узлом.')
   })
 
   it('keeps translated settings field copy addressable from schema keys', () => {

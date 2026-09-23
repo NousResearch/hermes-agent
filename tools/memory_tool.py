@@ -194,6 +194,12 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        # A staged batch is replayed unchanged on approval. Validate it against
+        # the live snapshot first so unsupported actions and stale old_text do
+        # not create pending proposals that can never succeed.
+        preflight = store.validate_batch(target, operations)
+        if not preflight["success"]:
+            return json.dumps(preflight, ensure_ascii=False)
         denied = _background_delete_gate(action, operations, target)
         if denied is not None:
             return denied

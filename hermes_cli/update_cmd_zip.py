@@ -447,13 +447,13 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windo
 
 def _finish_zip_update(
     *, active_tool_dependencies, pre_update_version, had_desktop_app_before_update: bool,
-    _windows_gateway_resume=None) -> bool:
+    branch: str = "main", _windows_gateway_resume=None) -> bool:
     """Post-swap tail of the ZIP path (runs in the interpreter born on the new tree). Returns
     ``False`` when a Desktop rebuild ran and failed."""
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
         _print_curator_recent_run_notice, _print_update_summary, _rebuild_desktop_after_update,
-        _update_node_dependencies, _validate_critical_modules_import,
+        _sweep_bytecode_after_update, _update_node_dependencies, _validate_critical_modules_import,
         _verify_and_restore_state_dbs_post_update,
     )
     # Self-lock deferral: the code swap is committed; defer only the dependency sync when this process
@@ -464,6 +464,11 @@ def _finish_zip_update(
     _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
     print("→ Updating Python dependencies...")
     _reinstall_python_deps_after_zip(active_tool_dependencies)
+    # The reinstall (and the tool/memory/plugin installs it chains) can regen bytecode from
+    # build-cache copies of an older tree; an unchecked hash-based .pyc never revalidates, so
+    # the rest of this pass would import stale definitions (#120014). The pre-swap sweep ran
+    # before these installs — sweep again now that the LAST install is done.
+    _sweep_bytecode_after_update(branch)
     # Verify the tree imports (catches the parse-OK-but-skewed tree an interrupted copy leaves). Runs
     # *after* the dep reinstall so a genuinely-new third-party requirement isn't misreported as a partial
     # copy. No SHA to roll back to — surface a concrete recovery step instead of success over a bricked install.

@@ -1458,6 +1458,7 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
             desktop_build_ok = _finish_zip_update(
                 active_tool_dependencies=opts.active_tool_dependencies,
                 pre_update_version=opts.pre_update_version,
+                branch=str(payload.get("branch") or "main"),
                 had_desktop_app_before_update=had_desktop_app_before_update,
                 _windows_gateway_resume=_windows_gateway_resume)
             if gateway_mode:

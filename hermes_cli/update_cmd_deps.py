@@ -1106,7 +1106,8 @@ def _sync_python_dependencies_after_pull(
     _windows_gateway_resume):
     """Reinstall Python deps for the pulled checkout. Order matters: ownership preflight ->
     self-lock deferral -> core marker -> ``.[all]`` -> bytecode sweep -> lazy/tool refresh (own
-    marker) -> memory-provider deps -> critical-import probe (warn only; stale bytecode self-heals)."""
+    marker) -> memory-provider deps -> final bytecode sweep (the installs above can regen stale
+    build-cache .pyc) -> critical-import probe (warn only; stale bytecode self-heals)."""
     from hermes_cli.update_cmd import (
         _m, _pip_install_prefix, _sweep_bytecode_after_update, _validate_critical_modules_import,
         _write_lazy_refresh_incomplete_marker, _write_update_incomplete_marker)
@@ -1182,6 +1183,14 @@ def _sync_python_dependencies_after_pull(
     # Heal memory-provider bridge packages last — the steps above may have stripped them.
     _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
+
+    # Every install above the first sweep (pip upgrade, lazy refresh, tool/memory/plugin deps)
+    # can regen bytecode from build-cache copies again. Unchecked hash-based .pyc never
+    # revalidates against the source, so a straggler from an older tree silently wins the
+    # imports the rest of this update pass performs (config-migration validator, dashboard
+    # cleanup — #120014). Sweep once more after the LAST install, before the probe and the
+    # maintenance/fleet phases import from the freshly pulled tree.
+    _sweep_bytecode_after_update(branch)
 
     # Remaining import failures are real breakage. Warn only — never roll back: `cannot import
     # name X` is also the stale-bytecode signature, which self-heals next launch.

@@ -429,6 +429,60 @@ def _route_model_cfgs(
             yield model_cfg
 
 
+def get_custom_provider_model_auxiliary(
+    model: str,
+    task: str,
+    *,
+    provider: str = "",
+    requested_provider: str = "",
+    base_url: str = "",
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return one custom primary model's ``auxiliary.<task>`` route override.
+
+    The runtime route is part of the identity: two endpoints serving the same model id must not
+    share overrides.  When a named custom runtime has no live URL, its configured aliases are the
+    fallback identity.  Non-custom primary providers never adopt same-named custom entries.
+    """
+    runtime_provider = str(provider or "").strip().lower()
+    if runtime_provider != "custom" and not runtime_provider.startswith("custom:"):
+        return {}
+    model = str(model or "").strip()
+    task = str(task or "").strip()
+    if not model or not task:
+        return {}
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return {}
+
+    if base_url:
+        entries = list(_entries_for_route(base_url, custom_providers, config))
+    else:
+        from hermes_cli.providers import custom_provider_aliases
+
+        identities = {
+            value for value in (
+                str(requested_provider or "").strip().lower(), runtime_provider,
+            ) if value and value != "custom"
+        }
+        entries = [
+            entry for entry in custom_providers or []
+            if isinstance(entry, dict) and identities.intersection(custom_provider_aliases(
+                str(entry.get("name") or ""), str(entry.get("provider_key") or "")))
+        ]
+
+    for entry in entries:
+        model_cfg = _route_model_cfg(entry, model)
+        auxiliary = model_cfg.get("auxiliary") if isinstance(model_cfg, dict) else None
+        task_cfg = auxiliary.get(task) if isinstance(auxiliary, dict) else None
+        if isinstance(task_cfg, dict):
+            return dict(task_cfg)
+    return {}
+
+
 def _coerce_ssl_verify(value: Any) -> Optional[bool]:
     if value is None:
         return None

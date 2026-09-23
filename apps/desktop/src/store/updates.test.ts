@@ -273,7 +273,7 @@ describe('checkBackendUpdates', () => {
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
   })
 
-  it('preserves backend update_available when the backend cannot count commits', async () => {
+  it('treats backend behind=-1 (uncountable distance) as unknown, not an update', async () => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'nixos',
@@ -287,9 +287,42 @@ describe('checkBackendUpdates', () => {
 
     const result = await checkBackendUpdates()
 
-    expect(result?.behind).toBe(0)
-    expect(result?.updateAvailable).toBe(true)
-    expect(result?.targetSha).toBe('backend:0.16.0')
+    expect(result?.behind).toBe(null)
+    expect(result?.updateAvailable).toBe(false)
+    expect(result?.targetSha).toBeUndefined()
+    expect(result?.message).toBe('Update available.')
+  })
+
+  it('renders no update badge for the unknown-distance backend state', async () => {
+    const { resolveVersionStatus } = await import('@/lib/version-status')
+    const { en } = await import('@/i18n/en')
+
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.21.1',
+      behind: -1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const result = await checkBackendUpdates()
+
+    const status = resolveVersionStatus({
+      applying: false,
+      copy: en.shell.statusbar,
+      remote: true,
+      restarting: false,
+      target: 'backend',
+      behind: result?.behind ?? 0,
+      updateAvailable: result?.updateAvailable,
+      version: result?.currentVersion ?? null
+    })
+
+    expect(status.label).toBe('backend v0.21.1')
+    expect(status.hasUpdate).toBe(false)
   })
 
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {

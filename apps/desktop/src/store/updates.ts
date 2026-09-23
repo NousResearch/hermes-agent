@@ -383,6 +383,24 @@ function isRemoteMode(): boolean {
 }
 
 function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
+  // A negative behind is the backend's "distance unknowable" sentinel
+  // (shallow clone, local-only deployment branch, unresolvable remote
+  // compare) — never proof that an update is waiting. Surface it as
+  // unknown (behind: null, no fabricated apply target) rather than
+  // coercing it into the update-available state.
+  if ((res.behind ?? 0) < 0) {
+    return {
+      supported: res.can_apply,
+      message: res.message ?? undefined,
+      updateAvailable: false,
+      behind: null,
+      currentVersion: res.current_version,
+      targetSha: undefined,
+      commits: res.commits,
+      fetchedAt: Date.now()
+    }
+  }
+
   const behind = res.behind ?? 0
 
   return {

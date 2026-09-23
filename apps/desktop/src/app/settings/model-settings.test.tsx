@@ -413,6 +413,36 @@ describe('ModelSettings', () => {
     expect(screen.getByText('nous')).toBeTruthy()
   })
 
+  it.each(['zh', 'zh-hant'] as const)(
+    'localizes stale auxiliary warnings in %s without resetting assignments',
+    async locale => {
+      getAuxiliaryModels.mockResolvedValueOnce({
+        main: { provider: 'nous', model: 'hermes-4' },
+        tasks: [{ task: 'curator', provider: 'openrouter', model: 'fixture-model', base_url: '' }]
+      })
+      const { ModelSettings } = await import('./model-settings')
+      const { I18nProvider, TRANSLATIONS } = await import('@/i18n')
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <QueryClientProvider client={client}>
+              <ModelSettings />
+            </QueryClientProvider>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+      expect(await screen.findByText(/仍由/)).toBeTruthy()
+      expect(screen.getByText('openrouter')).toBeTruthy()
+      expect(
+        screen.getAllByRole('button', { name: TRANSLATIONS[locale].settings.model.resetAllToMain }).length
+      ).toBeGreaterThan(0)
+      expect(screen.queryByText(/still run on/)).toBeNull()
+      expect(setModelAssignment).not.toHaveBeenCalled()
+      client.clear()
+    }
+  )
+
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },

@@ -1421,6 +1421,11 @@ export interface Translations {
       deepLinkErrorTooLarge: string
     }
     model: {
+      setupProviderFallback: string
+      setUpProvider: (name: string) => string
+      staleAuxBefore: (count: number, names: string) => string
+      staleAuxAfter: string
+      staleAuxOtherProviders: string
       moaEnabled: string
       moaSetDefault: string
       moaNewPresetPlaceholder: string

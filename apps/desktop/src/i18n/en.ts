@@ -1665,6 +1665,11 @@ export const en: Translations = {
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
     model: {
+      setupProviderFallback: "provider",
+      setUpProvider: name => `Set up ${name}`,
+      staleAuxBefore: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
+      staleAuxAfter: ', not your main model.',
+      staleAuxOtherProviders: 'other providers',
       moaEnabled: 'Enabled',
       moaSetDefault: 'Set default',
       moaNewPresetPlaceholder: 'new preset',

@@ -1617,6 +1617,11 @@ export const zh = defineLocale({
       deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
     },
     model: {
+      setupProviderFallback: "提供方",
+      setUpProvider: name => `设置 ${name}`,
+      staleAuxBefore: (count, names) => `${count} 个辅助任务（${names}）仍由 `,
+      staleAuxAfter: ' 运行，而不是主模型。',
+      staleAuxOtherProviders: '其他提供方',
       moaEnabled: '启用',
       moaSetDefault: '设为默认',
       moaNewPresetPlaceholder: '新预设',

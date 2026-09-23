@@ -69,6 +69,14 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
+def _batch_op_content(op: Dict[str, Any]) -> str:
+    """The entry text a batch op writes. ``new_text`` is a documented alias for ``content``
+    (tools/memory_tool.py schema), so the threat scan and the applier must resolve it the same
+    way — reading different fields is how an unscanned write path appeared.
+    """
+    return (op.get("content") or op.get("new_text") or "").strip()
+
+
 # Optional third value of an _apply closure: a dict merged into the success payload —
 # e.g. the full text an entry-level replace overwrote, so a whole-entry write is never
 # silent about the loss (#117952). Same convention as _error(**extra).
@@ -361,8 +369,12 @@ class MemoryStore:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
+        # Resolve the text exactly as _apply_batch_op does below: ``new_text`` is a documented alias
+        # for ``content`` (see the schema in tools/memory_tool.py), so scanning only ``content``
+        # left the batch shape with an unscanned way to write an entry.
         for i, op in enumerate(ops):
-            scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
+            scanned = _batch_op_content(op)
+            scan_error = op.get("action") in {"add", "replace"} and scanned and _scan_memory_content(scanned)
             if scan_error:
                 return _error(f"Operation {i + 1}: {scan_error}")
 
@@ -372,7 +384,7 @@ class MemoryStore:
             for i, op in enumerate(ops):
                 act = op.get("action")
                 msg, replaced_text = self._apply_batch_op(
-                    working, act, (op.get("content") or op.get("new_text") or "").strip(),
+                    working, act, _batch_op_content(op),
                     (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._batch_failure(target, msg)

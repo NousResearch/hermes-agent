@@ -24,7 +24,7 @@
 // Emphasis that legitimately follows whitespace is left alone, and a heading
 // must close on its own line to count as a summary part.
 const GLUED_HEADING_RUN = /(?<!\*)\*{4}(?!\*)/g
-const GLUED_AFTER_PROSE = /(?<=[^\s*])(\*\*(?=[^\s*])[^\n]*?\*\*)/g
+const GLUED_AFTER_PROSE = /(?<=[^\s*])(\*\*(?=[^\s*])[^*\n]*\*\*)(?=\s*$)/gm
 
 export function separateGluedReasoningBlocks(text: string): string {
   return text.replace(GLUED_HEADING_RUN, '**\n\n**').replace(GLUED_AFTER_PROSE, '\n\n$1')

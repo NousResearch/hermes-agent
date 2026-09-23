@@ -114,7 +114,12 @@ class GatewayInboundMixin:
         code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
         adapter = self._delivery_adapter_for(source)
         if code:
-            reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
+            config = getattr(self, "config", None)
+            pairing_message = (
+                config.get_pairing_message(source.platform)
+                if config and hasattr(config, "get_pairing_message") else ""
+            )
+            reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store), pairing_message)
         else:
             reply = PAIRING_RATE_LIMITED_REPLY
         if adapter:

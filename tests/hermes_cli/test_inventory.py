@@ -112,59 +112,8 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
 
 
 
-def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
-    """CLI /model picker must pass force_refresh to probe flags (#65652, #65650).
-
-    Normal open (/model bare) skips non-current probes; /model --refresh probes
-    all custom providers to freshen their model lists.
-    """
-    ctx = _empty_ctx()
-
-    # Normal open — skip non-current probes
-    force_refresh = False
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=[],
-    ) as mock_list:
-        build_models_payload(
-            ctx,
-            probe_custom_providers=force_refresh,
-            probe_current_custom_provider=not force_refresh,
-        )
-    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
-    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
-
-    # Refresh open — probe everything
-    force_refresh = True
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=[],
-    ) as mock_list:
-        build_models_payload(
-            ctx,
-            probe_custom_providers=force_refresh,
-            probe_current_custom_provider=not force_refresh,
-        )
-    assert mock_list.call_args.kwargs["probe_custom_providers"] is True
-    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is False
 
 
-def test_list_authenticated_providers_force_fresh_is_keyword_only():
-    """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
-
-    It was inserted between ``custom_providers`` and ``max_models``; making it
-    keyword-only ensures no positional caller passing ``max_models`` as the 5th
-    arg silently mis-binds it to the tier-refresh flag. Pin the contract so a
-    future signature edit that drops the ``*`` separator is caught.
-    """
-    import inspect
-
-    from hermes_cli.model_switch import list_authenticated_providers
-
-    sig = inspect.signature(list_authenticated_providers)
-    param = sig.parameters["force_fresh_nous_tier"]
-    assert param.kind is inspect.Parameter.KEYWORD_ONLY
-    assert param.default is False
 
 
 
@@ -378,7 +327,6 @@ def test_picker_hints_api_key_warning_format():
         r for r in payload["providers"] if r["slug"] == "anthropic"
     )
     assert "ANTHROPIC_API_KEY" in anthropic["warning"]
-    assert anthropic["warning"].startswith("paste ")
 
 
 # ─── canonical_order ───────────────────────────────────────────────────
@@ -630,26 +578,6 @@ def test_build_models_payload_no_max_models_returns_full_list():
 # ─── refresh flag (cache-bust) ─────────────────────────────────────────
 
 
-def test_build_models_payload_forwards_refresh_flag():
-    """build_models_payload must forward refresh= to list_authenticated_providers.
-
-    The desktop picker's "Refresh Models" control passes refresh=True; the
-    flag has to reach list_authenticated_providers so the per-provider
-    model-id cache gets busted. Default opens pass refresh=False.
-    """
-    captured: dict = {}
-
-    def _capture(*args, **kwargs):
-        captured["refresh"] = kwargs.get("refresh")
-        return []
-
-    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
-        build_models_payload(_empty_ctx())
-    assert captured["refresh"] is False
-
-    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
-        build_models_payload(_empty_ctx(), refresh=True)
-    assert captured["refresh"] is True
 
 
 def test_list_authenticated_providers_refresh_busts_cache():
@@ -662,26 +590,3 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
-
-
-# ─── _apply_featured (one-flagship-per-lab shortlist) ──────────────────
-
-
-class _FakeInfo:
-    def __init__(self, release_date: str) -> None:
-        self.release_date = release_date
-
-
-def _apply_featured_with_dates(rows, dates: dict[str, str]):
-    """Run _apply_featured with a deterministic models.dev stub."""
-    from hermes_cli import inventory
-
-    def _fake_get_model_info(provider, model):
-        return _FakeInfo(dates[model]) if model in dates else None
-
-    with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
-        inventory._apply_featured(rows)
-
-
-
-

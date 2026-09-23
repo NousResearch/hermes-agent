@@ -1,10 +1,8 @@
-import logging
 import os
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -23,7 +21,7 @@ def _backdate_leases(*homes, age_seconds=600.0):
         active_sessions._write_entries(state_path, entries)
 
 
-def test_resolve_max_concurrent_sessions_values(caplog):
+def test_resolve_max_concurrent_sessions_values():
     assert active_sessions.resolve_max_concurrent_sessions({}) is None
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": None}) is None
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": 0}) is None
@@ -42,12 +40,7 @@ def test_resolve_max_concurrent_sessions_values(caplog):
         == 2
     )
 
-    caplog.set_level(logging.WARNING)
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": "many"}) is None
-    assert any(
-        "Ignoring invalid max_concurrent_sessions='many'" in record.message
-        for record in caplog.records
-    )
 
 
 

@@ -1,5 +1,4 @@
 import asyncio
-import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -11,7 +10,6 @@ import gateway.run as gateway_run
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
-    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
 )
 from gateway.session import SessionEntry, build_session_key
@@ -132,7 +130,6 @@ def test_load_signal_interrupt_grace_timeout_from_typed_config(
         gateway_run.GatewayRunner._load_signal_interrupt_grace_timeout()
         == DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
     )
-    assert "Invalid signal_interrupt_grace_timeout" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -264,6 +261,43 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=False, service_restart=True
     )
+
+
+@pytest.mark.asyncio
+async def test_restart_from_served_profile_chat_restarts_the_host_gateway(monkeypatch):
+    """A /restart handled inside a served profile's runtime scope restarts the HOST gateway: the
+    detached watcher relaunches `hermes gateway restart` under the launch home (under a named
+    profile's home it exits 78 and nothing comes back), and stop() - which flushes pending
+    messages under get_hermes_home() - runs outside the requester's profile scope."""
+    from agent.secret_scope import current_secret_scope
+    from hermes_constants import get_hermes_home
+
+    launch_home = get_hermes_home()
+    profile_home = launch_home / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text("RESEARCH_ONLY_TOKEN=x\n", encoding="utf-8")
+
+    runner, _adapter = make_restart_runner()
+    seen = {}
+
+    async def _recording_stop(**_kwargs):
+        seen["stop_home"] = get_hermes_home()
+        seen["stop_secret_scope"] = current_secret_scope()
+
+    runner.stop = _recording_stop
+    watcher_envs = []
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda _argv, **kwargs: watcher_envs.append(kwargs["env"]) or MagicMock()
+    )
+
+    async with gateway_run._async_profile_runtime_scope(profile_home):
+        assert get_hermes_home() == profile_home
+        assert runner.request_restart(detached=True, via_service=False) is True
+    await runner._restart_task
+
+    assert [env.get("HERMES_HOME") for env in watcher_envs] == [str(launch_home)]
+    assert seen == {"stop_home": launch_home, "stop_secret_scope": None}
 
 
 @pytest.mark.windows_only

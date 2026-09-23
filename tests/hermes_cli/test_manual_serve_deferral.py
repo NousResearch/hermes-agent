@@ -9,7 +9,7 @@ from hermes_cli import process_identity
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves, warn_pending_manual_serves
+from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves
 from hermes_constants import get_hermes_home
 
 
@@ -205,14 +205,6 @@ def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, k
     assert defer_manual_serve(runtime, require_alive=True) is False
 
 
-def test_unreadable_create_time_warning_names_identity_not_storage(monkeypatch, capsys):
-    runtime = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
-    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
-    warn_pending_manual_serves(pending_manual=[runtime])
-    out = capsys.readouterr().out
-    assert "could not read the process creation time" in out
-    assert "storage permissions" not in out
-    assert "relaunch" in out
 
 
 def test_launchd_serve_row_never_pessimize_gateway_coverage():

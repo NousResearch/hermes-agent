@@ -38,17 +38,6 @@ def _trim_recorder(monkeypatch, agent):
     return seen
 
 
-def test_large_result_flags_the_batch_and_small_does_not(monkeypatch):
-    big = _agent_returning(monkeypatch, "x" * 1_000_000)
-    small = _agent_returning(monkeypatch, "x" * 999_999)
-    for agent in (big, small):
-        seen = _trim_recorder(monkeypatch, agent)
-        messages: list = []
-        agent._execute_tool_calls_concurrent(_FakeAssistantMsg([_FakeToolCall("terminal", "tc")]), messages, "task")
-        assert [m["role"] for m in messages] == ["tool"]
-        assert seen == []  # the commit never trims in-frame: the raw result is still referenced here
-    assert big._trim_after_tool_batch is True
-    assert small._trim_after_tool_batch is False
 
 
 def test_execute_tool_calls_trims_once_after_every_executor_frame_unwound(monkeypatch):

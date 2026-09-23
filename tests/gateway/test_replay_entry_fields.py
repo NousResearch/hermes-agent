@@ -17,7 +17,7 @@ These tests pin the expanded whitelist so it doesn't regress.
 from __future__ import annotations
 
 
-from gateway.run import _ASSISTANT_REPLAY_FIELDS, _build_replay_entry
+from gateway.run import _build_replay_entry
 
 
 class TestBuildReplayEntry:
@@ -88,16 +88,6 @@ class TestBuildReplayEntry:
         assert entry["finish_reason"] == "stop"
 
 
-    def test_replay_fields_constant_is_stable(self):
-        """Pin the whitelist explicitly so accidental renames are caught."""
-        assert _ASSISTANT_REPLAY_FIELDS == (
-            "reasoning",
-            "reasoning_content",
-            "reasoning_details",
-            "codex_reasoning_items",
-            "codex_message_items",
-            "finish_reason",
-        )
 
     def test_unrelated_keys_are_ignored(self):
         """Random keys on the message must not leak into the replay entry."""

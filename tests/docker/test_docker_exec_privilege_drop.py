@@ -17,12 +17,12 @@ These tests verify:
    as hermes:hermes — the actual user-visible invariant.
 4. The HERMES_DOCKER_EXEC_AS_ROOT opt-out lets diagnostic sessions keep
    running as root deliberately.
-5. The main CMD path (``docker run <image> …``) is unaffected by the
-   PATH-shim ordering — no recursion, no behavior change.
+
+The main CMD path through the shim is covered by
+test_main_invocation.py::test_chat_subcommand_passthrough.
 """
 
 from __future__ import annotations
-from tests.docker.conftest import docker_exec
 
 import subprocess
 import time
@@ -152,26 +152,6 @@ def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
 
 
 
-def test_main_cmd_path_unaffected(built_image: str) -> None:
-    """The CMD path (docker run <image> <args>) must still work.
-
-    The shim sits at /opt/hermes/bin earliest on PATH; main-wrapper.sh
-    invokes `s6-setuidgid hermes hermes <args>` which resolves `hermes`
-    through PATH. With the shim in the way, this could regress if the
-    shim recurses or interferes with TTY/exit-code propagation.
-
-    `chat --help` is cheap and exercises the full subcommand
-    passthrough path. The duplicate of test_main_invocation's
-    pre-existing test is intentional — that one would have passed
-    pre-shim too; this one specifically guards against shim regressions
-    in the CMD-as-main-program codepath.
-    """
-    r = subprocess.run(
-        ["docker", "run", "--rm", built_image, "chat", "--help"],
-        capture_output=True, text=True, timeout=60,
-    )
-    assert r.returncode == 0, f"CMD path broken by shim: stderr={r.stderr!r}"
-    assert "Traceback" not in r.stderr
 
 
 def test_e2e_login_then_supervised_gateway_can_read_auth(

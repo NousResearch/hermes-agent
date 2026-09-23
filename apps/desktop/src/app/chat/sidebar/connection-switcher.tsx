@@ -25,18 +25,9 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $desktopBoot } from '@/store/boot'
-import {
-  $activeConnectionId,
-  $connectionsRegistry,
-  $pendingConnectionId,
-  initializeConnectionsRegistry,
-  refreshConnectionsRegistry,
-  selectConnection
-} from '@/store/connections'
+import { $activeConnectionId, $connectionsRegistry, $pendingConnectionId, selectConnection } from '@/store/connections'
 import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
-import { isAuxiliaryWindow, isPeerInstanceWindow } from '@/store/windows'
 
 import { ConnectionGlyph } from './connection-glyph'
 
@@ -44,36 +35,11 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
   const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
-  const boot = useStore($desktopBoot)
   const pendingConnectionId = useStore($pendingConnectionId)
   const [searchQuery, setSearchQuery] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const connectionListRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    void refreshConnectionsRegistry().catch(() => undefined)
-
-    // Registry events are local IPC notifications, not remote polling. They
-    // keep a second Settings window or a removal/edit reflected here.
-    const off = window.hermesDesktop?.connections?.onChanged?.(() => {
-      void refreshConnectionsRegistry().catch(() => undefined)
-    })
-
-    return off
-  }, [])
-
-  useEffect(() => {
-    // The primary boot owns its initial config/session fetches. Restoring a
-    // different source before those settle lets a late primary response repaint
-    // the sidebar under the new source label. Switch only after boot completes,
-    // then the normal source reset/refetch remains the final writer. Peer and
-    // auxiliary windows already boot into their intended runtime; replaying the
-    // primary window's app-launch preference would move them away from it.
-    if (!boot.running && !isAuxiliaryWindow() && !isPeerInstanceWindow()) {
-      void initializeConnectionsRegistry().catch(() => undefined)
-    }
-  }, [boot.running])
 
   const connections = useMemo(() => sortConnectionsForDisplay(registry?.connections ?? []), [registry?.connections])
 

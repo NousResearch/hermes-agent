@@ -415,10 +415,12 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
     the opt-in."""
+    from tools.mcp_tool_common import mcp_server_enabled
+
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {
         str(name) for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict) and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+        if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
         from hermes_cli.plugins import get_portable_mcp_server_names_nowait

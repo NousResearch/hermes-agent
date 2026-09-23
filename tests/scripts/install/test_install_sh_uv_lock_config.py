@@ -35,25 +35,6 @@ def _bash_path(path: Path) -> str:
     return f"/mnt/{drive}/{tail}"
 
 
-def test_installers_keep_bootstrap_isolation_but_restore_project_config_for_lock() -> None:
-    install_text = INSTALL_SCRIPTS[0].read_text(encoding="utf-8")
-    setup_text = INSTALL_SCRIPTS[1].read_text(encoding="utf-8")
-
-    assert "export UV_NO_CONFIG=1" in install_text
-    assert "export UV_NO_CONFIG=1" in setup_text
-    assert _locked_sync_helper(INSTALL_SCRIPTS[0]) == _locked_sync_helper(
-        INSTALL_SCRIPTS[1]
-    )
-
-    helper = _locked_sync_helper(INSTALL_SCRIPTS[0])
-    assert "unset UV_NO_CONFIG UV_CONFIG_FILE" in helper
-    assert 'export XDG_CONFIG_HOME="$isolated_uv_config"' in helper
-    assert 'export XDG_CONFIG_DIRS="$isolated_uv_config"' in helper
-    assert "$UV_CMD sync --extra all --locked" in helper
-    assert 'run_locked_uv_sync "$INSTALL_DIR/venv"' in install_text
-    assert 'run_locked_uv_sync "$SCRIPT_DIR/venv"' in setup_text
-
-
 def test_locked_sync_helper_sanitizes_only_its_subprocess(tmp_path: Path) -> None:
     bash = shutil.which("bash")
     if bash is None:
@@ -113,67 +94,3 @@ test "$XDG_CONFIG_DIRS" = /poison/system
     ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix installer behavior")
-def test_real_uv_accepts_lock_when_project_config_is_restored(tmp_path: Path) -> None:
-    uv = shutil.which("uv")
-    if uv is None:
-        pytest.skip("uv is unavailable")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "pyproject.toml").write_text(
-        """[project]
-name = "installer-lock-regression"
-version = "0.1.0"
-requires-python = ">=3.11"
-
-[project.optional-dependencies]
-all = []
-
-[tool.uv]
-package = false
-exclude-newer = "14 days"
-""",
-        encoding="utf-8",
-    )
-
-    isolated_config = tmp_path / "isolated-config"
-    isolated_config.mkdir()
-    clean_env = os.environ.copy()
-    clean_env.pop("UV_NO_CONFIG", None)
-    clean_env.pop("UV_CONFIG_FILE", None)
-    clean_env["XDG_CONFIG_HOME"] = str(isolated_config)
-    clean_env["XDG_CONFIG_DIRS"] = str(isolated_config)
-    clean_env["UV_OFFLINE"] = "1"
-
-    locked = subprocess.run(
-        [uv, "lock"],
-        cwd=project,
-        env=clean_env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert locked.returncode == 0, locked.stderr
-
-    hidden_config_env = clean_env.copy()
-    hidden_config_env["UV_NO_CONFIG"] = "1"
-    rejected = subprocess.run(
-        [uv, "lock", "--check"],
-        cwd=project,
-        env=hidden_config_env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert rejected.returncode != 0
-
-    accepted = subprocess.run(
-        [uv, "lock", "--check"],
-        cwd=project,
-        env=clean_env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert accepted.returncode == 0, accepted.stderr

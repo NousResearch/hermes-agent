@@ -605,6 +605,32 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         "Uncheck Connections in `hermes tools` to turn it off.")
 
 
+def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+    # 45 → 46: the profile editor used to switch an MCP server off with `disabled: true`, a key no
+    # runtime reader consults, so the server kept running. Carry that choice over to `enabled:
+    # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
+    # `disabled: true` wins over an explicit `enabled: true`: `hermes mcp add` writes that, and the
+    # old editor only added `disabled`, so letting `enabled` win would skip nearly every server.
+    from hermes_cli.tools_config import _parse_enabled_flag
+
+    config = read_raw_config()
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return
+    legacy = {n: e for n, e in servers.items() if isinstance(e, dict) and "disabled" in e}
+    turned_off = sorted((n for n, e in legacy.items() if _parse_enabled_flag(e["disabled"], default=False)), key=str)
+    if not turned_off:
+        return  # a falsy `disabled` is inert; the runtime never read it
+    for name in turned_off:
+        del legacy[name]["disabled"]
+        legacy[name]["enabled"] = False
+    names = ", ".join(map(str, turned_off))
+    _commit(
+        config, results, quiet,
+        f"mcp_servers: disabled → enabled: false ({names})",
+        f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -725,6 +751,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
+    # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
+    (46, _migrate_to_46),
 )
 
 

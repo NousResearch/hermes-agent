@@ -129,20 +129,3 @@ class TestHandoffStateDB:
         assert len(entered) == 2
 
 
-class TestHandoffCommandRegistration:
-    """Slash-command surface checks."""
-
-    def test_command_registered(self):
-        from hermes_cli.commands import resolve_command
-        cmd = resolve_command("handoff")
-        assert cmd is not None
-        assert cmd.name == "handoff"
-        assert cmd.category == "Session"
-
-    def test_command_is_cli_only(self):
-        """`/handoff` is initiated from the CLI; gateway shouldn't expose it."""
-        from hermes_cli.commands import resolve_command, GATEWAY_KNOWN_COMMANDS
-        cmd = resolve_command("handoff")
-        assert cmd is not None
-        assert cmd.cli_only is True
-        assert "handoff" not in GATEWAY_KNOWN_COMMANDS

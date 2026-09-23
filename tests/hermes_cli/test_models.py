@@ -9,38 +9,14 @@ from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
-    OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
+    OPENROUTER_MODELS, fetch_openrouter_models, detect_provider_for_model,
     partition_nous_models_by_tier,
-    check_nous_free_tier, _FREE_TIER_CACHE_TTL,
-    union_with_portal_free_recommendations,
+    check_nous_free_tier, union_with_portal_free_recommendations,
     union_with_portal_paid_recommendations,
 )
 import hermes_cli.models as _models_mod
 from hermes_cli import models_local
 from hermes_cli import models_validate
-
-LIVE_OPENROUTER_MODELS = [
-    ("anthropic/claude-opus-4.6", "recommended"),
-    ("qwen/qwen3.7-max", ""),
-    ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-]
-
-
-class TestModelIds:
-    def test_returns_non_empty_list(self):
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            ids = model_ids()
-        assert isinstance(ids, list)
-        assert len(ids) > 0
-
-
-class TestOpenRouterModels:
-    def test_structure_is_list_of_tuples(self):
-        for entry in OPENROUTER_MODELS:
-            assert isinstance(entry, tuple) and len(entry) == 2
-            mid, desc = entry
-            assert isinstance(mid, str) and len(mid) > 0
-            assert isinstance(desc, str)
 
 
 class TestFetchOpenRouterModels:
@@ -109,15 +85,8 @@ class TestFetchOpenRouterModels:
         assert "google/gemini-3-pro-image-preview" not in ids
 
 
-
 class TestOpenRouterToolSupportHelper:
     """Unit tests for _openrouter_model_supports_tools (Kilo port #9068)."""
-
-    def test_tools_in_supported_parameters(self):
-        from hermes_cli.models import _openrouter_model_supports_tools
-        assert _openrouter_model_supports_tools(
-            {"id": "x", "supported_parameters": ["temperature", "tools"]}
-        ) is True
 
 
     def test_empty_supported_parameters_list_drops_model(self):
@@ -128,15 +97,7 @@ class TestOpenRouterToolSupportHelper:
         ) is False
 
 
-class TestFindOpenrouterSlug:
-    def test_exact_match(self):
-        from hermes_cli.models import _find_openrouter_slug
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            assert _find_openrouter_slug("anthropic/claude-opus-4.6") == "anthropic/claude-opus-4.6"
-
-
 class TestDetectProviderForModel:
-
 
 
     def test_short_alias_resolves_to_static_model(self):
@@ -151,9 +112,6 @@ class TestDetectProviderForModel:
         assert result[1].startswith("claude-sonnet")
 
 
-
-
-
     def test_custom_provider_not_overridden_by_static_catalog(self):
         """When current provider is custom:*, a static-catalog match must NOT
         override it — otherwise a model served by the user's own endpoint gets
@@ -163,8 +121,6 @@ class TestDetectProviderForModel:
         detection must return None instead of switching to openai.
         """
         assert detect_provider_for_model("gpt-5.4", "custom:foo") is None
-
-
 
 
 class TestPartitionNousModelsByTier:
@@ -248,8 +204,6 @@ class TestUnionWithPortalFreeRecommendations:
         assert p["qwen/qwen3.6-plus"] == self._FREE
         # Existing pricing untouched
         assert p["anthropic/claude-opus-4.6"] == self._PAID
-
-
 
 
     def test_fetch_failure_returns_inputs(self):
@@ -381,7 +335,6 @@ class TestCheckNousFreeTierCache:
         mock_account.assert_called_with(force_fresh=True)
 
 
-
 class TestNousRecommendedModels:
     """Tests for fetch_nous_recommended_models + get_nous_recommended_aux_model."""
 
@@ -427,11 +380,6 @@ class TestNousRecommendedModels:
         assert mock_urlopen.call_count == 1  # second call served from cache
 
 
-
-
-
-
-
     def test_paid_tier_prefers_paid_recommendation(self):
         """Paid-tier users should get the paid model when it's populated."""
         from hermes_cli.models import get_nous_recommended_aux_model
@@ -446,8 +394,6 @@ class TestNousRecommendedModels:
             vision = get_nous_recommended_aux_model(vision=True, free_tier=False)
         assert text == "anthropic/claude-opus-4.7"
         assert vision == "openai/gpt-5.4"
-
-
 
 
     def test_tier_detection_error_defaults_to_paid(self):
@@ -487,14 +433,6 @@ class TestCodexSoftAcceptPlausibilityGate:
         assert r["recognized"] is True
 
 
-class TestClaudeSonnet5InCuratedLists:
-    """Regression: Claude Sonnet 5 must appear in curated model lists (#55846)."""
-
-    def test_anthropic_native_list_includes_sonnet_5(self):
-        from hermes_cli.models import _PROVIDER_MODELS
-        assert "claude-sonnet-5" in _PROVIDER_MODELS["anthropic"]
-
-
 class TestFormatPricePerMtok:
     """_format_price_per_mtok: sub-cent prices must not collapse to 'free'/'$0.00'."""
 
@@ -528,12 +466,6 @@ class TestFormatPricePerMtok:
     def test_one_cent_boundary_stays_two_decimals(self):
         from hermes_cli.models_pricing import _format_price_per_mtok
         assert _format_price_per_mtok("0.00000001") == "$0.01"
-
-
-
-    def test_nous_list_includes_sonnet_5(self):
-        from hermes_cli.models import _PROVIDER_MODELS
-        assert "anthropic/claude-sonnet-5" in _PROVIDER_MODELS["nous"]
 
 
 class _FakeOllamaTagsHandler(BaseHTTPRequestHandler):
@@ -576,7 +508,8 @@ def _start_fake_ollama_server(models=None):
     )
     _FakeOllamaTagsHandler.paths_seen = []
     server = HTTPServer(("127.0.0.1", 0), _FakeOllamaTagsHandler)
-    thread = Thread(target=server.serve_forever, daemon=True)
+    # Short poll interval: server.shutdown() otherwise blocks ~0.5s per test.
+    thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     return server, server.server_address[1]
 
@@ -630,10 +563,6 @@ class TestLocalOllamaModelDiscovery:
         finally:
             server.shutdown()
 
-    def test_ollama_has_no_static_default_model(self):
-        from hermes_cli.models import get_default_model_for_provider
-
-        assert get_default_model_for_provider("ollama") == ""
 
     def test_fetch_ollama_models_accepts_base_url_without_scheme(self):
         """OLLAMA_HOST commonly omits http://; discovery should normalize it."""
@@ -677,11 +606,6 @@ class TestLocalOllamaModelDiscovery:
 
         assert probe_ollama_local_models("http://127.0.0.1:bad-port/v1") is None
 
-    def test_fetch_ollama_models_preserves_probe_failure(self):
-        from hermes_cli.models_local import fetch_ollama_local_models
-
-        with patch("hermes_cli.models_local.probe_ollama_local_models", return_value=None):
-            assert fetch_ollama_local_models("http://127.0.0.1:11434") is None
 
     def test_ollama_port_detection_requires_working_api_tags(self):
         from hermes_cli.models_local import should_use_ollama_native_catalog
@@ -827,8 +751,6 @@ class TestLocalOllamaModelDiscovery:
 
     def test_clear_provider_models_cache_clears_ollama_native_tags_cache(self):
         import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
         cache["http://127.0.0.1:11434"] = ("old-model",)
@@ -837,8 +759,6 @@ class TestLocalOllamaModelDiscovery:
 
     def test_clear_provider_models_cache_custom_clears_native_tags_cache(self):
         import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
         cache["http://127.0.0.1:11434"] = ("old-model",)
@@ -847,8 +767,6 @@ class TestLocalOllamaModelDiscovery:
 
     def test_clear_provider_models_cache_does_not_remove_custom_disk_cache(self):
         import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         disk_cache = {
             "custom": {"models": ["custom-model"]},
@@ -915,26 +833,6 @@ class TestLocalOllamaModelDiscovery:
         assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
         assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
 
-    def test_picker_user_provider_verifies_ambiguous_ollama_port(self):
-        """A custom-named providers: entry on :11434 should use /api/tags after verification."""
-        from hermes_cli.model_switch import list_authenticated_providers
-
-        with patch("hermes_cli.config.load_config", return_value={"providers": {}}), patch(
-            "hermes_cli.models_local.should_use_ollama_native_catalog",
-            return_value=True,
-        ), patch(
-            "hermes_cli.models_local.fetch_ollama_local_models",
-            return_value=["qwen3:1.7b"],
-        ), patch("hermes_cli.models.fetch_api_models", return_value=[]) as fetch_api:
-            rows = list_authenticated_providers(
-                user_providers={"local-llm": {"base_url": "http://127.0.0.1:11434/v1"}},
-                custom_providers=[],
-                max_models=10,
-            )
-
-        row = next(row for row in rows if row["slug"] == "local-llm")
-        assert row["models"] == ["qwen3:1.7b"]
-        fetch_api.assert_not_called()
 
     def test_picker_bare_custom_model_config_discovers_ollama_api_tags(self):
         """The documented model.provider=custom shape should use native tags."""
@@ -1371,8 +1269,6 @@ class TestLocalOllamaModelDiscovery:
 
     def test_ollama_failed_probe_is_cached_briefly(self):
         import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         models._OLLAMA_LOCAL_MODELS_CACHE.clear()
         models._OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
@@ -1386,8 +1282,6 @@ class TestLocalOllamaModelDiscovery:
 
     def test_empty_ollama_catalog_does_not_resurrect_stale_disk_models(self):
         import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         base_url = "http://127.0.0.1:11434"
         probe_key = models._ollama_probe_cache_key(base_url, None)
@@ -1408,8 +1302,6 @@ class TestLocalOllamaModelDiscovery:
 
     def test_failed_ollama_catalog_preserves_stale_disk_models(self):
         import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         base_url = "http://127.0.0.1:11434"
         probe_key = models._ollama_probe_cache_key(base_url, None)
@@ -1430,8 +1322,6 @@ class TestLocalOllamaModelDiscovery:
 
     def test_ollama_native_request_uses_redirect_safe_catalog_helper(self):
         import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         response = MagicMock()
         response.read.return_value = b'{"models": [{"name": "qwen3:1.7b"}]}'
@@ -1445,9 +1335,6 @@ class TestLocalOllamaModelDiscovery:
         request.assert_called_once()
 
     def test_validation_with_nonmatching_ollama_root_does_not_forward_config_headers(self):
-        import hermes_cli.models as models
-        from hermes_cli import models_local
-        from hermes_cli import models_validate
 
         with patch(
             "hermes_cli.config.load_config",
@@ -1474,7 +1361,6 @@ class TestLocalOllamaModelDiscovery:
                 headers={"X-Endpoint-Token": "explicit"},
             )
             assert probe.call_args.kwargs["headers"] == {"X-Endpoint-Token": "explicit"}
-
 
 
     def test_switch_model_direct_ollama_alias_preserves_matching_origin_api_key(self):

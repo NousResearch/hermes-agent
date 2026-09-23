@@ -48,6 +48,7 @@ class GatewayProfileReconcileMixin:
     _served_profile_homes: Optional[Dict[str, "Path"]] = None
     _served_profile_signatures: Optional[Dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
+    _profile_own_gateway_warned: Optional[set[str]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -105,6 +106,20 @@ class GatewayProfileReconcileMixin:
             active = getattr(self, "_primary_profile_name", None) or "default"
             current = {str(name): Path(home) for name, home in _multiplex_profile_homes(self.config)}
             known = dict(self._served_profile_homes or {})
+            from gateway.status import live_gateway_pid_for_home
+
+            blocked = set()
+            warned = self._profile_own_gateway_warned or set()
+            for name in list(current):
+                if name == active or name in known:
+                    continue
+                if live_gateway_pid_for_home(current[name]) is not None:
+                    blocked.add(name)
+                    if name not in warned:
+                        logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
+                                       "stop it before the host can serve this profile", name)
+                    del current[name]
+            self._profile_own_gateway_warned = blocked
             sigs = self._served_profile_signatures or {}
             added = [n for n in current if n not in known and n != active]
             removed = [n for n in known if n not in current and n != active]
@@ -290,8 +305,15 @@ def _for_each_served_profile(runner, body) -> None:
             body("default")
         return
     for profile_name, profile_home in _multiplex_profile_homes(config):
-        with _profile_runtime_scope(Path(profile_home)):
-            body(str(profile_name))
+        # One boundary per profile: callers (``_housekeeping_chore``) catch only at the tick level,
+        # so one profile's unreadable store or broken .env abandoned every profile after it, on
+        # every tick. The launch store failing is reachable (``_init_session_db`` tolerates it and
+        # keeps running), and serve defers every served profile's sweep to this loop.
+        try:
+            with _profile_runtime_scope(Path(profile_home)):
+                body(str(profile_name))
+        except Exception as exc:
+            logger.debug("Housekeeping for profile %s skipped: %s", profile_name, exc)
 
 
 def profile_scoped_chore(runner, chore):

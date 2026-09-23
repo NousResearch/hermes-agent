@@ -32,6 +32,10 @@ The catalog complements — it does not replace — the existing
 normal plugin under the hood; the catalog just adds discovery and a review
 layer on top.
 
+During desktop onboarding, the setup guide can also offer catalog plugins and skills through an
+approval card. Each row installs into your `default` profile only when you click Install, at the
+same reviewed commit this page describes.
+
 ## What's in an entry
 
 Each catalog entry is a small YAML file in the
@@ -49,6 +53,8 @@ directory of the hermes-agent repository, declaring:
 | `capabilities` | Declared tools, hooks, middleware, and required env vars |
 | `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
 | `platforms` | OS restrictions, empty = all (optional) |
+| `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
+| `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official entries only (optional, default `false`) |
 | `docs_url` | External documentation link (optional) |
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
 | `image` | Banner image for the catalog card and the plugin page hero, shown at 2:1 (1200×600 works; other shapes are centre-cropped); an `https` URL on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` (optional). Pin it to the entry's commit (`raw.githubusercontent.com/owner/repo/<sha>/...`) so it never changes under the review |

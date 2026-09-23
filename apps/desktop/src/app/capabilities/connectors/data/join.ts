@@ -11,7 +11,7 @@ import type {
 
 import type { McpCatalogEntry } from '@/hermes'
 import { connectorTitle } from '@/lib/connector-tools'
-import type { McpServers } from '@/lib/mcp-servers'
+import { type McpServers, serverEnabled } from '@/lib/mcp-servers'
 
 import { canAuthenticate } from '../../mcp/mcp-status'
 import { toolRows } from '../derive-tools'
@@ -237,7 +237,7 @@ export function joinLocalServers({ catalog, servers, status, toolCounts, usage }
       canAuthenticate: canAuthenticate(entry, raw),
       connectorSlug: text(bundled?.connector_slug),
       description: text(bundled?.description),
-      enabled: entry.enabled !== false,
+      enabled: serverEnabled(entry),
       inCatalog: bundled !== undefined,
       name,
       status: raw,

@@ -848,16 +848,10 @@ export const en: Translations = {
         reviewedHeading: 'Reviewed catalog entry',
         reviewedIntro:
           'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
-        restartToApply: 'Restart the gateway for the plugin to take effect.',
-        restartNow: 'Restart gateway',
-        connectServers: (name, n) =>
-          n === 1
-            ? `${name} installed. Its MCP server is not connected yet.`
-            : `${name} installed. Its ${n} MCP servers are not connected yet.`,
-        connectNow: 'Connect now',
-        connectSub: 'Open chats re-send their context',
-        connectFailed: 'Could not connect the plugin’s MCP servers.',
-        liveNow: name => `${name} installed and active.`,
+        toolsConnected: n => (n === 1 ? '1 tool connected' : `${n} tools connected`),
+        skillsReady: names => (names.length === 1 ? `skill ${names[0]} ready` : `${names.length} skills ready`),
+        nextChat: 'more tools available in your next chat',
+        serverNotConnected: (server, reason) => `MCP server ${server} is not connected${reason ? `: ${reason}` : '.'}`,
         missingEnvAction: 'Set it up',
         alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
@@ -3094,6 +3088,13 @@ export const en: Translations = {
     projectEmpty: 'No sessions yet',
     projectLoadFailed: 'Could not load sessions',
     noSessions: 'No sessions yet',
+    storageCorrupt: {
+      title: 'Session database is damaged',
+      body: (profiles: string) =>
+        `Hermes can't read all of the session history for ${profiles}. Chats missing from this list were not deleted; the file they are stored in is damaged.`,
+      action: 'Quit Hermes on this profile, then inspect the file without changing it, or restore a snapshot:',
+      guide: 'Recovery guide'
+    },
     noFilterMatches: 'No sessions match these filters',
     projects: {
       showAllSessions: 'Show all sessions',
@@ -4599,6 +4600,29 @@ export const en: Translations = {
       lateAnswerTip: 'Draft this answer as a follow-up message',
       lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
+    catalogInstall: {
+      preparing: 'Preparing the install…',
+      install: 'Install',
+      advanced: 'Advanced',
+      skip: 'Skip',
+      installing: 'Installing…',
+      installed: 'Installed',
+      notInstalled: 'Not installed',
+      failed: 'Failed',
+      showNames: 'show names',
+      hideNames: 'hide names',
+      skill: name => `skill ${name}`,
+      kind: { plugin: 'plugin', skill: 'skill' },
+      tier: { official: 'official', community: 'community' },
+      targetProfile: profile => `Installs into your ${profile} profile`,
+      sendFailed: 'Could not send your answer. Try again.',
+      commitLabel: 'Commit',
+      subdirLabel: 'Folder',
+      securityHeading: 'Security',
+      scan: { passed: 'Scan passed', warnings: 'Scan found warnings', failed: 'Scan failed' },
+      requirementsLabel: 'Requires',
+      credentialsHeading: 'Credentials'
+    },
     mcpSetup: {
       installTitle: 'Add MCP servers',
       enableTitle: 'Enable MCP servers',
@@ -4729,6 +4753,7 @@ export const en: Translations = {
       'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
     sudoCommandUnavailable:
       'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
+    sudoInstallDesc: 'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',

@@ -341,6 +341,29 @@ class TestV1Parts:
         assert "hello.txt" in result
         assert "base64" in result
 
+    def test_extract_inline_media_handles_legacy_bytes_part(self):
+        msg = {"parts": [
+            {"kind": "file", "file": {"name": "report.xlsx", "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "bytes": "aGVsbG8="}},
+        ]}
+        media = protocol.extract_inline_media(msg)
+        assert len(media) == 1
+        assert media[0]["source"] == "inline"
+        assert media[0]["filename"] == "report.xlsx"
+        assert media[0]["media_type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        assert media[0]["bytes"] == b"hello"
+
+    def test_extract_inline_media_handles_url_part(self):
+        msg = {"parts": [
+            {"url": "https://example.com/report.pdf", "filename": "report.pdf", "mediaType": "application/pdf"},
+        ]}
+        media = protocol.extract_inline_media(msg)
+        assert media == [{
+            "source": "url",
+            "url": "https://example.com/report.pdf",
+            "filename": "report.pdf",
+            "media_type": "application/pdf",
+        }]
+
     def test_context_id_extracted_from_message(self):
         params = {"message": protocol.text_message(protocol.ROLE_USER, "x", context_id="ctx-in-msg")}
         assert protocol.extract_context_id(params) == "ctx-in-msg"
@@ -999,6 +1022,8 @@ class TestInboundRoundTrip:
 
         def reply_fn(event):
             received["text"] = event.text
+            received["media_urls"] = list(event.media_urls)
+            received["media_types"] = list(event.media_types)
             return "got it"
 
         adapter, base = _make_live_adapter(monkeypatch, reply_fn=reply_fn)
@@ -1024,6 +1049,43 @@ class TestInboundRoundTrip:
             assert "report.pdf" in received["text"]
             assert "Q3" in received["text"]
             assert "42" in received["text"]
+            assert received["media_urls"] == ["https://example.com/report.pdf"]
+            assert received["media_types"] == ["application/pdf"]
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_inline_file_bytes_become_media_attachment(self, monkeypatch):
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+        received = {}
+
+        def reply_fn(event):
+            received["text"] = event.text
+            received["media_urls"] = list(event.media_urls)
+            received["media_types"] = list(event.media_types)
+            return "got it"
+
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=reply_fn)
+
+        async def run():
+            assert await adapter.connect() is True
+            msg = {
+                "role": protocol.ROLE_USER, "messageId": "m-inline", "contextId": "ctx-inline",
+                "parts": [
+                    {"kind": "file", "file": {"name": "report.xlsx", "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "bytes": "aGVsbG8="}},
+                ],
+            }
+            resp = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "1", "method": "message/send",
+                "params": {"message": msg},
+            })
+            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            assert len(received["media_urls"]) == 1
+            assert received["media_types"] == ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+            assert "report.xlsx" in received["text"]
+            assert "It is saved at:" in received["text"]
             await adapter.disconnect()
 
         asyncio.run(run())
@@ -1628,22 +1690,28 @@ class TestV1SpecRegressionFixes:
         fakebin = tmp_path / "bin"
         fakebin.mkdir()
         calls = tmp_path / "calls.jsonl"
-        hermes = fakebin / "hermes"
-        hermes.write_text("""#!/usr/bin/env python3
-import json, os, sqlite3, sys, time
-calls = os.environ['FAKE_HERMES_CALLS']
-with open(calls, 'a') as f:
-    f.write(json.dumps(sys.argv[1:]) + '\\n')
-home = os.environ['HERMES_HOME']
-con = sqlite3.connect(os.path.join(home, 'state.db'))
-if '--resume' not in sys.argv:
-    con.execute('INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)', ('sess-1', 'a2a', time.time(), None))
-    con.commit()
-print('fake reply')
-""")
-        hermes.chmod(0o755)
-        monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
-        monkeypatch.setenv("FAKE_HERMES_CALLS", str(calls))
+
+        import subprocess as _subprocess
+        import time as _time
+
+        def fake_subprocess_run(argv, capture_output, text, encoding, errors, timeout, env, check, stdin):
+            calls.parent.mkdir(parents=True, exist_ok=True)
+            with open(calls, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(list(argv[1:])) + '\n')
+            home = env['HERMES_HOME']
+            con = sqlite3.connect(os.path.join(home, 'state.db'))
+            try:
+                if '--resume' not in argv:
+                    con.execute(
+                        'INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)',
+                        ('sess-1', 'a2a', _time.time(), None),
+                    )
+                    con.commit()
+            finally:
+                con.close()
+            return _subprocess.CompletedProcess(argv, 0, stdout='fake reply\n', stderr='')
+
+        monkeypatch.setattr('plugins.platforms.a2a.adapter.subprocess.run', fake_subprocess_run)
         monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(profile_home))
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={

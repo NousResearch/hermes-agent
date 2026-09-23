@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 import sqlite3
 import subprocess
 import threading
@@ -23,7 +24,7 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_media_bytes
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.config import Platform
 from gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret as _get_scoped_secret
@@ -39,6 +40,7 @@ _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
+_A2A_INLINE_KIND_BY_PREFIX = (("image/", "image"), ("video/", "video"), ("audio/", "audio"))
 
 _ok = protocol.jsonrpc_result
 _err = protocol.jsonrpc_error
@@ -125,6 +127,30 @@ def _daemon_thread(target, name: str) -> threading.Thread:
     t = threading.Thread(target=target, name=name, daemon=True)
     t.start()
     return t
+
+
+def _cache_inline_attachment(media: dict) -> Optional[dict[str, str]]:
+    data = media.get("bytes")
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        return None
+    media_type = str(media.get("media_type") or "application/octet-stream")
+    filename = str(media.get("filename") or "")
+    default_kind = next((kind for prefix, kind in _A2A_INLINE_KIND_BY_PREFIX if media_type.startswith(prefix)), None)
+    cached = cache_media_bytes(bytes(data), filename=filename, mime_type=media_type, default_kind=default_kind)
+    if not cached:
+        return None
+    return {"path": cached.path, "media_type": cached.media_type}
+
+
+def _a2a_document_note(path: str, media_type: str, filename: str) -> str:
+    display = filename or Path(path).name
+    safe_display = re.sub(r'[^\w.\- ]', '_', display)
+    return (
+        f"[The user sent a file attachment via A2A: '{safe_display}'. It is saved at: {path}. "
+        f"MIME type: {media_type or 'application/octet-stream'}. "
+        f"Its content is not inlined here. If the request depends on this file, inspect it yourself "
+        f"using the available file/document tools instead of asking the user to re-upload it.]"
+    )
 
 
 def _safe_context_slug(value: str, max_len: int = 96) -> str:
@@ -530,8 +556,20 @@ class A2AAdapter(BasePlatformAdapter):
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
         agent = agent or self._agents[""]
         text = protocol.extract_text(params)
+        inline_media = protocol.extract_inline_media(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        for media in inline_media:
+            if media.get("source") == "url":
+                media_urls.append(str(media.get("url") or ""))
+                media_types.append(str(media.get("media_type") or "application/octet-stream"))
+                continue
+            cached = _cache_inline_attachment(media)
+            if cached:
+                media_urls.append(cached["path"])
+                media_types.append(cached["media_type"])
         turn = self._turns.track(context_id)
         max_turns = protocol.max_pingpong_turns()
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
@@ -540,8 +578,13 @@ class A2AAdapter(BasePlatformAdapter):
             logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)
             return self._end_task(rec, protocol.STATE_REJECTED, f"Anti-loop protection: context {context_id} exceeded "
                                   f"{max_turns} turns. Start a new context or increase A2A_MAX_PINGPONG_TURNS.")
-        if not text:
+        if not text and not media_urls:
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
+        if media_urls:
+            for path, media_type, media in zip(media_urls, media_types, inline_media):
+                if media.get("source") == "inline":
+                    note = _a2a_document_note(path, media_type, str(media.get("filename") or ""))
+                    text = f"{note}\n\n{text}" if text else note
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)
         protocol.persist_message(context_id, "user", text, task_id)
@@ -559,6 +602,7 @@ class A2AAdapter(BasePlatformAdapter):
             return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.")
         fut = self._add_pending(task_id, context_id)
         event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id,
+                             media_urls=media_urls, media_types=media_types, media_text_inlined=[False] * len(media_urls),
                              source=self.build_source(chat_id=context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
         try:
             asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)

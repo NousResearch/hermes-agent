@@ -362,10 +362,48 @@ def _model_level_key_env(provider_id: str) -> str:
     return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
 
 
+def _resolve_copilot_pooled_api_token() -> tuple[str, str]:
+    """Exchange the selected Copilot pool token and retain its endpoint."""
+    try:
+        from agent.credential_pool import load_pool
+        from hermes_cli.copilot_auth import get_copilot_api_token
+
+        pool = load_pool("copilot")
+        if not pool or not pool.has_credentials():
+            return "", ""
+        entry = pool.peek()
+        candidates = [entry] if entry is not None else []
+        for extra in pool.entries():
+            if extra is not None and all(extra is not candidate for candidate in candidates):
+                candidates.append(extra)
+        for entry in candidates:
+            raw_token = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+            if not raw_token:
+                continue
+            try:
+                api_token, base_url = get_copilot_api_token(raw_token)
+            except ValueError as exc:
+                logger.warning("Copilot pooled token validation failed: %s", exc)
+                continue
+            if api_token:
+                return api_token, (base_url or "").strip()
+    except Exception:
+        logger.debug("Copilot credential-pool resolution failed", exc_info=True)
+    return "", ""
+
+
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
-        # The dedicated copilot auth module does proper token validation/exchange.
+        # Copilot's device flow stores a raw GitHub OAuth token. Exchange the
+        # highest-priority pooled credential first so an explicit OAuth login
+        # wins over discovered environment and gh CLI tokens.
+        api_token, _base_url = _resolve_copilot_pooled_api_token()
+        if api_token:
+            return api_token, "credential_pool:copilot"
+
+        # The dedicated Copilot auth module handles environment and gh CLI
+        # discovery, then exchanges its raw token for a short-lived API token.
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
@@ -2110,10 +2148,12 @@ def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
 
 
 def _copilot_runtime_base_url(api_key: str, default: str, env_url: str) -> str:
-    """Copilot's API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
-    authoritative for Enterprise / proxied accounts; falls back to the registry default."""
+    """Copilot's API base comes from the selected credential's exchange response."""
     base_url = _default_api_key_base_url(api_key, default, env_url)
     try:
+        pooled_api_token, pooled_base_url = _resolve_copilot_pooled_api_token()
+        if pooled_api_token and pooled_base_url:
+            return pooled_base_url
         from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
         raw_token, _ = resolve_copilot_token()
         if raw_token:

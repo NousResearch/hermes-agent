@@ -26,7 +26,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "copilot", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
@@ -214,6 +214,19 @@ def _qwen_oauth_login(args) -> dict:
     return creds
 
 
+def _copilot_oauth_login(args) -> dict:
+    """Run GitHub device authorization and retain its raw OAuth token.
+
+    Copilot session tokens are short-lived and are exchanged only at runtime.
+    """
+    from hermes_cli.copilot_auth import copilot_device_code_login
+
+    token = copilot_device_code_login()
+    if not token:
+        raise SystemExit("Copilot OAuth login did not return credentials.")
+    return {"access_token": token}
+
+
 @dataclass(frozen=True)
 class _OAuthAddSpec:
     """Per-provider parameters for the generic ``hermes auth add <provider> --type oauth`` path."""
@@ -242,6 +255,11 @@ def _codex_pool_source(creds: dict) -> str:
 
 
 _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
+    "copilot": _OAuthAddSpec(
+        login=_copilot_oauth_login,
+        token=lambda creds: creds["access_token"],
+        source=SOURCE_MANUAL_DEVICE_CODE,
+        fields=lambda creds, provider: {"base_url": _provider_base_url(provider)}),
     "anthropic": _OAuthAddSpec(
         login=_anthropic_oauth_login,
         token=lambda creds: creds["access_token"],

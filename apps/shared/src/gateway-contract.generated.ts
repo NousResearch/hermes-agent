@@ -2826,6 +2826,7 @@ export interface SessionResumeParams {
   omit_messages?: boolean
   eager_build?: boolean
   close_on_disconnect?: boolean
+  inline_images?: boolean
 }
 export interface SessionResumeResult {
   session_id: string

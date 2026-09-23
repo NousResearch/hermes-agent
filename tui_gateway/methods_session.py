@@ -516,6 +516,9 @@ class _Resume:
         self.lazy, self.defer_history = _flag(params, "lazy"), _flag(params, "defer_history")
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = _flag(params, "omit_messages"), _flag(params, "eager_build")
+        # Image parts stay inlined (data URI) unless the caller opts out: a remote client re-reading a
+        # stored transcript pays for every attachment the conversation ever carried, on each reconnect.
+        self.inline_images = is_truthy_value(params.get("inline_images", True))
 
     def mint(self, prompts: bool = True) -> tuple:
         """``(runtime sid, source, cwd)`` for the live record this resume registers (+ gateway prompts on)."""
@@ -715,7 +718,8 @@ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
         return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                    transport=current_transport() or _stdio_transport)
+                                    transport=current_transport() or _stdio_transport,
+                                    inline_images=ctx.inline_images)
     payload["resumed"] = ctx.target
     if ctx.defer_history:
         payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),

@@ -29906,6 +29906,11 @@
             "default": false,
             "title": "Close On Disconnect",
             "type": "boolean"
+          },
+          "inline_images": {
+            "default": true,
+            "title": "Inline Images",
+            "type": "boolean"
           }
         },
         "required": [

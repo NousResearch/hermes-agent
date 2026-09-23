@@ -108,21 +108,25 @@ def _content_display_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _coerce_message_text(content: Any) -> str:
+def _coerce_message_text(content: Any, *, image_urls: bool = True) -> str:
     """Render ``message['content']`` (str, parts list, or one structured dict) as a plain string. Image parts
     keep their URL inline so the desktop's ``extractEmbeddedImages`` and the resume payload agree with the
-    cached message (else the inline image flashed, then vanished); other shapes become a placeholder."""
+    cached message (else the inline image flashed, then vanished); other shapes become a placeholder.
+
+    *image_urls* False renders the ``[image]`` reference form instead of the data URI, for callers whose
+    transport pays for every byte (a remote client re-reading a transcript). Default True is the local
+    contract described above."""
     if isinstance(content, list):
         chunks: list[str] = []
         for part in content:
             if isinstance(part, str) or (isinstance(part, dict) and isinstance(part.get("text"), str)):
                 chunks.append(part if isinstance(part, str) else part["text"])
             elif isinstance(part, dict) and part.get("type"):
-                rendered = _history_dict_text(part, image_urls=True)
+                rendered = _history_dict_text(part, image_urls=image_urls)
                 chunks.append(rendered if part["type"] in _HISTORY_TEXT_KINDS else f"\n{rendered}")
         return "".join(chunks)
     if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=True)
+        return _history_dict_text(content, image_urls=image_urls)
     return "" if content is None else str(content)
 
 
@@ -192,7 +196,10 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
-def _history_to_messages(history: list[dict]) -> list[dict]:
+def _history_to_messages(history: list[dict], *, image_urls: bool = True) -> list[dict]:
+    """``image_urls`` False renders image parts in the ``[image]`` reference form instead of
+    inlining their data URI — the same branch :func:`_coerce_message_text` already had, for a
+    caller that asks not to pay for attachment bytes on every read (see ``session.resume``)."""
     messages = []
     tool_call_args = {}
     for m in history:
@@ -205,7 +212,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
         if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
+        content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":

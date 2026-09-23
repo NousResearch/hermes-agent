@@ -651,6 +651,15 @@ class CLIStreamMixin:
             self._flush_stream()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        # Focus view suppresses this line too, but still records it for the
+        # post-turn hidden-line recovery indicator. Check focus before "off":
+        # /focus intentionally snaps tool_progress_mode to "off".
+        if getattr(self, "_focus_view_enabled", False):
+            try:
+                self._note_focus_hidden_line(tool_name)
+            except Exception:
+                pass
+            return
         if self.tool_progress_mode == "off":
             return
         announced = self.__dict__.setdefault("_tool_gen_announced", set())

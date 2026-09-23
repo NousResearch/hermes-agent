@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +65,17 @@ def test_faster_whisper_is_not_a_base_dependency():
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
 _STARLETTE_CVE_FLOOR = (1, 0, 1)
+# Advisory floors from `hermes security audit` / OSV on supported installs.
+# httpx2/httpcore2 2.7.0: GHSA-7mj9-2mp8-4m2p and related SOCKS/TLS,
+# decompression, SSE, and multipart findings. tornado 6.5.7:
+# GHSA-8423-8fgw-73vq and related request-parsing findings. setuptools
+# 79.0.1: GHSA-h35f-9h28-mq5c. The listed floors are the first clean
+# releases; pins may be newer.
+_HTTPX2_ADVISORY_FLOOR = Version("2.12.0")
+_HTTPCORE2_ADVISORY_FLOOR = Version("2.12.0")
+_TORNADO_ADVISORY_FLOOR = Version("6.5.8")
+_SETUPTOOLS_ADVISORY_FLOOR = Version("83.0.0")
+_HTTPX2_PIN_EXTRAS = ("mcp", "computer-use", "dev")
 _UPDATE_DOWNGRADE_GUARD_FLOORS = {
     # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
     # reviewed CVE pins must not slide back to stale versions that downgrade
@@ -207,6 +219,127 @@ def _pyproject_pinned_specs():
     for extra in data["project"].get("optional-dependencies", {}).values():
         specs.extend(extra)
     return specs
+
+
+def _assert_versions_meet_floor(package: str, versions, floor: Version, source: str) -> None:
+    assert versions, f"{package} not found in {source}"
+    below = sorted(v for v in versions if Version(v) < floor)
+    assert not below, (
+        f"{source} resolves {package} to {sorted(versions)}, below advisory "
+        f"floor {floor} — bump the exact pin and regenerate uv.lock"
+    )
+
+
+def test_httpx2_declared_pins_meet_advisory_floor():
+    """Every Hermes-declared httpx2 pin must be at the OSV-clean floor.
+
+    mcp 2.0.0 only requires httpx2>=2.5.0, so a missing or stale exact pin
+    lets 2.7.0 remain installed. The mcp, computer-use, and dev extras plus
+    LAZY_DEPS must all sit at 2.12.0 or newer.
+    """
+    extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["optional-dependencies"]
+    found = {}
+    for extra, specs in extras.items():
+        pins = _pins_from_specs(specs)
+        if "httpx2" in pins:
+            found[extra] = pins["httpx2"]
+    for extra in _HTTPX2_PIN_EXTRAS:
+        assert extra in found, (
+            f"[{extra}] must exact-pin httpx2; mcp pulls it with only >=2.5.0"
+        )
+        _assert_versions_meet_floor(
+            "httpx2", found[extra], _HTTPX2_ADVISORY_FLOOR, f"pyproject [{extra}]"
+        )
+    lazy = _pins_from_specs(_lazy_deps_pinned_specs())
+    _assert_versions_meet_floor(
+        "httpx2", lazy.get("httpx2", set()), _HTTPX2_ADVISORY_FLOOR, "LAZY_DEPS"
+    )
+
+
+def test_locked_httpx2_and_httpcore2_meet_advisory_floor():
+    """uv.lock must resolve httpx2 and httpcore2 at the OSV-clean floors.
+
+    httpx2 2.12.0 exact-requires httpcore2==2.12.0, so a lock that upgrades
+    one without the other is still a finding.
+    """
+    _assert_versions_meet_floor(
+        "httpx2", _locked_versions("httpx2"), _HTTPX2_ADVISORY_FLOOR, "uv.lock"
+    )
+    _assert_versions_meet_floor(
+        "httpcore2",
+        _locked_versions("httpcore2"),
+        _HTTPCORE2_ADVISORY_FLOOR,
+        "uv.lock",
+    )
+
+
+def test_webhook_extras_pin_tornado_above_advisory_floor():
+    """python-telegram-bot[webhooks] requires tornado~=6.5, which includes 6.5.7.
+
+    Without a direct pin, `hermes update` reinstalls PTB and leaves an
+    already-installed 6.5.7 in place. Every extra that ships the webhooks
+    extra must exact-pin tornado at 6.5.8 or newer.
+    """
+    extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["optional-dependencies"]
+    webhook_extras = []
+    tornado_pins = {}
+    for extra, specs in extras.items():
+        for spec in specs:
+            name = _distribution_name(spec)
+            if name == "python-telegram-bot" and "[webhooks]" in spec.replace(" ", ""):
+                webhook_extras.append(extra)
+            if name == "tornado":
+                assert "==" in spec, f"[{extra}] must exact-pin tornado, got {spec!r}"
+                tornado_pins[extra] = spec.split("==", 1)[1].split(";", 1)[0].strip()
+    assert webhook_extras, "expected at least one python-telegram-bot[webhooks] extra"
+    missing = [extra for extra in webhook_extras if extra not in tornado_pins]
+    assert not missing, (
+        "extras that ship python-telegram-bot[webhooks] must exact-pin tornado "
+        f"so stale 6.5.7 cannot survive an update: {missing}"
+    )
+    for extra, ver in tornado_pins.items():
+        _assert_versions_meet_floor(
+            "tornado", {ver}, _TORNADO_ADVISORY_FLOOR, f"pyproject [{extra}]"
+        )
+
+
+def test_locked_tornado_meets_advisory_floor():
+    """Hash-verified installs must not resolve tornado below 6.5.8."""
+    _assert_versions_meet_floor(
+        "tornado", _locked_versions("tornado"), _TORNADO_ADVISORY_FLOOR, "uv.lock"
+    )
+
+
+def test_setuptools_pins_meet_advisory_floor():
+    """Where Hermes controls setuptools, the pin and lock must stay at 83.0.0+.
+
+    Stale venvs can still carry 79.0.1 (GHSA-h35f-9h28-mq5c). Fresh installs
+    and lock-backed updates must not.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = set()
+    for req in data.get("build-system", {}).get("requires", []):
+        if _distribution_name(req) == "setuptools":
+            assert "==" in req, f"build-system must exact-pin setuptools, got {req!r}"
+            declared.add(req.split("==", 1)[1].split(";", 1)[0].strip())
+    extras = data["project"].get("optional-dependencies", {})
+    for extra, specs in extras.items():
+        pins = _pins_from_specs(specs)
+        if "setuptools" in pins:
+            declared.update(pins["setuptools"])
+    _assert_versions_meet_floor(
+        "setuptools", declared, _SETUPTOOLS_ADVISORY_FLOOR, "pyproject.toml"
+    )
+    _assert_versions_meet_floor(
+        "setuptools",
+        _locked_versions("setuptools"),
+        _SETUPTOOLS_ADVISORY_FLOOR,
+        "uv.lock",
+    )
 
 
 def _lazy_deps_pinned_specs():
@@ -398,6 +531,11 @@ _REQUIRED_SECURITY_PINS = {
         "platform.slack",
         "platform.matrix",
         "platform.teams",
+    },
+    # python-telegram-bot[webhooks] depends on tornado~=6.5, which includes
+    # 6.5.7. Reinstalling PTB alone leaves that version installed.
+    "tornado": {
+        "platform.telegram",
     },
 }
 

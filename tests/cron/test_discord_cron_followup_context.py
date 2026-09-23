@@ -316,3 +316,11 @@ async def test_active_followup_observes_opted_in_delivery(conversation, route, r
     assert BRIEF not in last_input
     assert str([m.get("api_content", m.get("content")) for m in
                 runner.session_store.load_transcript(session.session_id)]).count(BRIEF) == 1
+
+
+@pytest.mark.parametrize("db", [None, object()], ids=["no-session-db", "db-without-ledger"])
+def test_attach_without_delivery_ledger_leaves_input_unchanged(db):
+    from agent.turn_facade_lease import attach_pending_delivery_context
+
+    agent = SimpleNamespace(_session_db=db, session_id="s1")
+    assert attach_pending_delivery_context(agent, "hello", {"k": 1}) == ("hello", {"k": 1})

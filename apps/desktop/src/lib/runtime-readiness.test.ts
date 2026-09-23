@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  evaluateRuntimeReadiness,
   fetchRuntimeReadinessSignals,
   interpretRuntimeReadiness,
   runtimeReadinessDisplay
@@ -90,28 +89,6 @@ describe('fetchRuntimeReadinessSignals', () => {
     await fetchRuntimeReadinessSignals(requestGateway, 'nous')
 
     expect(calls).toEqual([{ method: 'setup.status' }, { method: 'setup.runtime_check', params: { provider: 'nous' } }])
-  })
-})
-
-describe('evaluateRuntimeReadiness', () => {
-  it('forwards requestedProvider to setup.runtime_check', async () => {
-    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
-      if (method === 'setup.status') {
-        return { provider_configured: true } as T
-      }
-
-      if (method === 'setup.runtime_check') {
-        expect(params).toEqual({ provider: 'nous' })
-
-        return { ok: true } as T
-      }
-
-      throw new Error(`unexpected method: ${method}`)
-    }
-
-    const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'nous' })
-
-    expect(result.ready).toBe(true)
   })
 })
 

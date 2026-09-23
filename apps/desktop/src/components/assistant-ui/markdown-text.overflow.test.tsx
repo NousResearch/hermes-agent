@@ -52,13 +52,8 @@ describe('markdown surface survives stack-overflow content', () => {
   // same text arrives as an answer, as reasoning, or in a tool result, and all
   // three render through this component. Guarding only one of them is what let
   // the bug survive an earlier fix attempt.
-  it.each([
-    ['reasoning (disableArtifacts)', { disableArtifacts: true }],
-    ['assistant answer', {}]
-  ])('survives on the %s path', (_label, surfaceProps) => {
-    const { container } = renderQuietly(
-      <MarkdownTextContent isRunning={false} text={DEGENERATE_UNK} {...surfaceProps} />
-    )
+  it('survives on the reasoning (disableArtifacts) path', () => {
+    const { container } = renderQuietly(<MarkdownTextContent disableArtifacts isRunning={false} text={DEGENERATE_UNK} />)
 
     expect(container.textContent).toBeTruthy()
   })

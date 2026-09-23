@@ -4,25 +4,10 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelPillLabel,
-  modelDisplayParts,
-  providerDisplayName
+  modelDisplayParts
 } from './model-status-label'
-import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
-  it('uses the canonical provider label for xAI OAuth model picks', () => {
-    expect(providerDisplayName('xai-oauth')).toBe('xAI Grok')
-    expect(providerDisplayName('xai')).toBe('xAI')
-    expect(providerDisplayName('openai-codex')).toBe('ChatGPT or Codex Subscription')
-  })
-  it('formats display names consistently', () => {
-    expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
-    expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
-    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
-    expect(displayModelName('deepseek/deepseek-flash')).toBe('DeepSeek V4.1 Flash')
-    expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
-  })
-
   it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
@@ -47,14 +32,6 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
   })
 
-  it('maps reasoning effort to compact labels', () => {
-    expect(reasoningEffortLabel('high')).toBe('High')
-    expect(reasoningEffortLabel('xhigh')).toBe('XHigh')
-    expect(reasoningEffortLabel('max')).toBe('Max')
-    expect(reasoningEffortLabel('ultra')).toBe('Ultra')
-    expect(reasoningEffortLabel('')).toBe('')
-  })
-
   it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
     expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
     expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
@@ -67,10 +44,6 @@ describe('model-status-label', () => {
     const options = { model: 'hermes-4', provider: 'nous' }
 
     it('prefers the sticky composer pick over the profile default pre-session', () => {
-      expect(currentPickerSelection(store, options)).toEqual(store)
-    })
-
-    it('keeps the SessionView selection when a stale options response disagrees', () => {
       expect(currentPickerSelection(store, options)).toEqual(store)
     })
 

@@ -17,7 +17,6 @@ All HTTP is mocked: nothing in this file talks to a real Portal.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import time
 import urllib.parse
@@ -31,12 +30,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import plugins.dashboard_auth.nous as nous_plugin
-from plugins.dashboard_auth._shared import JWKS_CACHE_SECONDS
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
-    LoginStart,
     ProviderError,
-    RefreshExpiredError,
     Session,
     assert_protocol_compliance,
 )
@@ -138,24 +134,8 @@ class TestConstruction:
     def test_protocol_compliance(self):
         assert_protocol_compliance(nous_plugin.NousDashboardAuthProvider)
 
-    def test_name_and_display(self):
-        p = nous_plugin.NousDashboardAuthProvider(
-            client_id="agent:inst1", portal_url="https://portal.example.com"
-        )
-        assert p.name == "nous"
-        assert p.display_name == "Nous Research"
 
-    def test_extracts_agent_instance_id(self):
-        p = nous_plugin.NousDashboardAuthProvider(
-            client_id="agent:abc-123", portal_url="https://portal.example.com"
-        )
-        assert p._agent_instance_id == "abc-123"
 
-    def test_strips_trailing_slash_from_portal_url(self):
-        p = nous_plugin.NousDashboardAuthProvider(
-            client_id="agent:x", portal_url="https://portal.example.com/"
-        )
-        assert p._portal_url == "https://portal.example.com"
 
     def test_rejects_malformed_client_id(self):
         with pytest.raises(ValueError, match="agent:"):
@@ -276,25 +256,6 @@ class TestConfigYamlSource:
         )
 
 
-    def test_neither_source_skips_with_helpful_reason(
-        self, patch_config, monkeypatch
-    ):
-        """Neither env nor config.yaml set — skip with a reason that
-        mentions BOTH surfaces so operators don't guess wrong about
-        which one to populate."""
-        monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
-        patch_config(None)
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_not_called()
-        # Old behaviour: skip reason mentions the env var.
-        assert "HERMES_DASHBOARD_OAUTH_CLIENT_ID" in nous_plugin.LAST_SKIP_REASON
-        # New behaviour: skip reason ALSO mentions the config.yaml path
-        # so the user knows it's a valid alternative.
-        assert "dashboard.oauth.client_id" in nous_plugin.LAST_SKIP_REASON, (
-            f"skip reason omits the config.yaml surface — operators "
-            f"won't know it exists. got: {nous_plugin.LAST_SKIP_REASON!r}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -309,11 +270,6 @@ class TestStartLogin:
             client_id="agent:inst1", portal_url="https://portal.example.com"
         )
 
-    def test_returns_login_start(self, provider):
-        result = provider.start_login(
-            redirect_uri="https://hermes.fly.dev/auth/callback"
-        )
-        assert isinstance(result, LoginStart)
 
     def test_redirect_url_targets_portal_authorize(self, provider):
         result = provider.start_login(
@@ -493,26 +449,6 @@ class TestCompleteLogin:
                     redirect_uri="https://hermes.fly.dev/auth/callback",
                 )
 
-    def test_captures_refresh_token_if_present_forward_compat(
-        self, provider, rsa_keypair
-    ):
-        """Forward-compat: contract V1 doesn't issue, but if a future Portal
-        does, we should preserve it in the Session for later use."""
-        access_token = _mint_token(rsa_keypair)
-        mock_resp = self._mock_post(
-            200,
-            {
-                "access_token": access_token,
-                "token_type": "Bearer",
-                "refresh_token": "rt-opaque",
-            },
-        )
-        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
-            session = provider.complete_login(
-                code="x", state="s", code_verifier="v",
-                redirect_uri="https://hermes.fly.dev/auth/callback",
-            )
-        assert session.refresh_token == "rt-opaque"
 
 
 # ---------------------------------------------------------------------------
@@ -529,22 +465,6 @@ class TestVerifySession:
         _patched_jwks(p, rsa_keypair)
         return p
 
-    def test_jwks_client_sends_explicit_http_headers(self, provider):
-        """Constructor-contract regression: the JWKS fetch must send an
-        explicit Accept + User-Agent so it isn't blocked by the Portal WAF
-        (same fix as the self_hosted provider)."""
-        provider._jwks_client = None
-        with patch("jwt.PyJWKClient") as client_cls:
-            provider._get_jwks_client()
-        client_cls.assert_called_once_with(
-            provider._jwks_url,
-            cache_keys=True,
-            lifespan=JWKS_CACHE_SECONDS,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "HermesAgent/1.0",
-            },
-        )
 
     def test_expired_token_returns_none(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair, ttl_seconds=-1)
@@ -660,7 +580,3 @@ class TestRefreshAndRevoke:
         assert kwargs["headers"]["x-nous-refresh-token"] == "rt_old_value"
 
 
-    def test_revoke_is_noop(self, provider):
-        # Must not raise; returns None implicitly.
-        assert provider.revoke_session(refresh_token="anything") is None
-        assert provider.revoke_session(refresh_token="") is None

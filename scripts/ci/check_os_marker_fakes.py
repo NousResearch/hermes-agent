@@ -55,7 +55,6 @@ _BASELINE = frozenset(
         "tests/hermes_cli/test_update_launchd_restart_verification.py",
         "tests/hermes_cli/test_update_launchd_unloaded_gateway.py",
         "tests/hermes_cli/test_urllib_security.py",
-        "tests/hermes_state/test_state_synchronous_pragma.py",
         "tests/test_hermes_constants.py",
         "tests/tools/test_macos_protected_search.py",
         "tests/tools/test_skills_tool.py",

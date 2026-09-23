@@ -1,6 +1,6 @@
 name: rtk-ai-plugin
 repo: https://github.com/kerrz2020/hermes-rtk-rewrite
-sha: 4c37849802ae2ec17fcfd0e2fa21b52792427cb3
+sha: a7b420adbec2a1fbd5673e25b1d94186b3020d0b
 description: >-
   Community (non-official) plugin that rewrites Hermes terminal commands through
   RTK (rtk-ai/rtk, Apache-2.0) before execution, so the model sees compact output

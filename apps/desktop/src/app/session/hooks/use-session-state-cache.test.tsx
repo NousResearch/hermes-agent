@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $activeSessionStoredIdRotation,
   $currentFastMode,
@@ -36,7 +37,7 @@ import {
 } from '@/store/session-states'
 
 import { cachedSessionRow } from './use-session-actions/utils'
-import { useSessionStateCache } from './use-session-state-cache'
+import { isViewSyncCriticalTransition, useSessionStateCache, VIEW_SYNC_FALLBACK_MS } from './use-session-state-cache'
 
 type Cache = ReturnType<typeof useSessionStateCache>
 
@@ -886,5 +887,162 @@ describe('useSessionStateCache — parked tiles release their warm transcript (#
 
     expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
     expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
+  })
+})
+
+// #95545: the chat pane rendered blank right after sending on Windows. The
+// optimistic user bubble and every busy (streaming) update were published to
+// the view only via requestAnimationFrame; Electron throttles rAF to ~0 for
+// blurred/occluded windows, and Windows focus transitions are not all visible
+// to Page Visibility — so a send landing while the window was unfocused at the
+// instant of Enter waited for a frame that never came, and long tool runs
+// showed no heartbeat from a blurred window.
+describe('useSessionStateCache — send→render publish vs. throttled rAF (#95545)', () => {
+  afterEach(() => {
+    cleanup()
+    $messages.set([])
+    $sessionStates.set({})
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('paints the optimistic user bubble synchronously on send even when rAF never fires', () => {
+    // A parked rAF: Chromium pauses frame callbacks for a renderer it
+    // considers hidden (blurred/occluded on Windows). Pre-fix this send-arm
+    // state was non-critical (busy=true) and waited on that frame — the pane
+    // stayed blank right after Enter until the window earned a frame again.
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
+
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="send-runtime" onReady={value => (cache = value)} />)
+
+    act(() => {
+      cache.updateSessionState('send-runtime', state => ({
+        ...state,
+        // seedOptimistic's exact shape: optimistic user row + busy arm, before
+        // any backend acceptance.
+        messages: [userMessage('user-optimistic', 'hello from the send edge')],
+        awaitingResponse: true,
+        busy: true,
+        sawAssistantPayload: false,
+        streamId: null,
+        turnLive: false
+      }))
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['user-optimistic'])
+  })
+
+  it('paints streamed progress via the timer fallback while rAF is parked', () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
+    vi.useFakeTimers()
+
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="stream-runtime" onReady={value => (cache = value)} />)
+
+    // Backend accepted the turn: the normal mid-stream shape (turnLive +
+    // sawAssistantPayload) stays coalesced while busy.
+    act(() => {
+      cache.updateSessionState('stream-runtime', state => ({
+        ...state,
+        messages: [assistantText('assistant-stream', 'first chunk')],
+        awaitingResponse: true,
+        busy: true,
+        sawAssistantPayload: true,
+        streamId: 'assistant-stream-1',
+        turnLive: true
+      }))
+    })
+
+    // Coalesced behind the parked frame: nothing published yet.
+    expect($messages.get()).toEqual([])
+
+    // The fallback timer (not the frame) delivers the paint.
+    act(() => {
+      vi.advanceTimersByTime(VIEW_SYNC_FALLBACK_MS + 1)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['assistant-stream'])
+  })
+
+  it('keeps frame-batched coalescing when rAF runs normally', () => {
+    vi.useFakeTimers()
+    let rafCallback: FrameRequestCallback | null = null
+
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      rafCallback = callback
+
+      return 42
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
+
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="frame-runtime" onReady={value => (cache = value)} />)
+
+    act(() => {
+      cache.updateSessionState('frame-runtime', state => ({
+        ...state,
+        messages: [assistantText('assistant-frame', 'streamed on the frame')],
+        awaitingResponse: true,
+        busy: true,
+        sawAssistantPayload: true,
+        streamId: 'assistant-frame-1',
+        turnLive: true
+      }))
+    })
+
+    // Still coalesced until the frame arrives...
+    expect($messages.get()).toEqual([])
+
+    act(() => {
+      rafCallback?.(16)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['assistant-frame'])
+
+    // The frame won: the fallback timer was cancelled and must not fire a
+    // second publish (a cancelled fake-timer handle never runs).
+    act(() => {
+      vi.advanceTimersByTime(VIEW_SYNC_FALLBACK_MS * 10)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['assistant-frame'])
+  })
+})
+
+describe('isViewSyncCriticalTransition — send→render publish gating (#95545)', () => {
+  it('treats the optimistic send arm (Enter → first backend accept) as critical', () => {
+    const armed = {
+      ...createClientSessionState(),
+      awaitingResponse: true,
+      busy: true,
+      sawAssistantPayload: false,
+      turnLive: false
+    }
+
+    expect(isViewSyncCriticalTransition(armed)).toBe(true)
+  })
+
+  it('keeps live mid-stream updates non-critical so they coalesce on the frame', () => {
+    const streaming = {
+      ...createClientSessionState(),
+      awaitingResponse: true,
+      busy: true,
+      sawAssistantPayload: true,
+      turnLive: true
+    }
+
+    expect(isViewSyncCriticalTransition(streaming)).toBe(false)
+  })
+
+  it('keeps terminal and needs-input transitions critical', () => {
+    // Idle (busy=false) — turn finished, failed, or never armed.
+    expect(isViewSyncCriticalTransition(createClientSessionState())).toBe(true)
+
+    const needsInput = { ...createClientSessionState(), busy: true, needsInput: true }
+
+    expect(isViewSyncCriticalTransition(needsInput)).toBe(true)
   })
 })

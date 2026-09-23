@@ -39,6 +39,45 @@ import {
 } from './use-session-actions/transcript-provenance'
 import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 
+/**
+ * How long a busy (streaming) transcript update may wait on
+ * `requestAnimationFrame` before a timer forces the publish.
+ *
+ * Chromium pauses rAF for a renderer it considers hidden, and Electron's
+ * throttling on Windows does not track every focus/occlusion transition
+ * (Page Visibility misses them) — so a stream flush landing while the window
+ * is blurred or occluded could otherwise wait for a frame that never comes
+ * until the user refocuses. Mirrors the delta queue's timer-based delivery
+ * (use-message-stream), so streamed progress paints even while frames are
+ * parked. In a healthy window the rAF fires within one frame — long before
+ * this timer — so the fallback is inert in the common case.
+ */
+export const VIEW_SYNC_FALLBACK_MS = 120
+
+/**
+ * A session-state update that must reach the view synchronously, never
+ * through the deferred frame publish.
+ *
+ * - `!state.busy`: terminal transitions (turn finished, failed, needs input)
+ *   must paint immediately — Electron throttles rAF to ~0 while a window is
+ *   backgrounded, occluded, or unfocused, which stranded the deferred flush
+ *   (the "new chat stuck on Thinking until refocus / F5" bug).
+ * - `state.needsInput`: the agent is waiting on the user; same class.
+ * - Send edge (#95545): between Enter and the backend's first `message.start`
+ *   the optimistic user bubble is the only content the turn will produce for
+ *   a while. If its publish waits on rAF and the window is blurred/occluded
+ *   at the instant of send — common on Windows, where the backend spawning
+ *   child/console processes (e.g. `uv` for a stdio MCP server) or a
+ *   notification can steal focus — the chat pane renders blank right after
+ *   sending. `turnLive` / `sawAssistantPayload` are stamped by the first
+ *   backend acceptance, so this predicate is true only during the optimistic
+ *   arm; once the turn is live, streamed content coalesces on the frame
+ *   publish as before.
+ */
+export function isViewSyncCriticalTransition(state: ClientSessionState): boolean {
+  return !state.busy || state.needsInput || (state.awaitingResponse && !state.turnLive && !state.sawAssistantPayload)
+}
+
 interface SessionStateCacheOptions {
   activeSessionId: string | null
   busyRef: MutableRefObject<boolean>
@@ -143,10 +182,23 @@ export function useSessionStateCache({
   const sessionStateCache = sessionStateByRuntimeIdRef.current
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
+  const viewSyncTimerRef = useRef<number | null>(null)
   const transcriptViewGateByRuntimeIdRef = useRef(new Map<string, symbol>())
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
+
+  const cancelViewSync = useCallback(() => {
+    if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(viewSyncRafRef.current)
+      viewSyncRafRef.current = null
+    }
+
+    if (viewSyncTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(viewSyncTimerRef.current)
+      viewSyncTimerRef.current = null
+    }
+  }, [])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -219,12 +271,8 @@ export function useSessionStateCache({
     // repaint over the chat the user just switched to (#47709 / #47743).
     pendingViewStateRef.current = null
     viewSessionIdRef.current = null
-
-    if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-      window.cancelAnimationFrame(viewSyncRafRef.current)
-      viewSyncRafRef.current = null
-    }
-  }, [])
+    cancelViewSync()
+  }, [cancelViewSync])
 
   const holdSessionTranscriptView = useCallback((runtimeId: string): (() => void) => {
     const token = Symbol(runtimeId)
@@ -312,23 +360,24 @@ export function useSessionStateCache({
       // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
       // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
       // (cancelling any in-flight RAF, since we're about to publish the latest
-      // state anyway). The plain busy heartbeat stays RAF-batched: that
-      // coalescing exists only to keep periodic `session.info` updates from
-      // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !viewState.busy || viewState.needsInput
+      // state anyway). The send edge belongs to the same class (#95545): the
+      // optimistic user bubble is staged while `busy` is still true, so it
+      // would wait for a frame that a Windows renderer blurred/occluded at the
+      // instant of Enter may never deliver — the "chat pane renders blank
+      // right after sending" report. The plain busy heartbeat stays
+      // RAF-batched: that coalescing exists only to keep periodic
+      // `session.info` updates from churning `$messages` and jerking the
+      // scroll position while reading.
+      const isCriticalTransition = isViewSyncCriticalTransition(viewState)
 
       if (isCriticalTransition) {
-        if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-          window.cancelAnimationFrame(viewSyncRafRef.current)
-          viewSyncRafRef.current = null
-        }
-
+        cancelViewSync()
         flushPendingViewState()
 
         return
       }
 
-      if (viewSyncRafRef.current !== null) {
+      if (viewSyncRafRef.current !== null || viewSyncTimerRef.current !== null) {
         return
       }
 
@@ -338,22 +387,30 @@ export function useSessionStateCache({
         return
       }
 
-      viewSyncRafRef.current = window.requestAnimationFrame(() => {
-        viewSyncRafRef.current = null
+      // Deferred publish, frame-batched with a TIMER fallback. Chromium pauses
+      // rAF for a renderer it considers hidden, and on Windows focus /
+      // occlusion transitions are not all visible to Page Visibility (see the
+      // delta queue's flush-on-focus listeners in use-message-stream) — so an
+      // rAF-only gate can strand streamed progress while the user watches a
+      // long tool run from a blurred window. Whichever of the two fires first
+      // publishes; the other is cancelled, so a healthy frame cadence behaves
+      // exactly as before (one paint per frame, the timer never wins).
+      const runFlush = () => {
+        cancelViewSync()
         flushPendingViewState()
-      })
+      }
+
+      viewSyncRafRef.current = window.requestAnimationFrame(runFlush)
+      viewSyncTimerRef.current = window.setTimeout(runFlush, VIEW_SYNC_FALLBACK_MS)
     },
-    [flushPendingViewState]
+    [cancelViewSync, flushPendingViewState]
   )
 
   useEffect(
     () => () => {
-      if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-        window.cancelAnimationFrame(viewSyncRafRef.current)
-        viewSyncRafRef.current = null
-      }
+      cancelViewSync()
     },
-    []
+    [cancelViewSync]
   )
 
   const updateSessionState = useCallback(

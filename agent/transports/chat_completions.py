@@ -18,6 +18,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from tools.schema_sanitizer import sanitize_tool_schemas
 
 # xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
 # declarations); aliased on the wire, mapped back in normalize_response.
@@ -359,6 +360,7 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
         api_kwargs["timeout"] = params["timeout"]
     if tools:
         # Moonshot/Kimi uses a stricter JSON Schema flavor; rewriting here also covers aggregator routes.
+        tools = sanitize_tool_schemas(tools)
         api_kwargs["tools"] = sanitize_moonshot_tools(tools) if is_moonshot_model(model) else tools
     return api_kwargs
 

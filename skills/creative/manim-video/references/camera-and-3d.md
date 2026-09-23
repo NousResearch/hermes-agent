@@ -75,7 +75,7 @@ helix = ParametricFunction(
 ## When NOT to Use 3D
 - 2D concepts, text-heavy scenes, flat data (bar charts, time series)
 
-## ZoomedScene — Inset Zoom
+## ZoomedScene: Inset Zoom
 
 Show a magnified inset of a detail while keeping the full view visible:
 
@@ -107,7 +107,7 @@ class ZoomExample(ZoomedScene):
 
 Use cases: zooming into a specific term in an equation, showing fine detail in a diagram, magnifying a region of a plot.
 
-## LinearTransformationScene — Linear Algebra
+## LinearTransformationScene: Linear Algebra
 
 Pre-built scene with basis vectors and grid for visualizing matrix transformations:
 
@@ -132,4 +132,4 @@ class LinearTransformExample(LinearTransformationScene):
         self.wait(2)
 ```
 
-This produces the signature 3Blue1Brown "Essence of Linear Algebra" look — grid lines deforming, basis vectors stretching, determinant visualized through area change.
+This produces the signature 3Blue1Brown "Essence of Linear Algebra" look: grid lines deforming, basis vectors stretching, determinant visualized through area change.

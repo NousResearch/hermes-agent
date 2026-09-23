@@ -2,9 +2,9 @@
 
 ## Performance
 
-### Step Zero — Disable FES
+### Step Zero: Disable FES
 
-The Friendly Error System (FES) adds massive overhead — up to 10x slowdown. Disable it in every production sketch:
+The Friendly Error System (FES) adds massive overhead: up to 10x slowdown. Disable it in every production sketch:
 
 ```javascript
 // BEFORE any p5 code
@@ -13,7 +13,7 @@ p5.disableFriendlyErrors = true;
 // Or use p5.min.js instead of p5.js — FES is stripped from minified build
 ```
 
-### Step One — pixelDensity(1)
+### Step One: pixelDensity(1)
 
 Retina/HiDPI displays default to 2x or 3x density, multiplying pixel count by 4-9x:
 
@@ -43,22 +43,22 @@ for (let p of particles) {
 }
 ```
 
-Use `magSq()` instead of `mag()` for distance comparisons — avoids expensive `sqrt()`.
+Use `magSq()` instead of `mag()` for distance comparisons: avoids expensive `sqrt()`.
 
 ### Diagnosis
 
 Open Chrome DevTools > Performance tab > Record while sketch runs.
 
 Common bottlenecks:
-1. **FES enabled** — 10x overhead on every p5 function call
-2. **pixelDensity > 1** — 4x pixel count, 4x slower
-3. **Too many draw calls** — thousands of `ellipse()`, `rect()` per frame
-4. **Large canvas + pixel operations** — `loadPixels()`/`updatePixels()` on 4K canvas
-5. **Unoptimized particle systems** — checking all-vs-all distances (O(n^2))
-6. **Memory leaks** — creating objects every frame without cleanup
-7. **Shader compilation** — calling `createShader()` in `draw()` instead of `setup()`
-8. **console.log() in draw()** — DOM write per frame, destroys performance
-9. **DOM manipulation in draw()** — layout thrashing (400-500x slower than canvas ops)
+1. **FES enabled**: 10x overhead on every p5 function call
+2. **pixelDensity > 1**: 4x pixel count, 4x slower
+3. **Too many draw calls**: thousands of `ellipse()`, `rect()` per frame
+4. **Large canvas + pixel operations**: `loadPixels()`/`updatePixels()` on 4K canvas
+5. **Unoptimized particle systems**: checking all-vs-all distances (O(n^2))
+6. **Memory leaks**: creating objects every frame without cleanup
+7. **Shader compilation**: calling `createShader()` in `draw()` instead of `setup()`
+8. **console.log() in draw()**: DOM write per frame, destroys performance
+9. **DOM manipulation in draw()**: layout thrashing (400-500x slower than canvas ops)
 
 ### Solutions
 
@@ -425,7 +425,7 @@ function setup() { createCanvas(800, 800); }
 
 ### Mobile Issues
 - Touch events need `return false` to prevent scroll
-- `devicePixelRatio` can be 2x or 3x — use `pixelDensity(1)` for performance
+- `devicePixelRatio` can be 2x or 3x: use `pixelDensity(1)` for performance
 - Smaller canvas recommended (720p or less)
 - Audio requires explicit user gesture to start
 

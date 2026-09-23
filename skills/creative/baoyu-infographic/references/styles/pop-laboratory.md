@@ -1,6 +1,6 @@
 # pop-laboratory
 
-Lab manual precision meets pop art color impact—coordinate systems, technical diagrams, and fluorescent accents on blueprint grid.
+Lab manual precision meets pop art color impact: coordinate systems, technical diagrams, and fluorescent accents on blueprint grid.
 
 ## Color Palette
 
@@ -30,7 +30,7 @@ Lab manual precision meets pop art color impact—coordinate systems, technical 
 
 ## Style Enforcement
 
-- Strictly systematic color usage: only teal, pink, yellow, charcoal—no rainbow palette
+- Strictly systematic color usage: only teal, pink, yellow, charcoal, no rainbow palette
 - Sufficient fine grid lines and coordinate annotations throughout
 - Maintain tension between large impactful headers and small precise parameters
 - Lab manual aesthetic: mix of microscopic details and macroscopic data

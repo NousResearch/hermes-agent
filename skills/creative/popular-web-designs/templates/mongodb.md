@@ -1,7 +1,7 @@
 # Design System: MongoDB
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `Source Code Pro`
@@ -15,19 +15,19 @@
 
 ## 1. Visual Theme & Atmosphere
 
-MongoDB's website is a deep-forest-meets-terminal experience — a design system rooted in the darkest teal-black (`#001e2b`) that evokes both the density of a database and the depth of a forest canopy. Against this near-black canvas, a striking neon green (`#00ed64`) pulses as the brand accent — bright enough to feel electric, organic enough to feel alive. This isn't the cold neon of cyberpunk; it's the bioluminescent green of something growing in the dark.
+MongoDB's website is a deep-forest-meets-terminal experience: a design system rooted in the darkest teal-black (`#001e2b`) that evokes both the density of a database and the depth of a forest canopy. Against this near-black canvas, a striking neon green (`#00ed64`) pulses as the brand accent, bright enough to feel electric, organic enough to feel alive. This isn't the cold neon of cyberpunk; it's the bioluminescent green of something growing in the dark.
 
-The typography system is architecturally ambitious: MongoDB Value Serif for massive hero headlines (96px) creates an editorial, authoritative presence — serif type at database-company scale is a bold choice that says "we're not just another tech company." Euclid Circular A handles the heavy lifting of body and UI text with an unusually wide weight range (300–700), while Source Code Pro serves as the code and label font with distinctive uppercase treatments featuring very wide letter-spacing (1px–3px). This three-font system creates a hierarchy that spans editorial elegance → geometric professionalism → engineering precision.
+The typography system is architecturally ambitious: MongoDB Value Serif for massive hero headlines (96px) creates an editorial, authoritative presence, serif type at database-company scale is a bold choice that says "we're not just another tech company." Euclid Circular A handles the heavy lifting of body and UI text with an unusually wide weight range (300–700), while Source Code Pro serves as the code and label font with distinctive uppercase treatments featuring very wide letter-spacing (1px–3px). This three-font system creates a hierarchy that spans editorial elegance → geometric professionalism → engineering precision.
 
 What makes MongoDB distinctive is its dual-mode design: a dark hero/feature section world (`#001e2b` with neon green accents) and a light content world (white with teal-gray borders `#b8c4c2`). The transition between these modes creates dramatic contrast. The shadow system uses teal-tinted dark shadows (`rgba(0, 30, 43, 0.12)`) that maintain the forest-dark atmosphere even on light surfaces. Buttons use pill shapes (100px–999px radius) with MongoDB Green borders (`#00684a`), and the entire component system references the LeafyGreen design system.
 
 **Key Characteristics:**
-- Deep teal-black backgrounds (`#001e2b`) — forest-dark, not space-dark
-- Neon MongoDB Green (`#00ed64`) as the singular brand accent — electric and organic
-- MongoDB Value Serif for hero headlines — editorial authority at tech scale
+- Deep teal-black backgrounds (`#001e2b`): forest-dark, not space-dark
+- Neon MongoDB Green (`#00ed64`) as the singular brand accent: electric and organic
+- MongoDB Value Serif for hero headlines: editorial authority at tech scale
 - Euclid Circular A for body with weight 300 (light) as a distinctive body weight
 - Source Code Pro with wide uppercase letter-spacing (1px–3px) for technical labels
-- Teal-tinted shadows: `rgba(0, 30, 43, 0.12)` — shadows carry the forest color
+- Teal-tinted shadows: `rgba(0, 30, 43, 0.12)`, shadows carry the forest color
 - Dual-mode: dark teal hero sections + light white content sections
 - Pill buttons (100px radius) with green borders (`#00684a`)
 - Link Blue (`#006cfa`) and hover transition to `#3860be`
@@ -35,14 +35,14 @@ What makes MongoDB distinctive is its dual-mode design: a dark hero/feature sect
 ## 2. Color Palette & Roles
 
 ### Primary Brand
-- **Forest Black** (`#001e2b`): Primary dark background — the deepest teal-black
-- **MongoDB Green** (`#00ed64`): Primary brand accent — neon green for highlights, underlines, gradients
-- **Dark Green** (`#00684a`): Button borders, link text on light — muted green for functional use
+- **Forest Black** (`#001e2b`): Primary dark background, the deepest teal-black
+- **MongoDB Green** (`#00ed64`): Primary brand accent, neon green for highlights, underlines, gradients
+- **Dark Green** (`#00684a`): Button borders, link text on light, muted green for functional use
 
 ### Interactive
-- **Action Blue** (`#006cfa`): Secondary accent — links, interactive highlights
+- **Action Blue** (`#006cfa`): Secondary accent, links, interactive highlights
 - **Hover Blue** (`#3860be`): All link hover states transition to this blue
-- **Teal Active** (`#1eaedb`): Button hover background — bright teal
+- **Teal Active** (`#1eaedb`): Button hover background, bright teal
 
 ### Neutral Scale
 - **Deep Teal** (`#1c2d38`): Dark button backgrounds, secondary dark surfaces
@@ -55,16 +55,16 @@ What makes MongoDB distinctive is its dual-mode design: a dark hero/feature sect
 - **Black** (`#000000`): Text on light surfaces, darkest elements
 
 ### Shadows
-- **Forest Shadow** (`rgba(0, 30, 43, 0.12) 0px 26px 44px, rgba(0, 0, 0, 0.13) 0px 7px 13px`): Primary card elevation — teal-tinted
+- **Forest Shadow** (`rgba(0, 30, 43, 0.12) 0px 26px 44px, rgba(0, 0, 0, 0.13) 0px 7px 13px`): Primary card elevation, teal-tinted
 - **Standard Shadow** (`rgba(0, 0, 0, 0.15) 0px 3px 20px`): General elevation
 - **Subtle Shadow** (`rgba(0, 0, 0, 0.1) 0px 2px 4px`): Light card lift
 
 ## 3. Typography Rules
 
 ### Font Families
-- **Display Serif**: `MongoDB Value Serif` — editorial hero headlines
-- **Body / UI**: `Euclid Circular A` — geometric sans-serif workhorse
-- **Code / Labels**: `Source Code Pro` — monospace with uppercase label treatments
+- **Display Serif**: `MongoDB Value Serif`, editorial hero headlines
+- **Body / UI**: `Euclid Circular A`, geometric sans-serif workhorse
+- **Code / Labels**: `Source Code Pro`, monospace with uppercase label treatments
 - **Fallbacks**: `Akzidenz-Grotesk Std` (with CJK: Noto Sans KR/SC/JP), `Times`, `Arial`, `system-ui`
 
 ### Hierarchy
@@ -89,10 +89,10 @@ What makes MongoDB distinctive is its dual-mode design: a dark hero/feature sect
 | Code Micro | Source Code Pro | 9px (0.56rem) | 600 | 2.67 (relaxed) | 2.5px | `text-transform: uppercase` |
 
 ### Principles
-- **Serif for authority**: MongoDB Value Serif at hero scale creates an editorial presence unusual in tech — it communicates that MongoDB is an institution, not a startup.
+- **Serif for authority**: MongoDB Value Serif at hero scale creates an editorial presence unusual in tech, it communicates that MongoDB is an institution, not a startup.
 - **Weight 300 as body default**: Euclid Circular A uses light (300) for body text, creating an airy reading experience that contrasts with the dense, dark backgrounds.
-- **Wide-tracked monospace labels**: Source Code Pro uppercase at 1px–3px letter-spacing creates technical signposts that feel like database field labels — systematic, structured, classified.
-- **Four-weight range**: 300 (light body) → 400 (standard) → 500 (UI/nav) → 700 (bold CTA) — a wider range than most systems, enabling fine-grained hierarchy.
+- **Wide-tracked monospace labels**: Source Code Pro uppercase at 1px–3px letter-spacing creates technical signposts that feel like database field labels, systematic, structured, classified.
+- **Four-weight range**: 300 (light body) → 400 (standard) → 500 (UI/nav) → 700 (bold CTA), a wider range than most systems, enabling fine-grained hierarchy.
 
 ## 4. Component Stylings
 
@@ -149,7 +149,7 @@ What makes MongoDB distinctive is its dual-mode design: a dark hero/feature sect
 ### Distinctive Components
 
 **Neon Green Accent Underlines**
-- `0px 2px 2px 0px solid #00ed64` — bottom + right border creating accent underlines
+- `0px 2px 2px 0px solid #00ed64`: bottom + right border creating accent underlines
 - Used on feature headings and highlighted text
 - Also appears as `#006cfa` (blue) variant
 
@@ -196,31 +196,31 @@ What makes MongoDB distinctive is its dual-mode design: a dark hero/feature sect
 | Subtle (Level 1) | `rgba(0,0,0,0.1) 0px 2px 4px` | Light card lift |
 | Standard (Level 2) | `rgba(0,0,0,0.15) 0px 3px 9px` | Standard cards |
 | Prominent (Level 3) | `rgba(0,0,0,0.15) 0px 3px 20px` | Elevated panels |
-| Forest (Level 4) | `rgba(0,30,43,0.12) 0px 26px 44px, rgba(0,0,0,0.13) 0px 7px 13px` | Hero cards — teal-tinted |
+| Forest (Level 4) | `rgba(0,30,43,0.12) 0px 26px 44px, rgba(0,0,0,0.13) 0px 7px 13px` | Hero cards: teal-tinted |
 
-**Shadow Philosophy**: MongoDB's shadow system is unique in that the primary elevation shadow uses `rgba(0, 30, 43, 0.12)` — a teal-tinted shadow that carries the forest-dark brand color into the depth system. This means even on white surfaces, shadows feel like they belong to the MongoDB color world rather than being generic neutral black.
+**Shadow Philosophy**: MongoDB's shadow system is unique in that the primary elevation shadow uses `rgba(0, 30, 43, 0.12)`, a teal-tinted shadow that carries the forest-dark brand color into the depth system. This means even on white surfaces, shadows feel like they belong to the MongoDB color world rather than being generic neutral black.
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use `#001e2b` (forest-black) for dark sections — not pure black
+- Use `#001e2b` (forest-black) for dark sections: not pure black
 - Apply MongoDB Green (`#00ed64`) sparingly for maximum electric impact
-- Use MongoDB Value Serif ONLY for hero/display headings — Euclid Circular A for everything else
+- Use MongoDB Value Serif ONLY for hero/display headings. Euclid Circular A for everything else
 - Apply Source Code Pro uppercase with wide tracking (1px–3px) for technical labels
 - Use teal-tinted shadows (`rgba(0,30,43,0.12)`) for primary card elevation
-- Maintain the dark/light section duality — dramatic contrast between modes
-- Use weight 300 for body text — the light weight is the readable voice
+- Maintain the dark/light section duality: dramatic contrast between modes
+- Use weight 300 for body text: the light weight is the readable voice
 - Apply pill radius (100px) to primary action buttons
 
 ### Don't
-- Don't use pure black (`#000000`) for dark backgrounds — always use teal-black (`#001e2b`)
-- Don't use MongoDB Green (`#00ed64`) on backgrounds — it's an accent for text, underlines, and small highlights
-- Don't use standard gray shadows — always use teal-tinted (`rgba(0,30,43,...)`)
-- Don't apply serif font to body text — MongoDB Value Serif is hero-only
-- Don't use narrow letter-spacing on Source Code Pro labels — the wide tracking IS the identity
+- Don't use pure black (`#000000`) for dark backgrounds: always use teal-black (`#001e2b`)
+- Don't use MongoDB Green (`#00ed64`) on backgrounds: it's an accent for text, underlines, and small highlights
+- Don't use standard gray shadows: always use teal-tinted (`rgba(0,30,43,...)`)
+- Don't apply serif font to body text: MongoDB Value Serif is hero-only
+- Don't use narrow letter-spacing on Source Code Pro labels: the wide tracking IS the identity
 - Don't mix dark and light section treatments within the same section
-- Don't use warm colors — the palette is strictly cool (teal, green, blue)
-- Don't forget the green accent underlines — they're the signature decorative element
+- Don't use warm colors: the palette is strictly cool (teal, green, blue)
+- Don't forget the green accent underlines: they're the signature decorative element
 
 ## 8. Responsive Behavior
 
@@ -272,8 +272,8 @@ What makes MongoDB distinctive is its dual-mode design: a dark hero/feature sect
 
 ### Iteration Guide
 1. Start with the mode decision: dark (#001e2b) for hero/features, white for content
-2. MongoDB Green (#00ed64) is electric — use once per section for maximum impact
-3. Serif headlines (MongoDB Value Serif) create the editorial authority — never use for body
-4. Weight 300 body text creates the airy reading experience — don't default to 400
-5. Source Code Pro uppercase with wide tracking for technical labels — the database voice
+2. MongoDB Green (#00ed64) is electric: use once per section for maximum impact
+3. Serif headlines (MongoDB Value Serif) create the editorial authority: never use for body
+4. Weight 300 body text creates the airy reading experience: don't default to 400
+5. Source Code Pro uppercase with wide tracking for technical labels: the database voice
 6. Teal-tinted shadows keep everything in the MongoDB color world

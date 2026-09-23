@@ -173,7 +173,7 @@ Portrait (1080x1920) has the same pixel count as landscape 1080p, so performance
 | Quote layout | 2-3 wide lines | 5-6 short lines |
 
 **Portrait-optimized patterns:**
-- Vertical rain/matrix effects are naturally enhanced — longer column travel
+- Vertical rain/matrix effects are naturally enhanced: longer column travel
 - Fire columns rise through more screen space
 - Rising embers/particles have more vertical runway
 - Text can be stacked more aggressively with more lines
@@ -294,7 +294,7 @@ color_field = mkc(R, G, B, g.rows, g.cols)  # (rows, cols, 3) uint8
 canvas_bg = g.render_bg(color_field, PAL_DENSE)
 ```
 
-The texture init loop runs once and is cached per palette. Per-frame cost is one fancy-index lookup + one broadcast multiply — orders of magnitude faster than the per-cell bitmap blit loop in `render()` for dense backgrounds.
+The texture init loop runs once and is cached per palette. Per-frame cost is one fancy-index lookup + one broadcast multiply: orders of magnitude faster than the per-cell bitmap blit loop in `render()` for dense backgrounds.
 
 ## Coordinate Array Caching
 
@@ -426,7 +426,7 @@ canvas_tickers = render_text_layer(g_md, rows_data, g_md.font)
 result = blend_canvas(canvas_bg, canvas_tickers, "screen", 0.9)
 ```
 
-This is purely a rendering optimization — same visual output, fewer draw calls. The grid's `render()` method is still needed for sparse character fields where characters are placed individually based on value fields.
+This is purely a rendering optimization: same visual output, fewer draw calls. The grid's `render()` method is still needed for sparse character fields where characters are placed individually based on value fields.
 
 ## Bloom Optimization
 
@@ -682,7 +682,7 @@ else:
 
 ### Temp File Best Practices
 
-- Use `tempfile.mkdtemp()` for segment directories — avoids polluting the project dir
+- Use `tempfile.mkdtemp()` for segment directories: avoids polluting the project dir
 - Name WAV extracts with `tempfile.mktemp(suffix=".wav")` so they're in the OS temp dir
 - For debugging, set `KEEP_INTERMEDIATES=1` env var to skip cleanup
-- Feature caches (`.npz`) are cheap to store and expensive to recompute — default to keeping them
+- Feature caches (`.npz`) are cheap to store and expensive to recompute: default to keeping them

@@ -44,9 +44,9 @@ Use this as the structure for PR review summary comments. Copy and fill in the s
 
 ## Verdict Decision
 
-- **Approved ✅** — Zero critical/warning items. Only suggestions or all clear.
-- **Changes Requested 🔴** — Any critical or warning item exists.
-- **Reviewed 💬** — Observations only (draft PRs, uncertain findings, informational).
+- **Approved ✅**: Zero critical/warning items. Only suggestions or all clear.
+- **Changes Requested 🔴**: Any critical or warning item exists.
+- **Reviewed 💬**: Observations only (draft PRs, uncertain findings, informational).
 
 ## For Inline Comments
 

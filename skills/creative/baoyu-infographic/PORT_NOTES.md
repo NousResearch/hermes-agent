@@ -1,4 +1,4 @@
-# Port Notes — baoyu-infographic
+# Port Notes: baoyu-infographic
 
 Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.56.1.
 
@@ -12,7 +12,7 @@ Only `SKILL.md` was modified. All 45 reference files are verbatim copies.
 |--------|----------|--------|
 | Metadata namespace | `openclaw` | `hermes` |
 | Trigger | `/baoyu-infographic` slash command | Natural language skill matching |
-| User config | EXTEND.md file (project/user/XDG paths) | Removed — not part of Hermes infra |
+| User config | EXTEND.md file (project/user/XDG paths) | Removed: not part of Hermes infra |
 | User prompts | `AskUserQuestion` (batched) | `clarify` tool (one at a time) |
 | Image generation | baoyu-imagine (Bun/TypeScript) | `image_generate` tool |
 | Platform support | Linux/macOS/Windows/WSL/PowerShell | Linux/macOS only |

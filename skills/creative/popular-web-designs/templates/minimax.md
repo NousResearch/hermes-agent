@@ -1,7 +1,7 @@
 # Design System: MiniMax
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `JetBrains Mono`
@@ -15,11 +15,11 @@
 
 ## 1. Visual Theme & Atmosphere
 
-MiniMax's website is a clean, product-showcase platform for a Chinese AI technology company that bridges consumer-friendly appeal with technical credibility. The design language is predominantly white-space-driven with a light, airy feel — pure white backgrounds (`#ffffff`) dominate, letting colorful product cards and AI model illustrations serve as the visual anchors. The overall aesthetic sits at the intersection of Apple's product marketing clarity and a playful, rounded design language that makes AI technology feel approachable.
+MiniMax's website is a clean, product-showcase platform for a Chinese AI technology company that bridges consumer-friendly appeal with technical credibility. The design language is predominantly white-space-driven with a light, airy feel: pure white backgrounds (`#ffffff`) dominate, letting colorful product cards and AI model illustrations serve as the visual anchors. The overall aesthetic sits at the intersection of Apple's product marketing clarity and a playful, rounded design language that makes AI technology feel approachable.
 
-The typography system is notably multi-font: DM Sans serves as the primary UI workhorse, Outfit handles display headings with geometric elegance, Poppins appears for mid-tier headings, and Roboto handles data-heavy contexts. This variety reflects a brand in rapid growth — each font serves a distinct communicative purpose rather than competing for attention. The hero heading at 80px weight 500 in both DM Sans and Outfit with a tight 1.10 line-height creates a bold but not aggressive opening statement.
+The typography system is notably multi-font: DM Sans serves as the primary UI workhorse, Outfit handles display headings with geometric elegance, Poppins appears for mid-tier headings, and Roboto handles data-heavy contexts. This variety reflects a brand in rapid growth, each font serves a distinct communicative purpose rather than competing for attention. The hero heading at 80px weight 500 in both DM Sans and Outfit with a tight 1.10 line-height creates a bold but not aggressive opening statement.
 
-What makes MiniMax distinctive is its pill-button geometry (9999px radius) for navigation and primary actions, combined with softer 8px–24px radiused cards for product showcases. The product cards themselves are richly colorful — vibrant gradients in pink, purple, orange, and blue — creating a "gallery of AI capabilities" feel. Against the white canvas, these colorful cards pop like app icons on a phone home screen, making each AI model/product feel like a self-contained creative tool.
+What makes MiniMax distinctive is its pill-button geometry (9999px radius) for navigation and primary actions, combined with softer 8px–24px radiused cards for product showcases. The product cards themselves are richly colorful (vibrant gradients in pink, purple, orange, and blue) creating a "gallery of AI capabilities" feel. Against the white canvas, these colorful cards pop like app icons on a phone home screen, making each AI model/product feel like a self-contained creative tool.
 
 **Key Characteristics:**
 - White-dominant layout with colorful product card accents
@@ -103,7 +103,7 @@ What makes MiniMax distinctive is its pill-button geometry (9999px radius) for n
 - **Multi-font purpose**: DM Sans = UI workhorse (body, nav, buttons); Outfit = geometric display (headings, product names); Poppins = friendly mid-tier (sub-headings, features); Roboto = technical/data contexts.
 - **Universal 1.50 line-height**: The overwhelming majority of text uses 1.50 line-height, creating a consistent reading rhythm regardless of font or size. Exceptions: display (1.10 tight) and some captions (1.70 relaxed).
 - **Weight 500 as default emphasis**: Most headings use 500 (medium) rather than bold, creating a modern, approachable tone. 600 for section titles, 700 reserved for strong emphasis.
-- **Compact hierarchy**: The size scale jumps from 80px display straight to 28–32px section, then 16–20px body — a deliberate compression that keeps the visual hierarchy feeling efficient.
+- **Compact hierarchy**: The size scale jumps from 80px display straight to 28–32px section, then 16–20px body, a deliberate compression that keeps the visual hierarchy feeling efficient.
 
 ## 4. Component Stylings
 
@@ -211,23 +211,23 @@ What makes MiniMax distinctive is its pill-button geometry (9999px radius) for n
 ## 7. Do's and Don'ts
 
 ### Do
-- Use white as the dominant background — let product cards provide the color
+- Use white as the dominant background: let product cards provide the color
 - Apply pill radius (9999px) for navigation tabs and toggle buttons
 - Use generous border radius (20px–24px) for product showcase cards
 - Employ the purple-tinted shadow for featured/hero product cards
-- Keep body text at DM Sans weight 400–500 — heavier weights for buttons only
+- Keep body text at DM Sans weight 400–500: heavier weights for buttons only
 - Use Outfit for display headings, DM Sans for everything functional
 - Maintain the universal 1.50 line-height across body text
 - Let colorful product illustrations/gradients serve as the primary visual interest
 
 ### Don't
-- Don't add colored backgrounds to main content sections — white is structural
-- Don't use sharp corners (0–4px radius) on product cards — the rounded aesthetic is core
-- Don't apply the brand pink (`#ea5ec1`) to text or buttons — it's for logo and decorative accents only
+- Don't add colored backgrounds to main content sections: white is structural
+- Don't use sharp corners (0–4px radius) on product cards: the rounded aesthetic is core
+- Don't apply the brand pink (`#ea5ec1`) to text or buttons: it's for logo and decorative accents only
 - Don't mix more than one display font per section (Outfit OR Poppins, not both)
-- Don't use weight 700 for headings — 500–600 is the range, 700 is reserved for strong emphasis in body text
-- Don't darken shadows beyond 0.16 opacity — the light, airy feel requires restraint
-- Don't use Roboto for headings — it's the data/technical context font only
+- Don't use weight 700 for headings: 500–600 is the range, 700 is reserved for strong emphasis in body text
+- Don't darken shadows beyond 0.16 opacity: the light, airy feel requires restraint
+- Don't use Roboto for headings: it's the data/technical context font only
 
 ## 8. Responsive Behavior
 
@@ -262,9 +262,9 @@ What makes MiniMax distinctive is its pill-button geometry (9999px radius) for n
 - "Design footer on dark (#181e25) background. Product links in DM Sans 14px, rgba(255,255,255,0.8). Multi-column layout."
 
 ### Iteration Guide
-1. Start with white — color comes from product cards and illustrations only
+1. Start with white: color comes from product cards and illustrations only
 2. Pill buttons (9999px) for nav/tabs, standard radius (8px) for CTA buttons
 3. Purple-tinted shadows for featured cards, neutral shadows for everything else
-4. DM Sans handles 70% of text — Outfit is display-only, Poppins is mid-tier only
-5. Keep weights moderate (500–600 for headings) — the brand tone is confident but approachable
+4. DM Sans handles 70% of text: Outfit is display-only, Poppins is mid-tier only
+5. Keep weights moderate (500–600 for headings): the brand tone is confident but approachable
 6. Large radius cards (20–24px) for products, smaller radius (8–13px) for UI elements

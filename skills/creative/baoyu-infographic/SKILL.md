@@ -136,7 +136,7 @@ Slug: 2-4 words kebab-case from topic. Conflict: append `-YYYYMMDD-HHMMSS`.
 
 ## Core Principles
 
-- Preserve source data faithfully — no summarization or rephrasing (but **strip any credentials, API keys, tokens, or secrets** before including in outputs)
+- Preserve source data faithfully: no summarization or rephrasing (but **strip any credentials, API keys, tokens, or secrets** before including in outputs)
 - Define learning objectives before structuring content
 - Structure for visual communication (headlines, labels, visual elements)
 
@@ -182,11 +182,11 @@ See `references/structured-content-template.md` for detailed format.
 
 Use the `clarify` tool to confirm options with the user. Since `clarify` handles one question at a time, ask the most important question first:
 
-**Q1 — Combination**: Present 3+ layout×style combos with rationale. Ask user to pick one.
+**Q1: Combination**: Present 3+ layout×style combos with rationale. Ask user to pick one.
 
-**Q2 — Aspect**: Ask for aspect ratio preference (landscape/portrait/square or custom W:H).
+**Q2: Aspect**: Ask for aspect ratio preference (landscape/portrait/square or custom W:H).
 
-**Q3 — Language** (only if source ≠ user language): Ask which language the text content should use.
+**Q3: Language** (only if source ≠ user language): Ask which language the text content should use.
 
 ### Step 5: Generate Prompt → `prompts/infographic.md`
 
@@ -222,16 +222,16 @@ Report: topic, layout, style, aspect, language, output path, files created.
 
 ## References
 
-- `references/analysis-framework.md` — Analysis methodology
-- `references/structured-content-template.md` — Content format
-- `references/base-prompt.md` — Prompt template
-- `references/layouts/<layout>.md` — 21 layout definitions
-- `references/styles/<style>.md` — 21 style definitions
+- `references/analysis-framework.md`: Analysis methodology
+- `references/structured-content-template.md`: Content format
+- `references/base-prompt.md`: Prompt template
+- `references/layouts/<layout>.md`: 21 layout definitions
+- `references/styles/<style>.md`: 21 style definitions
 
 ## Pitfalls
 
-1. **Data integrity is paramount** — never summarize, paraphrase, or alter source statistics. "73% increase" must stay "73% increase", not "significant increase".
-2. **Strip secrets** — always scan source content for API keys, tokens, or credentials before including in any output file.
-3. **One message per section** — each infographic section should convey one clear concept. Overloading sections reduces readability.
-4. **Style consistency** — the style definition from the references file must be applied consistently across the entire infographic. Don't mix styles.
-5. **image_generate aspect ratios** — the tool only supports `landscape`, `portrait`, and `square`. Custom ratios like `3:4` should map to the nearest option (portrait in that case).
+1. **Data integrity is paramount**: never summarize, paraphrase, or alter source statistics. "73% increase" must stay "73% increase", not "significant increase".
+2. **Strip secrets**: always scan source content for API keys, tokens, or credentials before including in any output file.
+3. **One message per section**: each infographic section should convey one clear concept. Overloading sections reduces readability.
+4. **Style consistency**: the style definition from the references file must be applied consistently across the entire infographic. Don't mix styles.
+5. **image_generate aspect ratios**: the tool only supports `landscape`, `portrait`, and `square`. Custom ratios like `3:4` should map to the nearest option (portrait in that case).

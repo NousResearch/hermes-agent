@@ -1,7 +1,7 @@
 # Design System: Kraken
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `system monospace stack`
@@ -22,7 +22,7 @@ Kraken's website is a clean, trustworthy crypto exchange that uses purple as its
 - Kraken-Brand (display) + Kraken-Product (UI) dual font system
 - Near-black (`#101114`) text with cool blue-gray neutral scale
 - 12px radius buttons (rounded but not pill)
-- Subtle shadows (`rgba(0,0,0,0.03) 0px 4px 24px`) — whisper-level
+- Subtle shadows (`rgba(0,0,0,0.03) 0px 4px 24px`): whisper-level
 - Green accent (`#149e61`) for positive/success states
 
 ## 2. Color Palette & Roles
@@ -31,7 +31,7 @@ Kraken's website is a clean, trustworthy crypto exchange that uses purple as its
 - **Kraken Purple** (`#7132f5`): Primary CTA, brand accent, links
 - **Purple Dark** (`#5741d8`): Button borders, outlined variants
 - **Purple Deep** (`#5b1ecf`): Deepest purple
-- **Purple Subtle** (`rgba(133,91,251,0.16)`): Purple at 16% — subtle button backgrounds
+- **Purple Subtle** (`rgba(133,91,251,0.16)`): Purple at 16%, subtle button backgrounds
 - **Near Black** (`#101114`): Primary text
 
 ### Neutral
@@ -119,7 +119,7 @@ Kraken's website is a clean, trustworthy crypto exchange that uses purple as its
 - Use Kraken-Brand for headings, Kraken-Product for body
 
 ### Don't
-- Don't use pill buttons — 12px is the max radius for buttons
+- Don't use pill buttons: 12px is the max radius for buttons
 - Don't use other purples outside the defined scale
 
 ## 8. Responsive Behavior

@@ -1,4 +1,4 @@
-# Revisions and Comments — XML details
+# Revisions and Comments: XML details
 
 Deep reference for `docx_revisions.py` and `docx_comments.py`. Read this
 when you need to reason about the raw WordprocessingML, extend the
@@ -24,7 +24,7 @@ paragraph (`w:p`), in the `w` namespace
 
 Key facts the script relies on:
 
-- Deleted text lives in `w:delText`, not `w:t` — that is why plain text
+- Deleted text lives in `w:delText`, not `w:t`: that is why plain text
   extraction naturally shows the "accepted" view (insertions visible,
   deletions hidden).
 - Resolution semantics:
@@ -51,16 +51,16 @@ Word itself rather than guessing.
 
 Three cooperating pieces:
 
-1. **`word/comments.xml`** — one `w:comment` element per comment,
+1. **`word/comments.xml`**: one `w:comment` element per comment,
    carrying `w:id`, `w:author`, `w:initials`, `w:date`, and body
    paragraphs. Related from document.xml via the relationship type
    `.../comments` and content type
    `application/vnd...wordprocessingml.comments+xml` (also needs a
-   `[Content_Types].xml` override — python-docx's part machinery adds it
+   `[Content_Types].xml` override: python-docx's part machinery adds it
    when the part is registered).
-2. **Range markers in the story** — `w:commentRangeStart w:id="N"`
+2. **Range markers in the story**: `w:commentRangeStart w:id="N"`
    before the anchored runs, `w:commentRangeEnd w:id="N"` after them.
-3. **The reference run** — a `w:r` containing `w:commentReference
+3. **The reference run**: a `w:r` containing `w:commentReference
    w:id="N"`, placed right after the range end; it ties the balloon to
    the location.
 

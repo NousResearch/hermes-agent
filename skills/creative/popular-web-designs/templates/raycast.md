@@ -1,7 +1,7 @@
 # Design System: Raycast
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `Geist Mono`
@@ -15,16 +15,16 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Raycast's marketing site feels like the dark interior of a precision instrument — a Swiss watch case carved from obsidian. The background isn't just dark, it's an almost-black blue-tint (`#07080a`) that creates a sense of being inside a macOS native application rather than a website. Every surface, every border, every shadow is calibrated to evoke the feeling of a high-performance desktop utility: fast, minimal, trustworthy.
+Raycast's marketing site feels like the dark interior of a precision instrument: a Swiss watch case carved from obsidian. The background isn't just dark, it's an almost-black blue-tint (`#07080a`) that creates a sense of being inside a macOS native application rather than a website. Every surface, every border, every shadow is calibrated to evoke the feeling of a high-performance desktop utility: fast, minimal, trustworthy.
 
-The signature move is the layered shadow system borrowed from macOS window chrome: multi-layer box-shadows with inset highlights that simulate physical depth, as if cards and buttons are actual pressed or raised glass elements on a dark desk. Combined with Raycast Red (`#FF6363`) — deployed almost exclusively in the hero's iconic diagonal stripe pattern — the palette creates a brand that reads as "powerful tool with personality." The red doesn't dominate; it punctuates.
+The signature move is the layered shadow system borrowed from macOS window chrome: multi-layer box-shadows with inset highlights that simulate physical depth, as if cards and buttons are actual pressed or raised glass elements on a dark desk. Combined with Raycast Red (`#FF6363`). Deployed almost exclusively in the hero's iconic diagonal stripe pattern, the palette creates a brand that reads as "powerful tool with personality." The red doesn't dominate; it punctuates.
 
-Inter is used everywhere — headings, body, buttons, captions — with extensive OpenType features (`calt`, `kern`, `liga`, `ss03`) creating a consistent, readable typographic voice. The positive letter-spacing (0.2px–0.4px on body text) is unusual for a dark UI and gives the text an airy, breathable quality that counterbalances the dense, dark surfaces. GeistMono appears for code elements, reinforcing the developer-tool identity.
+Inter is used everywhere (headings, body, buttons, captions) with extensive OpenType features (`calt`, `kern`, `liga`, `ss03`) creating a consistent, readable typographic voice. The positive letter-spacing (0.2px–0.4px on body text) is unusual for a dark UI and gives the text an airy, breathable quality that counterbalances the dense, dark surfaces. GeistMono appears for code elements, reinforcing the developer-tool identity.
 
 **Key Characteristics:**
-- Near-black blue-tinted background (`#07080a`) — not pure black, subtly blue-shifted
+- Near-black blue-tinted background (`#07080a`): not pure black, subtly blue-shifted
 - macOS-native shadow system with multi-layer inset highlights simulating physical depth
-- Raycast Red (`#FF6363`) as a punctuation color — hero stripes, not pervasive
+- Raycast Red (`#FF6363`) as a punctuation color: hero stripes, not pervasive
 - Inter with positive letter-spacing (0.2px) for an airy, readable dark-mode experience
 - Radix UI component primitives powering the interaction layer
 - Subtle rgba white borders (0.06–0.1 opacity) for containment on dark surfaces
@@ -33,12 +33,12 @@ Inter is used everywhere — headings, body, buttons, captions — with extensiv
 ## 2. Color Palette & Roles
 
 ### Primary
-- **Near-Black Blue** (`#07080a`): Primary page background — the foundational void with a subtle blue-cold undertone
+- **Near-Black Blue** (`#07080a`): Primary page background, the foundational void with a subtle blue-cold undertone
 - **Pure White** (`#ffffff`): Primary heading text, high-emphasis elements
-- **Raycast Red** (`#FF6363` / `hsl(0, 100%, 69%)`): Brand accent — hero stripes, danger states, critical highlights
+- **Raycast Red** (`#FF6363` / `hsl(0, 100%, 69%)`): Brand accent, hero stripes, danger states, critical highlights
 
 ### Secondary & Accent
-- **Raycast Blue** (`hsl(202, 100%, 67%)` / ~`#55b3ff`): Interactive accent — links, focus states, selected items
+- **Raycast Blue** (`hsl(202, 100%, 67%)` / ~`#55b3ff`): Interactive accent, links, focus states, selected items
 - **Raycast Green** (`hsl(151, 59%, 59%)` / ~`#5fc992`): Success states, positive indicators
 - **Raycast Yellow** (`hsl(43, 100%, 60%)` / ~`#ffbc33`): Warning accents, highlights
 - **Blue Transparent** (`hsla(202, 100%, 67%, 0.15)`): Blue tint overlay for interactive surfaces
@@ -69,15 +69,15 @@ Inter is used everywhere — headings, body, buttons, captions — with extensiv
 - **Info Blue** (`hsl(202, 100%, 67%)`): Informational highlights, links
 
 ### Gradient System
-- **Keyboard Key Gradient**: Linear gradient from `#121212` (top) to `#0d0d0d` (bottom) — simulates physical key depth
-- **Warm Glow**: `rgba(215, 201, 175, 0.05)` radial spread — subtle warm ambient glow behind featured elements
+- **Keyboard Key Gradient**: Linear gradient from `#121212` (top) to `#0d0d0d` (bottom), simulates physical key depth
+- **Warm Glow**: `rgba(215, 201, 175, 0.05)` radial spread, subtle warm ambient glow behind featured elements
 
 ## 3. Typography Rules
 
 ### Font Family
-- **Primary**: `Inter` — humanist sans-serif, used everywhere. Fallbacks: `Inter Fallback`, system sans-serif
-- **System**: `SF Pro Text` — Apple system font for select macOS-native UI elements. Fallbacks: `SF Pro Icons`, `Inter`, `Inter Fallback`
-- **Monospace**: `GeistMono` — Vercel's monospace font for code elements. Fallbacks: `ui-monospace`, `SFMono-Regular`, `Roboto Mono`, `Menlo`, `Monaco`
+- **Primary**: `Inter`, humanist sans-serif, used everywhere. Fallbacks: `Inter Fallback`, system sans-serif
+- **System**: `SF Pro Text`, Apple system font for select macOS-native UI elements. Fallbacks: `SF Pro Icons`, `Inter`, `Inter Fallback`
+- **Monospace**: `GeistMono`, Vercel's monospace font for code elements. Fallbacks: `ui-monospace`, `SFMono-Regular`, `Roboto Mono`, `Menlo`, `Monaco`
 - **OpenType features**: `calt`, `kern`, `liga`, `ss03` enabled globally; `ss02`, `ss08` on display text; `liga` disabled (`"liga" 0`) on hero headings
 
 ### Hierarchy
@@ -102,9 +102,9 @@ Inter is used everywhere — headings, body, buttons, captions — with extensiv
 | Code Small | 12px (GeistMono) | 400 | 1.60 | 0.2px | Inline code, terminal output |
 
 ### Principles
-- **Positive tracking on dark**: Unlike most dark UIs that use tight or neutral letter-spacing, Raycast applies +0.2px to +0.4px — creating an airy, readable feel that compensates for the dark background
-- **Weight 500 as baseline**: Most body text uses medium weight (500), not regular (400) — subtle extra heft improves legibility on dark surfaces
-- **Display restraint**: Hero text at 64px/600 is confident but not oversized — Raycast avoids typographic spectacle in favor of functional elegance
+- **Positive tracking on dark**: Unlike most dark UIs that use tight or neutral letter-spacing, Raycast applies +0.2px to +0.4px, creating an airy, readable feel that compensates for the dark background
+- **Weight 500 as baseline**: Most body text uses medium weight (500), not regular (400), subtle extra heft improves legibility on dark surfaces
+- **Display restraint**: Hero text at 64px/600 is confident but not oversized. Raycast avoids typographic spectacle in favor of functional elegance
 - **OpenType everywhere**: `ss03` (stylistic set 3) is enabled globally across Inter, giving the typeface a slightly more geometric, tool-like quality
 
 ## 4. Component Stylings
@@ -114,11 +114,11 @@ Inter is used everywhere — headings, body, buttons, captions — with extensiv
 - **Secondary Button**: Transparent background, white text, 6px radius, `1px solid rgba(255, 255, 255, 0.1)` border, subtle drop shadow (`rgba(0, 0, 0, 0.03) 0px 7px 3px`). Hover: opacity 0.6
 - **Ghost Button**: No background or border, gray text (`#6a6b6c`), 86px radius, same inset shadow. Hover: opacity 0.6, text brightens to white
 - **CTA (Download)**: Semi-transparent white background (`hsla(0, 0%, 100%, 0.815)`), dark text (`#18191a`), pill shape. Hover: full white background (`hsl(0, 0%, 100%)`)
-- **Transition**: All buttons use opacity transition for hover rather than background-color change — a signature Raycast interaction pattern
+- **Transition**: All buttons use opacity transition for hover rather than background-color change, a signature Raycast interaction pattern
 
 ### Cards & Containers
 - **Standard Card**: `#101111` surface, `1px solid rgba(255, 255, 255, 0.06)` border, 12px–16px border-radius
-- **Elevated Card**: Ring shadow `rgb(27, 28, 30) 0px 0px 0px 1px` outer + `rgb(7, 8, 10) 0px 0px 0px 1px inset` inner — creates a double-ring containment
+- **Elevated Card**: Ring shadow `rgb(27, 28, 30) 0px 0px 0px 1px` outer + `rgb(7, 8, 10) 0px 0px 0px 1px inset` inner. Creates a double-ring containment
 - **Feature Card**: 16px–20px border-radius, subtle warm glow (`rgba(215, 201, 175, 0.05) 0px 0px 20px 5px`) behind hero elements
 - **Hover**: Cards brighten slightly via border opacity increase or subtle shadow enhancement
 
@@ -136,10 +136,10 @@ Inter is used everywhere — headings, body, buttons, captions — with extensiv
 - **Sticky**: Nav fixed at top with subtle border separator
 
 ### Image Treatment
-- **Product screenshots**: macOS window chrome style — rounded corners (12px), deep shadows simulating floating windows
+- **Product screenshots**: macOS window chrome style, rounded corners (12px), deep shadows simulating floating windows
 - **Full-bleed sections**: Dark screenshots blend seamlessly into the dark background
-- **Hero illustration**: Diagonal stripe pattern in Raycast Red — abstract, geometric, brand-defining
-- **App UI embeds**: Showing actual Raycast command palette and extensions — product as content
+- **Hero illustration**: Diagonal stripe pattern in Raycast Red, abstract, geometric, brand-defining
+- **App UI embeds**: Showing actual Raycast command palette and extensions, product as content
 
 ### Keyboard Shortcut Keys
 - **Key cap styling**: Gradient background (`#121212` → `#0d0d0d`), heavy multi-layer shadow (`rgba(0, 0, 0, 0.4) 0px 1.5px 0.5px 2.5px` + inset shadows), creating realistic physical key appearance
@@ -171,13 +171,13 @@ Inter is used everywhere — headings, body, buttons, captions — with extensiv
 ### Border Radius Scale
 - **2px–3px**: Micro-elements, code spans, tiny indicators
 - **4px–5px**: Keyboard keys, small interactive elements
-- **6px**: Buttons, badges, tags — the workhorse radius
+- **6px**: Buttons, badges, tags, the workhorse radius
 - **8px**: Input fields, inline components
 - **9px–11px**: Images, medium containers
 - **12px**: Standard cards, product screenshots
 - **16px**: Large cards, feature sections
 - **20px**: Hero cards, prominent containers
-- **86px+**: Pill buttons, nav CTAs — full pill shape
+- **86px+**: Pill buttons, nav CTAs, full pill shape
 
 ## 6. Depth & Elevation
 
@@ -186,9 +186,9 @@ Inter is used everywhere — headings, body, buttons, captions — with extensiv
 | Level 0 (Void) | No shadow, `#07080a` surface | Page background |
 | Level 1 (Subtle) | `rgba(0, 0, 0, 0.28) 0px 1.189px 2.377px` | Minimal lift, inline elements |
 | Level 2 (Ring) | `rgb(27, 28, 30) 0px 0px 0px 1px` outer + `rgb(7, 8, 10) 0px 0px 0px 1px inset` inner | Card containment, double-ring technique |
-| Level 3 (Button) | `rgba(255, 255, 255, 0.05) 0px 1px 0px 0px inset` + `rgba(255, 255, 255, 0.25) 0px 0px 0px 1px` + `rgba(0, 0, 0, 0.2) 0px -1px 0px 0px inset` | macOS-native button press — white highlight top, dark inset bottom |
-| Level 4 (Key) | 5-layer shadow stack with inset press effects | Keyboard shortcut key caps — physical 3D appearance |
-| Level 5 (Floating) | `rgba(0, 0, 0, 0.5) 0px 0px 0px 2px` + `rgba(255, 255, 255, 0.19) 0px 0px 14px` + insets | Command palette, floating panels — heavy depth with glow |
+| Level 3 (Button) | `rgba(255, 255, 255, 0.05) 0px 1px 0px 0px inset` + `rgba(255, 255, 255, 0.25) 0px 0px 0px 1px` + `rgba(0, 0, 0, 0.2) 0px -1px 0px 0px inset` | macOS-native button press: white highlight top, dark inset bottom |
+| Level 4 (Key) | 5-layer shadow stack with inset press effects | Keyboard shortcut key caps: physical 3D appearance |
+| Level 5 (Floating) | `rgba(0, 0, 0, 0.5) 0px 0px 0px 2px` + `rgba(255, 255, 255, 0.19) 0px 0px 14px` + insets | Command palette, floating panels: heavy depth with glow |
 
 ### Shadow Philosophy
 Raycast's shadow system is the most macOS-native on the web. Multi-layer shadows combine:
@@ -198,32 +198,32 @@ Raycast's shadow system is the most macOS-native on the web. Multi-layer shadows
 - The effect is physical: elements feel like glass or brushed metal, not flat rectangles
 
 ### Decorative Depth
-- **Warm glow**: `rgba(215, 201, 175, 0.05) 0px 0px 20px 5px` behind featured elements — a subtle warm aura on the cold dark canvas
+- **Warm glow**: `rgba(215, 201, 175, 0.05) 0px 0px 20px 5px` behind featured elements, a subtle warm aura on the cold dark canvas
 - **Blue info glow**: `rgba(0, 153, 255, 0.15)` for interactive state emphasis
 - **Red danger glow**: `rgba(255, 99, 99, 0.15)` for error/destructive state emphasis
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use `#07080a` (not pure black) as the background — the blue-cold tint is essential to the Raycast feel
-- Apply positive letter-spacing (+0.2px) on body text — this is deliberately different from most dark UIs
-- Use multi-layer shadows with inset highlights for interactive elements — the macOS-native depth is signature
-- Keep Raycast Red (`#FF6363`) as punctuation, not pervasive — reserve it for hero moments and error states
-- Use `rgba(255, 255, 255, 0.06)` borders for card containment — barely visible, structurally essential
-- Apply weight 500 as the body text baseline — medium weight improves dark-mode legibility
+- Use `#07080a` (not pure black) as the background: the blue-cold tint is essential to the Raycast feel
+- Apply positive letter-spacing (+0.2px) on body text: this is deliberately different from most dark UIs
+- Use multi-layer shadows with inset highlights for interactive elements: the macOS-native depth is signature
+- Keep Raycast Red (`#FF6363`) as punctuation, not pervasive: reserve it for hero moments and error states
+- Use `rgba(255, 255, 255, 0.06)` borders for card containment: barely visible, structurally essential
+- Apply weight 500 as the body text baseline: medium weight improves dark-mode legibility
 - Use pill shapes (86px+ radius) for primary CTAs, rectangular shapes (6px–8px) for secondary actions
 - Enable OpenType features `calt`, `kern`, `liga`, `ss03` on all Inter text
 - Use opacity transitions (hover: opacity 0.6) for button interactions, not color changes
 
 ### Don't
-- Use pure black (`#000000`) as the background — the blue tint differentiates Raycast from generic dark themes
-- Apply negative letter-spacing on body text — Raycast deliberately uses positive spacing for readability
-- Use Raycast Blue as the primary accent for everything — blue is for interactive/info, red is the brand color
-- Create single-layer flat shadows — the multi-layer inset system is core to the macOS-native aesthetic
-- Use regular weight (400) for body text when 500 is available — the extra weight prevents dark-mode text from feeling thin
-- Mix warm and cool borders — stick to the cool gray (`hsl(195, 5%, 15%)`) border palette
-- Apply heavy drop shadows without inset companions — shadows always come in pairs (outer + inset)
-- Use decorative elements, gradients, or colorful backgrounds — the dark void is the stage, content is the performer
+- Use pure black (`#000000`) as the background: the blue tint differentiates Raycast from generic dark themes
+- Apply negative letter-spacing on body text: Raycast deliberately uses positive spacing for readability
+- Use Raycast Blue as the primary accent for everything: blue is for interactive/info, red is the brand color
+- Create single-layer flat shadows: the multi-layer inset system is core to the macOS-native aesthetic
+- Use regular weight (400) for body text when 500 is available: the extra weight prevents dark-mode text from feeling thin
+- Mix warm and cool borders: stick to the cool gray (`hsl(195, 5%, 15%)`) border palette
+- Apply heavy drop shadows without inset companions: shadows always come in pairs (outer + inset)
+- Use decorative elements, gradients, or colorful backgrounds: the dark void is the stage, content is the performer
 
 ## 8. Responsive Behavior
 
@@ -237,7 +237,7 @@ Raycast's shadow system is the most macOS-native on the web. Multi-layer shadows
 | Large Desktop | >1200px | Max-width container centered, generous side margins |
 
 ### Touch Targets
-- Pill buttons: 86px radius with 20px padding — well above 44px minimum
+- Pill buttons: 86px radius with 20px padding, well above 44px minimum
 - Secondary buttons: 8px padding minimum, but border provides visual target expansion
 - Nav links: 16px text with surrounding padding for accessible touch targets
 
@@ -252,7 +252,7 @@ Raycast's shadow system is the most macOS-native on the web. Multi-layer shadows
 - Product screenshots scale responsively within fixed-ratio containers
 - Hero diagonal stripe pattern scales proportionally
 - macOS window chrome rounded corners maintained at all sizes
-- No lazy-loading artifacts — images are critical to the product narrative
+- No lazy-loading artifacts: images are critical to the product narrative
 
 ## 9. Agent Prompt Guide
 
@@ -274,8 +274,8 @@ Raycast's shadow system is the most macOS-native on the web. Multi-layer shadows
 
 ### Iteration Guide
 When refining existing screens generated with this design system:
-1. Check the background is `#07080a` not pure black — the blue tint is critical
-2. Verify letter-spacing is positive (+0.2px) on body text — negative spacing breaks the Raycast aesthetic
-3. Ensure shadows have both outer and inset layers — single-layer shadows look flat and wrong
+1. Check the background is `#07080a` not pure black: the blue tint is critical
+2. Verify letter-spacing is positive (+0.2px) on body text: negative spacing breaks the Raycast aesthetic
+3. Ensure shadows have both outer and inset layers: single-layer shadows look flat and wrong
 4. Confirm Inter has OpenType features `calt`, `kern`, `liga`, `ss03` enabled
-5. Test that hover states use opacity transitions (0.6) not color swaps — this is a core interaction pattern
+5. Test that hover states use opacity transitions (0.6) not color swaps: this is a core interaction pattern

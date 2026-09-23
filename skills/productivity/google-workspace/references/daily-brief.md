@@ -8,7 +8,7 @@ Credit: workflow contributed by Ben Barclay (benbarclay).
 
 ### 1. Resolve day and identity
 
-Confirm Google account, timezone, and target local day. Use an explicit half-open window `[day_start, next_day_start)` in the account's timezone rather than vague "today" filters — the account timezone and the machine timezone are frequently different. Done when the exact UTC and local window are stated.
+Confirm Google account, timezone, and target local day. Use an explicit half-open window `[day_start, next_day_start)` in the account's timezone rather than vague "today" filters: the account timezone and the machine timezone are frequently different. Done when the exact UTC and local window are stated.
 
 ### 2. Fetch calendar events
 
@@ -20,7 +20,7 @@ Search a bounded recent window plus messages connected to meeting participants, 
 
 ### 4. Link mail to meetings
 
-Match by thread references, participant addresses, company/domain, event title, and project context. Treat fuzzy matches as suggestions, not facts — one shared keyword is not an association. Extract promised documents, unanswered questions, pre-read links, and decisions needed. Done when each meeting has either preparation items or an explicit "no preparation found."
+Match by thread references, participant addresses, company/domain, event title, and project context. Treat fuzzy matches as suggestions, not facts: one shared keyword is not an association. Extract promised documents, unanswered questions, pre-read links, and decisions needed. Done when each meeting has either preparation items or an explicit "no preparation found."
 
 ### 5. Build the brief
 
@@ -38,7 +38,7 @@ Rank by consequence and time, not message count. Done when each included item ha
 
 ### 6. Offer bounded actions
 
-Draft replies, create calendar holds, or add tasks only after presenting them — a brief request is not authorization to mutate. Apply approved actions with the main skill's commands, then read them back. Done when every approved mutation has a Google object ID/link and correct time/recipient.
+Draft replies, create calendar holds, or add tasks only after presenting them: a brief request is not authorization to mutate. Apply approved actions with the main skill's commands, then read them back. Done when every approved mutation has a Google object ID/link and correct time/recipient.
 
 ## Pitfalls
 

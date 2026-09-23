@@ -1,7 +1,7 @@
 # Design System: Revolut
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `system monospace stack`
@@ -15,19 +15,19 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Revolut's website is fintech confidence distilled into pixels — a design system that communicates "your money is in capable hands" through massive typography, generous whitespace, and a disciplined neutral palette. The visual language is built on Aeonik Pro, a geometric grotesque that creates billboard-scale headlines at 136px with weight 500 and aggressive negative tracking (-2.72px). This isn't subtle branding; it's fintech at stadium scale.
+Revolut's website is fintech confidence distilled into pixels: a design system that communicates "your money is in capable hands" through massive typography, generous whitespace, and a disciplined neutral palette. The visual language is built on Aeonik Pro, a geometric grotesque that creates billboard-scale headlines at 136px with weight 500 and aggressive negative tracking (-2.72px). This isn't subtle branding; it's fintech at stadium scale.
 
-The color system is built on a comprehensive `--rui-*` (Revolut UI) token architecture with semantic naming for every state: danger (`#e23b4a`), warning (`#ec7e00`), teal (`#00a87e`), blue (`#494fdf`), deep-pink (`#e61e49`), and more. But the marketing surface itself is remarkably restrained — near-black (`#191c1f`) and pure white (`#ffffff`) dominate, with the colorful semantic tokens reserved for the product interface, not the marketing page.
+The color system is built on a comprehensive `--rui-*` (Revolut UI) token architecture with semantic naming for every state: danger (`#e23b4a`), warning (`#ec7e00`), teal (`#00a87e`), blue (`#494fdf`), deep-pink (`#e61e49`), and more. But the marketing surface itself is remarkably restrained, near-black (`#191c1f`) and pure white (`#ffffff`) dominate, with the colorful semantic tokens reserved for the product interface, not the marketing page.
 
-What distinguishes Revolut is its pill-everything button system. Every button uses 9999px radius — primary dark (`#191c1f`), secondary light (`#f4f4f4`), outlined (`transparent + 2px solid`), and ghost on dark (`rgba(244,244,244,0.1) + 2px solid`). The padding is generous (14px 32px–34px), creating large, confident touch targets. Combined with Inter for body text at various weights and positive letter-spacing (0.16px–0.24px), the result is a design that feels both premium and accessible — banking for the modern era.
+What distinguishes Revolut is its pill-everything button system. Every button uses 9999px radius: primary dark (`#191c1f`), secondary light (`#f4f4f4`), outlined (`transparent + 2px solid`), and ghost on dark (`rgba(244,244,244,0.1) + 2px solid`). The padding is generous (14px 32px–34px), creating large, confident touch targets. Combined with Inter for body text at various weights and positive letter-spacing (0.16px–0.24px), the result is a design that feels both premium and accessible, banking for the modern era.
 
 **Key Characteristics:**
-- Aeonik Pro display at 136px weight 500 — billboard-scale fintech headlines
+- Aeonik Pro display at 136px weight 500: billboard-scale fintech headlines
 - Near-black (`#191c1f`) + white binary with comprehensive `--rui-*` semantic tokens
 - Universal pill buttons (9999px radius) with generous padding (14px 32px)
 - Inter for body text with positive letter-spacing (0.16px–0.24px)
 - Rich semantic color system: blue, teal, pink, yellow, green, brown, danger, warning
-- Zero shadows detected — depth through color contrast only
+- Zero shadows detected: depth through color contrast only
 - Tight display line-heights (1.00) with relaxed body (1.50–1.56)
 
 ## 2. Color Palette & Roles
@@ -62,8 +62,8 @@ What distinguishes Revolut is its pill-everything button system. Every button us
 ## 3. Typography Rules
 
 ### Font Families
-- **Display**: `Aeonik Pro` — geometric grotesque, no detected fallbacks
-- **Body / UI**: `Inter` — standard system sans
+- **Display**: `Aeonik Pro`, geometric grotesque, no detected fallbacks
+- **Body / UI**: `Inter`, standard system sans
 - **Fallback**: `Arial` for specific button contexts
 
 ### Hierarchy
@@ -83,8 +83,8 @@ What distinguishes Revolut is its pill-everything button system. Every button us
 | Body Bold Link | Inter | 16px (1.00rem) | 700 | 1.50 | 0.24px | Bold links |
 
 ### Principles
-- **Weight 500 as display default**: Aeonik Pro uses medium (500) for ALL headings — no bold. This creates authority through size and tracking, not weight.
-- **Billboard tracking**: -2.72px at 136px is extremely compressed — text designed to be read at a glance, like airport signage.
+- **Weight 500 as display default**: Aeonik Pro uses medium (500) for ALL headings, no bold. This creates authority through size and tracking, not weight.
+- **Billboard tracking**: -2.72px at 136px is extremely compressed, text designed to be read at a glance, like airport signage.
 - **Positive tracking on body**: Inter uses +0.16px to +0.24px, creating airy, well-spaced reading text that contrasts with the compressed headings.
 
 ## 4. Component Stylings
@@ -122,7 +122,7 @@ What distinguishes Revolut is its pill-everything button system. Every button us
 
 ### Cards & Containers
 - Radius: 12px (small), 20px (cards)
-- No shadows — flat surfaces with color contrast
+- No shadows: flat surfaces with color contrast
 - Dark and light section alternation
 
 ### Navigation
@@ -146,7 +146,7 @@ What distinguishes Revolut is its pill-everything button system. Every button us
 
 | Level | Treatment | Use |
 |-------|-----------|-----|
-| Flat (Level 0) | No shadow | Everything — Revolut uses zero shadows |
+| Flat (Level 0) | No shadow | Everything: Revolut uses zero shadows |
 | Focus | `0 0 0 0.125rem` ring | Accessibility focus |
 
 **Shadow Philosophy**: Revolut uses ZERO shadows. Depth comes entirely from the dark/light section contrast and the generous whitespace between elements.
@@ -155,16 +155,16 @@ What distinguishes Revolut is its pill-everything button system. Every button us
 
 ### Do
 - Use Aeonik Pro weight 500 for all display headings
-- Apply 9999px radius to all buttons — pill shape is universal
+- Apply 9999px radius to all buttons: pill shape is universal
 - Use generous button padding (14px 32px)
 - Keep the palette to near-black + white for marketing surfaces
 - Apply positive letter-spacing on Inter body text
 
 ### Don't
-- Don't use shadows — Revolut is flat by design
-- Don't use bold (700) for Aeonik Pro headings — 500 is the weight
-- Don't use small buttons — the generous padding is intentional
-- Don't apply semantic colors to marketing surfaces — they're for the product
+- Don't use shadows: Revolut is flat by design
+- Don't use bold (700) for Aeonik Pro headings: 500 is the weight
+- Don't use small buttons: the generous padding is intentional
+- Don't apply semantic colors to marketing surfaces: they're for the product
 
 ## 8. Responsive Behavior
 
@@ -192,7 +192,7 @@ What distinguishes Revolut is its pill-everything button system. Every button us
 - "Build a pill button: #191c1f background, white text, 9999px radius, 14px 32px padding, 20px Aeonik Pro weight 500. Hover: opacity 0.85."
 
 ### Iteration Guide
-1. Aeonik Pro 500 for headings — never bold
+1. Aeonik Pro 500 for headings: never bold
 2. All buttons are pills (9999px) with generous padding
-3. Zero shadows — flat is the Revolut identity
+3. Zero shadows: flat is the Revolut identity
 4. Near-black + white for marketing, semantic colors for product

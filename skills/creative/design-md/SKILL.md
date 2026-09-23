@@ -16,8 +16,8 @@ metadata:
 DESIGN.md is Google's open spec (Apache-2.0, `google-labs-code/design.md`) for
 describing a visual identity to coding agents. One file combines:
 
-- **YAML front matter** — machine-readable design tokens (normative values)
-- **Markdown body** — human-readable rationale, organized into canonical sections
+- **YAML front matter**: machine-readable design tokens (normative values)
+- **Markdown body**: human-readable rationale, organized into canonical sections
 
 Tokens give exact values. Prose tells agents *why* those values exist and how to
 apply them. The CLI (`npx @google/design.md`) lints structure + WCAG contrast,
@@ -112,7 +112,7 @@ pressed) are **separate component entries** with related key names
 
 Sections are optional, but present ones should appear in this order. The
 linter flags out-of-order sections (`section-order`, warning) and duplicate
-headings — consumers per the spec reject duplicates, so fix both before
+headings: consumers per the spec reject duplicates, so fix both before
 returning the file.
 
 1. Overview (alias: Brand & Style)
@@ -143,7 +143,7 @@ if the value type is valid. Unknown component properties produce a warning.
 
 ## Workflow: lint / diff / export
 
-The CLI is `@google/design.md` (Node). Use `npx` — no global install needed.
+The CLI is `@google/design.md` (Node). Use `npx`: no global install needed.
 
 ```bash
 # Validate structure + token references + WCAG contrast
@@ -167,7 +167,7 @@ npx -y @google/design.md spec --rules-only --format json
 
 All commands accept `-` for stdin. `lint` returns exit 1 on errors (warnings
 alone exit 0). `export` exits 0 on a successful export regardless of lint
-findings in the source — run `lint` separately to gate on those. Output is
+findings in the source: run `lint` separately to gate on those. Output is
 JSON by default; parse it if you need to report findings structurally.
 
 On Windows, the `design.md` bin name can collide with the `.md` file
@@ -176,20 +176,20 @@ alias: `npx -y -p @google/design.md designmd lint DESIGN.md`.
 
 ### Lint rule reference (the 9 rules, as of CLI 0.3.0)
 
-- `broken-ref` (error) — `{colors.missing}` points at a non-existent token
-- `contrast-ratio` (warning) — component `textColor` vs `backgroundColor`
+- `broken-ref` (error): `{colors.missing}` points at a non-existent token
+- `contrast-ratio` (warning): component `textColor` vs `backgroundColor`
   below WCAG AA (4.5:1)
-- `missing-primary` (warning) — colors defined but no `primary` token
-- `missing-typography` (warning) — colors defined but no typography tokens
-- `orphaned-tokens` (warning) — color tokens never referenced by a component
-- `section-order` (warning) — sections out of the canonical order
-- `unknown-key` (warning) — top-level YAML key that looks like a typo of a
+- `missing-primary` (warning): colors defined but no `primary` token
+- `missing-typography` (warning): colors defined but no typography tokens
+- `orphaned-tokens` (warning): color tokens never referenced by a component
+- `section-order` (warning): sections out of the canonical order
+- `unknown-key` (warning): top-level YAML key that looks like a typo of a
   schema key (`colours:` → `colors:`); custom extension keys stay silent
-- `token-summary`, `missing-sections` (info) — counts and absent optional
+- `token-summary`, `missing-sections` (info): counts and absent optional
   sections
 
 When the user cares about accessibility, call this out explicitly in your
-summary — WCAG findings are the most load-bearing reason to use the CLI.
+summary: WCAG findings are the most load-bearing reason to use the CLI.
 
 ## Pitfalls
 
@@ -198,17 +198,17 @@ summary — WCAG findings are the most load-bearing reason to use the CLI.
 - **Hex colors must be quoted strings.** YAML will otherwise choke on `#` or
   truncate values like `#1A1C1E` oddly.
 - **Negative dimensions need quotes too.** `letterSpacing: -0.02em` parses as
-  a YAML flow — write `letterSpacing: "-0.02em"`.
+  a YAML flow: write `letterSpacing: "-0.02em"`.
 - **Section order matters even though the linter only warns.** If the user
   gives you prose in a random order, reorder it to match the canonical list
-  before saving — spec-compliant consumers expect it.
+  before saving: spec-compliant consumers expect it.
 - **Typography sub-property typos are silently dropped.** As of CLI 0.3.0 a
   typo like `fontwight:` produces no finding and the value vanishes from
-  exports — double-check sub-property names against the schema
+  exports: double-check sub-property names against the schema
   (`fontFamily`, `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`,
   `fontFeature`, `fontVariation`).
 - **`version: alpha` is the current spec version** (as of Jul 2026, CLI
-  0.3.0). The spec is marked alpha — watch for breaking changes.
+  0.3.0). The spec is marked alpha: watch for breaking changes.
 - **Token references resolve by dotted path.** `{colors.primary}` works;
   `{primary}` does not.
 

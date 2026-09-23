@@ -67,28 +67,28 @@ BLEND_MODES = {
 ### Blend Mode Selection Guide
 
 **Modes that brighten** (safe for dark inputs):
-- `screen` — always brightens. Two 50% gray layers screen to 75%. The go-to safe blend.
-- `add` — simple addition, clips at white. Good for sparkles, glows, particle overlays.
-- `colordodge` — extreme brightening at overlap zones. Can blow out. Use low opacity (0.3-0.5).
-- `linearlight` — aggressive brightening. Similar to add but with offset.
+- `screen`: always brightens. Two 50% gray layers screen to 75%. The go-to safe blend.
+- `add`: simple addition, clips at white. Good for sparkles, glows, particle overlays.
+- `colordodge`: extreme brightening at overlap zones. Can blow out. Use low opacity (0.3-0.5).
+- `linearlight`: aggressive brightening. Similar to add but with offset.
 
 **Modes that darken** (avoid with dark inputs):
-- `multiply` — darkens everything. Only use when both layers are already bright.
-- `overlay` — darkens when base < 0.5, brightens when base > 0.5. Crushes dark inputs: `2 * 0.12 * 0.12 = 0.03`. Use `screen` instead for dark material.
-- `colorburn` — extreme darkening at overlap zones.
+- `multiply`: darkens everything. Only use when both layers are already bright.
+- `overlay`: darkens when base < 0.5, brightens when base > 0.5. Crushes dark inputs: `2 * 0.12 * 0.12 = 0.03`. Use `screen` instead for dark material.
+- `colorburn`: extreme darkening at overlap zones.
 
 **Modes that create contrast**:
-- `softlight` — gentle contrast. Good for subtle texture overlay.
-- `hardlight` — strong contrast. Like overlay but keyed on the top layer.
-- `vividlight` — very aggressive contrast. Use sparingly.
+- `softlight`: gentle contrast. Good for subtle texture overlay.
+- `hardlight`: strong contrast. Like overlay but keyed on the top layer.
+- `vividlight`: very aggressive contrast. Use sparingly.
 
 **Modes that create color effects**:
-- `difference` — XOR-like patterns. Two identical layers difference to black; offset layers create wild colors. Great for psychedelic looks.
-- `exclusion` — softer version of difference. Creates complementary color patterns.
-- `hard_mix` — posterizes to pure black/white/saturated color at intersections.
+- `difference`: XOR-like patterns. Two identical layers difference to black; offset layers create wild colors. Great for psychedelic looks.
+- `exclusion`: softer version of difference. Creates complementary color patterns.
+- `hard_mix`: posterizes to pure black/white/saturated color at intersections.
 
 **Modes for texture blending**:
-- `grain_extract` / `grain_merge` — extract a texture from one layer, apply it to another.
+- `grain_extract` / `grain_merge`: extract a texture from one layer, apply it to another.
 
 ### Multi-Layer Chaining
 
@@ -106,7 +106,7 @@ Order matters: `screen(A, B)` is commutative, but `difference(screen(A,B), C)` d
 
 ### Linear-Light Blend Modes
 
-Standard `blend_canvas()` operates in sRGB space — the raw byte values. This is fine for most uses, but sRGB is perceptually non-linear: blending in sRGB darkens midtones and shifts hues slightly. For physically accurate blending (matching how light actually combines), convert to linear light first.
+Standard `blend_canvas()` operates in sRGB space: the raw byte values. This is fine for most uses, but sRGB is perceptually non-linear: blending in sRGB darkens midtones and shifts hues slightly. For physically accurate blending (matching how light actually combines), convert to linear light first.
 
 Uses `srgb_to_linear()` / `linear_to_srgb()` from `architecture.md` § OKLAB Color System.
 
@@ -800,7 +800,7 @@ bg = apply_text_backdrop(bg, frame_glyphs, padding=80, darkness=0.75)
 bg = text_renderer.render(bg, frame_glyphs, color=(255, 255, 255))
 ```
 
-Combine with **reverse vignette** (see shaders.md) for scenes where text is always centered — the reverse vignette provides a persistent center-dark zone, while the backdrop handles per-frame glyph positions.
+Combine with **reverse vignette** (see shaders.md) for scenes where text is always centered: the reverse vignette provides a persistent center-dark zone, while the backdrop handles per-frame glyph positions.
 
 ## External Layout Oracle Pattern
 

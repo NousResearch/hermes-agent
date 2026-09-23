@@ -50,7 +50,7 @@ For each frame: extract chunk, apply window, FFT, compute band energies.
 | `beat` | Flux peak detection | Binary beat onset |
 | `bdecay` | Exponential decay from beats | Smooth beat pulse (0→1→0) |
 
-**Band ratios are critical** — they decouple spectral shape from volume, so a quiet bass section and a loud bass section both read as "bassy" rather than just "loud" vs "quiet".
+**Band ratios are critical**: they decouple spectral shape from volume, so a quiet bass section and a loud bass section both read as "bassy" rather than just "loud" vs "quiet".
 
 ### Smoothing
 

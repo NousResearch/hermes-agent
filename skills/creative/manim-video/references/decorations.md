@@ -195,8 +195,8 @@ self.play(FadeOut(brace), FadeOut(label))
 ### The annotation lifecycle
 
 Annotations should follow a rhythm:
-1. **Appear** — draw attention (Create, GrowFromCenter)
-2. **Hold** — viewer reads and understands (self.wait)
-3. **Disappear** — clear the stage for the next thing (FadeOut)
+1. **Appear**: draw attention (Create, GrowFromCenter)
+2. **Hold**: viewer reads and understands (self.wait)
+3. **Disappear**: clear the stage for the next thing (FadeOut)
 
-Never leave annotations on screen indefinitely — they become visual noise once their purpose is served.
+Never leave annotations on screen indefinitely: they become visual noise once their purpose is served.

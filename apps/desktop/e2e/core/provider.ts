@@ -22,6 +22,7 @@ export interface Gate {
 
 export function gate(): Gate {
   let open = () => {}
+
   const opened = new Promise<void>(resolve => {
     open = resolve
   })
@@ -86,6 +87,7 @@ function turnPosition(messages: any[]): { marker: null | string; step: number } 
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role === 'user') {
       lastUser = i
+
       break
     }
   }
@@ -240,7 +242,9 @@ export function startScriptedProvider(): Promise<ScriptedProvider> {
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/v1/models')) {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ object: 'list', data: [{ id: 'mock-model', object: 'model', created: 0, owned_by: 'core' }] }))
+      res.end(
+        JSON.stringify({ object: 'list', data: [{ id: 'mock-model', object: 'model', created: 0, owned_by: 'core' }] })
+      )
 
       return
     }

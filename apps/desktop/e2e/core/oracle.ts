@@ -88,7 +88,25 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
 
         for (const [marker, count] of counts) {
           if (count > 1 && w.__coreSampler.violations.length < 20) {
-            w.__coreSampler.violations.push({ marker, count, text: text.replace(/\s+/g, ' ').slice(0, 600) })
+            // Where the copies live: one bubble with doubled text vs two bubbles.
+            const bubbles = (
+              [
+                ...viewport.querySelectorAll(
+                  '[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-root"]'
+                )
+              ] as HTMLElement[]
+            )
+              .filter(el => el.innerText.includes(marker))
+              .map(el => `${el.getAttribute('data-slot')}#${el.getAttribute('data-message-id') ?? el.id ?? ''}`)
+
+            w.__coreSampler.violations.push({
+              marker,
+              count,
+              at: Math.round(performance.now()),
+              route: location.hash,
+              bubbles,
+              text: text.replace(/\s+/g, ' ').slice(0, 600)
+            })
           }
         }
       }
@@ -268,16 +286,19 @@ function wireViolations(
 
     if (turn.complete === null && !gapped) {
       problems.push(`wire ${textSegments.at(-1)!.marker}: turn never completed`)
+
       continue
     }
 
     const seen = new Set<string>()
+
     const check = (kind: string, segs: { marker: string; text: string }[], pick: (c: RecordedCompletion) => string) => {
       segs.forEach((seg, i) => {
         const completion = byOpening.get(seg.marker)
 
         if (!completion) {
           problems.push(`wire: ${kind} segment ${seg.marker} was never streamed by the provider`)
+
           return
         }
 
@@ -291,10 +312,14 @@ function wireViolations(
 
         if (gapped) {
           if (!isSubsequence(seg.text.split(' '), sent.split(' '))) {
-            problems.push(`wire: ${kind} ${JSON.stringify(seg.text)} is not an in-order subsequence of ${JSON.stringify(sent)}`)
+            problems.push(
+              `wire: ${kind} ${JSON.stringify(seg.text)} is not an in-order subsequence of ${JSON.stringify(sent)}`
+            )
           }
         } else if (partialAllowed ? !sent.startsWith(seg.text) : seg.text !== sent) {
-          problems.push(`wire: ${kind} ${JSON.stringify(seg.text)} != provider ${JSON.stringify(sent)}${completion.aborted ? ' (aborted)' : ''}`)
+          problems.push(
+            `wire: ${kind} ${JSON.stringify(seg.text)} != provider ${JSON.stringify(sent)}${completion.aborted ? ' (aborted)' : ''}`
+          )
         }
       })
     }
@@ -305,7 +330,9 @@ function wireViolations(
     const final = byOpening.get(textSegments.at(-1)!.marker)
 
     if (final && turn.complete !== null && norm(turn.complete) !== norm(final.sentText)) {
-      problems.push(`wire: message.complete ${JSON.stringify(turn.complete)} != final completion ${JSON.stringify(final.sentText)}`)
+      problems.push(
+        `wire: message.complete ${JSON.stringify(turn.complete)} != final completion ${JSON.stringify(final.sentText)}`
+      )
     }
   }
 
@@ -354,6 +381,7 @@ function transcriptViolations(persisted: PersistedMessage[], view: RenderedView,
 
     if (occurrences !== 1) {
       problems.push(`rendered ${occurrences}x (want 1): ${row.role} ${JSON.stringify(content.slice(0, 80))}`)
+
       continue
     }
 
@@ -432,7 +460,9 @@ export async function assertTranscriptOracle(
     })
 
   const transient = await samplerViolations(page)
-  expect(transient.violations, `transient duplicate render during [${label}] (${transient.samples} samples)`).toEqual([])
+  expect(transient.violations, `transient duplicate render during [${label}] (${transient.samples} samples)`).toEqual(
+    []
+  )
 
   const wire = wireViolations(ws, provider, new Set(target.expectUserMarkers), new Set(target.lossyWire ?? []))
   expect(wire, `wire integrity [${label}]`).toEqual([])

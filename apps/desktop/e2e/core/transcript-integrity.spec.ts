@@ -38,13 +38,20 @@ import {
 import { assertTranscriptOracle, installDuplicateSampler, type OracleTarget } from './oracle'
 import { gate, startScriptedProvider } from './provider'
 
-const nonce = Math.random().toString(36).slice(2, 8).replace(/[^a-z0-9]/g, 'x').padEnd(4, 'q')
+const nonce = Math.random()
+  .toString(36)
+  .slice(2, 8)
+  .replace(/[^a-z0-9]/g, 'x')
+  .padEnd(4, 'q')
 const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 const AI = (n: number) => `A${n}i-${nonce}`
 const R = (n: number) => `R${n}-${nonce}`
 
-const words = (marker: string, ...rest: string[]) => [`${marker} `, ...rest.map((w, i) => (i === rest.length - 1 ? w : `${w} `))]
+const words = (marker: string, ...rest: string[]) => [
+  `${marker} `,
+  ...rest.map((w, i) => (i === rest.length - 1 ? w : `${w} `))
+]
 
 function viewport(page: Page) {
   return page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
@@ -94,7 +101,10 @@ test('transcript oracle holds across every transition', async () => {
 
     await test.step('tool-call turn: interim text + real terminal tool + final', async () => {
       provider.script(U(2), [
-        { text: words(AI(2), 'checking', 'first'), toolCalls: [{ name: 'terminal', args: { command: 'echo core-tool-ok' } }] },
+        {
+          text: words(AI(2), 'checking', 'first'),
+          toolCalls: [{ name: 'terminal', args: { command: 'echo core-tool-ok' } }]
+        },
         { text: words(A(2), 'tool', 'said', 'ok') }
       ])
       await send(page, `${U(2)} run a tool`, 'Enter', ws)
@@ -104,7 +114,9 @@ test('transcript oracle holds across every transition', async () => {
     })
 
     await test.step('reasoning turn: reasoning deltas never leak into or double the reply', async () => {
-      provider.script(U(3), [{ reasoning: words(R(3), 'weighing', 'options'), text: words(A(3), 'reasoned', 'answer') }])
+      provider.script(U(3), [
+        { reasoning: words(R(3), 'weighing', 'options'), text: words(A(3), 'reasoned', 'answer') }
+      ])
       await send(page, `${U(3)} think first`, 'Enter', ws)
       await finished(U(3))
       sessionA.expectUserMarkers.push(U(3))
@@ -216,12 +228,20 @@ test('transcript oracle holds across every transition', async () => {
 
     // Sockets that delivered the message.complete of the turn whose reply opens with `marker`.
     const completeSockets = (marker: string) =>
-      new Set(ws.events.filter(e => e.type === 'message.complete' && String(e.payload?.text ?? '').startsWith(marker)).map(e => e.socket))
+      new Set(
+        ws.events
+          .filter(e => e.type === 'message.complete' && String(e.payload?.text ?? '').startsWith(marker))
+          .map(e => e.socket)
+      )
 
     let sessionP2: OracleTarget = { sessionId: '', profile: 'p2', expectUserMarkers: [] }
 
     await test.step('non-default profile on the shared host backend: one socket per session', async () => {
-      await page.getByRole('button', { name: 'Bots', exact: true }).or(page.getByRole('tab', { name: 'Bots', exact: true })).first().click()
+      await page
+        .getByRole('button', { name: 'Bots', exact: true })
+        .or(page.getByRole('tab', { name: 'Bots', exact: true }))
+        .first()
+        .click()
       const row = page.locator('[data-slot="bots-roster"] [data-roster-key="local::p2"]')
       await expect(row).toBeVisible({ timeout: 60_000 })
       await row.click()
@@ -232,7 +252,9 @@ test('transcript oracle holds across every transition', async () => {
       await expect(viewport(page)).toContainText(A(9))
       let p2Session: null | string = null
       await expect
-        .poll(() => (p2Session = storedSessionForMarker(sandbox, 'p2', U(9))), { message: 'p2 turn persisted in the p2 state.db' })
+        .poll(() => (p2Session = storedSessionForMarker(sandbox, 'p2', U(9))), {
+          message: 'p2 turn persisted in the p2 state.db'
+        })
         .not.toBeNull()
       sessionP2 = { sessionId: p2Session!, profile: 'p2', expectUserMarkers: [U(9)] }
       await assertTranscriptOracle(page, ws, provider, sessionP2, 'p2 first turn')
@@ -245,7 +267,22 @@ test('transcript oracle holds across every transition', async () => {
       sessionP2.expectUserMarkers.push(U(13))
       await assertTranscriptOracle(page, ws, provider, sessionP2, 'p2 second turn')
       expect([...completeSockets(A(9))].length, 'p2 turn 1 delivered on exactly one socket').toBe(1)
-      expect([...completeSockets(A(13))].length, 'p2 turn 2 delivered on exactly one socket (no 2nd socket to one backend)').toBe(1)
+      expect([...completeSockets(A(13))].length, 'p2 turn 2 delivered on exactly one socket').toBe(1)
+      // One backend process, one socket: the host backend serves p2 too, so
+      // the renderer must not hold a second live socket to it (#120006).
+      const sameBackend = new Set([String(backendPort), String(proxy.port)])
+      await expect
+        .poll(
+          () =>
+            ws.sockets
+              .filter(s => !s.closed && sameBackend.has(new URL(s.url).port))
+              .map(s => s.url.replace(/token=[^&]+/, 'token=…')),
+          {
+            timeout: 30_000,
+            message: 'live sockets to the one host backend'
+          }
+        )
+        .toHaveLength(1)
     })
 
     await test.step('forced second socket to the same backend: every event still renders once', async () => {
@@ -256,7 +293,10 @@ test('transcript oracle holds across every transition', async () => {
       const socketsBefore = ws.sockets.length
       await splitProfileRoute(app, 'p2')
       provider.script(U(10), [
-        { text: words(AI(10), 'looking', 'it', 'up'), toolCalls: [{ name: 'terminal', args: { command: 'echo core-two-sockets' } }] },
+        {
+          text: words(AI(10), 'looking', 'it', 'up'),
+          toolCalls: [{ name: 'terminal', args: { command: 'echo core-two-sockets' } }]
+        },
         { text: words(A(10), 'two', 'sockets', 'one', 'render') }
       ])
       await send(page, `${U(10)} tool on p2`, 'Enter', ws)
@@ -264,7 +304,10 @@ test('transcript oracle holds across every transition', async () => {
       await expect.poll(() => ws.sockets.length).toBeGreaterThan(socketsBefore)
       // Precondition of the scenario: the turn really was fanned out to 2+ sockets.
       await expect
-        .poll(() => completeSockets(A(10)).size, { timeout: 60_000, message: 'the forced turn reached more than one socket' })
+        .poll(() => completeSockets(A(10)).size, {
+          timeout: 60_000,
+          message: 'the forced turn reached more than one socket'
+        })
         .toBeGreaterThan(1)
       sessionP2.expectUserMarkers.push(U(10))
       await assertTranscriptOracle(page, ws, provider, sessionP2, 'p2 tool turn over two sockets')

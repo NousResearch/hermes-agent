@@ -1,5 +1,10 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
-import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import {
+  $clarifyRequests,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  normalizeChoices
+} from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
 export interface PendingClarifyResumeState {
@@ -57,13 +62,13 @@ export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEvent
     args: request.questions?.length
       ? {
           questions: request.questions.map(question => ({
-            choices: question.choices ?? undefined,
+            choices: normalizeChoices(question.choices),
             multi_select: question.multiSelect || undefined,
             question: question.question
           }))
         }
       : {
-          choices: request.choices ?? [],
+          choices: normalizeChoices(request.choices),
           ...(request.multiSelect ? { multi_select: true } : {}),
           question: request.question
         },

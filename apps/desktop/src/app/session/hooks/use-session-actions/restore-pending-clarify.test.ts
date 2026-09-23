@@ -120,4 +120,76 @@ describe('pendingClarifyToolPayload', () => {
       tool_id: 'rid'
     })
   })
+
+  it('drops object-shaped choices on the single-question branch so the renderer never sees {"label": "}', () => {
+    const payload = pendingClarifyToolPayload({
+      // The store's ClarifyRequest type claims string[] | null, but the leak
+      // path is exactly when something upstream lets an object array slip
+      // through. Cast to exercise the rehydration boundary defensively.
+      choices: [{ label: 'Foo' }, { label: 'Bar' }] as unknown as null,
+      multiSelect: false,
+      question: 'Pick one?',
+      requestId: 'rid',
+      sessionId: 'sess'
+    })
+
+    expect(payload.args).toEqual({
+      choices: [],
+      question: 'Pick one?'
+    })
+    expect(JSON.stringify(payload.args)).not.toContain('{"label"')
+  })
+
+  it('keeps only the string entries when a mixed-shape choices array reaches the boundary', () => {
+    const payload = pendingClarifyToolPayload({
+      choices: [{ label: 'Foo' }, 'Bar', null, 42] as unknown as null,
+      multiSelect: false,
+      question: 'Pick one?',
+      requestId: 'rid',
+      sessionId: 'sess'
+    })
+
+    expect(payload.args).toEqual({
+      choices: ['Bar'],
+      question: 'Pick one?'
+    })
+  })
+
+  it('drops object-shaped choices inside the multi-question questions[] branch', () => {
+    const payload = pendingClarifyToolPayload({
+      choices: null,
+      multiSelect: false,
+      question: '',
+      questions: [
+        {
+          choices: [{ label: 'Foo' }, { label: 'Bar' }] as unknown as null,
+          multiSelect: false,
+          qid: 'q0',
+          question: 'One?'
+        }
+      ],
+      requestId: 'rid',
+      sessionId: 'sess'
+    })
+
+    expect(payload.args).toEqual({
+      questions: [{ choices: [], question: 'One?' }]
+    })
+    expect(JSON.stringify(payload.args)).not.toContain('{"label"')
+  })
+
+  it('passes all-string choices through unchanged on the single-question branch', () => {
+    const payload = pendingClarifyToolPayload({
+      choices: ['Foo', 'Bar'],
+      multiSelect: false,
+      question: 'Pick one?',
+      requestId: 'rid',
+      sessionId: 'sess'
+    })
+
+    expect(payload.args).toEqual({
+      choices: ['Foo', 'Bar'],
+      question: 'Pick one?'
+    })
+  })
 })

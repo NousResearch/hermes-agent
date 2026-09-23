@@ -106,27 +106,32 @@ _WAV_MIME_EXT = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav
 
 
 def _cache_mcp_media_block(block, kind: str, writer: str, ext_for, *, cap_what: Optional[str] = None) -> str:
-    """Cache an image/audio block and return a ``MEDIA:<path>`` tag. "" (logging, not raising)
-    when the block isn't ``kind`` media, the base64 is malformed, or the cache rejects the
-    bytes: the caller falls through to any text blocks."""
+    """Cache an image/audio block and return a ``MEDIA:<path>`` tag; "" when the block isn't ``kind``
+    media. Malformed base64 or bytes the cache rejects (an SVG or HEIC image, an HTML error page)
+    render an inline marker, like the embedded-resource path: never raising, but never dropping the
+    block silently either, which left the model believing the tool returned less than it did."""
     data = getattr(block, "data", None)
     mime = _base_mime(mcp_field(block, "mime_type", "mimeType"))
     if data is None or not mime.startswith(f"{kind}/"):
         return ""
-    raw_bytes, err = _decode_block_b64(data, f"{kind} block", mime, cap_what=cap_what)
+    raw_bytes, err = _decode_block_b64(data, f"{kind} block", mime, cap_what=cap_what,
+                                       decode_fail=f"[MCP {kind} block could not be decoded: {mime}]")
     if raw_bytes is None:
         return err
-    path, err = _write_block_cache(writer, f"{kind} block", kind, raw_bytes, ext=ext_for(mime))
+    path, err = _write_block_cache(
+        writer, f"{kind} block", kind, raw_bytes, ext=ext_for(mime),
+        unavailable=f"[MCP {kind} block received ({len(raw_bytes)} bytes, {mime}) but {kind} cache unavailable in this process]",
+        failed=f"[MCP {kind} block could not be cached ({mime}, {len(raw_bytes)} bytes)]")
     return err if path is None else f"MEDIA:{path}"
 
 
 def _cache_mcp_image_block(block) -> str:
-    """Cache an ``ImageContent`` block and return a ``MEDIA:<path>`` tag ("" on any failure)."""
+    """Cache an ``ImageContent`` block: a ``MEDIA:<path>`` tag, or an inline marker when it cannot be."""
     return _cache_mcp_media_block(block, "image", "cache_image_from_bytes", _mcp_image_extension_for_mime_type)
 
 
 def _cache_mcp_audio_block(block) -> str:
-    """Cache an ``AudioContent`` block and return a ``MEDIA:<path>`` tag ("" on any failure)."""
+    """Cache an ``AudioContent`` block: a ``MEDIA:<path>`` tag, or an inline marker when it cannot be."""
     return _cache_mcp_media_block(
         block, "audio", "cache_audio_from_bytes",
         lambda mime: _WAV_MIME_EXT.get(mime) or mimetypes.guess_extension(mime) or ".ogg",

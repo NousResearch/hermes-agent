@@ -17,7 +17,10 @@ images natively.
 from __future__ import annotations
 
 import base64
+import json
 from types import SimpleNamespace
+
+import pytest
 
 
 def _png_bytes():
@@ -92,18 +95,38 @@ class TestCacheMcpImageBlock:
         assert _cache_mcp_image_block(block) == ""
 
 
-    def test_returns_empty_when_bytes_dont_look_like_an_image(self, tmp_path, monkeypatch):
-        """``cache_image_from_bytes`` has a format sniff; if the claimed
-        ``image/png`` is actually an HTML error page, the cache raises and
-        we log + drop rather than propagate."""
+    @pytest.mark.parametrize(("kind", "mime", "data", "marker"), [
+        ("image", "image/png", base64.b64encode(b"<html>error</html>").decode("ascii"), "could not be cached"),
+        ("image", "image/svg+xml", base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"/>').decode("ascii"),
+         "could not be cached"),
+        ("image", "image/png", "abc", "could not be decoded"),
+        ("audio", "audio/wav", "abc", "could not be decoded"),
+    ])
+    def test_media_the_cache_cannot_take_renders_a_marker_not_nothing(self, tmp_path, monkeypatch, kind, mime, data,
+                                                                      marker):
+        """``cache_image_from_bytes`` sniffs formats (an SVG, HEIC or an HTML error page claiming image/png is
+        refused) and base64 can be malformed. Never raise, but never drop the block silently either: the model
+        would believe the tool returned less than it did."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_tool_content import _cache_mcp_image_block
+        from tools.mcp_tool_content import _cache_mcp_audio_block, _cache_mcp_image_block
 
-        block = SimpleNamespace(
-            data=base64.b64encode(b"<html>error</html>").decode("ascii"),
-            mimeType="image/png",
-        )
-        assert _cache_mcp_image_block(block) == ""
+        rendered = (_cache_mcp_image_block if kind == "image" else _cache_mcp_audio_block)(
+            SimpleNamespace(data=data, mimeType=mime))
+        assert not rendered.startswith("MEDIA:")
+        assert f"[MCP {kind} block {marker}" in rendered and mime in rendered
+
+    def test_tool_result_tells_the_model_an_image_was_dropped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool_handlers import _render_call_tool_result
+
+        svg = base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"/>').decode("ascii")
+        result = SimpleNamespace(isError=False, structuredContent=None, meta=None, content=[
+            SimpleNamespace(type="text", text="Chart rendered"),
+            SimpleNamespace(type="image", data=svg, mimeType="image/svg+xml")])
+
+        text = json.loads(_render_call_tool_result(result, "charts"))["result"]
+        assert text.startswith("Chart rendered")
+        assert "[MCP image block could not be cached (image/svg+xml" in text
 
     def test_handles_jpeg(self, tmp_path, monkeypatch):
         """JPEG signature should also be accepted."""

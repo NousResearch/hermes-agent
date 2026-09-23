@@ -824,7 +824,10 @@ class ControlAPI:
         for spec in self.bundle.agents:
             live = applied.get(spec.id)
             declared_digest = self.runtime.expected_digest(
-                spec, policy=self._compiled(spec.id), knowledge=self.bundle.knowledge
+                spec,
+                policy=self._compiled(spec.id),
+                knowledge=self.bundle.knowledge,
+                deployment=self.bundle.deployment,
             )
             rows.append(
                 {

@@ -7,6 +7,7 @@ import shutil
 import yaml
 
 from nova.apply import apply_bundle
+from nova.policy import compile_policy
 from nova.runtime.hermes.paths import HermesPaths
 from nova.spec import load_bundle
 
@@ -292,3 +293,46 @@ def test_plan_prune_previews_the_removal_without_deleting(tmp_path, runtime, aud
 
     assert "operations__acme-support-telegram" in report.pruned
     assert derived.exists(), "a dry-run prune deleted a profile"
+
+
+# The first live Bedrock deployment moved deployment.yaml from a foundation-model id to an
+# inference profile. Every agent spec was untouched, so apply reported `unchanged` and the
+# profiles kept calling the old id. The tenant's provider is part of what an agent runs on.
+def _bundle_with_model(tmp_path, model):
+    root = tmp_path / model
+    shutil.copytree(EXAMPLE_BUNDLE, root)
+    path = root / "deployment.yaml"
+    text = path.read_text(encoding="utf-8")
+    assert "${ACME_LLM_MODEL:-acme-default}" in text
+    path.write_text(text.replace("${ACME_LLM_MODEL:-acme-default}", model), encoding="utf-8")
+    return load_bundle(root)
+
+
+def test_a_tenant_model_change_reaches_every_agent(tmp_path, runtime, audit, home):
+    apply_bundle(_bundle_with_model(tmp_path, "model-a"), runtime, audit=audit)
+    report = apply_bundle(_bundle_with_model(tmp_path, "model-b"), runtime, audit=audit)
+
+    assert set(report.changed) == EXAMPLE_AGENTS
+    for agent_id in EXAMPLE_AGENTS:
+        config = yaml.safe_load(HermesPaths(home=home).config_path(agent_id).read_text())
+        assert config["model"]["model"] == "model-b"
+
+
+def test_drift_check_agrees_with_apply_when_a_deployment_is_declared(
+    tmp_path, runtime, audit
+):
+    applied = _bundle_with_model(tmp_path, "model-a")
+    apply_bundle(applied, runtime, audit=audit)
+    live = {agent.agent_id: agent.digest for agent in runtime.list_agents()}
+
+    for bundle, in_sync in ((applied, True), (_bundle_with_model(tmp_path, "model-b"), False)):
+        for spec in bundle.enabled_agents():
+            if spec.id not in EXAMPLE_AGENTS:
+                continue
+            expected = runtime.expected_digest(
+                spec,
+                policy=compile_policy(spec, bundle.policy) if bundle.policy else None,
+                knowledge=bundle.knowledge,
+                deployment=bundle.deployment,
+            )
+            assert (live[spec.id] == expected) is in_sync, spec.id

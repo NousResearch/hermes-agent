@@ -145,6 +145,7 @@ def agent_digest(
     spec: AgentSpec,
     policy: Optional[CompiledPolicy],
     knowledge: Optional[Mapping[str, Any]] = None,
+    deployment: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Stable identity of an agent as materialized: its spec, its policy, its knowledge grant.
 
@@ -159,8 +160,15 @@ def agent_digest(
     next apply would report the agent up to date while its tool still describes a corpus by
     its old name. ``index_path`` and ``audit_log`` are stripped for the same reason
     :data:`RUNTIME_INJECTED_KEYS` are: where the files live is deployment, not identity.
+
+    ``deployment`` is the tenant-level part of the agent's runtime configuration — the
+    resolved provider and ``runtime_config`` from ``deployment.yaml`` — for the same reason:
+    switching the tenant's model with every agent spec untouched changes which model the
+    agent calls. Left out, an apply reports every agent ``unchanged`` and the profiles keep
+    the old model; that is how a move to a Bedrock inference profile never reached the
+    runtime. Empty for a tenant that declares none, so those digests do not move.
     """
-    if policy is None and not knowledge:
+    if policy is None and not knowledge and not deployment:
         return spec.digest()
     payload: dict[str, Any] = {"spec": spec.to_dict()}
     if policy is not None:
@@ -171,6 +179,8 @@ def agent_digest(
             for key, value in knowledge.items()
             if key not in RUNTIME_INJECTED_KEYS and key not in ("index_path",)
         }
+    if deployment:
+        payload["deployment"] = dict(deployment)
     return "sha256:" + hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()

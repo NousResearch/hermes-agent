@@ -195,7 +195,9 @@ def _diagnose_agent(
         )
 
     policy = compile_policy(spec, bundle.policy) if bundle.policy is not None else None
-    expected = runtime.expected_digest(spec, policy=policy, knowledge=bundle.knowledge)
+    expected = runtime.expected_digest(
+        spec, policy=policy, knowledge=bundle.knowledge, deployment=bundle.deployment
+    )
     if live.digest == expected:
         return Finding(
             kind=event.kind, subject=event.subject, correlation_id=event.correlation_id,

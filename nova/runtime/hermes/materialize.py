@@ -644,7 +644,7 @@ def plan_writes(
         # The recorded digest must cover everything materialization depends on, policy
         # included, or a re-apply compares against a digest it can never match and
         # reports every agent as changed forever.
-        digest=_combined_digest(spec, policy, knowledge),
+        digest=_combined_digest(spec, policy, knowledge, provider, runtime_config),
         nova_version=_nova_version(),
         # Deliberately not part of the digest: the tenant is who owns the profile, not
         # what the agent is. Putting it in the digest would re-materialize every agent on
@@ -724,7 +724,7 @@ def materialize(
     created = not profile_dir.exists()
     # The policy is part of what an agent IS, so it belongs in the identity that decides
     # whether a re-apply is a change. A policy edit with an unchanged spec must rewrite.
-    digest = _combined_digest(spec, policy, knowledge)
+    digest = _combined_digest(spec, policy, knowledge, provider, runtime_config)
     writes = plan_writes(
         spec, paths, identity, policy, knowledge, provider, runtime_config, tenant_id
     )
@@ -787,6 +787,22 @@ def _combined_digest(
     spec: AgentSpec,
     policy: Optional[CompiledPolicy],
     knowledge: Optional[dict[str, Any]] = None,
+    provider: Optional[ProviderSpec] = None,
+    runtime_config: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Delegates to the one shared definition; see :func:`nova.policy.agent_digest`."""
-    return agent_digest(spec, policy, knowledge)
+    return agent_digest(
+        spec, policy, knowledge, deployment_identity(provider, runtime_config)
+    )
+
+
+def deployment_identity(
+    provider: Optional[ProviderSpec], runtime_config: Optional[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """The tenant-level inputs that reach an agent's ``config.yaml``, as digest payload."""
+    out: dict[str, Any] = {}
+    if provider is not None and provider.declared:
+        out["provider"] = provider.to_dict()
+    if runtime_config:
+        out["runtime_config"] = dict(runtime_config)
+    return out

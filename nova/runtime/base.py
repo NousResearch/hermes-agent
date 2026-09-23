@@ -758,6 +758,7 @@ class AgentRuntime(ABC):
         *,
         policy: Optional[CompiledPolicy] = None,
         knowledge: Optional[KnowledgeCatalog] = None,
+        deployment: Optional[DeploymentSpec] = None,
     ) -> str:
         """The digest :meth:`materialize_agent` would record for this spec, without writing.
 

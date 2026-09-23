@@ -117,7 +117,10 @@ def test_agents_reports_in_sync_after_apply(api, bundle, runtime, audit):
     # assertion is supposed to catch.
     spec = bundle.agent("customer-support")
     expected = runtime.expected_digest(
-        spec, policy=compile_policy(spec, bundle.policy), knowledge=bundle.knowledge
+        spec,
+        policy=compile_policy(spec, bundle.policy),
+        knowledge=bundle.knowledge,
+        deployment=bundle.deployment,
     )
     assert rows["customer-support"]["applied_digest"] == expected
 

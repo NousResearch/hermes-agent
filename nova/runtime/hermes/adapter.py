@@ -166,7 +166,9 @@ class HermesRuntime(AgentRuntime):
             "agent.materialized",
             correlation_id=correlation_id,
             subject=spec.id,
-            digest=_materialize._combined_digest(spec, policy, grant),
+            digest=_materialize._combined_digest(
+                spec, policy, grant, resolved, runtime_config
+            ),
             detail={
                 "runtime": self.name,
                 "agent_name": spec.name,
@@ -348,14 +350,24 @@ class HermesRuntime(AgentRuntime):
         *,
         policy: Optional[CompiledPolicy] = None,
         knowledge: Optional[KnowledgeCatalog] = None,
+        deployment: Optional[DeploymentSpec] = None,
     ) -> str:
-        """As the contract, plus this agent's resolved knowledge grant.
+        """As the contract, plus this agent's resolved knowledge grant and provider.
 
         The grant is resolved rather than taken from the spec because the corpus titles the
-        tool description carries come from the tenant catalog, not from the agent.
+        tool description carries come from the tenant catalog, not from the agent. The
+        provider is resolved the way :meth:`materialize_agent` resolves it, or the two would
+        disagree for every agent on a tenant that declares a deployment.
         """
+        deployment = deployment or DeploymentSpec()
         grant = _materialize.build_knowledge_config(spec, self.paths, knowledge)
-        return _materialize._combined_digest(spec, policy, grant)
+        return _materialize._combined_digest(
+            spec,
+            policy,
+            grant,
+            deployment.provider.merged_with(spec.model.deployment),
+            deployment.runtime_config,
+        )
 
     def list_agents(self) -> list[MaterializedAgent]:
         profiles_dir = self.paths.profiles_dir

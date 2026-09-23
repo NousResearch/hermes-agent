@@ -212,7 +212,7 @@ export function StatusMenu({
           <Codicon name="chevron-down" size="0.7rem" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
+      <DropdownMenuContent align="start" className="z-(--z-modal-popover)">
         {columns
           .filter(name => name === status || !isLockedTarget(name))
           .map(name => (

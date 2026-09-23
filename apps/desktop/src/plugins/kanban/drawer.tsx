@@ -266,7 +266,7 @@ function AssigneeMenu({
           <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="chevron-down" size="0.65rem" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
+      <DropdownMenuContent align="start" className="z-(--z-modal-popover)">
         {(roster?.profiles ?? []).map(profile => (
           <DropdownMenuItem key={profile.name} onSelect={() => onReassign(profile.name)}>
             <Avatar name={profile.name} size="0.875rem" />
@@ -875,7 +875,7 @@ export function TaskDrawer({
                       <Codicon name="ellipsis" size="0.9rem" />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
+                  <DropdownMenuContent align="end" className="z-(--z-modal-popover)">
                     <DropdownMenuItem
                       onSelect={() => {
                         void navigator.clipboard.writeText(task.id)

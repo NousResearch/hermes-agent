@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import { $settingsScopeOverride } from '@/store/settings-scope'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -64,6 +65,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 }))
 
 beforeEach(() => {
+  $settingsScopeOverride.set(null)
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -92,9 +94,13 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   profileSwitchHandler = null
+  $settingsScopeOverride.set(null)
 })
 
-async function renderModelSettings(scopeProfile?: string | { connectionId: string; profile: string }) {
+async function renderModelSettings(
+  scopeProfile?: string | { connectionId: string; profile: string },
+  onMainModelChanged?: (provider: string, model: string) => void
+) {
   const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
@@ -103,7 +109,7 @@ async function renderModelSettings(scopeProfile?: string | { connectionId: strin
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings scopeProfile={scopeProfile} />
+        <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -292,6 +298,21 @@ describe('ModelSettings', () => {
         base_url: 'http://localhost:11434/v1'
       })
     )
+  })
+
+  it('does not repaint active-model stores when applying a non-active profile model', async () => {
+    $settingsScopeOverride.set('research')
+    const onMainModelChanged = vi.fn()
+
+    await renderModelSettings({ connectionId: 'remote-a', profile: 'research' }, onMainModelChanged)
+
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'hermes-4-mini' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(setModelAssignment).toHaveBeenCalled())
+    expect(onMainModelChanged).not.toHaveBeenCalled()
   })
 
   it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {

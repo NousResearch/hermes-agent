@@ -416,6 +416,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |
+| `SIGNAL_SEND_ALLOWED_USERS` | Outbound DM allowlist: comma-separated E.164 phone numbers or UUIDs the bot may send to. Falls back to `SIGNAL_ALLOWED_USERS` when unset; if that is `*` or unset, DM sends are blocked. `group:` targets are gated by `SIGNAL_GROUP_ALLOWED_USERS` |
 | `SIGNAL_GROUP_ALLOWED_USERS` | Comma-separated group IDs, or `*` for all groups |
 | `SIGNAL_HOME_CHANNEL_NAME` | Display name for the Signal home channel |
 | `SIGNAL_IGNORE_STORIES` | Ignore Signal stories/status updates |

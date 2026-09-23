@@ -1289,7 +1289,10 @@ dispatch and delivery have separate owners:
 
 - **Dispatch stays single-owner.** Exactly one gateway keeps
   `kanban.dispatch_in_gateway: true` and runs the dispatcher; every other
-  gateway sets it to `false`.
+  gateway sets it to `false`. Both the flag and the singleton lock are
+  re-evaluated every tick, so changing which gateway dispatches needs no
+  restart on either side, and a gateway that wants the lock but cannot get it
+  warns instead of going silent.
 - **Notification delivery is profile-owned.** Every gateway — including
   non-dispatch ones — runs the notifier and polls only subscriptions stamped
   with a profile whose platform adapters it hosts. A task created from the

@@ -28,6 +28,25 @@ each gateway polls only subscriptions for profiles whose platform adapters it
 hosts. The atomic event claim prevents duplicate delivery across watcher
 processes.
 
+### Ownership is re-evaluated every tick
+
+The flag and the machine-global singleton lock (`<kanban home>/kanban/
+.dispatcher.lock`) are read together on **every dispatcher tick**, not once at
+boot. Three consequences worth relying on:
+
+- Flipping `dispatch_in_gateway` takes effect on the next tick. The gateway
+  losing the role releases the lock; the gateway gaining it picks the lock up.
+  Neither side needs a restart.
+- A gateway that loses the startup race keeps retrying instead of giving up for
+  its process lifetime, so a freed lock is always picked up by a gateway that
+  wants it.
+- A gateway whose config enables dispatch but cannot get the lock logs a
+  **WARNING** naming the lock path, repeated hourly while the condition holds.
+  A silent fleet with a full ready queue is the failure mode this replaces.
+
+`HERMES_KANBAN_DISPATCH_IN_GATEWAY=false` remains a permanent per-process
+opt-out: it is read once at startup and that gateway never touches the lock.
+
 ## Configuration
 
 On the dispatch-owning gateway (typically the `default` profile), no change is

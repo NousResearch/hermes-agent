@@ -26,7 +26,7 @@ def test_mixin_defines_kanban_methods():
         assert hasattr(GatewayKanbanWatchersMixin, m), f"mixin missing {m}"
 
 
-def test_gateway_dispatcher_stuck_warning_names_guard_reason(monkeypatch, caplog):
+def test_gateway_dispatcher_stuck_warning_names_guard_reason(tmp_path, monkeypatch, caplog):
     """The embedded dispatcher's "stuck" warning names the respawn-guard reason
     holding the ready queue (#111910) instead of a bare zero-spawn count."""
     import asyncio
@@ -38,7 +38,13 @@ def test_gateway_dispatcher_stuck_warning_names_guard_reason(monkeypatch, caplog
     held = kbd.DispatchResult(respawn_guarded=[("t_held", "active_pr")])
     runner = object.__new__(kw.GatewayKanbanWatchersMixin)
     runner._running = True
-    monkeypatch.setattr(runner, "_kanban_dispatcher_boot", lambda: (lambda: {}, object(), {}))
+
+    class _Kb:
+        @staticmethod
+        def kanban_home():
+            return tmp_path
+
+    monkeypatch.setattr(runner, "_kanban_dispatcher_boot", lambda: (lambda: {}, _Kb(), {}))
 
     class _Dispatcher:
         def __init__(self, *a, **k):

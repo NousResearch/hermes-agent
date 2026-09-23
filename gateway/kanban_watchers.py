@@ -20,6 +20,7 @@ from gateway.kanban_watchers_common import (
     _kanban_dispatch_allowed,
     _release_singleton_lock,
     _resolve_auto_decompose_settings,
+    _resolve_dispatch_enabled,
     _gc_retention_days,
     _to_thread_process_service,
     logger,
@@ -35,6 +36,7 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+_DISPATCH_STATE_RELOG_SECONDS = 3600.0
 
 
 class GatewayKanbanWatchersMixin:
@@ -201,11 +203,14 @@ class GatewayKanbanWatchersMixin:
                 logger.warning("kanban notifier: artifact upload (%s) failed: %s", path, exc)
 
     def _kanban_dispatcher_boot(self) -> Optional[tuple]:
-        """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.
+        """Resolve the config loader and kanban_db; None when this process must never dispatch.
 
-        Config is read once at boot (restart to apply), except the auto-decompose
-        toggle which is re-read every tick. The env var is an escape hatch to
-        disable without editing YAML.
+        Only the env escape hatch and a missing dependency are permanent here.
+        ``kanban.dispatch_in_gateway`` is NOT read as a gate: it is re-read every
+        tick by the loop, together with the singleton lock, so a gateway that
+        loses the boot race or starts with dispatch disabled can take ownership
+        later without a restart. Dispatcher settings other than the enable flag
+        are still read once (restart to apply).
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -222,37 +227,75 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban dispatcher: cannot load config (%s); disabled", exc)
             return None
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
-            logger.info("kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false")
-            return None
         try:
             from hermes_cli import kanban_db as _kb
         except Exception:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return None
-
-        # Single-dispatcher backstop (see _acquire_singleton_lock). The lock
-        # lives at the machine-global kanban root, so it serialises ALL gateways.
         self._kanban_dispatcher_lock_handle = None
-        _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
-        _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
-        if _lock_state == "contended":
-            logger.info("kanban dispatcher: another gateway already holds the dispatcher "
-                        "lock (%s); this gateway will NOT dispatch.", _lock_path)
-            return None
-        if _lock_state == "held":
-            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
-            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+        return _load_config, _kb, kanban_cfg
+
+    def _kanban_dispatcher_claim(self, lock_path, enabled: bool) -> bool:
+        """Re-evaluate singleton ownership for this tick; True when this gateway may dispatch.
+
+        The lock (see :func:`_acquire_singleton_lock`) lives at the machine-global
+        kanban root and serialises ALL gateways. Ownership follows this gateway's
+        live config: a gateway that stops wanting to dispatch releases it in the
+        same tick, and a gateway that wants it retries every tick until it wins,
+        so a freed lock never strands the fleet.
+        """
+        if not enabled:
+            if self._owns_kanban_dispatcher_lock():
+                self._release_kanban_dispatcher_lock()
+            self._log_kanban_dispatch_state("disabled", lock_path)
+            return False
+        if self._owns_kanban_dispatcher_lock():
+            self._log_kanban_dispatch_state("owner", lock_path)
+            return True
+        handle, state = _acquire_singleton_lock(lock_path)
+        if state == "held":
+            self._kanban_dispatcher_lock_handle = handle
+            self._log_kanban_dispatch_state("owner", lock_path)
+            return True
+        if state == "contended":
+            self._log_kanban_dispatch_state("contended", lock_path)
+            return False
+        self._log_kanban_dispatch_state("unlocked", lock_path)
+        return True
+
+    def _log_kanban_dispatch_state(self, state: str, lock_path) -> None:
+        """Announce a dispatch-ownership state on change, then re-announce hourly.
+
+        A gateway whose config enables dispatch but cannot get the lock is the
+        silent failure this loop exists to prevent, so ``contended`` is a
+        recurring WARNING rather than a one-shot boot INFO.
+        """
+        now = time.monotonic()
+        previous = getattr(self, "_kanban_dispatch_state", None)
+        logged_at = getattr(self, "_kanban_dispatch_state_logged_at", 0.0)
+        if state == previous and now - logged_at < _DISPATCH_STATE_RELOG_SECONDS:
+            return
+        self._kanban_dispatch_state = state
+        self._kanban_dispatch_state_logged_at = now
+        if state == "owner":
+            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", lock_path)
+        elif state == "disabled":
+            logger.info("kanban dispatcher: idle — kanban.dispatch_in_gateway is false; "
+                        "not holding the dispatcher lock (%s)", lock_path)
+        elif state == "contended":
+            logger.warning("kanban dispatcher: kanban.dispatch_in_gateway is true but another "
+                           "process holds the dispatcher lock (%s); this gateway is NOT "
+                           "dispatching and will keep retrying every tick.", lock_path)
         else:
             logger.warning("kanban dispatcher: advisory lock unavailable at %s; proceeding "
-                           "on config control alone.", _lock_path)
-        return _load_config, _kb, kanban_cfg
+                           "on config control alone.", lock_path)
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
-        Gated by `kanban.dispatch_in_gateway` (default True); when false the
-        loop exits and an external `hermes kanban daemon` is expected. Each
+        `kanban.dispatch_in_gateway` (default True) and the machine-global
+        singleton lock are re-evaluated together on every tick, so flipping the
+        flag or losing the boot race never needs a restart on either side. Each
         tick runs :func:`kanban_db_dispatch.dispatch_once` in a thread; one tick's
         failure never stops the next. Shutdown: ``self._running`` is checked
         between ticks and the in-flight ``to_thread`` returns on its own.
@@ -263,6 +306,8 @@ class GatewayKanbanWatchersMixin:
         _load_config, _kb, kanban_cfg = boot
         settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
         interval = settings.interval
+        lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        enabled = bool(kanban_cfg.get("dispatch_in_gateway", True))
 
         # Initial delay so adapters are wired before workers spawn (matches the notifier).
         await asyncio.sleep(5)
@@ -277,6 +322,21 @@ class GatewayKanbanWatchersMixin:
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
+            try:
+                enabled = _resolve_dispatch_enabled(_load_config, enabled)
+                dispatching = self._kanban_dispatcher_claim(lock_path, enabled)
+            except asyncio.CancelledError:
+                self._release_kanban_dispatcher_lock()
+                raise
+            except Exception:
+                logger.exception("kanban dispatcher: ownership check failed")
+                dispatching = False
+
+            if not dispatching:
+                bad_ticks = 0
+                await self._sleep_between_ticks(interval)
+                continue
+
             try:
                 # Reap zombies before per-board work so a board DB failure
                 # cannot block cleanup of unrelated workers.

@@ -1,6 +1,8 @@
 """Random tips shown at CLI session start to help users discover features."""
 
 import random
+import re
+
 
 # One-liners covering slash commands, CLI flags, config, keybindings, tools, gateway, skills.
 TIPS = [
@@ -429,9 +431,52 @@ TIPS = [
 ]
 
 
-def get_random_tip(exclude_recent: int = 0) -> str:
-    """Return a random tip string."""
-    return random.choice(TIPS)
+_SLASH_COMMAND_RE = re.compile(r"(?<![\w/])/([A-Za-z][A-Za-z0-9_-]*(?:/[A-Za-z][A-Za-z0-9_-]*)*)")
+_VALID_TIP_SURFACES = {"cli", "gateway"}
+
+
+def _tip_command_refs(tip: str) -> set[str]:
+    """Return slash-command-looking tokens referenced by a tip."""
+    return {command for match in _SLASH_COMMAND_RE.findall(tip) for command in match.split("/")}
+
+
+def _tip_available_on_surface(tip: str, surface: str | None) -> bool:
+    """Return whether a tip should be shown on a given UI surface."""
+    if surface not in _VALID_TIP_SURFACES:
+        return True
+
+    from hermes_cli.commands import resolve_command
+
+    for command in _tip_command_refs(tip):
+        if command == "command":
+            # Documentation placeholder in "/command with big arguments".
+            continue
+        command_def = resolve_command(command)
+        if surface == "gateway":
+            # No session config is supplied: omit opt-in commands conservatively.
+            if command_def is None or command_def.cli_only or command_def.gateway_config_gate:
+                return False
+        elif command_def is not None and command_def.gateway_only:
+            return False
+    return True
+
+
+def _tips_for_surface(surface: str | None) -> list[str]:
+    """Return tips appropriate for the given UI surface."""
+    tips = [tip for tip in TIPS if _tip_available_on_surface(tip, surface)]
+    return tips or ["Describe your goal and ask Hermes for help getting started."]
+
+
+def get_random_tip(exclude_recent: int = 0, surface: str | None = None) -> str:
+    """Return a random tip string.
+
+    Args:
+        exclude_recent: not used currently; reserved for future
+            deduplication across sessions.
+        surface: optional UI surface ("cli" or "gateway") used to avoid
+            advertising slash commands that are unavailable there.
+    """
+    return random.choice(_tips_for_surface(surface))
 
 
 # Task-oriented example prompts for the empty composer. Kept generic — Hermes is

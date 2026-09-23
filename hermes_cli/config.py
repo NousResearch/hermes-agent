@@ -1776,12 +1776,16 @@ def _explicit_config_paths(config: Dict[str, Any]) -> Set[Tuple[str, ...]]:
     return paths
 
 
+_STRIPPED = object()  # "drop this key": distinct from None, which is data
+
+
 def _strip_default_values(
     config: Dict[str, Any], defaults: Dict[str, Any] = DEFAULT_CONFIG,
     preserve_keys: Optional[Set[Tuple[str, ...]]] = None) -> Dict[str, Any]:
     """Return *config* without keys whose values match *defaults*.
     Paths in *preserve_keys* (explicitly present in the user's raw config) are always kept even
-    when equal to the default. Dicts whose every child is stripped are removed entirely so
+    when equal to the default — including an explicit ``null``, which is why ``_STRIPPED`` marks a
+    removal rather than ``None``. Dicts whose every child is stripped are removed entirely so
     default-only subtrees never bloat ``config.yaml``."""
     preserve_keys = {("_config_version",)} | set(preserve_keys or ())
 
@@ -1791,10 +1795,11 @@ def _strip_default_values(
         if isinstance(value, dict) and value:
             default_dict = default if isinstance(default, dict) else {}
             stripped = {k: _strip(v, default_dict.get(k), path + (k,)) for k, v in value.items()}
-            return {k: v for k, v in stripped.items() if v is not None} or None
-        return None if value == default else copy.deepcopy(value)
+            return {k: v for k, v in stripped.items() if v is not _STRIPPED} or _STRIPPED
+        return _STRIPPED if value == default else copy.deepcopy(value)
 
-    return _strip(config, defaults, ()) or {}
+    result = _strip(config, defaults, ())
+    return {} if result is _STRIPPED else result
 
 
 def split_model_config_default(raw_default: Any) -> tuple[str, str]:

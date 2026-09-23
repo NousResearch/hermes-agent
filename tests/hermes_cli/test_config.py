@@ -1747,6 +1747,37 @@ class TestConfigNormalizationDoesNotOverwriteUserValues:
         assert "max_turns" not in raw.get("agent", {})
         assert raw["memory"]["user_char_limit"] == 2200
 
+    def test_save_config_preserves_explicit_null(self, tmp_path):
+        """An explicitly-written null is DATA, not the strip sentinel.
+
+        ``_strip_default_values`` used ``None`` to mean "remove this key", so a
+        path in ``preserve_keys`` came back as ``None`` and the caller's
+        ``if v is not None`` filter threw it away: a key the user wrote as
+        ``null`` — and whose schema default is also ``null`` — could never
+        survive a save/load round-trip, leaving every reader on the default with
+        no error and no trace of the declaration.
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "kanban": {
+                        "max_in_progress": None,
+                        "max_in_progress_per_profile": None,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["kanban"]["max_in_progress"] is None
+        assert raw["kanban"]["max_in_progress_per_profile"] is None
+
 
 
     def test_normalize_max_turns_does_not_inject_default(self):

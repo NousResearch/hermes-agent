@@ -505,7 +505,7 @@ The official image is based on `debian:13.4` and includes:
 
 - Python 3.13 with dependencies synced from the lockfile via `uv sync --frozen --no-install-project` for the baked extras (`all`, `messaging`, Anthropic/Bedrock/Azure identity, Matrix), followed by a no-dependency editable install of Hermes itself. Catalog plugins such as the Hindsight memory provider are not baked in; `hermes plugins install hindsight` installs the plugin and its dependencies into `HERMES_LAZY_INSTALL_TARGET` (`/opt/data/lazy-packages`) at install time.
 - Node.js 26 + npm (for browser automation, WhatsApp bridge, TUI/Desktop bundles, and workspace build tooling)
-- Playwright with Chromium (`npx playwright install --with-deps chromium --only-shell`)
+- Playwright with Chromium (`npx playwright install --with-deps chromium`)
 - ripgrep, ffmpeg, git, and `xz-utils` as system utilities
 - **`docker-cli`** — so agents running inside the container can drive the host's Docker daemon (bind-mount `/var/run/docker.sock` to opt in) for `docker build`, `docker run`, container inspection, etc.
 - **`openssh-client`** — enables the [SSH terminal backend](./configuration.md#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.

@@ -57,8 +57,8 @@ PLACEMENT = [
     # gen_board then slides J1 so its "PCB Edge" line sits on x = 0
     ("Connector_USB", "USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal", "J1", 5.5, 12.5, 270),
     ("Package_TO_SOT_SMD", "SOT-223-3_TabPin2", "U2", 14.5, 5.0, 0),
-    ("Capacitor_SMD", "C_0805_2012Metric", "C1", 22.0, 12.0, 0),
-    ("Capacitor_SMD", "C_0805_2012Metric", "C2", 22.0, 16.0, 0),
+    ("Capacitor_SMD", "C_0805_2012Metric", "C1", 17.5, 12.0, 0),
+    ("Capacitor_SMD", "C_0805_2012Metric", "C2", 17.5, 16.0, 0),
     ("Resistor_SMD", "R_0603_1608Metric", "R1", 13.0, 20.5, 0),
     ("LED_SMD", "LED_0603_1608Metric", "D1", 13.0, 16.5, 270),
     ("Resistor_SMD", "R_0603_1608Metric", "R2", 16.5, 20.5, 0),

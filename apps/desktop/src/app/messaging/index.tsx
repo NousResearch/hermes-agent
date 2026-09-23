@@ -154,6 +154,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [saving, setSaving] = useState<string | null>(null)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
+  const messagingGatewayStopped = platforms?.some(platform => platform.enabled && !platform.gateway_running) ?? false
 
   const restartGatewayNow = useCallback(async () => {
     // runGatewayRestart never rejects: it toasts the failure and settles the
@@ -545,11 +546,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   )
                 }
               >
-                {restartNeeded && (
+                {(restartNeeded || messagingGatewayStopped) && (
                   <Alert variant="warning">
                     <AlertTriangle />
                     <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-                      <span>{m.restartNeeded}</span>
+                      <span>{restartNeeded ? m.restartNeeded : m.gatewayStopped}</span>
                       <Button
                         disabled={gatewayRestarting}
                         onClick={() => void restartGatewayNow()}
@@ -557,7 +558,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                         variant="secondary"
                       >
                         <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
-                        {gatewayRestarting ? m.restarting : m.restartNow}
+                        {gatewayRestarting
+                          ? m.restarting
+                          : messagingGatewayStopped
+                            ? m.startMessagingGateway
+                            : m.restartNow}
                       </Button>
                     </AlertDescription>
                   </Alert>

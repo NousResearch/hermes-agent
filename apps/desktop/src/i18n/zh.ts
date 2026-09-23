@@ -3883,7 +3883,7 @@ export const zh = defineLocale({
       fastFailed: '快速模式更新失败'
     },
     gatewayMenu: {
-      gateway: '网关',
+      gateway: '后端',
       connected: '已连接',
       connecting: '连接中',
       offline: '离线',
@@ -3930,7 +3930,7 @@ export const zh = defineLocale({
       openCommandCenter: '打开命令中心',
       showTerminal: '显示终端',
       hideTerminal: '隐藏终端',
-      gateway: '网关',
+      gateway: '后端',
       gatewayReady: '就绪',
       gatewayNeedsSetup: '需要设置',
       gatewayUnavailable: '推理不可用',

@@ -2741,7 +2741,7 @@ export const ar = defineLocale({
       fastFailed: 'فشل تحديث الوضع السريع'
     },
     gatewayMenu: {
-      gateway: 'البوابة',
+      gateway: 'الواجهة الخلفية',
       connected: 'متصل',
       connecting: 'جار الاتصال',
       offline: 'غير متصل',
@@ -2772,7 +2772,7 @@ export const ar = defineLocale({
       openCommandCenter: 'فتح مركز الأوامر',
       showTerminal: 'إظهار الطرفية',
       hideTerminal: 'إخفاء الطرفية',
-      gateway: 'البوابة',
+      gateway: 'الواجهة الخلفية',
       gatewayReady: 'البوابة جاهزة',
       gatewayNeedsSetup: 'البوابة تحتاج إعدادا',
       gatewayUnavailable: 'الاستدلال غير متاح',

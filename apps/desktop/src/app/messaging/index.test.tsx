@@ -292,6 +292,21 @@ describe('MessagingView restart banner', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
   })
+
+  it('starts a stopped messaging gateway from the Messaging page', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ configured: true, enabled: true, gateway_running: false, state: 'gateway_stopped' })]
+    })
+
+    await renderMessaging()
+
+    const start = await screen.findByRole('button', { name: 'Start messaging gateway' })
+    await act(async () => {
+      fireEvent.click(start)
+    })
+
+    expect(runGatewayRestart).toHaveBeenCalledOnce()
+  })
 })
 
 describe('MessagingView Telegram quick setup', () => {

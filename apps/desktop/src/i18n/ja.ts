@@ -3152,7 +3152,7 @@ export const ja = defineLocale({
       fastFailed: '高速モードの更新に失敗しました'
     },
     gatewayMenu: {
-      gateway: 'ゲートウェイ',
+      gateway: 'バックエンド',
       connected: '接続済み',
       connecting: '接続中',
       offline: 'オフライン',
@@ -3199,7 +3199,7 @@ export const ja = defineLocale({
       openCommandCenter: 'コマンドセンターを開く',
       showTerminal: 'ターミナルを表示',
       hideTerminal: 'ターミナルを非表示',
-      gateway: 'ゲートウェイ',
+      gateway: 'バックエンド',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
       gatewayUnavailable: '推論を利用できません',

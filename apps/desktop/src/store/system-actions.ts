@@ -28,7 +28,12 @@ async function awaitAction(name: string): Promise<void> {
 
     if (!status.running) {
       if (status.exit_code != null && status.exit_code !== 0) {
-        throw new Error(translateNow('commandCenter.gatewayRestartFailed'))
+        // The action endpoint retains the child process output. Keep its last
+        // line with the toast so a failed restart names the actual cause
+        // (bad credentials, a port conflict, and so on) instead of making the
+        // user open gateway.log to learn why it failed.
+        const cause = status.lines.map(line => line.trim()).filter(Boolean).at(-1)
+        throw new Error(cause || translateNow('commandCenter.gatewayRestartFailed'))
       }
 
       return

@@ -3,7 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_cli import update_cmd_fleet, update_receipt
+from hermes_cli import update_cmd_fleet, update_inventory, update_receipt
 
 
 def _checkout(tmp_path: Path, name: str) -> Path:
@@ -127,3 +127,62 @@ def test_collect_fleet_versions_classifies_separate_checkout_gateway(tmp_path, m
     assert [row["state"] for row in fleet] == ["external"]
     assert fleet[0]["code_root"] == str(pinned.resolve())
     assert update_receipt.print_fleet_version_matrix(fleet) is False  # matrix does not fail the update
+
+
+def test_plan_reconciliation_skips_only_proven_external_gateway(tmp_path, monkeypatch, capsys):
+    """A separate install's gateway is recorded but is not this checkout's restart debt."""
+    external = _checkout(tmp_path, "external")
+    own = update_receipt._updater_code_root()
+    assert own is not None
+    homes = [("default", tmp_path / "default"), ("work", tmp_path / "work")]
+    records = {
+        homes[0][1]: {"pid": 41, "argv": [str(own / "hermes_cli" / "main.py")]},
+        homes[1][1]: {"pid": 42, "argv": [str(external / "hermes_cli" / "main.py")]},
+    }
+    monkeypatch.setattr(update_inventory, "_supervisor_classifier", lambda: lambda _pid: "launchd")
+    monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
+    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda home: records[home]["pid"])
+    monkeypatch.setattr("gateway.status.read_runtime_status", lambda path: records[path.parent])
+    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda: [])
+    plan = update_inventory.UpdatePlan()
+    update_inventory._collect_gateway_runtimes(plan, homes, set())
+    restored = update_inventory.UpdatePlan.from_dict(plan.to_dict())
+    outcomes = update_inventory.match_runtime_outcomes(
+        restored, restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert [(row["profile"], row["outcome"]) for row in outcomes] == [
+        ("default", "restarted"), ("work", "external"),
+    ]
+    assert update_inventory.report_unaccounted_runtimes(outcomes) is False
+    update_inventory.print_update_plan(restored)
+    assert "external checkout" in capsys.readouterr().out
+
+    # An older pre-swap updater did not stamp ownership into the plan. The
+    # post-swap fleet probe still proves this exact gateway PID is external.
+    legacy = update_inventory.UpdatePlan.from_dict(plan.to_dict())
+    legacy.runtimes[1].detail = {}
+    recovered = update_inventory.match_runtime_outcomes(
+        legacy, restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        external_gateway_pids={42},
+    )
+    assert [row["outcome"] for row in recovered] == ["restarted", "external"]
+
+
+def test_unknown_gateway_checkout_remains_restart_debt(tmp_path, monkeypatch):
+    home = tmp_path / "work"
+    monkeypatch.setattr(update_inventory, "_supervisor_classifier", lambda: lambda _pid: "launchd")
+    monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
+    monkeypatch.setattr(update_receipt, "_gateway_code_root", lambda _pid, _home: None)
+    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda _home: 42)
+    monkeypatch.setattr("gateway.status.read_runtime_status", lambda _path: {"pid": 42})
+    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda: [])
+    plan = update_inventory.UpdatePlan()
+    update_inventory._collect_gateway_runtimes(plan, [("work", home)], set())
+    outcomes = update_inventory.match_runtime_outcomes(
+        plan, restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "unaccounted"
+    assert update_inventory.report_unaccounted_runtimes(outcomes) is True

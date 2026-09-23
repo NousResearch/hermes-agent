@@ -2006,6 +2006,12 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 externally_supervised_profiles=restart.externally_supervised_profiles,
                 killed_pids=restart.killed_pids,
                 failed_units=restart.failed_or_stale_units,
+                # The pre-swap plan may have been written by an older updater without code-root
+                # ownership. A live post-swap fleet row can still prove the same PID is external.
+                external_gateway_pids={
+                    row["pid"] for row in (_fleet_snapshot or [])
+                    if row.get("state") == "external" and isinstance(row.get("pid"), int)
+                },
                 # Serve/dashboard reconcile by incarnation liveness, not unit names.
                 # See #100479.
                 stale_serve_pids=(

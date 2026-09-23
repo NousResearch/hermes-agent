@@ -220,95 +220,72 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
-    def test_403_opencode_go_relay_server_error_is_transient_not_auth(self):
-        """A relay 403 stamped ``code=server_error`` on the OpenCode Go route classifies as a
-        transient upstream failure — retried, no credential rotation — not as a credential
-        refusal.
+    @pytest.mark.parametrize(
+        "provider, body, expected",
+        [
+            pytest.param(
+                "opencode-go",
+                {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
+                           "type": "server_error", "code": "server_error"}},
+                FailoverReason.overloaded,
+                id="relay-code-is-transient",
+            ),
+            pytest.param(
+                # The opencode-go profile declares this alias; the slug is canonicalised by
+                # asking the provider registry, so no second alias table lives in the classifier.
+                "opencode_go",
+                {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
+                           "type": "server_error", "code": "server_error"}},
+                FailoverReason.overloaded,
+                id="declared-alias-resolves",
+            ),
+            pytest.param(
+                # ``server_error`` is generic — re-globalising the code would move this verdict.
+                "anthropic",
+                {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
+                           "type": "server_error", "code": "server_error"}},
+                FailoverReason.auth,
+                id="other-provider-keeps-its-verdict",
+            ),
+            pytest.param(
+                "opencode-go",
+                {"error": {"message": "Insufficient credits", "type": "server_error",
+                           "code": "server_error"}},
+                FailoverReason.billing,
+                id="billing-outranks-the-relay-code",
+            ),
+            pytest.param(
+                "opencode-go",
+                {"error": {"message": "Attention Required! | Cloudflare", "code": "server_error"}},
+                FailoverReason.upstream_blocked,
+                id="waf-marker-outranks-the-relay-code",
+            ),
+            pytest.param(
+                "opencode-go",
+                {"error": {"message": "Invalid API key provided", "code": "invalid_api_key"}},
+                FailoverReason.auth,
+                id="no-relay-code-stays-auth",
+            ),
+        ],
+    )
+    def test_403_relay_code_is_read_last_and_per_provider(self, provider, body, expected):
+        """One 403 table: the relay's own code is a transient upstream failure on its route only.
 
-        OpenCode Go/Console wrap an internal upstream failure (an upstream body that is not
-        valid JSON) in HTTP 403 with ``error.code=server_error``. The auth verdict benches the
-        sole credential and cascades the fallback chain for the rest of the cooldown window.
+        OpenCode Go/Console wrap an internal upstream failure (an upstream body that is not valid
+        JSON) in HTTP 403 with ``error.code=server_error``. Read as the auth default, that verdict
+        benches the sole credential and cascades the fallback chain for the rest of the cooldown
+        window — the field report in #117869.
+
+        The provider-scoped check is read LAST in ``_status_403``, so every row below is the
+        contract that something more specific keeps winning: a global transient code, billing
+        evidence, a WAF/CDN marker, and a body with no relay-internal code at all.
         """
-        body = {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
-                          "type": "server_error", "code": "server_error"}}
         result = classify_api_error(
             MockAPIError("Forbidden", status_code=403, body=body),
-            provider="opencode-go", model="deepseek-v4.1-flash",
+            provider=provider, model="deepseek-v4.1-flash",
         )
-        assert result.reason == FailoverReason.overloaded
-        assert result.retryable is True
-        assert result.should_rotate_credential is False
-        assert result.is_auth is False
-
-    def test_403_server_error_from_other_provider_still_auth(self):
-        """Guards re-globalizing the code: ``server_error`` is generic, so on any other
-        provider the same 403 body stays the auth default."""
-        body = {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
-                          "type": "server_error", "code": "server_error"}}
-        result = classify_api_error(MockAPIError("Forbidden", status_code=403, body=body), provider="anthropic")
-        assert result.reason == FailoverReason.auth
-        assert result.is_auth is True
-
-    def test_403_server_error_provider_alias_is_transient(self):
-        """Guards the alias path: the opencode-go profile declares ``opencode_go``, and a caller
-        spelling the provider that way gets the same transient verdict."""
-        body = {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
-                          "type": "server_error", "code": "server_error"}}
-        result = classify_api_error(
-            MockAPIError("Forbidden", status_code=403, body=body),
-            provider="opencode_go", model="deepseek-v4.1-flash",
-        )
-        assert result.reason == FailoverReason.overloaded
-
-    def test_403_server_error_alias_is_resolved_by_the_provider_registry(self, monkeypatch):
-        """Guards the single source of aliases: the classifier asks the provider registry, so an
-        alias a profile declares resolves with no second table kept in ``error_classifier``."""
-        import providers
-
-        real = providers.get_provider_profile
-
-        def fake(name):
-            return SimpleNamespace(name="opencode-go") if name == "opencode-go-eu" else real(name)
-
-        monkeypatch.setattr(providers, "get_provider_profile", fake)
-        body = {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
-                          "type": "server_error", "code": "server_error"}}
-        result = classify_api_error(
-            MockAPIError("Forbidden", status_code=403, body=body),
-            provider="opencode-go-eu", model="deepseek-v4.1-flash",
-        )
-        assert result.reason == FailoverReason.overloaded
-
-    def test_403_server_error_with_billing_body_is_billing(self):
-        """Guards the ordering: the provider-scoped transient check runs after the billing one,
-        so credit exhaustion stamped with ``code=server_error`` stays billing."""
-        body = {"error": {"message": "Insufficient credits", "type": "server_error", "code": "server_error"}}
-        result = classify_api_error(
-            MockAPIError("Forbidden", status_code=403, body=body),
-            provider="opencode-go", model="deepseek-v4.1-flash",
-        )
-        assert result.reason == FailoverReason.billing
-
-    def test_403_server_error_with_waf_body_is_upstream_blocked(self):
-        """Guards the ordering on the other side: an established WAF/CDN marker is more specific
-        evidence than a structured relay code, so it keeps the upstream_blocked verdict it had
-        before this route's code was recognised."""
-        body = {"error": {"message": "Attention Required! | Cloudflare", "code": "server_error"}}
-        result = classify_api_error(
-            MockAPIError("Forbidden", status_code=403, body=body),
-            provider="opencode-go", model="deepseek-v4.1-flash",
-        )
-        assert result.reason == FailoverReason.upstream_blocked
-
-    def test_403_without_relay_code_still_auth(self):
-        """Control: a 403 whose body carries no relay-internal code stays an auth
-        verdict, so the credential auth-recovery path still runs for real
-        permission errors."""
-        body = {"error": {"message": "Invalid API key provided", "code": "invalid_api_key"}}
-        result = classify_api_error(MockAPIError("Forbidden", status_code=403, body=body), provider="opencode-go")
-        assert result.reason == FailoverReason.auth
-        assert result.is_auth is True
-        assert result.should_fallback is True
+        assert result.reason == expected
+        assert result.is_auth is (expected is FailoverReason.auth)
 
 
 

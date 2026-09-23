@@ -158,8 +158,8 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_no_tools_shows_disclaimer(self):
-        """Without slack toolset loaded, prompt must show the stale-API disclaimer."""
+    def test_slack_prompt_no_tools_allows_configured_workflows(self):
+        """Missing dedicated tools must not prohibit authorized skill workflows."""
         from unittest.mock import patch
         config = GatewayConfig(
             platforms={
@@ -178,10 +178,13 @@ class TestBuildSessionContextPrompt:
             prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
-        assert "pin" in prompt.lower()
+        assert "no dedicated Slack tools" in prompt
+        assert "explicitly configured skill or command" in prompt
+        assert "documented authorization boundaries" in prompt
+        assert "verify writes" in prompt
+        assert "do not assume" in prompt.lower()
+        assert "you do not have access to slack-specific apis" not in prompt.lower()
         assert "current message's slack block/attachment payload" in prompt.lower()
-        assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
 
 
     def test_slack_tools_loaded_detects_real_mcp_registration(self):
@@ -1795,5 +1798,4 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-
 

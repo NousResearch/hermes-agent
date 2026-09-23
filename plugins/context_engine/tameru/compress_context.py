@@ -1480,6 +1480,55 @@ def _block_link_terms(text: str) -> set[str]:
     return out
 
 
+_DERIVE_MIN_TERMS = 3
+_DERIVE_MAX_TERMS = 8
+
+
+def _derive_query_terms(text: str, *, max_terms: int = _DERIVE_MAX_TERMS) -> list[str]:
+    """TPC-style derived objective for empty or generic queries.
+
+    Infers a conservative task descriptor from the document itself: rare
+    content terms that recur — appearing in too few lines marks a passing
+    detail, in too many marks boilerplate — ranked by idf·log(1+tf).
+    Fully deterministic (frequency statistics only, no model calls).
+    Returns [] when the document has no stable term structure; callers
+    keep their normal fail-open path in that case.
+    """
+    if not text or not text.strip():
+        return []
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    n = len(lines)
+    if n < 8:
+        return []
+    # Bounded work: this runs before the industrial size gate, so huge
+    # inputs are sampled deterministically (uniform stride — no head bias).
+    if n > 4096:
+        stride = math.ceil(n / 4096)
+        lines = lines[::stride]
+        n = len(lines)
+    df: dict[str, int] = {}
+    tf: dict[str, int] = {}
+    for ln in lines:
+        terms = _block_link_terms(ln)
+        for t in terms:
+            df[t] = df.get(t, 0) + 1
+            tf[t] = tf.get(t, 0) + 1
+    if not df:
+        return []
+    # Thematic band: recurs across lines (topic) but not near-everywhere
+    # (boilerplate). Cap scales with document size, floor keeps tiny docs strict.
+    hi = max(3, int(n * 0.20))
+    cands = [t for t, d in df.items() if 2 <= d <= hi]
+    if len(cands) < _DERIVE_MIN_TERMS:
+        return []
+    # idf·log(1+tf), tie-broken alphabetically — set order must not leak in.
+    ranked = sorted(
+        cands,
+        key=lambda t: (-(math.log(1 + n / df[t]) * math.log(1 + tf[t])), t),
+    )
+    return ranked[:max_terms]
+
+
 def _graph_path_closure(
     blocks: list[dict[str, Any]],
     kept: set[int],
@@ -3098,11 +3147,19 @@ def inspect_compressibility(text: str, query: str) -> dict[str, Any]:
         return {
             "worth_it": False,
             "repetition_ratio": 0.0,
+            "guaranteed_savings_pct": 0.0,
+            "ceiling_class": "n/a",
             "reason": f"too small ({tokens} tokens < 200)",
         }
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
     if not lines:
-        return {"worth_it": False, "repetition_ratio": 0.0, "reason": "empty"}
+        return {
+            "worth_it": False,
+            "repetition_ratio": 0.0,
+            "guaranteed_savings_pct": 0.0,
+            "ceiling_class": "n/a",
+            "reason": "empty",
+        }
     # Repetition ratio: fraction of duplicate lines (exact + normalised runs).
     from collections import Counter
 
@@ -3110,12 +3167,26 @@ def inspect_compressibility(text: str, query: str) -> dict[str, Any]:
     counts = Counter(norm)
     dup_lines = sum(c for c in counts.values() if c > 1)
     repetition_ratio = dup_lines / len(lines)
+    # Context-calibrated ceiling (Compactor): not every context compresses
+    # the same. The guaranteed-safe bound is the surplus share of duplicated
+    # normalised lines — bytes a dedupe pass removes with zero judgement.
+    # Beyond it, savings depend on relevance selection, not redundancy.
+    total_chars = sum(len(ln) + 1 for ln in lines)
+    surplus_chars = sum((c - 1) * (len(ln) + 1) for ln, c in counts.items() if c > 1)
+    guaranteed = surplus_chars / max(1, total_chars)
+    ceiling_class = (
+        "dedupe-heavy" if guaranteed >= 0.40
+        else "moderate" if guaranteed >= 0.15
+        else "sparse"
+    )
     # Distinct-line ratio as a secondary signal: highly unique prose with no
     # query hits rarely compresses extractively without damage.
     worth = repetition_ratio >= 0.3 or tokens >= 5000
     return {
         "worth_it": worth,
         "repetition_ratio": round(repetition_ratio, 3),
+        "guaranteed_savings_pct": round(guaranteed, 3),
+        "ceiling_class": ceiling_class,
         "reason": (
             f"repetition {repetition_ratio:.0%}, {tokens} tokens"
             if worth
@@ -3149,12 +3220,29 @@ def compress_context(
     summary_timeout: float | None = None,
     summary_allow_remote: bool | None = None,
     limits: IndustrialLimits | None = None,
+    derive_query: bool = False,
 ) -> CompressResult:
     caller_text = str(context or "")
     if not isinstance(query, str):
         # PAACE-style plan awareness: a sequence of upcoming-task strings is
         # scored as a union — a term from any planned step counts.
         query = " ".join(str(part) for part in (query or []) if part)
+    # TPC-style derived objective (opt-in): an empty/generic query normally
+    # fails open. With derive_query=True the engine first tries to infer a
+    # conservative task descriptor from the document's own recurring rare
+    # terms; when no stable term structure exists the original empty query
+    # stands and the usual fail-open applies. Receipts mark derived
+    # objectives via query_source/derived_terms and the risk floor is
+    # medium — an inferred intent never earns a "low" rating.
+    derived_terms: list[str] = []
+    if (
+        derive_query
+        and not query_has_distinctive_selectors(query or "")
+        and not _topic_terms(query or "")
+    ):
+        derived_terms = _derive_query_terms(caller_text)
+        if derived_terms:
+            query = " ".join(derived_terms)
     requested_mode = (mode or "adaptive").strip().lower()
     if requested_mode not in {"adaptive", "fixed", "compiler", "precision"}:
         raise ValueError(
@@ -3326,6 +3414,7 @@ def compress_context(
             min_savings_ratio=min_savings_ratio,
             degraded_view=degraded_view,
             limits=limits,
+            derive_query=derive_query,
         )
         base = compress_context(caller_text, query, strategy="extract", **ladder_kwargs)
         if not base.fail_open:
@@ -3788,6 +3877,10 @@ def compress_context(
         if risk_order.get(verifier_risk, 2) > risk_order.get(risk, 2):
             risk = verifier_risk
         recall = min(recall, float(verifier.get("score", 0.0)))
+    # An inferred objective is advisory context, not caller intent — a
+    # derived query never earns a "low" compression-risk rating.
+    if derived_terms and risk == "low":
+        risk = "medium"
     __cr = CompressResult(
         compressed_text=result_text,
         original_tokens=original_tokens,
@@ -3834,6 +3927,10 @@ def compress_context(
         # lcc sufficiency lesson: blocks restored because a kept block's
         # rare terms were qualified or defined there.
         "sufficiency_restored": selection.get("sufficiency_restored") or [],
+        # TPC lesson: callers must see when the objective was inferred,
+        # not supplied — a derived query is advisory context, not intent.
+        "query_source": "derived" if derived_terms else "caller",
+        "derived_terms": derived_terms,
         "industrial": industrial.to_dict(),
     }
     receipt.update(
@@ -3938,6 +4035,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                    help="Fail open when achieved savings fall below this ratio (0 disables)")
     p.add_argument("--degraded-view", action="store_true",
                    help="On input size-limit breach, score a bounded head+tail view per block instead of failing open")
+    p.add_argument("--derive-query", action="store_true",
+                   help="On empty/generic query, infer a conservative objective from the document's recurring rare terms instead of failing open")
     p.add_argument("--stats", action="store_true")
     args = p.parse_args(list(argv) if argv is not None else None)
     if args.context_file == "-":
@@ -3987,6 +4086,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         pin_recent=args.pin_recent,
         min_savings_ratio=args.min_savings_ratio,
         degraded_view=args.degraded_view,
+        derive_query=args.derive_query,
         limits=limits,
     )
     if args.stats:

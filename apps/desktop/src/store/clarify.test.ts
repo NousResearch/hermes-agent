@@ -169,6 +169,51 @@ describe('normalizeChoices', () => {
     expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
     expect(normalizeChoices([])).toEqual([])
   })
+
+  // The wire schema declares choices as `Array<string>`, but an LLM that
+  // emits the legacy `{key, description}` envelope (still common with some
+  // providers) used to be silently dropped — the renderer then had no buttons
+  // and fell back to free text. Flatten that envelope to readable strings so
+  // the card still paints pickable rows. Mirrors `tools/clarify_tool.py::
+  // _flatten_choice` (the canonical Python-side flattener).
+  it('flattens {key, description} dict choices into readable strings', () => {
+    expect(
+      normalizeChoices([
+        { key: 'A', description: 'The Hermes model registry' },
+        { key: 'B', description: 'A direct huggingface API call' },
+        { key: 'C', description: 'A bare curl HTTP call' }
+      ])
+    ).toEqual([
+      'A: The Hermes model registry',
+      'B: A direct huggingface API call',
+      'C: A bare curl HTTP call'
+    ])
+  })
+
+  it('uses `label` when `description` is missing on a dict choice', () => {
+    expect(
+      normalizeChoices([
+        { key: 'A', label: 'Continue with A' },
+        { key: 'B', description: 'fall back' }
+      ])
+    ).toEqual(['A: Continue with A', 'B: fall back'])
+  })
+
+  it('drops dict choices that have no readable text', () => {
+    expect(
+      normalizeChoices([
+        { key: 'A' },
+        { key: 'B', description: '' },
+        { key: 'C', description: 'kept' }
+      ])
+    ).toEqual(['C: kept'])
+  })
+
+  it('keeps string choices alongside dict choices (mixed payload)', () => {
+    expect(
+      normalizeChoices(['plain', { key: 'A', description: 'wrapped' }, 42, 'after'])
+    ).toEqual(['plain', 'A: wrapped', 'after'])
+  })
 })
 
 describe('normalizeQuestions', () => {

@@ -147,6 +147,11 @@ export function coreAppEnv(sandbox: CoreSandbox, extra: Record<string, string> =
     HERMES_DESKTOP_APP_NAME: `HermesCoreE2E-${path.basename(sandbox.root)}`,
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
     HERMES_DESKTOP_CDP_PORT: 'off',
+    // A partial-clone (blob:none) dev checkout turns some backend git read into
+    // a lazy `git fetch origin` over the network, which outlived quit by >60 s
+    // (reported as a finding). CI checkouts are not partial; keep dev runs
+    // offline and deterministic the same way.
+    GIT_NO_LAZY_FETCH: '1',
     ...extra
   }
 }

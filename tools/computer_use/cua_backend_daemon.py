@@ -17,12 +17,13 @@ from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use import cua_backend_driver as _driver
+from tools.computer_use.permissions import CUA_DRIVER_BUNDLE_ID
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
 # The only bundle identity the private daemon may launch through, and the teams that sign official
 # releases. Exact matches only: a suffixed identifier or other team is an impostor.
-_CUA_DRIVER_BUNDLE_ID = "com.trycua.driver"
+_CUA_DRIVER_BUNDLE_ID = CUA_DRIVER_BUNDLE_ID
 _CUA_DRIVER_TEAM_IDS = ("4YEC26S9KF", "YCK386LBJ7")
 _QUIET_ERRORS = (OSError, subprocess.SubprocessError)
 

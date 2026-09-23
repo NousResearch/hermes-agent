@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from plugins.platforms.feishu.feishu_comment import (
     parse_drive_comment_event,
     _ALLOWED_NOTICE_TYPES,
+    _resolve_model_and_runtime,
     _sanitize_comment_text,
 )
 
@@ -136,6 +137,25 @@ class TestWikiReverseLookup(unittest.TestCase):
         query_dict = dict(queries)
         self.assertEqual(query_dict["token"], "docx_abc")
         self.assertEqual(query_dict["obj_type"], "docx")
+
+
+class TestResolveModelAndRuntime(unittest.TestCase):
+    def test_configured_reasoning_reaches_the_comment_agent(self):
+        """#85153 sibling: the comment agent is an ``AIAgent()`` built from gateway config like every other
+        surface, so ``agent.reasoning_effort: none`` must ride ``runtime_kwargs`` (resolved against the
+        comment agent's model, so per-model overrides apply)."""
+        cfg = {"agent": {"reasoning_effort": "none", "reasoning_overrides": {"gpt-5.6": "high"}}}
+        with patch("gateway.run._load_gateway_config", return_value=cfg), \
+             patch("gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openai-api", "api_key": "k"}):
+            model, runtime_kwargs = _resolve_model_and_runtime()
+        self.assertEqual(model, "gpt-4o-mini")
+        self.assertEqual(runtime_kwargs["reasoning_config"], {"enabled": False})
+        with patch("gateway.run._load_gateway_config", return_value=cfg), \
+             patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openai-api", "api_key": "k"}):
+            _model, runtime_kwargs = _resolve_model_and_runtime()
+        self.assertEqual(runtime_kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
 
 
 if __name__ == "__main__":

@@ -13,7 +13,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
@@ -31,7 +30,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from hermes_constants import get_hermes_home
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +82,14 @@ def _payload_fields(kwargs: Dict[str, Any]) -> Dict[str, Any]:
         cwd = str(Path.cwd())
     except OSError:
         cwd = ""
+    from hermes_cli.profiles import get_active_profile_name
     return {
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
         "cwd": cwd,
+        # Resolved at fire time: a multiplexed gateway's hook script must know which profile fired it.
+        "profile": get_active_profile_name(),
         "extra": {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS},
     }
 
@@ -279,8 +281,33 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
 
 # --- Subprocess callback ---
 
-# Popen failure -> diagnostic; anything else is reported as str(exc).
+# Popen failure -> diagnostic; WinError 193 gets its own below, everything else is str(exc).
 _POPEN_ERRORS = ((FileNotFoundError, "command not found"), (PermissionError, "command not executable"))
+
+# A hook configured as a bare script path runs on POSIX because the kernel reads its shebang.
+# CreateProcess has no such mechanism and answers WinError 193 ("%1 is not a valid Win32
+# application") for a text file, so every ``command: "~/.hermes/agent-hooks/x.sh"`` example in
+# the hooks docs — the canonical shape — fails on Windows while the same config works everywhere
+# else. Map the suffixes that shape uses to their interpreter; unmapped suffixes keep the OS
+# failure so a typo still reads as "command not found" rather than a mystery interpreter error.
+_WINDOWS_SCRIPT_INTERPRETERS = {".sh": "bash", ".bash": "bash", ".py": "python"}
+# WinError 193 raised for a suffix we deliberately do not map.
+_NOT_DIRECTLY_EXECUTABLE = "cannot be run directly on Windows (there is no shebang support): start it with its interpreter, e.g. 'bash <path>'"
+
+
+def _windows_script_argv(argv: list[str]) -> list[str]:
+    """``argv`` with the interpreter prepended when element 0 is an existing script we can name an
+    interpreter for; unchanged otherwise, including on POSIX, where the shebang already works."""
+    suffix = os.path.splitext(argv[0])[1].lower()
+    kind = _WINDOWS_SCRIPT_INTERPRETERS.get(suffix)
+    if kind is None or not os.path.isfile(argv[0]):
+        return argv
+    if kind == "python":
+        return [sys.executable, *argv]
+    # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
+    # installer's own actionable guidance, which is a better diagnostic than any we could add.
+    from tools.environments.local import _find_bash
+    return [_find_bash(), *argv]
 
 
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
@@ -301,17 +328,35 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
     popen_kwargs: Dict[str, Any] = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    # HERMES_HOME follows the routed profile (the import-time environ holds the launch profile's), and
+    # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
+    # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
+    from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import build_subprocess_env
     try:
+        if IS_WINDOWS:
+            argv = _windows_script_argv(argv)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, encoding='utf-8', errors='replace', shell=False, **popen_kwargs)
+                                text=True, encoding='utf-8', errors='replace', shell=False,
+                                env=build_subprocess_env(scrub_secrets=is_multiplex_active()), **popen_kwargs)
     except Exception as exc:
-        return failed(next((msg for cls, msg in _POPEN_ERRORS if isinstance(exc, cls)), str(exc)))
+        for cls, msg in _POPEN_ERRORS:
+            if isinstance(exc, cls):
+                return failed(msg)
+        if getattr(exc, "winerror", None) == 193:
+            # Unmapped suffix (.zsh, .fish, .rb, …) — the raw WinError text is localized, so an
+            # operator on a non-English Windows could not act on it at all.
+            return failed(f"{argv[0]!r} {_NOT_DIRECTLY_EXECUTABLE}")
+        return failed(str(exc))
     try:
         stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException: the hook leads its own process group, so Ctrl+C's SIGINT never reaches it — only we can.
         kill_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
         with suppress(Exception):
             proc.communicate(timeout=1)
+        if not isinstance(exc, Exception):
+            raise
         if not isinstance(exc, subprocess.TimeoutExpired):  # pragma: no cover — defensive
             return failed(str(exc))
         result.update(timed_out=True, elapsed_seconds=round(time.monotonic() - t0, 3))
@@ -400,6 +445,15 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for verb, _, _, payload in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "modify" and isinstance(data.get(payload), dict):
             return {"action": "modify", "args": data[payload]}
+    # Hermes-only escalation to the human-approval gate (#92553). Claude-Code's ``decision:
+    # approve`` means auto-ALLOW, so it is deliberately not mapped onto this.
+    if data.get("action") == "approve":
+        directive: Dict[str, Any] = {"action": "approve"}
+        for key in ("message", "rule_key"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                directive[key] = value.strip()
+        return directive
     return None
 
 
@@ -457,16 +511,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
     """Atomic write; on OSError log and keep the in-process approval."""
     p = allowlist_path()
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(data, indent=2, sort_keys=True))
-            atomic_replace(tmp_path, p)
-        except Exception:
-            with suppress(OSError):
-                os.unlink(tmp_path)
-            raise
+        atomic_json_write(p, data, sort_keys=True, mode=0o600)
     except OSError as exc:
         logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is in-memory for this run, "
                        "but the next startup will re-prompt (or skip registration on non-TTY runs without "

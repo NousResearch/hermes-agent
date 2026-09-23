@@ -75,7 +75,7 @@ def _ambient_host_block() -> tuple[dict | None, dict]:
     path = resolve_config_path()
     if not path.exists():
         return None, {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
     return raw, _host_block(raw, resolve_active_host())
 
 

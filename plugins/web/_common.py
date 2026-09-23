@@ -184,15 +184,19 @@ def cached_sdk_client(slot: str, env_var: str, missing_key_error: str, feature: 
     reset ``tools.web_tools._<vendor>_client = None`` see fresh state). Raises ValueError
     when the key is unset."""
     import tools.web_tools as _wt
-    cached = getattr(_wt, slot, None)
-    if cached is not None:
-        return cached
+    # Resolved before the cache is consulted: the slot is one per process, but the key can change
+    # under it (``/reload``, or each multiplexed profile's secret scope resolving its own key).
     api_key = provider_env(env_var)
     if not api_key:
         raise ValueError(missing_key_error)
+    # (key, client) as one value so concurrent builds under different keys can never leave one
+    # key recorded beside another key's client.
+    cached = getattr(_wt, slot, None)
+    if cached is not None and cached[0] == api_key:
+        return cached[1]
     lazy_ensure(feature)
     client = factory(api_key)
-    setattr(_wt, slot, client)
+    setattr(_wt, slot, (api_key, client))
     return client
 
 

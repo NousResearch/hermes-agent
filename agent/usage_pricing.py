@@ -109,6 +109,7 @@ class PricingEntry:
     input_cost_per_million_above: Optional[Decimal] = None
     output_cost_per_million_above: Optional[Decimal] = None
     cache_read_cost_per_million_above: Optional[Decimal] = None
+    cache_write_cost_per_million_above: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -185,11 +186,11 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "gpt-4.1-nano": ("0.10", "0.40", "0.025"), "o3": ("10.00", "40.00", "2.50"),
         "o3-mini": ("1.10", "4.40", "0.55"),
     }),
-    # deepseek-chat / deepseek-reasoner are deprecated aliases of
-    # deepseek-v4-flash's non-thinking / thinking modes — same rates.
-    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-07", {
-        ("deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"): ("0.14", "0.28", "0.0028"),
-        "deepseek-v4-pro": ("0.435", "0.87", "0.003625"),
+    # Off-peak USD rates (peak = 2x, Mon-Fri 01-04 + 06-10 UTC). ``deepseek-v4-flash`` and the
+    # retired deepseek-chat / deepseek-reasoner aliases are served by V4.1-Flash at the Flash price.
+    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
+        ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
+        "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
@@ -241,6 +242,39 @@ for _provider, _url, _version, _rows in _SNAPSHOTS:
             _OFFICIAL_DOCS_PRICING[(_provider, _model)] = _entry
 del _SNAPSHOTS, _provider, _url, _version, _rows, _models, _rates, _entry, _model
 
+# GPT-6 Astra uses whole-request pricing above the 272K prompt tier.  Keep this
+# account-gated model out of generic static catalogs, but retain published billing
+# metadata for an explicitly selected route.
+_OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
+    "10.00", "50.00", "1.00", "12.50",
+    url="https://developers.openai.com/api/docs/models/gpt-6-astra",
+    version="openai-gpt-6-astra-2026-09",
+    tier_threshold_tokens=272_000,
+    input_cost_per_million_above=Decimal("20.00"),
+    output_cost_per_million_above=Decimal("75.00"),
+    cache_read_cost_per_million_above=Decimal("2.00"),
+    cache_write_cost_per_million_above=Decimal("25.00"),
+)
+
+# GPT-6 Sol / Luna (the 5.6 Sol/Luna successors): same 272K whole-request tier as Astra
+# (2x input + cache, 1.5x output). Cache write = 1.25x input, cache read = 0.10x input.
+# Terra has no published model page yet, so it deliberately has no row.
+for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above in (
+    ("gpt-6-sol", "2.00", "10.00", "0.20", "2.50", "4.00", "15.00", "0.40", "5.00"),
+    ("gpt-6-luna", "0.10", "0.50", "0.01", "0.125", "0.20", "0.75", "0.02", "0.25"),
+):
+    _OFFICIAL_DOCS_PRICING[("openai", _slug)] = _snap(
+        _inp, _out, _read, _write,
+        url=f"https://developers.openai.com/api/docs/models/{_slug}",
+        version="openai-gpt-6-tiers-2026-09",
+        tier_threshold_tokens=272_000,
+        input_cost_per_million_above=Decimal(_inp_above),
+        output_cost_per_million_above=Decimal(_out_above),
+        cache_read_cost_per_million_above=Decimal(_read_above),
+        cache_write_cost_per_million_above=Decimal(_write_above),
+    )
+del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above
+
 # Context-tiered Gemini Pro: above 200k prompt tokens the *_above rates apply to
 # the whole request (see PricingEntry).
 _OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-pro")] = _snap(
@@ -255,13 +289,15 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
 )
 del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 
-# GPT-5.6 "-pro" high-effort variants bill at the base tier's per-token rates
-# (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
+# GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
+# rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
 # picker variants are the same model with the suffix stripped on the wire.
 # The direct Gemini provider emits preview IDs for two models; key the snapshot
 # by both the documented stable name and the emitted ID.
 for _provider, _alias, _canonical in (
-    *((("openai", f"{m}-{suffix}", m) for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna") for suffix in ("pro", "900k"))),
+    *((("openai", f"{m}-{suffix}", m)
+       for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
+       for suffix in ("pro", "900k"))),
     ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro"),
     ("google", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
 ):
@@ -527,6 +563,7 @@ def normalize_usage(
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )
 
 
@@ -538,6 +575,11 @@ def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> CostResult:
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider or '')
+    reported = profile.get_usage_cost(model_name, usage) if profile else None
+    if reported is not None:
+        return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return CostResult(
@@ -558,7 +600,7 @@ def estimate_usage_cost(
         (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
         (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
          ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, None,
+        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
          ("cache-write pricing unavailable for route",)),
     ):
         if above and rate_above is not None:

@@ -35,7 +35,8 @@ def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gatew
         from hermes_cli.nous_account import (
             format_nous_portal_entitlement_message, get_nous_portal_account_info)
         message = format_nous_portal_entitlement_message(
-            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability)
+            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability,
+            in_chat=True)
         if message:
             return message
     except Exception:
@@ -60,8 +61,10 @@ normalize_modal_mode = coerce_modal_mode
 
 
 def has_direct_modal_credentials() -> bool:
-    """Return True when direct Modal credentials/config are available."""
-    if os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"):
+    """Return True when direct Modal credentials/config are available. The token pair is a
+    profile credential: read it through the secret scope so the default profile's Modal
+    account never selects the direct backend for a multiplexed secondary."""
+    if _scoped_credential("MODAL_TOKEN_ID") and _scoped_credential("MODAL_TOKEN_SECRET"):
         return True
     try:
         return (Path.home() / ".modal.toml").exists()
@@ -107,19 +110,36 @@ def _dotenv_value(env_var: str) -> str:
         return ""
 
 
+def _env_source_suppressed(provider_id: str, env_var: str) -> bool:
+    """``hermes auth remove <provider>`` records ``env:<VAR>`` in ``suppressed_sources`` and promises
+    the variable is ignored until ``hermes auth add``; a value still living in a long-running
+    gateway's process environment (inherited across update restarts) must honor that too."""
+    if not provider_id:
+        return False
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed(provider_id, f"env:{env_var}")
+    except Exception:  # pragma: no cover — auth store unreadable: keep prior behavior
+        return False
+
+
 def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = "",
                             env_getter=None) -> str:
     """Resolve a voice-provider API key (single owner for STT/TTS lookup). Order: explicit
     ``config_value`` -> profile secret scope / env -> ``.env`` via ``env_getter`` (or
     ``hermes_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
     active multiplex turn the profile scope is authoritative: a miss returns ``""`` rather
-    than borrowing another profile's env or pool. Never raises.
+    than borrowing another profile's env or pool. Never raises. The env/.env tier is skipped
+    entirely while ``env:<env_var>`` is suppressed for ``provider_id`` (#116155).
 
     Resolution order (fixes #68003 — keys added via ``hermes auth add <provider>`` were invisible to the
     voice tools, which only consulted env/.env):
     """
-    key = str(config_value or "").strip() or _scoped_credential(env_var)
+    key = str(config_value or "").strip()
     if key:
+        return key
+    env_suppressed = _env_source_suppressed(provider_id, env_var)
+    if not env_suppressed and (key := _scoped_credential(env_var)):
         return key
     try:
         from agent.secret_scope import is_multiplex_active
@@ -127,7 +147,8 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
             return ""
     except Exception:  # pragma: no cover — secret_scope is in-repo
         pass
-    key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
+    if not env_suppressed:
+        key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
     if key or not provider_id:
         return key
     try:

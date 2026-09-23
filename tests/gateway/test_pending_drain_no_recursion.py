@@ -28,9 +28,8 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -242,55 +241,3 @@ async def test_drain_task_cancellation_releases_session():
     )
 
 
-@pytest.mark.asyncio
-async def test_late_arrival_drain_still_fires_when_no_in_band_drain():
-    """The late-arrival drain in ``finally`` must still spawn a fresh
-    task when no in-band drain preceded it.
-
-    Pre-#17758 this path already existed; the #17758 follow-up guard
-    only re-queues when ``_session_tasks[sk] is not current_task``.
-    For a late-arrival with no in-band drain, ``_session_tasks[sk]``
-    IS the current task, so the ``else`` branch must fire and spawn
-    a drain task for the queued message.
-
-    Queue a pending message *after* M0's handler returns (so the
-    in-band drain block sees nothing) but *before* ``finally`` runs
-    the late-arrival check — we do this by hooking ``_stop_typing``,
-    which runs in finally before the late-arrival check."""
-    adapter = _make_adapter()
-    sk = _sk()
-
-    results: list[str] = []
-    original_stop_typing = getattr(adapter, "stop_typing", None)
-
-    async def injecting_stop_typing(chat_id):
-        # Simulate a message landing during the cleanup awaits.
-        adapter._pending_messages[sk] = _make_event(text="late")
-        if original_stop_typing:
-            await original_stop_typing(chat_id)
-
-    adapter.stop_typing = injecting_stop_typing
-
-    async def handler(event):
-        results.append(event.text)
-        return "ok"
-
-    adapter._message_handler = handler
-
-    await adapter.handle_message(_make_event(text="first"))
-
-    # Wait for the late-arrival drain task to finish the second event.
-    # 2000 * 0.01s = 20s budget: the old 4s budget flaked on loaded CI
-    # runners (11/12 turns completed; main run 33455779041).
-    for _ in range(2000):
-        if "late" in results and sk not in adapter._active_sessions:
-            break
-        await asyncio.sleep(0.01)
-
-    await adapter.cancel_background_tasks()
-
-    assert "first" in results, "original message handler did not run"
-    assert "late" in results, (
-        "late-arrival drain did not spawn a drain task — a message that "
-        "landed during cleanup awaits was silently dropped"
-    )

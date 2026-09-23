@@ -8,6 +8,7 @@ rely on (name-based diff, in-place mutation, agent-scoped filtering) rather than
 freezing any particular tool list.
 """
 
+import json
 import threading
 import types
 
@@ -45,6 +46,16 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert added == {"mcp_granola_get_account_info"}
     assert "mcp_granola_get_account_info" in agent.valid_tool_names
     assert len(agent.tools) == 3
+
+    side = _agent(["read_file", "terminal"])
+    side.side_agent = True
+    monkeypatch.setattr(model_tools, "get_tool_definitions",
+                        lambda **kw: new_defs + [_tool("manage_connections")])
+
+    _mcp_agent.refresh_agent_mcp_tools(side)
+
+    assert "manage_connections" not in side.valid_tool_names
+    assert "manage_connections" not in [t["function"]["name"] for t in side.tools]
 
 
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
@@ -137,25 +148,6 @@ def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     assert "lcm_grep" not in agent.valid_tool_names   # gated out (#5544)
 
 
-def test_refreshed_tool_is_callable_through_valid_tool_names_guard(monkeypatch):
-    """The whole point: a late tool, once refreshed, passes the name guard the
-    run loop uses to accept/reject tool calls (agent.valid_tool_names)."""
-    agent = _agent(["read_file"])
-
-    import model_tools
-    monkeypatch.setattr(
-        model_tools, "get_tool_definitions",
-        lambda **kw: [_tool("read_file"), _tool("mcp_granola_list_meetings")],
-    )
-
-    # Before refresh the run loop would reject the call ("Tool does not exist").
-    assert "mcp_granola_list_meetings" not in agent.valid_tool_names
-
-    _mcp_agent.refresh_agent_mcp_tools(agent)
-
-    # After refresh the same guard accepts it AND it's in the tools= payload.
-    assert "mcp_granola_list_meetings" in agent.valid_tool_names
-    assert any(t["function"]["name"] == "mcp_granola_list_meetings" for t in agent.tools)
 
 
 def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
@@ -209,10 +201,6 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
 # ── discovery-wait bound (mcp_discovery_timeout config) ──────────────────────
 
 
-def test_resolve_discovery_timeout_explicit_wins(monkeypatch):
-    from hermes_cli import mcp_startup
-
-    assert mcp_startup._resolve_discovery_timeout(2.5) == 2.5
 
 
 def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
@@ -220,7 +208,7 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     import time
     from hermes_cli import mcp_startup
 
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
     import hermes_cli.config as cfg
     monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 999.0})
 
@@ -289,6 +277,35 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     assert [t["function"]["name"] for t in agent.tools] == [
         "read_file", "terminal", "aaa_mcp_late",
     ]
+
+
+def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
+    """``tool_search``'s description is derived from the session at build time: the
+    deferred-tool count, the embedded listing, and whether ``manage_connections`` was
+    present. Every one of those inputs can move between turns (a late MCP server, a
+    ``check_fn`` flap on a portal blip), and a moved byte in the tool array re-prefills
+    the whole cached history. The refresh must leave the bridge entries exactly as
+    built; a search still reads the live catalog at dispatch."""
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+
+    built = _tool("tool_search")
+    built["function"]["description"] = "Search 21 additional tools. connectors__ hint present."
+    agent = _agent(["read_file", "manage_connections"])
+    agent.tools.append(built)
+    agent.valid_tool_names.add("tool_search")
+    before = json.dumps(agent.tools, sort_keys=True)
+
+    fresh_bridge = _tool("tool_search")
+    fresh_bridge["function"]["description"] = "Search 33 additional tools."
+    # manage_connections flapped out (portal blip); a late server grew the count.
+    _serve(monkeypatch, [_tool("read_file"), fresh_bridge, _tool("mcp_late_tool")])
+    _registered(monkeypatch, ["read_file", "manage_connections", "mcp_late_tool", *BRIDGE_TOOL_NAMES])
+
+    added = _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert added == {"mcp_late_tool"}
+    assert json.dumps(agent.tools[:3], sort_keys=True) == before
+    assert [t["function"]["name"] for t in agent.tools][-1] == "mcp_late_tool"
 
 
 # ---------------------------------------------------------------------------

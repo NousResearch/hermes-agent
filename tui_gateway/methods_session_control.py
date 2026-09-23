@@ -27,13 +27,13 @@ _ACTION_COMMAND_MAP: dict[str, tuple[str, str]] = {
     "goal.pause": ("goal", "pause"),
     "goal.resume": ("goal", "resume"),
     "goal.clear": ("goal", "clear"),
+    "goal.unwait": ("goal", "unwait"),
     "loop.pause": ("loop", "pause"),
     "loop.resume": ("loop", "resume"),
     "loop.stop": ("loop", "stop"),
 }
 
 _MANAGER_ACTIONS = frozenset({
-    "goal.unwait",
     "subgoal.add",
     "subgoal.remove",
     "subgoal.clear",
@@ -335,19 +335,9 @@ def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
 
 def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:
     """Use manager APIs for controls that have no TUI command handler."""
-    if action == "goal.unwait":
-        return _execute_goal_unwait(session_key)
     if action.startswith("subgoal."):
         return _execute_subgoal_action(session_key, action, args)
     return _execute_heartbeat_action(session_key, action)
-
-
-def _execute_goal_unwait(session_key: str) -> dict:
-    from hermes_cli.goals import GoalManager
-
-    manager = GoalManager(session_id=session_key)
-    output = "▶ Wait barrier cleared — goal loop resumes." if manager.stop_waiting() else "No wait barrier set."
-    return {"result": {"type": "exec", "output": output}}
 
 
 def _execute_subgoal_action(session_key: str, action: str, args: dict) -> dict:

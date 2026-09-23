@@ -25,7 +25,7 @@ import pytest
 import gateway.run as gateway_run
 from agent.context_references import ContextReferenceResult
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 

@@ -23,8 +23,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 from hermes_constants import is_termux as _is_termux_environment
+from hermes_platform.host.runtime import is_wsl
+from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 
 # ── Recording parameters ──
 SAMPLE_RATE = 16000  # Whisper native rate
@@ -310,7 +311,7 @@ def detect_audio_environment() -> dict:
     # WSL: the PowerShell/Media.SoundPlayer fallback only covers OUTPUT, so when
     # it is all that's available downgrade to a notice (recording guidance stays
     # visible, TTS-only usage isn't blocked).
-    if _is_wsl2_env():
+    if is_wsl():
         if has_forwarded_audio:
             notices.append("Running in WSL with a reachable PulseAudio/PipeWire sound server")
         elif _wsl_powershell_tts_available():
@@ -320,13 +321,13 @@ def detect_audio_environment() -> dict:
                 "Voice INPUT (recording) still requires a PulseAudio bridge:\n"
                 "  1. Set PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
                 "  2. Create ~/.asoundrc pointing ALSA at PulseAudio\n"
-                "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav")
+                "  3. Verify with: arecord -d 3 test.wav && aplay test.wav")
         else:
             warnings.append(
                 "Running in WSL -- audio requires a forwarded sound server.\n"
                 "  PulseAudio: export PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
                 "  PipeWire:   export PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0\n"
-                "  Then verify: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav")
+                "  Then verify: arecord -d 3 test.wav && aplay test.wav")
 
     _probe_audio_libraries(warnings, notices, has_forwarded_audio=has_forwarded_audio,
                            termux_mic_cmd=termux_mic_cmd, termux_app_installed=termux_app_installed)
@@ -729,16 +730,25 @@ class AudioRecorder(_RecorderBase):
                 self._on_audio_block(np, indata)
 
         stream = None
-        try:  # may block on CoreAudio (first call only)
-            stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                    callback=_callback)
-            stream.start()
-        except Exception as e:
-            with suppress(Exception):
-                stream.close()
-            raise RuntimeError(
-                f"Failed to open audio input stream: {e}. "
-                "Check that a microphone is connected and accessible.") from e
+        for attempt in range(2):
+            try:  # may block on CoreAudio (first call only)
+                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                        callback=_callback)
+                stream.start()
+                break
+            except Exception as e:
+                with suppress(Exception):
+                    stream.close()
+                stream = None
+                # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
+                # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
+                # failed open itself wakes the bridge, so one immediate retry succeeds
+                # where the user's second key press would have (#109303).
+                if attempt or "timed out" not in str(e).lower():
+                    raise RuntimeError(
+                        f"Failed to open audio input stream: {e}. "
+                        "Check that a microphone is connected and accessible.") from e
+                logger.info("Audio input stream start timed out; retrying once")
         self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:
@@ -952,20 +962,10 @@ def stop_playback() -> None:
         sd.stop()
 
 
-def _is_wsl2_env() -> bool:
-    """True inside WSL (Microsoft kernel signature in /proc/version); False on any error.
-    Module-level so tests can patch it instead of ``builtins.open``."""
-    try:
-        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
-            return "microsoft" in _fv.read().lower()
-    except OSError:
-        return False
-
-
 def _wsl_powershell_tts_available() -> bool:
     """WSL2 PowerShell TTS fallback usable. OUTPUT only (Media.SoundPlayer on the host) —
     recording still needs a PulseAudio bridge, so callers keep surfacing that guidance."""
-    return bool(_is_wsl2_env() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
+    return bool(is_wsl() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
 
 
 def play_audio_file(file_path: str) -> bool:
@@ -991,7 +991,7 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
         # ~100 ms to stabilise and the small default blocksize worsens
         # clock-adjustment jitter (microsoft/wslg#1257).
         blocksize = 0  # default (auto)
-        if _is_wsl2_env():
+        if is_wsl():
             fade_samples = int(0.1 * sample_rate)
             audio_float = audio_data.astype(np.float64)
             audio_float[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=np.float64)
@@ -1014,7 +1014,7 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
     ffplay/aplay have no device, but Media.SoundPlayer on the host does: convert to a
     uniquely-named WAV in Windows %TEMP% (concurrent TTS must not collide), play, always
     delete, and re-raise the ORIGINAL exit status past the cleanup (rm -f exits 0)."""
-    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and _is_wsl2_env()):
+    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and is_wsl()):
         return None
     try:
         import uuid

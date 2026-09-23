@@ -14,15 +14,18 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 import json
 import logging
 import time
+from contextvars import ContextVar
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import urljoin
 
 import httpx
 
 from hermes_constants import get_hermes_home
 from tools.url_safety import is_safe_url
+from tools.url_safety import create_ssrf_safe_client
 from tools.website_policy import check_website_access
 from tools.skills_hub_models import _normalize_lock_install_path, _validate_skill_name
 
@@ -81,18 +84,51 @@ def __getattr__(name: str):
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
+# Default per-request timeout every one-shot hub GET used before pooling existed.
+_DEFAULT_HTTP_TIMEOUT = 20
+
+# An inspect resolves metadata and then the preview bundle through the same
+# source adapter. Keeping this context local to that operation lets httpx reuse
+# its verified connection without extending a client beyond the CLI request.
+_skills_hub_http_client: ContextVar[Optional[Any]] = ContextVar(
+    "skills_hub_http_client", default=None
+)
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
+@contextmanager
+def skills_hub_http_session() -> Iterator[None]:
+    """Reuse one SSRF-safe HTTP client for a single skills-hub resolution."""
+    if _skills_hub_http_client.get() is not None:
+        yield
+        return
+    with create_ssrf_safe_client(timeout=_DEFAULT_HTTP_TIMEOUT, follow_redirects=False) as client:
+        token = _skills_hub_http_client.set(client)
+        try:
+            yield
+        finally:
+            _skills_hub_http_client.reset(token)
+
+
+def _skills_hub_http_get(url: str, **kwargs: Any) -> httpx.Response:
+    """GET through the active resolution pool, or preserve one-shot behavior."""
+    client = _skills_hub_http_client.get()
+    if client is not None:
+        return client.get(url, **kwargs)
+    return httpx.get(url, **kwargs)
+
+
+def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
+                        headers: Optional[Dict[str, str]] = None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
-    from tools.url_safety import create_ssrf_safe_client
-
-    with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
-        return client.get(url)
+    with skills_hub_http_session():
+        return _skills_hub_http_client.get().get(url, timeout=timeout, headers=headers)
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
-    """Fetch a URL with SSRF and redirect-target validation (each hop re-checked)."""
+def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
+                      headers: Optional[Dict[str, str]] = None) -> Optional[httpx.Response]:
+    """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
+
+    *headers* are plain request headers (no credentials) and are sent on every hop."""
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
@@ -112,7 +148,7 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout)
+            resp = _ssrf_safe_http_get(current_url, timeout=timeout, headers=headers)
         except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
@@ -128,6 +164,70 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
 
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
     return None
+
+
+@contextmanager
+def _guarded_http_stream(
+    url: str,
+    *,
+    params: Optional[Dict[str, str]] = None,
+    timeout: int = _DEFAULT_HTTP_TIMEOUT,
+) -> Iterator[Optional[httpx.Response]]:
+    """Stream one response with bounded, policy-checked redirects."""
+    from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
+
+    current_url = url
+    current_params = params
+    response: Optional[httpx.Response] = None
+    stack = ExitStack()
+
+    try:
+        for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
+            if not is_safe_url(current_url):
+                logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
+                response = None
+                break
+
+            blocked = check_website_access(current_url)
+            if blocked:
+                logger.info(
+                    "Blocked Skills Hub fetch for %s by rule %s",
+                    blocked["host"],
+                    blocked["rule"],
+                )
+                response = None
+                break
+
+            stack.close()
+            stack = ExitStack()
+            try:
+                client = stack.enter_context(
+                    create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+                )
+                response = stack.enter_context(
+                    client.stream("GET", current_url, params=current_params)
+                )
+            except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
+                logger.debug("Skills Hub stream failed for %s: %s", current_url, exc)
+                response = None
+                break
+
+            if response.status_code not in _REDIRECT_STATUS_CODES:
+                break
+
+            location = response.headers.get("location")
+            if not location:
+                response = None
+                break
+            current_url = urljoin(current_url, location)
+            current_params = None
+        else:
+            logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
+            response = None
+
+        yield response
+    finally:
+        stack.close()
 
 
 # ---------------------------------------------------------------------------

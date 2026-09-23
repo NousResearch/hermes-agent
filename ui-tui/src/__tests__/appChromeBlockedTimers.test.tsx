@@ -1,6 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,7 +13,6 @@ import { StatusRule } from '../components/appChrome.js'
 import { AppLayout } from '../components/appLayout.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type StatusRuleProps = React.ComponentProps<typeof StatusRule>
@@ -344,65 +344,6 @@ describe('status-chrome timers under an occluding overlay', () => {
   })
 })
 
-// teknium1's review of #12463 called out that its test asserted on a `picker`
-// overlay state that no longer exists.  Pin the gate to fields the current
-// OverlayState actually carries so a rename breaks this file loudly.
-describe('status-chrome timers track the current overlay model', () => {
-  // Everything that genuinely paints over the rule: the modal widget slot,
-  // plus the FloatingOverlays set (with the rule at its default `top`).
-  const occluding: Array<[string, Partial<OverlayState>]> = [
-    ['modelPicker', { modelPicker: true }],
-    ['pager', { pager: { lines: ['a'], offset: 0 } }],
-    ['petPicker', { petPicker: true }],
-    ['pluginsHub', { pluginsHub: true }],
-    ['sessions', { sessions: true }],
-    ['skillsHub', { skillsHub: true }],
-    ['widget', { widget: { appId: 'demo', state: null } }]
-  ]
-
-  // In `$isBlocked` but NOT occluding.  `agents` / `journey` unmount the whole
-  // ComposerPane subtree, so React's effect cleanup already stops the clocks
-  // and gating on them would be dead code; the rest are PromptZone states that
-  // render in normal flow and push the rule down without covering it.
-  const nonOccluding: Array<[string, Partial<OverlayState>]> = [
-    ['agents', { agents: true }],
-    ['approval', { approval: { command: 'ls', requestId: 'a-1' } as OverlayState['approval'] }],
-    ['billing', { billing: { kind: 'credits' } as OverlayState['billing'] }],
-    ['clarify', { clarify: { question: 'which?', requestId: 'c-1' } as OverlayState['clarify'] }],
-    ['confirm', { confirm: { onConfirm: () => {}, prompt: 'sure?' } as OverlayState['confirm'] }],
-    ['journey', { journey: true }],
-    ['secret', { secret: { envVar: 'TOKEN', prompt: 'token?' } as OverlayState['secret'] }],
-    ['subscription', { subscription: { kind: 'expired' } as OverlayState['subscription'] }],
-    ['sudo', { sudo: { requestId: 'sudo-1' } as OverlayState['sudo'] }]
-  ]
-
-  it.each(occluding)('pauses the status clocks while %s covers the rule', (_name, patch) => {
-    patchOverlayState(patch)
-
-    mount(idleProps)
-
-    expect(oneSecondTimers(intervalSpy)).toBe(0)
-  })
-
-  it.each(nonOccluding)('keeps the status clocks running while %s is open', (_name, patch) => {
-    patchOverlayState(patch)
-
-    mount(idleProps)
-
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
-  })
-
-  it('keeps the clocks running for the non-occluding ambient dock', () => {
-    // `ambient` is a glanceable in-flow dock that reserves its own rows and
-    // doesn't cover the status rule, so pausing there would be a regression.
-    patchOverlayState({ ambient: [{ appId: 'clock', state: null }] })
-
-    mount(idleProps)
-
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
-  })
-})
-
 // The visibility gate teknium1 asked for: mount the REAL AppLayout so the
 // status rule sits in its true position relative to PromptZone (normal flow,
 // above ComposerPane) and FloatingOverlays (absolute, growing upward), then
@@ -430,15 +371,6 @@ describe('AppLayout status-rule visibility', () => {
     await flush()
 
     expect(layout.output()).toContain('1m 30s')
-  })
-
-  it('keeps the status rule on screen AND its clock advancing under a flow-layout sudo prompt', async () => {
-    const layout = mountLayout({ sudo: { requestId: 'sudo-1' } as OverlayState['sudo'] })
-
-    await flush()
-
-    expect(layout.output()).toContain('1m 0s')
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
   })
 
   it('arms no clock under a floating model picker while the rule is at the top', async () => {

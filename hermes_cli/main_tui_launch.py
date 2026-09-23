@@ -41,7 +41,7 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     db = None
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=True)  # exit epilogue only reads
         session = db.get_session(target)
         if not session:
             return
@@ -342,11 +342,12 @@ def _ensure_tui_node() -> None:
     try:
         # Helper logs to stderr; stdout carries `command -v node` — subshell PATH
         # edits don't leak back into Python, so the capture is the bridge.
+        from tools.environments.local import _find_bash  # not a bare "bash": System32's WSL stub wins CreateProcess
         result = subprocess.run(
-            ["bash", "-c", f'source "{helper}" >&2 && ensure_node >&2 && command -v node'],
+            [_find_bash(), "-c", f'source "{helper}" >&2 && ensure_node >&2 && command -v node'],
             env={**os.environ, "HERMES_HOME": hermes_home},
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, RuntimeError, subprocess.SubprocessError):  # RuntimeError: no Git Bash on Windows
         return
 
     parts = os.environ.get("PATH", "").split(os.pathsep)
@@ -426,6 +427,16 @@ def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
     # esbuild treats this as an executable override. If a shell points it at a
     # different release, the pinned package's postinstall rejects that binary.
     run_env.pop("ESBUILD_BINARY_PATH", None)
+    # The repo-root ``.npmrc`` is git-tracked, so the updater's autostash parks
+    # any mirror/proxy line added there and every update reinstalls without it
+    # (restricted networks then prune optional native deps like get-windows and
+    # the rebuild fails). ``$HERMES_HOME`` lives outside the git tree and the
+    # update hand-off already carries ``HERMES_HOME`` down to every npm child.
+    # An explicit ``NPM_CONFIG_USERCONFIG`` wins (#106373).
+    from hermes_constants import get_hermes_home
+    npmrc = get_hermes_home() / "npmrc"
+    if npmrc.is_file():
+        run_env.setdefault("NPM_CONFIG_USERCONFIG", os.fspath(npmrc))
     return run_env
 
 
@@ -444,7 +455,11 @@ def _tui_node_bin(bin: str) -> str:
             if ensure_dependency("node"):
                 path = find_node_executable("node")
     if not path:
-        print(f"{bin} not found — install Node.js to use the TUI.")
+        print(
+            f"Node.js is required for the TUI but `{bin}` was not found. Install it from "
+            "https://nodejs.org (run `hermes doctor` for the install hint for your OS), then "
+            "retry `hermes --tui`. To keep working now, run `hermes --cli`."
+        )
         sys.exit(1)
     return path
 
@@ -724,6 +739,12 @@ def _launch_tui(
     # the single factory; keep secrets (the TUI/agent needs provider creds).
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    from hermes_cli.shared_session_attach import configure_tui_attachment
+    try:
+        configure_tui_attachment(env, resume_session_id)
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
@@ -799,7 +820,7 @@ def _launch_tui(
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.
     if code == 42:
         from hermes_cli.relaunch import relaunch
-        print("\n⚕ Launching update...\n")
+        print("\n☤ Launching update...\n")
         relaunch(["update"], preserve_inherited=False)
 
     sys.exit(code)

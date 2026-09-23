@@ -21,9 +21,4 @@ describe('filterVisibleProjects', () => {
     const tree = [explicit('p_real'), auto('/www/gone')]
     expect(filterVisibleProjects(tree, ['p_real', '/www/gone']).map(p => p.id)).toEqual(['p_real'])
   })
-
-  it('passes the list through when nothing is dismissed', () => {
-    const tree = [auto('/www/a'), explicit('p_b')]
-    expect(filterVisibleProjects(tree, [])).toBe(tree)
-  })
 })

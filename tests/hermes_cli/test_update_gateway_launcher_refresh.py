@@ -26,8 +26,6 @@ from unittest import mock
 import pytest
 
 import hermes_cli.gateway_windows as gateway_windows
-import hermes_cli.main as cli_main
-from hermes_cli import update_cmd
 
 
 # ---------------------------------------------------------------------------
@@ -85,11 +83,5 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
 # ---------------------------------------------------------------------------
 # _refresh_windows_gateway_launchers: hermes update regenerates launchers
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 

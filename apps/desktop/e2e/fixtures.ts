@@ -27,7 +27,7 @@ import * as path from 'node:path'
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
 import { resolveElectronBinary } from './electron-binary'
-import { startMockServer, type MockServerOptions } from './mock-server'
+import { startMockServer, type MockServerOptions } from '../../../tests-js/scripts/mock-server'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -205,7 +205,7 @@ ${modelContextLength ? `  context_length: ${modelContextLength}\n` : ''}provider
     key_env: MOCK_API_KEY
     models:
       mock-model: {}
-    context_length: 4096
+    context_length: 64000
 ${autoTitleDefault}${approvalsDefault}${displaySection}${extraConfig ? `\n${extraConfig.trim()}\n` : ''}`
 
   fs.writeFileSync(configPath, config, 'utf8')
@@ -262,6 +262,14 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     HERMES_HOME: sandbox.hermesHome,
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
+    // One `hermes serve` per host, and profile roots are HOME-anchored
+    // (`~/.hermes/profiles`, the default profile's own home): without both of
+    // these a local e2e run attaches to the developer's running backend or
+    // lists and writes their real profiles, and chats through their real
+    // model and state.db instead of the sandbox + mock provider. CI never has
+    // either, so only local runs ever took that path.
+    HERMES_DESKTOP_ISOLATED_BACKEND: '1',
+    HOME: sandbox.root,
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
     HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
     // `app.close()` in teardown must exit even when a spec leaves a turn
@@ -492,7 +500,7 @@ providers:
     key_env: MOCK_API_KEY
     models:
       mock-model: {}
-    context_length: 4096
+    context_length: 64000
 `,
     'utf8',
   )

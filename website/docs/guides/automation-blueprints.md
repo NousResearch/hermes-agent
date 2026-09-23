@@ -6,16 +6,16 @@ description: "Ready-to-use automation blueprints — scheduled tasks, GitHub eve
 
 # Automation Blueprints
 
-Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
+Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](../user-guide/features/cron.md) for time-based triggers and [webhook platform](../user-guide/messaging/webhooks.md) for event-driven triggers.
 
 Every blueprint works with **any model** — not locked to a single provider.
 
-For parameterized blueprints with forms instead of cron syntax, see the [Automation Blueprints Catalog](/reference/automation-blueprints-catalog).
+For parameterized blueprints with forms instead of cron syntax, see the [Automation Blueprints Catalog](../reference/automation-blueprints-catalog.mdx).
 
 :::tip Three Trigger Types
 | Trigger | How | Tool |
 |---------|-----|------|
-| **Schedule** | Runs on a cadence (hourly, nightly, weekly) | `cronjob` tool or `/cron` slash command |
+| **Schedule** | Runs on a cadence (hourly, nightly, weekly) | `cronjob_manage` tool or `/cron` slash command |
 | **GitHub Event** | Fires on PR opens, pushes, issues, CI results | Webhook platform (`hermes webhook subscribe`) |
 | **API Call** | External service POSTs JSON to your endpoint | Webhook platform (config.yaml routes or `hermes webhook subscribe`) |
 

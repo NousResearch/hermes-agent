@@ -1,16 +1,17 @@
+import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
+import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { modelSearchText } from '@/lib/model-search-text'
+import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import { normalize } from '@/lib/text'
+import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import type { LocalModelLoadProgress, ModelOptionProvider, ModelPricing } from '@/types/hermes'
+import type { LocalModelLoadProgress } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
@@ -61,8 +62,8 @@ export function ModelPickerDialog({
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
   // an empty query), which destroys the backend's curated order. We disable
-  // it and do a plain substring filter that preserves array order — matching
-  // the `hermes model` CLI picker, which shows the curated list verbatim.
+  // it: an empty query shows the curated list verbatim (like the `hermes
+  // model` CLI picker) and a query ranks with the shared fuzzyRank.
   const [search, setSearch] = useState('')
 
   const modelOptions = useQuery({
@@ -264,11 +265,16 @@ function ModelResults({
 
   const q = normalize(search)
 
-  const matches = (provider: ModelOptionProvider, model: string) =>
-    !q ||
-    modelSearchText(model).toLowerCase().includes(q) ||
-    provider.name.toLowerCase().includes(q) ||
-    provider.slug.toLowerCase().includes(q)
+  // Model rows rank with the same fuzzyRank + modelSearchText the web and TUI
+  // pickers use, so one query orders identically on every surface. A query
+  // that names the provider itself keeps its whole curated list, in order.
+  const rankModels = (provider: ModelOptionProvider, models: readonly string[]) => {
+    if (!q || foldIncludes(provider.name, q) || foldIncludes(provider.slug, q)) {
+      return [...models]
+    }
+
+    return fuzzyRank(models, q, modelSearchText).map(r => r.item)
+  }
 
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
@@ -285,14 +291,14 @@ function ModelResults({
   // In-flight local downloads render as disabled progress rows: inside the
   // Local group when it exists, else as their own group (first download —
   // nothing staged yet, so the backend reports no Local provider at all).
-  const visibleDownloads = downloads.filter(job => !q || (job.target || '').toLowerCase().includes(q))
+  const visibleDownloads = downloads.filter(job => !q || foldIncludes(job.target || '', q))
   const hasLocalGroup = configured.some(p => p.slug === LOCAL_PROVIDER_SLUG)
 
   return (
     <>
       {configured.map(provider => {
-        // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        // Empty query: the backend's curated order, verbatim.
+        const models = rankModels(provider, provider.models ?? [])
         const groupDownloads = provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
 
         if (models.length === 0 && groupDownloads.length === 0) {
@@ -311,7 +317,7 @@ function ModelResults({
               </div>
             )}
             {models.map(model => {
-              const isCurrent = model === currentModel && provider.slug === currentProvider
+              const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
               // Managed local model loading into memory right now: show the
@@ -337,7 +343,7 @@ function ModelResults({
                   value={`${provider.slug}:${model}`}
                 >
                   <span className="min-w-0 flex-1 truncate">
-                    <HighlightMatches query={search} text={model} />
+                    <HighlightMatches foldSeparators query={search} text={model} />
                   </span>
                   {loadProgress && (
                     <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
@@ -499,9 +505,12 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  // free_tier is only set for Nous. true → "Free tier", false → "Pro".
+  // Two different facts wear the same badge: `free_tier` is a signed-in Nous
+  // account on the free plan; `free_tier_row` is the no-account route's own
+  // row. Either way the user is on free inference, so say so. Never match the
+  // route by name — the label is copy.
   const tierBadge =
-    provider.free_tier === true ? (
+    provider.free_tier === true || provider.free_tier_row === true ? (
       <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
         {copy.freeTier}
       </span>

@@ -217,7 +217,7 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
-详情参见[安全指南](/user-guide/security#environment-variable-passthrough)。
+详情参见[安全指南](../security.md#environment-variable-passthrough)。
 
 Hermes 始终将脚本和自动生成的 `hermes_tools.py` RPC 存根写入临时暂存目录，执行完成后清理。在 `strict` 模式下，脚本也在该目录中*运行*；在 `project` 模式下，脚本在会话的工作目录中运行（暂存目录保留在 `PYTHONPATH` 中以确保导入正常解析）。子进程在独立的进程组中运行，以便在超时或中断时干净地终止。
 
@@ -231,7 +231,7 @@ Hermes 始终将脚本和自动生成的 `hermes_tools.py` RPC 存根写入临�
 | 运行构建或测试套件 | ❌ | ✅ |
 | 对搜索结果进行循环处理 | ✅ | ❌ |
 | 交互式/后台进程 | ❌ | ✅ |
-| 需要环境变量中的 API key | ⚠️ 仅通过[透传](/user-guide/security#environment-variable-passthrough) | ✅（大多数可透传） |
+| 需要环境变量中的 API key | ⚠️ 仅通过[透传](../security.md#environment-variable-passthrough) | ✅（大多数可透传） |
 
 **经验法则：** 需要在调用之间含逻辑地程序化调用 Hermes 工具时，使用 `execute_code`。运行 shell 命令、构建和进程时，使用 `terminal`。
 

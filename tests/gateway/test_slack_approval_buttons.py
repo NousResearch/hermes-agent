@@ -480,37 +480,23 @@ class TestSlackThreadContext:
 # _has_active_session_for_thread — session key fix (#5833)
 # ===========================================================================
 
-class TestSessionKeyFix:
-    """Test that _has_active_session_for_thread uses build_session_key."""
 
+def test_thread_suspension_requires_a_fresh_context(tmp_path):
+    """Stopping a Slack thread must re-enable first-turn history seeding."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
 
-    def test_stale_session_returns_false(self):
-        """A session key that exists but would be rolled by the reset policy
-        must NOT count as active — otherwise the reset-time first turn skips
-        the thread-history reseed (#55239)."""
-        adapter = _make_adapter()
-
-        class Store:
-            config = MagicMock()
-            config.group_sessions_per_user = False
-            config.thread_sessions_per_user = False
-            _entries = {
-                "agent:main:slack:group:C1:1000.0": MagicMock()
-            }
-
-            def _ensure_loaded(self):
-                return None
-
-            def _should_reset(self, entry, source):
-                return "idle"
-
-        adapter._session_store = Store()
-
-        result = adapter._has_active_session_for_thread(
-            channel_id="C1", thread_ts="1000.0", user_id="U123"
-        )
-
-        assert result is False
+    adapter = _make_adapter()
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    adapter._session_store = store
+    source = adapter._thread_session_source("C1", "1000.0", "U123", "", "group")
+    entry = store.get_or_create_session(source)
+    try:
+        assert adapter._has_active_session_for_thread("C1", "1000.0", "U123")
+        store.suspend_session(entry.session_key)
+        assert not adapter._has_active_session_for_thread("C1", "1000.0", "U123")
+    finally:
+        store._db.close()
 
 
 class TestSessionKeyChatType:
@@ -529,16 +515,30 @@ class TestSessionKeyChatType:
         This is the exact bug that the old ``hardcoded "group"`` code caused:
         the lookup builds ``group:…`` while the real session is ``dm:…``.
         """
+        from gateway.session import SessionEntry
+
         adapter = _make_adapter()
         mock_store = MagicMock()
-        mock_store._entries = {
-            "agent:main:slack:dm:D0DMCHANNEL:2000.0": MagicMock()
-        }
+        session_key = "agent:main:slack:dm:D0DMCHANNEL:2000.0"
+        mock_store._entries = {session_key: SessionEntry.from_dict({
+            "session_key": session_key,
+            "session_id": "slack-dm-thread-session",
+            "created_at": "2024-01-01T00:00:00",
+            "updated_at": "2024-01-01T00:00:00",
+        })}
         mock_store._ensure_loaded = MagicMock()
         mock_store.config = MagicMock()
         mock_store.config.group_sessions_per_user = True
         mock_store.config.thread_sessions_per_user = False
         adapter._session_store = mock_store
+
+        # The same entry must be active with the event's correct DM type.
+        assert adapter._has_active_session_for_thread(
+            channel_id="D0DMCHANNEL",
+            thread_ts="2000.0",
+            user_id="U_USER",
+            chat_type="dm",
+        )
 
         # Default chat_type="group" should NOT find the DM session
         result = adapter._has_active_session_for_thread(
@@ -840,4 +840,3 @@ class TestSlackReactionAuthorizationGate:
         assert "U_RANDO" in runner.auth_checked
         assert runner.handled == []
         adapter.handle_message.assert_not_called()
-

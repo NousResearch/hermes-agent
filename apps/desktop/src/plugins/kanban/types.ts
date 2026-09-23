@@ -91,6 +91,15 @@ export interface KanbanAttachment {
   size?: null | number
 }
 
+/** GET /tasks/:id `link_tasks` — one resolved row per linked task, so the UI
+ *  renders titles instead of raw ids. Additive: older backends omit it and
+ *  the drawer falls back to shortId chips. */
+export interface KanbanLinkTask {
+  id: string
+  title: string
+  status: string
+}
+
 /** Fields present only on the detail endpoint (beyond the card's KanbanTask).
  *  `started_at`/`worker_pid`/`last_heartbeat_at` are inherited — they live on
  *  KanbanTask now that the board's liveness arc reads them. */
@@ -117,8 +126,12 @@ export interface KanbanTaskDetail {
   task: KanbanTaskFull
   comments: KanbanComment[]
   events: KanbanEvent[]
-  attachments: KanbanAttachment[]
+  /** Kanban backends before attachments landed (#35395, May 2026) omit this
+   *  key and have no /tasks/{id}/attachments endpoints; absent/null hides the
+   *  section instead of offering uploads the backend would 404 on. */
+  attachments?: KanbanAttachment[] | null
   links: { parents: string[]; children: string[] }
+  link_tasks?: KanbanLinkTask[] | null
   runs: KanbanRun[]
 }
 

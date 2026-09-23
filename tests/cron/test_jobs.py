@@ -101,6 +101,40 @@ class TestParseSchedule:
         assert run_at > now
         assert run_at < now + timedelta(minutes=31)
 
+    def test_date_only_becomes_date_window_oneshot(self):
+        result = parse_schedule("2026-10-01")
+        assert result["kind"] == "once"
+        assert result["run_at"].startswith("2026-10-01T00:00:00")
+        assert result["fire_window_days"] == 1
+
+    def test_date_only_recovers_until_end_of_date_window(self, monkeypatch):
+        schedule = parse_schedule("2026-10-01")
+        run_at = datetime.fromisoformat(schedule["run_at"])
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: run_at + timedelta(hours=12),
+        )
+        assert compute_next_run(schedule) == schedule["run_at"]
+
+    def test_date_only_expires_after_end_of_date_window(self, monkeypatch):
+        schedule = parse_schedule("2026-10-01")
+        run_at = datetime.fromisoformat(schedule["run_at"])
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: run_at + timedelta(days=1),
+        )
+        assert compute_next_run(schedule) is None
+
+    def test_timestamp_keeps_two_minute_grace(self, monkeypatch):
+        schedule = parse_schedule("2026-10-01T12:00:00")
+        run_at = datetime.fromisoformat(schedule["run_at"])
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: run_at + timedelta(minutes=2),
+        )
+        assert compute_next_run(schedule) == schedule["run_at"]
+
+
     def test_every_becomes_interval(self):
         result = parse_schedule("every 2h")
         assert result["kind"] == "interval"

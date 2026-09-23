@@ -155,6 +155,9 @@ _ALIBABA_CODING_PLAN_MODELS = [
 _ALIBABA_TOKEN_PLAN_MODELS = [
     "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
     "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
+    # Callable on the live endpoint (chat probe 2026-09-23) but deliberately hidden from
+    # /v1/models by Alibaba; night-discount model, must stay picker-visible.
+    "deepseek-v4-pro-0813",
 ]
 _XAI_MODELS = _xai_curated_models()
 

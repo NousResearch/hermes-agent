@@ -916,7 +916,7 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         b.seen_slugs.add(pid.lower())
 
 
-def _lap_canonical_rows(b: _PickerBuild) -> None:
+def _lap_canonical_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS
@@ -952,6 +952,15 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
         else:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
                                              non_blocking=b.non_blocking_catalogs)
+        # A ``providers.<canonical-slug>.models`` block extends the row exactly as it does for
+        # built-in (section 1) and overlay (section 2) rows. Without it, ids the user pinned in
+        # config that the endpoint deliberately hides from /v1/models (e.g. alibaba-token-plan's
+        # deepseek-v4-pro-0813, callable but unlisted) never reach the picker, and section 3
+        # cannot emit them later because this row owns the slug.
+        from hermes_cli.model_switch import _declared_model_ids
+        configured = user_providers.get(cp.slug) if isinstance(user_providers, dict) else None
+        if isinstance(configured, dict):
+            model_ids = list(dict.fromkeys([*_declared_model_ids(configured.get("models")), *model_ids]))
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
@@ -1238,7 +1247,7 @@ def list_authenticated_providers(
     _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data, user_providers)
-    _lap_canonical_rows(b)
+    _lap_canonical_rows(b, user_providers if isinstance(user_providers, dict) else {})
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)
     _lap_bare_custom_row(b, custom_providers)

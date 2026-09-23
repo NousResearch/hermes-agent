@@ -636,6 +636,30 @@ def test_overlay_provider_row_merges_configured_models(monkeypatch):
     assert row["total_models"] == 4
 
 
+def test_canonical_provider_row_merges_configured_models(monkeypatch):
+    """A ``providers.<canonical>.models`` block extends a canonical row (alibaba-token-plan) the
+    way it already extends built-in (section 1) and overlay (section 2) rows. Endpoints can
+    deliberately hide callable ids from /v1/models (Alibaba's night-discount
+    deepseek-v4-pro-0813), and section 3 cannot re-emit them because this row owns the slug —
+    without the merge the pinned id never reaches the picker."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda *_a, **_k: ["qwen3.8-max", "glm-5.2"],
+    )
+    monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "test-key")
+
+    hidden = "deepseek-v4-pro-0813"
+    rows = list_authenticated_providers(
+        current_provider="alibaba-token-plan", max_models=50,
+        user_providers={"alibaba-token-plan": {"models": [hidden]}})
+    row = next(r for r in rows if r["slug"] == "alibaba-token-plan")
+    assert row["source"] == "canonical"
+    assert row["models"] == [hidden, "qwen3.8-max", "glm-5.2"]
+    assert row["total_models"] == 3
+
+
 @pytest.mark.parametrize("base_url, listed", [("https://r.openai.azure.com/openai/v1", True), ("", False)])
 def test_entra_only_azure_foundry_row_is_listed_without_api_key(monkeypatch, base_url, listed):
     """``model.auth_mode: entra_id`` mints a per-request bearer, so no ``AZURE_FOUNDRY_API_KEY``

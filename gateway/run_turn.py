@@ -2282,6 +2282,19 @@ class GatewayTurnMixin:
             return self._resolve_profile_home_for_source(source)
         return None
 
+    def _async_profile_scope_for_source(self, source: SessionSource):
+        """``async with`` twin of :meth:`_profile_scope_for_source` (secret hydration off-loop).
+
+        Slash dispatch runs under the RECEIVING bot's scope (auth needs its ``.env``), which is not
+        the routed runtime when a bot serves another profile's chat; every handler reading
+        home-relative state (pending writes, memory store, config) binds the runtime here (#119915)."""
+        from gateway.run import _async_profile_runtime_scope
+        home = self._profile_scope_key_for_source(source)
+        if home is not None:
+            return _async_profile_runtime_scope(home)
+        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+        return async_launch_profile_scope_if_multiplexed()
+
     @staticmethod
     def _standalone_launch_scope():
         """Scope for a standalone gateway's own (launch-profile) work: a no-op until the process hosts

@@ -682,6 +682,12 @@ class SessionMessagesMixin:
         platform_message_id, token counts, reasoning sidecars all survive byte-exact, and the FTS triggers
         index the clones naturally), and the originals are archived. NOTE: re-sequencing assigns the tail
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
+
+        A carried-forward message keeps its display identity and order: when a dict in
+        *compacted_messages* carries the ``_row_id`` of a row archived by this commit (same role),
+        the fresh row inherits that row's ``display_identity``/``display_order`` verbatim. Prune-shaped
+        rewrites (shortened tool arguments or tool-result text) therefore still dedupe against the
+        archived original instead of surfacing as a second, reordered copy.
         """
         from hermes_state import SessionCompressionInProgressError
         def _do(conn):
@@ -707,6 +713,23 @@ class SessionMessagesMixin:
                     "ORDER BY id DESC LIMIT ?",
                     (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
             rewind_ids += tail_ids
+            # Snapshot the display generation of every carried-forward origin BEFORE the archive/insert
+            # below (the insert stamps fresh ``_row_id`` values onto the same dicts, losing the link).
+            carried = [m.get("_row_id") for m in compacted_messages
+                if isinstance(m.get("_row_id"), int) and not isinstance(m.get("_row_id"), bool)]
+            origin_display = {}
+            if carried:
+                for row in conn.execute(
+                        f"SELECT id, role, display_identity, display_order FROM messages "
+                        f"WHERE session_id = ? AND id IN ({_placeholders(carried)})",
+                        [session_id, *carried]).fetchall():
+                    if row["display_identity"] is None:
+                        continue
+                    origin_display[int(row["id"])] = (row["role"], row["display_identity"], row["display_order"])
+            carry_pairs = [(m, m["_row_id"]) for m in compacted_messages
+                if isinstance(m.get("_row_id"), int) and not isinstance(m.get("_row_id"), bool)
+                and m["_row_id"] in origin_display
+                and m.get("role", "unknown") == origin_display[m["_row_id"]][0]]
             if rewind_ids:
                 placeholders = _placeholders(rewind_ids)
                 conn.execute("UPDATE messages SET active = 0, compacted = 0 "
@@ -715,6 +738,12 @@ class SessionMessagesMixin:
             else:
                 conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+            for msg, origin_id in carry_pairs:
+                new_id = msg.get("_row_id")
+                if isinstance(new_id, int) and not isinstance(new_id, bool):
+                    _, identity, order = origin_display[origin_id]
+                    conn.execute("UPDATE messages SET display_identity = ?, display_order = ? WHERE id = ?",
+                        (identity, order, new_id))
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
@@ -812,18 +841,27 @@ class SessionMessagesMixin:
     def _dedupe_display_generations(self, rows):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
-        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``."""
-        seen: Dict[Tuple[Any, ...], Any] = {}
-        first_id: Dict[Tuple[Any, ...], int] = {}
+        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``.
+
+        Groups by the durable ``display_identity`` a commit stored, never by a recomputed payload key: a
+        prune-shaped rewrite (shortened tool arguments or tool-result text) keeps its origin's identity, so
+        the archived original and its carried-forward copy still collapse. Rows without a stored identity
+        (legacy stores) fall back to the recomputed key."""
+        seen: Dict[Any, Any] = {}
+        first_position: Dict[Any, Any] = {}
         for row in rows:
-            key = self._display_dedupe_key(row)
+            names = row.keys() if hasattr(row, "keys") else ()
+            stored = row["display_identity"] if "display_identity" in names else None
+            key = ("stored", stored) if stored is not None else ("computed", self._display_dedupe_key(row))
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
-            first_id[key] = min(first_id.get(key, row["id"]), row["id"])
-        # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
+            position = (row["display_order"]
+                if "display_order" in names and row["display_order"] is not None else row["id"])
+            first_position[key] = min(first_position.get(key, position), position)
+        # Order by the logical message's original position, not the chosen representative's: a carried
         # copy in a newer generation has a higher id than messages emitted after the original.
-        return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
+        return [seen[key] for key in sorted(seen, key=first_position.__getitem__)]
 
     def _ensure_display_order(self, session_id: str) -> bool:
         """Backfill one legacy session once, preserving the pre-index display identity exactly."""
@@ -1057,11 +1095,22 @@ class SessionMessagesMixin:
                 seen.add(current)
             return best if best is not None else session_id
 
+    def _conversation_display_columns(self) -> str:
+        """``, display_identity, display_order`` when the store has them. Read-only legacy stores predate
+        those columns; the display dedupe falls back to the recomputed key for such rows."""
+        try:
+            with self._read_ctx() as conn:
+                names = set(self._message_column_names(conn))
+        except Exception:
+            return ""
+        return ", display_identity, display_order" if {"display_identity", "display_order"} <= names else ""
+
     def _fetch_conversation_rows(self, session_ids: List[str], active_clause: str, *, with_session_id: bool):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
-        and would break tool-call adjacency)."""
+        and would break tool-call adjacency), plus the durable display columns when the store has them."""
         return self._read_all(
-            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
+            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS}"
+            f"{self._conversation_display_columns()} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
             f"{active_clause} ORDER BY id", tuple(session_ids))
 

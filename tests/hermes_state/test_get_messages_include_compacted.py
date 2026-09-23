@@ -639,3 +639,33 @@ class TestDisplayDedupe:
         msgs = db.get_messages(sid, include_compacted=True)
         assert len(msgs) == 1
         assert msgs[0]["tool_call_id"] == "call-1"
+
+    def test_pruned_carry_keeps_display_identity_and_order(self, db):
+        """A prune-shaped rewrite (shortened tool args / tool-result text) keeps its
+        origin's display identity: the archived original and its carried-forward copy
+        collapse to one row, in original position, on every display projection (#117750)."""
+        sid = "pruned-carry"
+        db.create_session(sid, source="cli")
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "start", "timestamp": 100.0},
+            {"role": "assistant", "content": "Earlier progress", "timestamp": 101.0,
+             "tool_calls": [{"id": "stable-call", "type": "function",
+                             "function": {"name": "demo_tool",
+                                          "arguments": json.dumps({"value": "L" * 4000})}}]},
+            {"role": "tool", "content": "R" * 5000, "tool_call_id": "stable-call",
+             "tool_name": "demo_tool", "timestamp": 102.0},
+            {"role": "assistant", "content": "Later answer", "timestamp": 200.0},
+        ])
+        history = db.get_messages_as_conversation(sid, include_row_ids=True)
+        history[1]["tool_calls"][0]["function"]["arguments"] = json.dumps({"value": "short"})
+        history[2]["content"] = "short result"
+        db.archive_and_compact(sid, history)
+
+        expected = ["start", "Earlier progress", "short result", "Later answer"]
+        assert [m["content"] for m in db.get_messages(sid, include_compacted=True)] == expected
+        visible = db.get_messages_as_conversation(sid, include_compacted=True)
+        assert [m["content"] for m in visible] == expected
+        assert [m["content"] for m in visible if m["role"] == "assistant"] == [
+            "Earlier progress", "Later answer"]
+        _, display_history = db.get_resume_conversations(sid)
+        assert [m["content"] for m in display_history] == expected

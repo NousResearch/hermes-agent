@@ -527,7 +527,7 @@ stt:
   enabled: true
   provider: local        # local, groq, openai, mistral
   local:
-    model: base          # tiny, base, small, medium, large-v3
+    model: base          # tiny, base, small, medium, large-v3, turbo
 ```
 
 ### TTS（文字 → 语音）

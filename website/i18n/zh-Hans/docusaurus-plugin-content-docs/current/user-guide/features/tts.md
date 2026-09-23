@@ -397,7 +397,7 @@ def register(ctx):
 stt:
   provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
   local:
-    model: "base"             # tiny, base, small, medium, large-v3
+    model: "base"             # tiny, base, small, medium, large-v3, turbo
   openai:
     model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
   mistral:

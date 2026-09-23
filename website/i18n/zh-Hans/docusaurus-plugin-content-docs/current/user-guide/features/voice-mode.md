@@ -402,7 +402,7 @@ stt:
                                     # （说话人分离、对齐、归档等）
   provider: "local"                  # "local"（免费）| "groq" | "openai" | "mistral" | "xai"
   local:
-    model: "base"                    # tiny, base, small, medium, large-v3
+    model: "base"                    # tiny, base, small, medium, large-v3, turbo
   # model: "whisper-1"              # 旧版：在未设置 provider 时使用
 
 # 文字转语音（TTS）

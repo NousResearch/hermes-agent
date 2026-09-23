@@ -8,6 +8,7 @@ the known-fragile core packages, using the pins from pyproject.toml).
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import shutil
@@ -208,6 +209,113 @@ def _marker_owner_is_live(marker: Path) -> bool:
             except ValueError:
                 return False
     return False
+
+
+# ``hermes update`` writes this into ``.git/`` right before git moves the checkout and removes it once
+# git is done. Git rewrites the tree file by file and moves HEAD last, so an update killed in between
+# leaves HEAD on the old commit with a prefix of the files already new; that mixed tree fails at import
+# in every entry point, ``hermes update`` included. A marker whose owner is gone means exactly that.
+INTERRUPTED_PULL_MARKER = "hermes-update-pull"
+# A fast-forward takes seconds; past this a "live" owner pid is a recycled one.
+_INTERRUPTED_PULL_MAX_AGE_SECONDS = 10 * 60
+
+
+def interrupted_pull_marker(root: Path) -> Path:
+    return root / ".git" / INTERRUPTED_PULL_MARKER
+
+
+def restore_interrupted_pull(project_root: Path | None = None) -> bool:
+    """Put back the files a killed ``hermes update`` had half-moved to the new commit. Never raises.
+
+    Returns True when files were restored: modules this process already imported may be the
+    half-written ones, so the caller must relaunch (``relaunch_after_restore``).
+
+    Fast path (no marker) is one ``stat``. Acts only when the marker's owner is gone and HEAD is still
+    the pre-pull commit: every path that differs between it and the pull target returns to HEAD (the
+    commit the venv was built for), so the install is whole again and ``hermes update`` redoes the
+    update from the start. Paths the update does not change keep any local edits; the updater's
+    autostash (if any) stays in ``git stash list``.
+    """
+    try:
+        root = _project_root() if project_root is None else project_root
+        marker = interrupted_pull_marker(root)
+        if not marker.is_file() or _pytest_owns_live_checkout(root):
+            return False
+        fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8").splitlines())
+        try:
+            owner = int(fields.get("pid", ""))
+        except ValueError:
+            owner = -1
+        # Our own pid is never the owner: this runs at startup, and containers hand a retry the
+        # killed updater's pid.
+        if (owner != os.getpid() and _pid_is_running(owner)
+                and time.time() - marker.stat().st_mtime < _INTERRUPTED_PULL_MAX_AGE_SECONDS):
+            return False
+
+        def git(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+            return subprocess.run(["git", "--literal-pathspecs", "-C", str(root), *args], input=stdin,
+                                  capture_output=True, text=True, timeout=120,
+                                  stdin=None if stdin is not None else subprocess.DEVNULL)
+
+        pre, target = fields.get("pre", "").strip(), fields.get("target", "").strip()
+        if not pre or not target or git("rev-parse", "HEAD").stdout.strip() != pre:
+            marker.unlink()  # git finished (HEAD moved) or the marker is unusable
+            return False
+        diff = git("diff", "--name-status", "-z", "--no-renames", pre, target)
+        if diff.returncode != 0:
+            return False
+        parts = diff.stdout.split("\0")
+        added = [p for s, p in zip(parts[::2], parts[1::2]) if s == "A"]
+        kept = [p for s, p in zip(parts[::2], parts[1::2]) if s and s != "A"]
+        # The dead git's index lock would refuse every command below.
+        (root / ".git" / "index.lock").unlink(missing_ok=True)
+        status = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+        dirty = {entry[3:] for entry in status.stdout.split("\0") if len(entry) > 3}
+        if status.returncode != 0 or dirty.isdisjoint(added + kept):
+            if status.returncode == 0:
+                marker.unlink()  # the killed git never reached the tree: nothing to put back
+            return False
+        print("⚠ A previous `hermes update` was killed while git was writing the new code — "
+              f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
+        ok = True
+        if kept:
+            ok = git("restore", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=-",
+                     "--pathspec-file-nul", stdin="\0".join(kept)).returncode == 0
+        if added and ok:
+            ok = git("rm", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
+                     "--pathspec-file-nul", stdin="\0".join(added)).returncode == 0
+            for rel in added:
+                path = root / rel
+                path.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    os.removedirs(path.parent)  # stops at the first non-empty dir
+        if ok:
+            marker.unlink()
+            print("  ✓ Checkout restored; `hermes update` updates it again.", file=sys.stderr)
+            if fields.get("stash", "").strip():
+                print(f"  Your local changes are still in the update's stash ({fields['stash'].strip()}).",
+                      file=sys.stderr)
+            return True
+        print(f"  ✗ Could not restore it automatically. Recover with: git -C {root} reset --hard {pre}",
+              file=sys.stderr)
+    except Exception:
+        pass  # Never block launch — the import that follows surfaces the real error.
+    return False
+
+
+def relaunch_after_restore() -> None:
+    """Re-run this command from the restored tree; never returns.
+
+    Everything imported so far (this package, ``hermes_bootstrap``, ``hermes_cli.main`` itself) may
+    be the killed git's new files, and they would run against the restored old tree.
+    """
+    argv = [sys.executable, *sys.orig_argv[1:]]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if sys.platform == "win32":
+        # os.execv on Windows spawns and exits, detaching the console's wait on us.
+        sys.exit(subprocess.call(argv))  # windows-footgun: ok — interactive child keeps our console
+    os.execv(sys.executable, argv)
 
 
 def _pinned_specs(packages: list[str], project_root: Path) -> list[str]:

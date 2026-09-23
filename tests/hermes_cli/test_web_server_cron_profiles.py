@@ -30,6 +30,17 @@ def isolated_profiles(tmp_path, monkeypatch):
     return {"default": default_home, "worker_alpha": worker_home}
 
 
+def test_standalone_jobs_remain_discoverable_for_dashboard_management(isolated_profiles):
+    home = isolated_profiles["worker_alpha"]
+    (home / "config.yaml").write_text("gateway:\n  standalone: true\n")
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job", prompt="local job", schedule="every 1h",
+    )
+    assert isinstance(job, dict)
+    assert "worker_alpha" in {p["name"] for p in _web_server_cron._cron_profile_dicts()}
+    assert _web_server_cron._find_cron_job_profile(job["id"]) == "worker_alpha"
+
+
 def _drain_queue(q):
     values = []
     while True:

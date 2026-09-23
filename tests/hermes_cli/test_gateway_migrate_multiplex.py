@@ -880,3 +880,20 @@ def test_windows_is_migratable_and_only_s6_is_refused(monkeypatch):
     reason = gm._host_supports_migration()
     assert reason is not None and "Restart the container" in reason
     assert "nothing on this host was changed" in reason
+
+
+def test_standalone_profile_is_listed_left_alone_and_not_a_fold_target(fleet):
+    """A profile that opts itself out via `gateway.standalone: true` keeps its own gateway: it is
+    neither a blocker nor a fold target — the plan names it under standalone_by_config instead."""
+    root = fleet.root
+    (root / "profiles" / "ops" / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+    plan = gm.build_migration_plan()
+    assert "ops" not in [p.name for p in plan.profiles]
+    assert "ops" not in [p.name for p in plan.standalone_secondaries]
+    assert "coder" in [p.name for p in plan.standalone_secondaries]
+    assert plan.standalone_by_config == ("ops",)
+    payload = json.loads(json.dumps(plan.to_dict()))
+    assert payload["standalone_by_config"] == list(plan.standalone_by_config)
+    assert "ops" not in [p["profile"] for p in payload["profiles"]]
+    lines = gm.format_plan(plan, dry_run=True)
+    assert any("Standalone by config (gateway.standalone: true), left alone: ops" in line for line in lines)

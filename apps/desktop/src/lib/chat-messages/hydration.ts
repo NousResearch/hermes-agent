@@ -282,6 +282,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     active.parts = [...active.parts, ...parts]
+    active.durableComplete = false
     active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
     absorbRows(active, pendingToolRows)
 
@@ -298,6 +299,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         id: `${pendingToolTimestamp || Date.now()}-${index}-tools`,
         role: 'assistant',
         parts: pendingToolParts,
+        durableComplete: false,
         ...(pendingToolRows > 1 ? { serverRowSpan: pendingToolRows } : {}),
         timestamp: pendingToolTimestamp
       })
@@ -360,6 +362,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
 
     const parts: ChatMessagePart[] = []
+    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+    const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
     const reasoning =
       message.reasoning ||
@@ -390,8 +395,18 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
       parts.push(
-        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
+        ...message.tool_calls.map((call, callIndex) =>
+          toolPartFromStoredCall(call, callIndex, message.timestamp, message.tool_call_labels)
+        )
       )
+    }
+
+    if (rowId !== undefined) {
+      for (const part of parts) {
+        if (part.type === 'text') {
+          part.sourceRowId = rowId
+        }
+      }
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
@@ -436,6 +451,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
+        activeAssistant.durableComplete = durableComplete
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,
@@ -453,12 +469,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
-    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
-
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
+      ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
       ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),

@@ -47,12 +47,20 @@ describe('PluginsTab', () => {
     $connection.set(null)
   })
 
-  it('lists the scoped profile agent plugins with toggles', () => {
+  it('renders declared server pills and the unavailable sentence under the description', () => {
     $agentPlugins.set([
       {
         description: 'A test plugin',
         key: 'demo-plugin',
         name: 'demo-plugin',
+        servers: [
+          { name: 'ready-server', sentence: '', state: 'connected' },
+          {
+            name: 'setup-server',
+            sentence: 'Example App is not installed. Install Example App, then try again.',
+            state: 'missing_app'
+          }
+        ],
         source: 'git',
         status: 'enabled',
         version: '1.0.0'
@@ -61,7 +69,9 @@ describe('PluginsTab', () => {
 
     render(<PluginsTab profile="workbot" />)
 
-    expect(screen.getByText('demo-plugin')).toBeTruthy()
+    expect(screen.getByTestId('server-pill-ready-server').className).toContain('bg-emerald-500/10')
+    expect(screen.getByTestId('server-pill-setup-server').className).toContain('bg-destructive/10')
+    expect(screen.getByText('Example App is not installed. Install Example App, then try again.')).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Agent: demo-plugin' }).getAttribute('aria-checked')).toBe('true')
   })
 

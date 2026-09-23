@@ -6,6 +6,7 @@ recording stub context.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -25,6 +26,48 @@ def _make_plugin(
     (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     (d / "__init__.py").write_text(init_py, encoding="utf-8")
     return d
+
+
+def _portable_plugin(root: Path, servers: dict, declarations: dict) -> Path:
+    from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+
+    root.mkdir()
+    (root / "plugin.json").write_text(json.dumps({
+        "$schema": PLUGIN_SCHEMA_V1,
+        "name": "example-plugin",
+        "extensions": {"com.nousresearch.hermes": {"servers": declarations}},
+    }), encoding="utf-8")
+    (root / "mcp.json").write_text(json.dumps({
+        "$schema": MCP_SCHEMA_V1,
+        "mcpServers": servers,
+    }), encoding="utf-8")
+    return root
+
+
+def test_portable_validation_fails_orphan_and_reports_availability(tmp_path: Path) -> None:
+    orphan = _portable_plugin(
+        tmp_path / "orphan",
+        {},
+        {"worker": {"requires": {"app": False}}},
+    )
+    report = validate_plugin_dir(orphan)
+    assert not report.ok
+    assert any("no matching mcp.json server" in failure for failure in report.failures)
+
+    app = tmp_path / "example-app"
+    declared = _portable_plugin(
+        tmp_path / "declared",
+        {"worker": {"type": "stdio", "command": "python"}},
+        {"worker": {
+            "app": {"darwin": {"presence": "executable", "location": str(app)}},
+            "requires": {"app": True},
+        }},
+    )
+    report = validate_plugin_dir(declared)
+    assert any(
+        name == "server availability: worker" and ok and detail in {"missing_app", "unsupported_os"}
+        for name, ok, detail in report.checks
+    )
 
 
 BASE_MANIFEST = {

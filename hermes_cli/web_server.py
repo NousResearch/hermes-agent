@@ -594,7 +594,7 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def _plugin_api_runtime_gate(request: Request, call_next):
-    """Block requests to disabled plugin API routes at request time.
+    """Block disabled plugin APIs and scope enabled handlers to the request profile.
 
     :func:`_mount_plugin_api_routes` gates at import time; a plugin disabled
     while running keeps its router mounted until restart, so enforce on every
@@ -631,6 +631,15 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
         if blocked and source in ("user", "bundled"):
             return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+    if plugin_name:
+        from hermes_cli.web_server_profiles import _config_profile_scope
+        # The scope spans call_next so async handlers and sync endpoint workers
+        # inherit the request's ContextVars, not the process launch defaults.
+        try:
+            with _config_profile_scope(request.query_params.get("profile")):
+                return await call_next(request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     return await call_next(request)
 
 

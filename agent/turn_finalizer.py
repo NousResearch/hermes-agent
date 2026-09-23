@@ -688,8 +688,11 @@ def finalize_turn(
     # for a steer that WAS delivered into the live request but never seen: when the turn
     # aborts right after delivery, the marker row is the unanswered transcript tail
     # (voice barge-in raced a hard stop into the batch boundary and the surface waited
-    # for a manual resend). It re-posts as the next user turn — an extra row is a fair
-    # price for never dropping a user message.
+    # for a manual resend). The predicate is "no materialized response after the marker",
+    # not "never sent": a request that carried the marker and was cancelled before its
+    # first delta leaves the correction just as unresolved — no answer, no tool action —
+    # so at-least-once beats the silent drop there too. It re-posts as the next user
+    # turn — an extra row is a fair price for never dropping a user message.
     _leftover_steer = agent._drain_pending_steer()
     if not _leftover_steer and interrupted:
         _leftover_steer = _unanswered_steer_tail(messages)

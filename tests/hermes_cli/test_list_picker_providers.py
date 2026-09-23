@@ -304,7 +304,7 @@ def test_canonical_uncapped_provider_keeps_full_picker_catalog(monkeypatch):
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr(auth, "PROVIDER_REGISTRY", registry)
     monkeypatch.setattr(models, "CANONICAL_PROVIDERS", canonical)
-    monkeypatch.setattr(model_switch_providers, "_build_curated_lists", lambda *_a: catalogs)
+    monkeypatch.setattr(model_switch_providers, "_build_curated_lists", lambda *_a, **_kw: catalogs)
     monkeypatch.setattr(
         model_switch_providers,
         "_live_or_curated_ids",

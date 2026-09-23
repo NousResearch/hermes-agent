@@ -257,3 +257,56 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+@pytest.mark.parametrize("mechanism", ["config", "retired"])
+def test_decompose_excludes_unroutable_assignee(kanban_home, mechanism):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="route safely", triage=True)
+    from types import SimpleNamespace
+    profiles = [
+        SimpleNamespace(name="default", description="fallback", retired=False),
+        SimpleNamespace(name="retired-worker", description="stub", retired=mechanism == "retired"),
+        SimpleNamespace(name="worker", description="active", retired=False),
+    ]
+    payload = jsonlib.dumps({"fanout": True, "tasks": [
+        {"title": "child", "body": "work", "assignee": "retired-worker", "parents": []},
+    ]})
+    config = {"kanban": {"default_assignee": "default"}}
+    if mechanism == "config":
+        config["kanban"]["decompose_exclude_assignees"] = "retired-worker"
+    with patch("hermes_cli.profiles.list_profiles", return_value=profiles), \
+         patch("hermes_cli.profiles.profile_exists", side_effect=lambda name: name in {p.name for p in profiles}), \
+         patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+         patch("hermes_cli.config.load_config_readonly", return_value=config), \
+         _patch_aux_client(payload), _patch_extra_body():
+        outcome = decomp.decompose_task(tid, author="me")
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child.assignee == "default"
+
+
+@pytest.mark.parametrize("mechanism", ["config", "retired"])
+def test_decompose_excluded_profile_not_exposed_in_prompt(kanban_home, mechanism):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="inspect roster", triage=True)
+    from types import SimpleNamespace
+    profiles = [
+        SimpleNamespace(name="default", description="fallback", retired=False),
+        SimpleNamespace(name="retired-worker", description="stub", retired=mechanism == "retired"),
+        SimpleNamespace(name="worker", description="active", retired=False),
+    ]
+    payload = jsonlib.dumps({"fanout": False, "title": "tight", "body": "done", "assignee": None})
+    config = {"kanban": {"default_assignee": "default"}}
+    if mechanism == "config":
+        config["kanban"]["decompose_exclude_assignees"] = ["retired-worker"]
+    with patch("hermes_cli.profiles.list_profiles", return_value=profiles), \
+         patch("hermes_cli.profiles.profile_exists", side_effect=lambda name: name in {p.name for p in profiles}), \
+         patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+         patch("hermes_cli.config.load_config_readonly", return_value=config), \
+         patch("agent.auxiliary_client.call_llm", return_value=_fake_aux_response(payload)) as call, \
+         _patch_extra_body():
+        outcome = decomp.decompose_task(tid, author="me")
+    assert outcome.ok, outcome.reason
+    prompt = call.call_args.kwargs["messages"][1]["content"]
+    assert "retired-worker" not in prompt
+    assert "worker" in prompt

@@ -1897,6 +1897,10 @@ DEFAULT_CONFIG = {
         # root profile named "default", so on a shared kanban.db every home can otherwise claim
         # default-assigned cards.
         "dispatch_profiles": None,
+        # Profiles excluded from kanban decomposition routing (list or comma-separated string).
+        # Default [] excludes nothing; retired/stub profiles can remain on disk, so existence
+        # checks alone cannot keep the decomposer from routing to them.
+        "decompose_exclude_assignees": [],
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

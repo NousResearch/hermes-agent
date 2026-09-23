@@ -656,10 +656,29 @@ _PRUNED_TOOL_ARGUMENTS_MESSAGE = (
 
 def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str, guardrail_decision) -> str:
     """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
-    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
+    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal
+    post_tool_call. Keep denials fail-closed; stop the turn when the policy hook is unavailable."""
+    from agent.tool_guardrails import ToolGuardrailDecision
+    from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
     if block_body is not None:
+        block_message = block_body.get("message") or block_body["error"]
+        error_type = block_error_type
+        if (
+            block_error_type == "plugin_block"
+            and block_message == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        ):
+            error_type = "policy_hook_unavailable"
+            block_body = {**block_body, "success": False, "error_type": error_type, "status": "blocked"}
+            agent._set_tool_guardrail_halt(ToolGuardrailDecision(
+                action="halt",
+                code=error_type,
+                message=block_message,
+                tool_name=ref.name,
+                count=1,
+            ))
         result = json.dumps(block_body, ensure_ascii=False)
-        error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
+        error_message = block_message
     else:
         result = agent._guardrail_block_result(guardrail_decision)
         error_type = "guardrail_block"

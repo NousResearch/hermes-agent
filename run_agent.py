@@ -1246,6 +1246,14 @@ class AIAgent(
             record_guardrail_decision(self, decision.action, decision.code)
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
+        if decision.code == "policy_hook_unavailable":
+            return (
+                "I stopped because a pre-tool policy hook timed out or is still running. "
+                "The blocked tool did not execute. Retrying in this process is not a recovery. "
+                "Preserve the session, inspect the named hook in the agent log, and restart "
+                "the affected process only after resolving the hook or disabling an optional "
+                "non-security extension. Security checks have not been bypassed."
+            )
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
         return (
             f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "

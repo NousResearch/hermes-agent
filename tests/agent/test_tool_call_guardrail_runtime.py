@@ -510,3 +510,44 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+@pytest.mark.parametrize("executor", ["_execute_tool_calls_sequential", "_execute_tool_calls_concurrent"])
+def test_policy_hook_unavailable_halts_without_dispatch(executor):
+    from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
+    agent = _make_agent("terminal", config=_hard_stop_config())
+    args = {"command": "printf probe-1"}
+    call = _mock_tool_call("terminal", json.dumps(args), "hook-unavailable-1")
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+    with (
+        patch("agent.tool_executor._pre_tool_block", return_value=(_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, args)),
+        patch("model_tools.handle_function_call", return_value="MUST NOT EXECUTE") as handler,
+    ):
+        getattr(agent, executor)(message, messages, "hook-outage-fixture")
+    handler.assert_not_called()
+    decision = agent._tool_guardrail_halt_decision
+    assert decision is not None
+    assert decision.code == "policy_hook_unavailable"
+    assert decision.should_halt
+    payload = json.loads(messages[-1]["content"])
+    assert payload["success"] is False
+    assert payload["error_type"] == "policy_hook_unavailable"
+    assert messages[-1]["tool_call_id"] == "hook-unavailable-1"
+
+
+def test_policy_hook_unavailable_does_not_reclassify_normal_denial():
+    agent = _make_agent("terminal", config=_hard_stop_config())
+    args = {"command": "printf denied"}
+    call = _mock_tool_call("terminal", json.dumps(args), "ordinary-denial")
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+    with (
+        patch("agent.tool_executor._pre_tool_block", return_value=("Explicit policy denial", args)),
+        patch("model_tools.handle_function_call", return_value="MUST NOT EXECUTE") as handler,
+    ):
+        agent._execute_tool_calls_sequential(message, messages, "denial-fixture")
+    handler.assert_not_called()
+    assert agent._tool_guardrail_halt_decision is None
+    assert json.loads(messages[-1]["content"])["error"] == "Explicit policy denial"

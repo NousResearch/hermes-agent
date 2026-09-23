@@ -61,7 +61,9 @@ def _read_json(path: Path):
     if not path.exists():
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig strips a BOM written by Windows editors (Notepad);
+        # plain utf-8 keeps the BOM as U+FEFF and fails json parsing.
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception as e:
         logger.debug("Failed to load %s: %s", path.name, e)

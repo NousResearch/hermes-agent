@@ -7,6 +7,25 @@ the private page content.
 This is the fix for the SSRF bypass described in issue #44731.
 """
 
+from types import SimpleNamespace
+from tools import browser_tool_cloud as bt_cloud, browser_tool_session as bt_session
+
+
+def _peer_supervisor(**kwargs):
+    """Model the current atomic-window supervisor API without starting Chrome."""
+    supervisor = SimpleNamespace(**kwargs)
+    if not hasattr(supervisor, 'flush_network_events'):
+        supervisor.flush_network_events = lambda: True
+    if not hasattr(supervisor, 'start_network_response_window'):
+        def rotate():
+            records = supervisor.snapshot().network_responses
+            if hasattr(supervisor, 'clear_network_responses'):
+                supervisor.clear_network_responses()
+            return records
+        supervisor.start_network_response_window = rotate
+    return supervisor
+
+
 import json
 
 import pytest
@@ -380,3 +399,64 @@ class TestBrowserVisionPrivateNetworkGuard:
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
+
+    @pytest.mark.parametrize("capture_raises", [False, True])
+    def test_peer_violation_removes_requested_and_backend_screenshot_paths(
+        self, monkeypatch, tmp_path, capture_raises
+    ):
+        """Blocked screenshots cannot remain at a backend-returned alternate path."""
+        from types import SimpleNamespace
+
+        import hermes_constants
+        from tools import browser_supervisor
+
+        records = []
+        requested_dir = tmp_path / "requested"
+        actual_path = tmp_path / "backend" / "actual.png"
+        requested_paths = []
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+        )
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "screenshot":
+                requested_path = type(actual_path)(args[-1])
+                requested_paths.append(requested_path)
+                requested_path.parent.mkdir(parents=True, exist_ok=True)
+                requested_path.write_bytes(b"private requested screenshot")
+                if capture_raises:
+                    records.append(unsafe_record)
+                    raise RuntimeError("PRIVATE_RESPONSE_BODY")
+                actual_path.parent.mkdir(parents=True, exist_ok=True)
+                actual_path.write_bytes(b"private backend screenshot")
+                records.append(unsafe_record)
+                return _make_screenshot_result(str(actual_path))
+            if command == "open":
+                return {"success": True}
+            return {"success": False, "error": "unexpected command"}
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(bt_cloud, "_get_browser_engine", lambda: "chrome")
+        monkeypatch.setattr(bt_cloud, "_should_inject_engine", lambda engine: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", mock_run_browser_command)
+        monkeypatch.setattr(hermes_constants, "get_hermes_dir", lambda *args: requested_dir)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        result = json.loads(browser_browser_vision(question="what", task_id="test"))
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert requested_paths and not requested_paths[0].exists()
+        assert not actual_path.exists()

@@ -1510,19 +1510,32 @@ class MatrixAdapter(BasePlatformAdapter):
                 await asyncio.gather(*pending, return_exceptions=True)
         self._invite_join_tasks.clear()
         self._reaction_redaction_tasks.clear()
+        close_errors = []
         crypto_db = self._crypto_db
         if crypto_db is not None:
-            await crypto_db.stop()
-            if self._crypto_db is crypto_db:
-                self._crypto_db = None
+            try:
+                await crypto_db.stop()
+            except BaseException as exc:
+                close_errors.append(exc)
+            else:
+                if self._crypto_db is crypto_db:
+                    self._crypto_db = None
         client = self._client
         session = client.api.session if client is not None else self._opening_session
         if session is not None:
-            await session.close()
-            if self._client is client:
-                self._client = None
-            if self._opening_session is session:
-                self._opening_session = None
+            try:
+                await session.close()
+            except BaseException as exc:
+                close_errors.append(exc)
+            else:
+                if self._client is client:
+                    self._client = None
+                if self._opening_session is session:
+                    self._opening_session = None
+        if len(close_errors) > 1:
+            raise BaseExceptionGroup("Matrix disconnect cleanup failed", close_errors)
+        if close_errors:
+            raise close_errors[0]
         logger.info("Matrix: disconnected")
 
     async def send(
@@ -1539,9 +1552,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
                 from aiohttp import ClientError
-                from mautrix.errors import MatrixConnectionError, MatrixResponseError
+                from mautrix.errors import MatrixConnectionError
                 ambiguous = isinstance(exc, (TimeoutError, ClientError, MatrixConnectionError,
-                                             MatrixResponseError, ConnectionError, OSError))
+                                             ConnectionError, OSError))
                 if (ambiguous or _is_matrix_rate_limit(exc)
                         or not (self._encryption and getattr(self._client, "crypto", None))):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)

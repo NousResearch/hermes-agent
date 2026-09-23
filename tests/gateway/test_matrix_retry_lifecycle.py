@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from mautrix.api import Method
+from mautrix.errors import MatrixResponseError
 
 from plugins.platforms.matrix import adapter as matrix
 
@@ -226,3 +227,82 @@ async def test_cancelled_partial_connect_owns_session_until_teardown(monkeypatch
     assert adapter._client is None
     await adapter.disconnect()
     assert closes == [True]
+
+
+@pytest.mark.asyncio
+async def test_definitive_response_error_still_shares_keys_and_retries_once():
+    adapter = object.__new__(matrix.MatrixAdapter)
+    adapter.platform = matrix.Platform.MATRIX
+    adapter._encryption = True
+    calls = []
+    async def share():
+        calls.append("share")
+    adapter._client = SimpleNamespace(crypto=SimpleNamespace(share_keys=share))
+    adapter.format_message = lambda text: text
+    adapter.truncate_message = lambda text, _limit: [text]
+    adapter.max_message_length = 1000
+    adapter._build_text_message_content = lambda text: {"msgtype": "m.text", "body": text}
+    adapter._apply_relation_metadata = lambda *args, **kwargs: None
+    async def send_event(*args):
+        calls.append("send")
+        if calls == ["send"]:
+            raise MatrixResponseError("response did not fulfill expectations")
+        return "$recovered"
+    adapter._send_room_message = send_event
+    result = await adapter.send("!r", "hello")
+    assert result.success and result.message_id == "$recovered"
+    assert calls == ["send", "share", "send"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_attempts_session_close_after_crypto_stop_failure_and_retains_failed_owner():
+    adapter = object.__new__(matrix.MatrixAdapter)
+    adapter._sync_task = None
+    adapter._invite_join_tasks = {}
+    adapter._reaction_redaction_tasks = set()
+    adapter._opening_session = None
+    calls = []
+    class CryptoDB:
+        async def stop(self):
+            calls.append("stop")
+            if calls.count("stop") == 1:
+                raise RuntimeError("crypto stop failed")
+    class Session:
+        async def close(self):
+            calls.append("close")
+    db, session = CryptoDB(), Session()
+    adapter._crypto_db = db
+    adapter._client = SimpleNamespace(api=SimpleNamespace(session=session))
+    with pytest.raises(RuntimeError, match="crypto stop failed"):
+        await adapter._disconnect_impl()
+    assert calls == ["stop", "close"]
+    assert adapter._crypto_db is db and adapter._client is None
+    await adapter._disconnect_impl()
+    assert calls == ["stop", "close", "stop"]
+    assert adapter._crypto_db is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_reports_both_failures_and_retains_both_owners():
+    adapter = object.__new__(matrix.MatrixAdapter)
+    adapter._sync_task = None
+    adapter._invite_join_tasks = {}
+    adapter._reaction_redaction_tasks = set()
+    adapter._opening_session = None
+    calls = []
+    class CryptoDB:
+        async def stop(self):
+            calls.append("stop")
+            raise RuntimeError("stop failed")
+    class Session:
+        async def close(self):
+            calls.append("close")
+            raise RuntimeError("close failed")
+    db, session = CryptoDB(), Session()
+    client = SimpleNamespace(api=SimpleNamespace(session=session))
+    adapter._crypto_db, adapter._client = db, client
+    with pytest.raises(ExceptionGroup) as raised:
+        await adapter._disconnect_impl()
+    assert [str(exc) for exc in raised.value.exceptions] == ["stop failed", "close failed"]
+    assert calls == ["stop", "close"]
+    assert adapter._crypto_db is db and adapter._client is client

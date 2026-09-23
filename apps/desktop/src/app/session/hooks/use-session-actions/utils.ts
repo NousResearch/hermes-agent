@@ -877,7 +877,7 @@ export function preserveLocalPendingTurnMessages(
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
 
-type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> & {
+type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'> & {
   [safelyPersistedInflightUser]?: true
 }
 
@@ -1037,12 +1037,20 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // An activate snapshot taken before the turn committed goes stale once REST
   // returns the committed reply after the persisted prompt: its partial
   // `inflight.assistant` is a prefix of that reply, and projecting it paints
-  // the answer twice (the extra row frozen on its first chunk).
+  // the answer twice (the extra row frozen on its first chunk). Text alone
+  // cannot tell this turn's reply from the previous turn's answer to the same
+  // resent prompt, so the reply must have been written after this turn began.
+  const turnStartedAt = projection.turn_started_at
+  const committedAt = liveAssistantOfCurrentTurn?.timestamp
+
   const turnAlreadyCommitted = Boolean(
     inflightUserAlreadyPersisted &&
     !inflightError &&
     liveAssistantOfCurrentTurn &&
     !isLiveTailRow(liveAssistantOfCurrentTurn) &&
+    typeof turnStartedAt === 'number' &&
+    typeof committedAt === 'number' &&
+    committedAt >= turnStartedAt &&
     !liveAssistantOfCurrentTurn.parts.some(part => part.type === 'tool-call') &&
     isStrictAnswerTextExtension(chatMessageText(liveAssistantOfCurrentTurn), inflightAssistant)
   )
@@ -1325,7 +1333,10 @@ export function overlayConcurrentMessageChanges(
 
     // message.complete settled this stream row while REST was in flight, and
     // the page already carries the same reply under its committed id (#70209).
-    if (current.role === 'assistant' && current.pending !== true && isLiveTailReplyId(current.id)) {
+    // Only a row the page newly added counts: one already in the baseline is an
+    // earlier turn's answer (a resent prompt can repeat it word for word). An
+    // errored row carries a failure the committed text cannot show.
+    if (current.role === 'assistant' && current.pending !== true && !current.error && isLiveTailReplyId(current.id)) {
       const text = textWithoutReferenceLines(chatMessageText(current)).trim()
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
@@ -1333,6 +1344,7 @@ export function overlayConcurrentMessageChanges(
         (message, index) =>
           index > lastUser &&
           message.role === 'assistant' &&
+          !baselineById.has(message.id) &&
           !isLiveTailRow(message) &&
           textWithoutReferenceLines(chatMessageText(message)).trim() === text
       )

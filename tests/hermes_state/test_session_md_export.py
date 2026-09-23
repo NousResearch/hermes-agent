@@ -51,6 +51,22 @@ def test_get_compression_lineage_returns_only_compression_chain(tmp_path):
         db.close()
 
 
+def test_compression_lineage_root_resolves_segments_and_missing_sessions(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("root", source="cli")
+        db.end_session("root", "compression")
+        db.create_session("tip", source="cli", parent_session_id="root")
+        db.create_session("standalone", source="cli")
+
+        assert db.compression_lineage_root("root") == "root"
+        assert db.compression_lineage_root("tip") == "root"
+        assert db.compression_lineage_root("standalone") == "standalone"
+        assert db.compression_lineage_root("missing") is None
+    finally:
+        db.close()
+
+
 def test_fork_children_created_before_continuation_do_not_hijack_lineage(tmp_path):
     # Regression: the forward walk used to accept any non-branch child as the
     # compression continuation. A delegate/tool child spawned BEFORE the real
@@ -92,4 +108,3 @@ def test_fork_children_created_before_continuation_do_not_hijack_lineage(tmp_pat
         assert contents == ["root msg", "continuation msg"]
     finally:
         db.close()
-

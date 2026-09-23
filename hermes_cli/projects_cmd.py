@@ -54,6 +54,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     project_sub("bind-board", "Bind a kanban board to a project").add_argument(
         "board", nargs="?", default="", help="Board slug (omit to unbind)"
     )
+    p_assign = sub.add_parser("assign", help="Assign a session lineage to a project")
+    p_assign.add_argument("session", help="Session id or unique id prefix")
+    p_assign.add_argument("project", help="Project id or slug")
+    for action, help_text in (
+        ("unfile", "Explicitly place a session lineage in Unfiled"),
+        ("release", "Remove explicit membership and restore cwd inference"),
+    ):
+        sp = sub.add_parser(action, help=help_text)
+        sp.add_argument("session", help="Session id or unique id prefix")
+    project_sub("sessions", "List session lineage roots assigned to a project")
     parser.set_defaults(_project_parser=parser)
     return parser
 
@@ -116,6 +126,40 @@ def _with_project(fn):
         return 1 if proj is None else fn(args, conn, proj)
 
     return _db_command(wrapper)
+
+
+def _session_db_command(fn):
+    """Run a command with the active profile's projects.db and state.db."""
+
+    @functools.wraps(fn)
+    def wrapper(args: argparse.Namespace) -> int:
+        from hermes_state import SessionDB
+
+        db = None
+        try:
+            db = SessionDB()
+            with pdb.connect_closing() as conn:
+                out = fn(args, conn, db)
+        except ValueError as exc:
+            print(f"project: {exc}", file=sys.stderr)
+            return 2
+        finally:
+            if db is not None:
+                db.close()
+        if isinstance(out, str):
+            print(out)
+            return 0
+        return out
+
+    return wrapper
+
+
+def _lineage_root(db, session_prefix: str) -> str:
+    session_id = db.resolve_session_id(session_prefix)
+    root_id = db.compression_lineage_root(session_id) if session_id else None
+    if root_id is None:
+        raise ValueError(f"no unique session matches: {session_prefix}")
+    return root_id
 
 
 def _print_project(proj) -> None:
@@ -225,6 +269,45 @@ def _cmd_bind_board(args, conn, proj) -> str:
     return f"Bound {proj.slug} -> board {args.board}"
 
 
+@_session_db_command
+def _cmd_assign(args, conn, db):
+    root_id = _lineage_root(db, args.session)
+    proj = _resolve(conn, args.project)
+    if proj is None:
+        return 1
+    pdb.set_session_home(conn, root_id, proj.id)
+    return f"Assigned session lineage {root_id} -> {proj.slug}"
+
+
+@_session_db_command
+def _cmd_unfile(args, conn, db) -> str:
+    root_id = _lineage_root(db, args.session)
+    pdb.set_session_home(conn, root_id, None)
+    return f"Unfiled session lineage {root_id}"
+
+
+@_session_db_command
+def _cmd_release(args, conn, db) -> str:
+    root_id = _lineage_root(db, args.session)
+    pdb.clear_session_home(conn, root_id)
+    return f"Released session lineage {root_id} to cwd inference"
+
+
+@_session_db_command
+def _cmd_sessions(args, conn, db):
+    proj = _resolve(conn, args.project)
+    if proj is None:
+        return 1
+    roots = pdb.session_roots_for_project(conn, proj.id)
+    if not roots:
+        return f"No sessions assigned to {proj.slug}."
+    for root_id in roots:
+        row = db.get_session(root_id) or {}
+        title = str(row.get("title") or "").strip()
+        print(f"{root_id}{f'  {title}' if title else ''}")
+    return 0
+
+
 _HANDLERS = {
     "create": _cmd_create,
     "list": _cmd_list,
@@ -238,4 +321,8 @@ _HANDLERS = {
     "archive": _flag_command("archive_project", "Archived"),
     "restore": _flag_command("restore_project", "Restored"),
     "bind-board": _cmd_bind_board,
+    "assign": _cmd_assign,
+    "unfile": _cmd_unfile,
+    "release": _cmd_release,
+    "sessions": _cmd_sessions,
 }

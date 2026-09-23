@@ -2963,7 +2963,7 @@ export const zh = defineLocale({
     projects: {
       showAllSessions: '显示所有会话',
       sectionLabel: '项目',
-      home: '主页',
+      home: '未归档',
       autoDiscovered: '自动发现',
       newButton: '新建项目',
       createTitle: '新建项目',

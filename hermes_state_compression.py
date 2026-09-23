@@ -715,3 +715,8 @@ class SessionCompressionMixin:
             current = next_child
         # Later tips are included only when the requested session itself was compacted.
         return lineage if session_id in lineage else [session_id]
+
+    def compression_lineage_root(self, session_id: str) -> Optional[str]:
+        """Return the stable membership key for a stored session, or ``None`` when missing."""
+        lineage = self.get_compression_lineage(session_id)
+        return lineage[0] if lineage else None

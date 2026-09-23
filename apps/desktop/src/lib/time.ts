@@ -30,6 +30,37 @@ export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', mont
 export const fmtMonth = new Intl.DateTimeFormat(undefined, { month: 'long' })
 export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
 
+// Compact numeric creation dates for session-row prefixes. Keep the locale's
+// field order and digits, but normalize separators so the prefix stays narrow.
+const fmtCompactMonthDay = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'numeric' })
+
+const fmtCompactMonthDayYear = new Intl.DateTimeFormat(undefined, {
+  day: 'numeric',
+  month: 'numeric',
+  year: '2-digit'
+})
+
+export function formatSessionCreationDate(seconds: number | null | undefined, nowMs = Date.now()): string | null {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return null
+  }
+
+  const date = new Date(seconds * SECOND)
+
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+
+  const includeYear = date.getFullYear() !== new Date(nowMs).getFullYear()
+  const formatter = includeYear ? fmtCompactMonthDayYear : fmtCompactMonthDay
+
+  return formatter
+    .formatToParts(date)
+    .filter(({ type }) => type === 'day' || type === 'month' || type === 'year')
+    .map(({ value }) => value)
+    .join('-')
+}
+
 // ── Relative time ──────────────────────────────────────────────────────────
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 

@@ -378,6 +378,73 @@ def test_explicit_project_claims_sessions_and_beats_auto():
     assert any(p["id"] == "/www/other" and p["isAuto"] for p in tree["projects"])
 
 
+def test_explicit_session_home_overrides_folder_inference():
+    folder_owner = _project("p_folder", "Folder", ["/www/app"])
+    assigned = _project("p_assigned", "Assigned", ["/www/elsewhere"])
+    session = _session("/www/app", branch="main")
+
+    tree = pt.build_tree(
+        [folder_owner, assigned], [session], [], resolve=lambda _cwd: None,
+        hydrate=True, session_homes={session["id"]: assigned["id"]},
+    )
+
+    counts = {project["id"]: project["sessionCount"] for project in tree["projects"]}
+    assert counts == {"p_folder": 0, "p_assigned": 1}
+
+
+def test_explicit_unfiled_goes_home_while_absent_override_keeps_inference():
+    project = _project("p_app", "App", ["/www/app"])
+    unfiled = _session("/www/app", branch="main")
+    inferred = _session("/www/app", branch="main")
+
+    tree = pt.build_tree(
+        [project], [unfiled, inferred], [], resolve=lambda _cwd: None,
+        hydrate=True, session_homes={unfiled["id"]: None},
+    )
+
+    assert _home_session_ids(tree) == [unfiled["id"]]
+    explicit = next(p for p in tree["projects"] if p["id"] == project["id"])
+    assert [s["id"] for s in _sessions_of(explicit)] == [inferred["id"]]
+
+
+def test_archived_or_unknown_assignment_goes_home_and_restore_reclaims_it():
+    archived = _project("p_archived", "Archived", ["/www/app"], archived=True)
+    archived_session = _session("/www/app", branch="main")
+    missing_session = _session("/www/other", branch="main")
+    homes = {
+        archived_session["id"]: archived["id"],
+        missing_session["id"]: "p_missing",
+    }
+
+    hidden = pt.build_tree(
+        [archived], [archived_session, missing_session], [], resolve=lambda _cwd: None,
+        hydrate=True, session_homes=homes,
+    )
+    assert set(_home_session_ids(hidden)) == {archived_session["id"], missing_session["id"]}
+
+    restored = dict(archived, archived=False)
+    visible = pt.build_tree(
+        [restored], [archived_session], [], resolve=lambda _cwd: None,
+        hydrate=True, session_homes=homes,
+    )
+    assert _home(visible) is None
+    assert [s["id"] for s in _sessions_of(visible["projects"][0])] == [archived_session["id"]]
+
+
+def test_session_home_uses_lineage_root_key_when_present():
+    project = _project("p_app", "App", ["/www/app"])
+    tip = _session(
+        "/www/other", branch="feature", _lineage_root_id="compression-root"
+    )
+
+    tree = pt.build_tree(
+        [project], [tip], [], resolve=lambda _cwd: None, hydrate=True,
+        session_homes={"compression-root": project["id"]},
+    )
+
+    assert [s["id"] for s in _sessions_of(tree["projects"][0])] == [tip["id"]]
+
+
 def test_scoped_session_ids_is_union_of_placed_sessions():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(

@@ -3092,7 +3092,7 @@ export const en: Translations = {
     projects: {
       showAllSessions: 'Show all sessions',
       sectionLabel: 'Projects',
-      home: 'Home',
+      home: 'Unfiled',
       autoDiscovered: 'Auto-discovered',
       newButton: 'New project',
       createTitle: 'New project',

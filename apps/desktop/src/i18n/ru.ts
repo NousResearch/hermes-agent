@@ -2578,7 +2578,7 @@ export const ru = defineLocale({
     projects: {
       showAllSessions: 'Показать все сессии',
       sectionLabel: 'Проекты',
-      home: 'Главная',
+      home: 'Без проекта',
       newButton: 'Новый проект',
       createTitle: 'Новый проект',
       createDesc: 'Назовите рабочее пространство и добавьте одну или несколько папок.',

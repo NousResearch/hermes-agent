@@ -2012,7 +2012,7 @@ export const ar = defineLocale({
     projects: {
       showAllSessions: 'عرض جميع الجلسات',
       sectionLabel: 'المشاريع',
-      home: 'الرئيسية',
+      home: 'غير مصنّف',
       autoDiscovered: 'مكتشف تلقائيًا',
       newButton: 'مشروع جديد',
       createTitle: 'مشروع جديد',

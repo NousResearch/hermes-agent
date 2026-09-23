@@ -1,7 +1,48 @@
-"""Tests for hermes_cli/fallback_config.py — fallback entry API-key resolution."""
+"""Tests for hermes_cli/fallback_config.py."""
+
+import logging
 
 from agent.secret_scope import reset_secret_scope, set_secret_scope
-from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
+from hermes_cli.fallback_config import (
+    effective_runtime_provider,
+    get_fallback_chain,
+    normalize_fallback_entries,
+    resolve_entry_api_key,
+)
+
+
+def test_fallback_chain_accepts_compact_and_json_string_entries():
+    assert get_fallback_chain({
+        "fallback_providers": [
+            "openrouter:qwen/qwen3.6-plus",
+            "nous:model:free",
+            '{"provider":"xai","model":"grok-code-fast-1"}',
+            '"google:gemini-2.5-pro"',
+        ],
+        "fallback_model": '[{"provider":"anthropic","model":"claude-sonnet-4-6"}]',
+    }) == [
+        {"provider": "openrouter", "model": "qwen/qwen3.6-plus"},
+        {"provider": "nous", "model": "model:free"},
+        {"provider": "xai", "model": "grok-code-fast-1"},
+        {"provider": "google", "model": "gemini-2.5-pro"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    ]
+
+
+def test_invalid_configured_fallback_entries_are_reported(caplog):
+    invalid_entries = [
+        "missing-model",
+        {"provider": "nous"},
+        7,
+        '{"provider":"openrouter",}',
+        '["openrouter:model",]',
+        '"openrouter:model',
+    ]
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+        assert normalize_fallback_entries(invalid_entries) == []
+
+    assert len(caplog.records) == len(invalid_entries)
+    assert all("Ignoring fallback entry" in record.message for record in caplog.records)
 
 
 class TestResolveEntryApiKey:

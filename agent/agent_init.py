@@ -1026,14 +1026,10 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
 
 
 def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
-    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
-    if isinstance(fallback_model, dict):
-        fallback_model = [fallback_model]
-    if not isinstance(fallback_model, list):
-        return []
-    return [
-        f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")
-    ]
+    """Normalize fallback config passed directly to ``AIAgent`` constructors."""
+    from hermes_cli.fallback_config import normalize_fallback_entries
+
+    return normalize_fallback_entries(fallback_model)
 
 
 def _init_fallback_chain(agent, fallback_model):

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalized_base_url(value: Any) -> str:
@@ -71,21 +76,65 @@ def pre_agent_fallback_notice(
 
 
 
-def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
-    candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+def _fallback_entry_from_string(value: str) -> dict[str, Any] | None:
+    """Parse one compact ``provider:model`` fallback entry."""
+    provider, separator, model = value.strip().partition(":")
+    if separator and provider.strip() and model.strip():
+        return {"provider": provider.strip(), "model": model.strip()}
+    return None
+
+
+def normalize_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    """Normalize mapping, JSON, and compact ``provider:model`` fallback entries."""
     entries: list[dict[str, Any]] = []
-    for entry in candidates:
+
+    def append_candidate(entry: Any, location: str) -> None:
+        if isinstance(entry, str):
+            text = entry.strip()
+            try:
+                decoded = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                if text.startswith(("{", "[", '"')):
+                    logger.warning(
+                        "Ignoring fallback entry %s: expected valid JSON",
+                        location,
+                    )
+                    return
+                decoded = text
+            if decoded != text or isinstance(decoded, (dict, list)):
+                append_candidate(decoded, location)
+                return
+            entry = _fallback_entry_from_string(text)
+        if isinstance(entry, list):
+            for index, nested in enumerate(entry):
+                append_candidate(nested, f"{location}.{index}")
+            return
         if not isinstance(entry, dict):
-            continue
+            logger.warning(
+                "Ignoring fallback entry %s: expected a provider:model string or mapping with provider and model",
+                location,
+            )
+            return
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
         if not provider or not model:
-            continue
+            logger.warning("Ignoring fallback entry %s: both provider and model are required", location)
+            return
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))
         if base_url:
             normalized["base_url"] = base_url
         entries.append(normalized)
+
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        for index, candidate in enumerate(raw):
+            append_candidate(candidate, str(index))
+    elif isinstance(raw, (dict, str)):
+        append_candidate(raw, "0")
+    else:
+        logger.warning("Ignoring fallback configuration with unsupported type %s", type(raw).__name__)
     return entries
 
 
@@ -109,7 +158,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+        for entry in normalize_fallback_entries(config.get(key)):
             identity = _entry_identity(entry)
             if identity not in seen:
                 seen.add(identity)

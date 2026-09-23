@@ -24,6 +24,11 @@ export interface ChatImageUploadResult {
   mime_type: string;
 }
 
+/** Keep command text and Return in distinct PTY frames for Ink key parsing. */
+export function imageAttachPtyFrames(path: string): readonly [string, string] {
+  return [`/image ${path}`, "\r"];
+}
+
 function imageFileKey(file: File): string {
   return `${file.name}\0${file.type}\0${file.size}\0${file.lastModified}`;
 }

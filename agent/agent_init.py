@@ -1176,9 +1176,9 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         if _YOLO_MODE_FROZEN:
             agent._session_init_model_config["yolo_mode"] = True
 
-    # In-memory todo list for task planning (one per agent/session)
+    # Session-scoped persistence lets fresh agents recover their own list only.
     from tools.todo_tool import TodoStore
-    agent._todo_store = TodoStore()
+    agent._todo_store = TodoStore.for_session(agent.session_id)
 
 
 def _apply_display_config(agent, _agent_cfg, platform):

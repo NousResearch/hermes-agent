@@ -241,23 +241,31 @@ def _set_process_title() -> None:
 
 # Cheap read of `display.interface` for the earliest hot-path decisions
 # (mouse-residue suppression, Termux fast launch) that run before
-# hermes_cli.config is importable. Cached so early callers don't re-parse YAML.
-_EARLY_INTERFACE_CACHE: "list | None" = None
+# hermes_cli.config is importable. Cached per config path so early callers
+# don't re-parse YAML, and so the answer follows the home the process ends up
+# in: mouse-residue suppression reads this BEFORE `_apply_profile_override()`
+# sets HERMES_HOME, and a cache keyed on nothing pinned every later caller to
+# the default home's interface for the whole run (#116902).
+_EARLY_INTERFACE_CACHE: "tuple[str, str] | None" = None
+
+
+def _early_interface_config_path() -> str:
+    """config.yaml of the home this process is currently pointed at."""
+    home = os.environ.get("HERMES_HOME")
+    if home:
+        return os.path.join(home, "config.yaml")
+    return os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
 
 
 def _config_default_interface_early() -> str:
     """Return the configured default interface ("cli"/"tui") via a minimal
     YAML read. Best-effort: any error falls back to "cli" (legacy behavior)."""
     global _EARLY_INTERFACE_CACHE
-    if _EARLY_INTERFACE_CACHE is not None:
-        return _EARLY_INTERFACE_CACHE[0]
+    cfg_path = _early_interface_config_path()
+    if _EARLY_INTERFACE_CACHE is not None and _EARLY_INTERFACE_CACHE[0] == cfg_path:
+        return _EARLY_INTERFACE_CACHE[1]
     value = "cli"
     try:
-        home = os.environ.get("HERMES_HOME")
-        if home:
-            cfg_path = os.path.join(home, "config.yaml")
-        else:
-            cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
         if os.path.exists(cfg_path):
             import yaml as _yaml_iface
 
@@ -272,7 +280,7 @@ def _config_default_interface_early() -> str:
                     value = "tui"
     except Exception:
         value = "cli"  # best-effort — default to classic REPL on any error
-    _EARLY_INTERFACE_CACHE = [value]
+    _EARLY_INTERFACE_CACHE = (cfg_path, value)
     return value
 
 
@@ -558,15 +566,22 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _desktop_ssh_backend(argv: list) -> bool:
-    """A Desktop-owned ``serve --ssh-session-token-file`` child has a fixed identity too.
+def _s6_supervised_gateway_run(argv: list) -> bool:
+    """A bare ``gateway run`` inside the s6 image names the ``gateway-default`` slot too.
 
-    The Desktop client names the remote profile explicitly (``--profile <name>``, or none for
-    the root home). Following the remote host's sticky ``active_profile`` instead silently
-    re-homes the backend into a profile the UI never asked for, so Settings read one
-    ``config.yaml`` and the user edits another (KC's "nothing sticks over SSH").
+    ``_maybe_redirect_run_to_s6_supervision`` turns it into a start of the supervised slot for the
+    current profile, and it is the image's own CMD. Following the sticky ``active_profile`` there
+    started that profile's named slot on every container boot: the one the boot reconciler just
+    registered down, because a started named slot is a second gateway beside the multiplexer.
+    ``--no-supervise`` keeps the foreground run, which follows ``active_profile`` as before (#22502).
     """
-    return "--ssh-session-token-file" in argv
+    words = [a for a in argv if not a.startswith("-")]
+    if words[:2] != ["gateway", "run"] or "--no-supervise" in argv:
+        return False
+    if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
+        return False
+    from hermes_cli.service_manager import _s6_running
+    return _s6_running()
 
 
 def _apply_profile_override() -> None:
@@ -588,7 +603,9 @@ def _apply_profile_override() -> None:
     if profile_name is None and hermes_home_env and os.environ.get("HERMES_UPDATE_POST_SWAP") == "1":
         return
 
-    if profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv):
+    if (profile_name is None and not _under_gateway_supervisor(argv)
+            and not _startup_fast.is_desktop_ssh_backend_argv(argv)
+            and not _s6_supervised_gateway_run(argv)):
         try:
             from hermes_constants import get_default_hermes_root
 
@@ -765,7 +782,9 @@ from hermes_cli.main_platform_setup import (
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
+from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 from hermes_cli.main_dashboard import (
+    _attach_to_host_backend,
     _finalize_update_output,
     _find_stale_dashboard_pids,
     _install_hangup_protection,
@@ -1902,7 +1921,7 @@ cmd_webhook = _forward_command("cmd_webhook", "hermes_cli.webhook", "webhook_com
 cmd_kanban = _forward_command("cmd_kanban", "hermes_cli.kanban", "kanban_command", forward_return=True, doc='Multi-profile collaboration board.')
 cmd_project = _forward_command("cmd_project", "hermes_cli.projects_cmd", "projects_command", forward_return=True, doc='Manage projects (named, multi-folder workspaces).')
 cmd_hooks = _forward_command("cmd_hooks", "hermes_cli.hooks", "hooks_command", doc='Shell-hook inspection and management.')
-cmd_doctor = _forward_command("cmd_doctor", "hermes_cli.doctor", "run_doctor", doc='Check configuration and dependencies.')
+cmd_doctor = _forward_command("cmd_doctor", "hermes_cli.doctor", "run_doctor", forward_return=True, doc='Check configuration and dependencies.')
 cmd_dump = _forward_command("cmd_dump", "hermes_cli.dump", "run_dump", doc='Dump setup summary for support/debugging.')
 cmd_debug = _forward_command("cmd_debug", "hermes_cli.debug", "run_debug", doc='Debug tools (share report, etc.).')
 cmd_skin = _forward_command("cmd_skin", "hermes_cli.skin_cmd", "skin_command", doc='Skin management (list / use / set).')
@@ -2342,6 +2361,19 @@ def _update_preflight_handled(args) -> bool:
         print_update_plan(collect_runtime_inventory())
         return True
 
+    if getattr(args, "list_venv_holders", False):
+        # Read-only twin of the Windows venv-holder refusal (#117246): same scan and classifiers,
+        # machine-readable, exit 3 when holders remain so automation can stop those PIDs and retry.
+        import json
+
+        from hermes_cli.update_cmd_windows import VENV_HOLDERS_EXIT, list_venv_holders
+
+        holders = list_venv_holders()
+        print(json.dumps(holders, indent=2))
+        if holders:
+            sys.exit(VENV_HOLDERS_EXIT)
+        return True
+
     # Image/package-managed admission gate: baked provenance marker first
     # (fail-closed on malformed), then docker/nix/apt heuristics. Records a
     # `refused` receipt and exits 2 (refused-by-contract, distinct from errors).
@@ -2555,14 +2587,24 @@ def _dashboard_sanitize_desktop_env(headless_backend) -> None:
     HERMES_SERVE_HEADLESS=1). A shell inheriting those then running
     `hermes dashboard` would serve the desktop renderer ("Desktop IPC bridge
     is unavailable", #52945) or disable the SPA. Only Electron-packaged
-    WEB_DIST contamination is stripped — caller-managed overrides (dev /
-    custom builds) must still work, and the desktop-spawned backend itself
-    (HERMES_DESKTOP=1) keeps its dist. Headless `serve` re-sets
-    HERMES_SERVE_HEADLESS itself.
+    WEB_DIST contamination is stripped from browser dashboards — caller-managed
+    overrides (dev / custom builds) must still work, while headless `serve`
+    keeps the packaged path used by the Desktop backend. Headless `serve`
+    re-sets HERMES_SERVE_HEADLESS itself.
+
+    The Desktop's legacy fallback spawn (`dashboard --no-open`, taken when the
+    `serve --help` probe times out on a cold host) is not headless yet must keep
+    its packaged dist: it is told apart by the per-spawn
+    HERMES_DASHBOARD_SESSION_TOKEN, which the terminal pane never receives and
+    the terminal tool's env policy strips from agent children.
     """
-    if os.environ.get("HERMES_DESKTOP") != "1":
-        if _is_electron_packaged_web_dist(os.environ.get("HERMES_WEB_DIST", "")):
-            os.environ.pop("HERMES_WEB_DIST", None)
+    desktop_owned_child = _is_desktop_owned_backend()
+    if (
+        not headless_backend
+        and not desktop_owned_child
+        and _is_electron_packaged_web_dist(os.environ.get("HERMES_WEB_DIST", ""))
+    ):
+        os.environ.pop("HERMES_WEB_DIST", None)
     if not headless_backend:
         os.environ.pop("HERMES_SERVE_HEADLESS", None)
 
@@ -2633,21 +2675,27 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # ~350ms `mcp` SDK import, which holds the GIL against the web_server
     # import and delays the READY sentinel; _make_agent's bounded
     # wait_for_mcp_discovery covers a server still connecting at first turn.
-    mcp_discovery_after_bind = headless_backend and os.environ.get("HERMES_DESKTOP") == "1"
-    if not mcp_discovery_after_bind:
-        try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
+    # A standalone (non-Desktop) dashboard may sit idle and unvisited for days
+    # (#58733): it arms discovery instead and the first /api/ws client fires it.
+    desktop = _is_desktop_owned_backend()
+    if headless_backend and desktop:
+        return True
+    try:
+        from hermes_cli.mcp_startup import (
+            defer_background_mcp_discovery,
+            start_background_mcp_discovery,
+        )
 
-            start_background_mcp_discovery(
-                logger=logger,
-                thread_name="dashboard-mcp-discovery",
-            )
-        except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at dashboard startup",
-                exc_info=True,
-            )
-    return mcp_discovery_after_bind
+        if desktop:
+            start_background_mcp_discovery(logger=logger, thread_name="dashboard-mcp-discovery")
+        else:
+            defer_background_mcp_discovery(logger=logger, thread_name="dashboard-mcp-discovery", delay=None)
+    except Exception:
+        logger.debug(
+            "Background MCP tool discovery failed at dashboard startup",
+            exc_info=True,
+        )
+    return False
 
 
 def cmd_dashboard(args):
@@ -2662,6 +2710,7 @@ def cmd_dashboard(args):
     _ssh_owner_nonce = _dashboard_validate_serve_args(args, _headless_backend, _token_file)
     _dashboard_sanitize_desktop_env(_headless_backend)
 
+    _attach_to_host_backend(args, _headless_backend)
     _route_named_profile_dashboard(args, _headless_backend, _ssh_owner_nonce, _token_file)
 
     # Apply the final process/profile policy after dashboard routing, but before

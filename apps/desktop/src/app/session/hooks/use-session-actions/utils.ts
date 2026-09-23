@@ -1,11 +1,19 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  textPart,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
+import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -51,6 +59,13 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import {
+  acknowledgedTranscriptBoundary,
+  conflictingTranscriptIdentity,
+  persistedTurnsEquivalent,
+  transcriptRowIds
+} from './pending-turn-identity'
+
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
 
@@ -78,12 +93,7 @@ function hasStructuralParts(message: ChatMessage): boolean {
  * turn — as opposed to a committed transcript row.
  */
 function isLiveTailRow(message: ChatMessage): boolean {
-  return (
-    message.pending === true ||
-    message.id.startsWith('assistant-stream-') ||
-    message.id.startsWith('inflight-assistant-') ||
-    message.interim === true
-  )
+  return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
 }
 
 /**
@@ -143,11 +153,13 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 // ships one), these fail tsc until someone explicitly classifies it.
 //
 // COMPARED: fields whose change must trigger a re-render (setMessages).
+// Durable identity changes must publish too: view-side refresh reconciliation
+// must see an acknowledgement even when its visible text is unchanged.
 // IGNORED:  fields that are intentionally not compared — display-only metadata
 //           or reference identity the runtime already guarantees.
-//   timestamp  — presentation-only (sort/age display), never affects transcript equality
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
-//   rowId — durable backend identity; stable for a given row, never changes what's painted
+//   serverRowSpan — backend rows the folded message covers; the older-page offset
+//                   accounting reads it, the transcript never paints it
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -157,6 +169,10 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'rowId',
+  'persistedTurn',
+  'durableComplete',
+  'recovered',
   'asyncResult',
   'asyncResultKind',
   'id',
@@ -177,7 +193,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -220,6 +236,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   }
 
   if (aPart.type === 'text' || aPart.type === 'reasoning') {
+    if (aPart.sourceRowId !== bPart.sourceRowId) {
+      return false
+    }
+
     return (aPart as { text: string }).text === (bPart as { text: string }).text
   }
 
@@ -271,7 +291,11 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
+    a.rowId !== b.rowId ||
+    !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
+    a.durableComplete !== b.durableComplete ||
+    a.recovered !== b.recovered ||
     a.pending !== b.pending ||
     a.error !== b.error ||
     // Structural compare — the descriptor arrives as a fresh object per
@@ -324,6 +348,15 @@ export function preserveEquivalentTranscript(current: ChatMessage[], next: ChatM
   return chatMessageArraysEquivalent(current, next) ? current : next
 }
 
+/** Durable history against the local view: role-ordinal pairing, then the
+ *  local pending turn and local assistant errors the DB cannot know about. */
+export function reconcileDurableHistory(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const reconciled = reconcileResumeMessages(messages, previous)
+  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previous)
+
+  return preserveLocalAssistantErrors(withPendingTurn, previous)
+}
+
 export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
@@ -346,7 +379,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
     const previous = previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
-    if (!previous) {
+    if (!previous || conflictingTranscriptIdentity(previous, message)) {
       return message
     }
 
@@ -371,8 +404,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // empty/tool-only hydrated row can share a role ordinal while being
     // different turns, and plain `'' === ''` would pair them (#114543),
     // grafting the cached reasoning/tool parts onto the unrelated row.
-    const sameText =
-      nextText.length > 0 && (nextText === previousVisibleText || nextText === previousText.trim())
+    const sameText = nextText.length > 0 && (nextText === previousVisibleText || nextText === previousText.trim())
 
     // Mid-turn, the authoritative text has advanced past the cached copy by one
     // or more deltas. That is still the same turn, and the cached row holds the
@@ -389,9 +421,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // inherit its reasoning/tool parts (#76444 review / salvage).
     const sameTurn =
       sameText ||
-      (nextText.length > 0 &&
-        previousTrimmed.length > 0 &&
-        isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
+      (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
       (message.role === 'assistant' &&
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
@@ -535,6 +565,52 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
   return merged
 }
 
+/** Text of the response that follows a folded tool round, not the commentary before it. */
+function lastFoldedResponseText(message: ChatMessage): string {
+  let afterTool = false
+  let text = ''
+
+  for (const part of message.parts) {
+    if (part.type === 'tool-call') {
+      afterTool = true
+      text = ''
+
+      continue
+    }
+
+    if (afterTool && part.type === 'text') {
+      text = textWithoutReferenceLines(part.text).trim()
+    }
+  }
+
+  return afterTool ? text : ''
+}
+
+/**
+ * History folds a final answer into the preceding tool-round bubble. A live
+ * stream bubble holding only that answer is the same occurrence, but full-bubble
+ * equality cannot see it.
+ */
+function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessage): boolean {
+  const needle = textWithoutReferenceLines(chatMessageText(live)).trim()
+
+  if (!needle || live.parts.some(part => part.type === 'tool-call')) {
+    return false
+  }
+
+  const lastUser = messages.findLastIndex(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  return messages.slice(lastUser + 1).some(message => {
+    if (message.role !== 'assistant' || isLiveTailReplyId(message.id)) {
+      return false
+    }
+
+    const folded = lastFoldedResponseText(message)
+
+    return folded === needle || isStrictAnswerTextExtension(folded, needle)
+  })
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -543,10 +619,14 @@ export function preserveLocalPendingTurnMessages(
     return nextMessages
   }
 
+  const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
+  const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)
+  const acknowledgedTurn = nextMessages.slice(Math.max(0, acknowledged.storedIndex))
+  const lastStoredRowId = nextMessages.reduce((last, message) => Math.max(last, ...transcriptRowIds(message)), 0)
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
-  for (const message of nextMessages) {
+  for (const message of remainingNext) {
     if (isGatewaySystemMarker(message)) {
       continue
     }
@@ -572,7 +652,7 @@ export function preserveLocalPendingTurnMessages(
   const liveOptimisticUsers = new Set<ChatMessage>()
 
   if (newestOptimisticUser) {
-    for (let index = previousMessages.indexOf(newestOptimisticUser); index >= 0; index -= 1) {
+    for (let index = previousMessages.indexOf(newestOptimisticUser); index > acknowledged.localIndex; index -= 1) {
       const candidate = previousMessages[index]
 
       if (candidate.role === 'user' && candidate.id.startsWith('user-')) {
@@ -593,16 +673,27 @@ export function preserveLocalPendingTurnMessages(
     }
   }
 
-  const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+  const latestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
+  const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
+  let crossedUserBoundary = false
 
-  for (const message of previousMessages) {
-    if (isGatewaySystemMarker(message)) {
+  for (const [index, message] of previousMessages.entries()) {
+    if (index <= acknowledged.localIndex || isGatewaySystemMarker(message)) {
       continue
     }
+
+    crossedUserBoundary ||= message.role === 'user' || message.role === 'system'
+
+    // A second segment of the acknowledged turn can still be folded into its
+    // final row. A new prompt closes that ownership; identical later replies
+    // must not be consumed by the already-acknowledged prefix.
+    const candidates = (crossedUserBoundary ? remainingNext : acknowledgedTurn).filter(
+      candidate => !conflictingTranscriptIdentity(message, candidate)
+    )
 
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
@@ -634,16 +725,37 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    // The submit receipt already proved this row was saved. If the newest
+    // page has advanced beyond it, its absence is pagination, not unsent input.
+    if (isOptimisticUser && message.rowId !== undefined && message.rowId <= lastStoredRowId) {
+      continue
+    }
+
+    // Same for a reply whose completion receipt proved persistence: compaction
+    // can re-insert it under a newer id, so absence here is not loss. #117867
+    if (
+      isPendingAssistant &&
+      message.durableComplete === true &&
+      message.rowId !== undefined &&
+      message.rowId <= lastStoredRowId
+    ) {
+      continue
+    }
+
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&
+      !conflictingTranscriptIdentity(message, latestAuthoritativeUser) &&
       textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
         textWithoutReferenceLines(chatMessageText(message))
     ) {
       continue
     }
 
-    const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+    const ordinalMatch = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+
+    const authoritative =
+      ordinalMatch && !conflictingTranscriptIdentity(message, ordinalMatch) ? ordinalMatch : undefined
 
     // A settled stream row (`pending: false` after message.complete) whose reply
     // the authoritative transcript already carries under its committed id is
@@ -654,7 +766,7 @@ export function preserveLocalPendingTurnMessages(
     if (
       isPendingAssistant &&
       message.pending !== true &&
-      nextMessages.some(
+      candidates.some(
         candidate =>
           candidate.role === 'assistant' &&
           textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
@@ -704,7 +816,7 @@ export function preserveLocalPendingTurnMessages(
     if (isPendingAssistant) {
       const nextText = textWithoutReferenceLines(chatMessageText(message))
 
-      const committedMatch = nextMessages.find(
+      const committedMatch = candidates.find(
         candidate =>
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
@@ -716,7 +828,7 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
 
-      const committedPrefix = nextMessages.find(
+      const committedPrefix = candidates.find(
         candidate =>
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
@@ -735,6 +847,14 @@ export function preserveLocalPendingTurnMessages(
 
         continue
       }
+    }
+
+    if (
+      isPendingAssistant &&
+      previousMessages.indexOf(message) > lastPreviousUser &&
+      durableFoldCoversLiveResponse(candidates, message)
+    ) {
+      continue
     }
 
     preserved.push(message)
@@ -851,6 +971,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     // timeline projection history uses instead of as a user bubble (#112144).
     // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
     const displayKind = projection.inflight?.display_kind
+
     const typed = displayKind
       ? toChatMessages([
           {
@@ -1477,6 +1598,20 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
+
+  // A hidden row (canonical Bot Chat, room plumbing) is unlisted by design:
+  // inserting it into $sessions paints a sidebar row until the next refresh,
+  // and the keep-list then holds it there (#113273). Park it on the off-list
+  // owner atom the draft stubs ride — owner resolution still finds it via
+  // ownerLookupSessionRows, the sidebar never does.
+  if (session.hidden) {
+    setUnlistedSessionOwnerRows(prev => [
+      session,
+      ...prev.filter(existing => (existing._lineage_root_id ?? existing.id) !== lineage)
+    ])
+
+    return
+  }
 
   const prepend = (prev: SessionInfo[]) => [
     session,

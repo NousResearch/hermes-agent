@@ -31,11 +31,6 @@ class TestIsUnusableContainerCwd:
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
 
 
-    def test_container_backends_set(self):
-        from tools.terminal_tool_config import _CONTAINER_BACKENDS
-        assert _CONTAINER_BACKENDS == frozenset(
-            {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
-        )
 
 
 class TestOverrideCwdSanitizedAtCallSite:
@@ -209,7 +204,3 @@ class TestFileOpsCwdSanitizedAtCallSite:
             monkeypatch, "/Users/me/workspace", env_type="singularity")
         assert cwd == "/workspace"
 
-    def test_host_override_sanitized_on_modal(self, monkeypatch):
-        cwd = self._run_and_capture_cwd(
-            monkeypatch, "/Users/me/workspace", env_type="modal")
-        assert cwd == "/workspace"

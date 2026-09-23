@@ -159,8 +159,9 @@ export class JsonRpcGatewayClient {
       createRequestId: this.options.createRequestId,
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
       heartbeatIntervalMs: this.options.heartbeatIntervalMs,
-      // Desktop/web have always counted any inbound frame as liveness; the
-      // TUI (stdio/attach owner) keeps its stricter pong-based contract.
+      // Desktop/web and the TUI alike count any inbound frame as liveness
+      // (#115251): streamed deltas are life; only a silent drop trips the
+      // deadline.
       heartbeatLiveness: 'any-inbound',
       onEvent: event => this.handleEvent(event),
       onHeartbeatFailure: error => this.invalidate(error.message),
@@ -522,7 +523,7 @@ export class JsonRpcGatewayClient {
             continue
           }
 
-          this.dispatchIfNewer(event as GatewayEvent)
+          this.dispatchIfNewer({ ...event, replayed: true } as GatewayEvent)
         }
       }
     } catch {
@@ -584,7 +585,7 @@ export class JsonRpcGatewayClient {
 
     for (const parked of hold.values()) {
       for (const event of parked) {
-        this.dispatchIfNewer(event)
+        this.dispatchIfNewer({ ...event, replayed: true })
       }
     }
   }
@@ -603,7 +604,10 @@ export class JsonRpcGatewayClient {
   }
 
   private dispatchEvent(event: GatewayEvent): void {
-    this.events.dispatch(event)
+    // Tag the frame with the process epoch this socket adopted so a consumer
+    // holding several sockets to one backend can recognise the same event
+    // arriving on each of them; the epoch is per process, not per socket.
+    this.events.dispatch(this.replayEpoch ? { ...event, replayEpoch: this.replayEpoch } : event)
   }
 
   private setState(state: ConnectionState): void {

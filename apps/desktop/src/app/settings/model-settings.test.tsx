@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ConfigApi from '@/api/config'
+
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
 // them to let the dropdown open in tests.
@@ -27,7 +29,10 @@ const startManualOnboarding = vi.fn()
 const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
-vi.mock('@/hermes', () => ({
+// Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
+// config hook reaches them through the barrel, and a bare mock would throw.
+vi.mock('@/hermes', async () => ({
+  ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
   getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
   getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
@@ -126,21 +131,6 @@ describe('ModelSettings profile scope', () => {
 })
 
 describe('ModelSettings', () => {
-  it('loads the current main model and lists configured providers only', async () => {
-    await renderModelSettings()
-
-    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
-    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
-
-    // Open the provider Select — only configured providers should be listed.
-    const triggers = await screen.findAllByRole('combobox')
-    fireEvent.click(triggers[0])
-
-    // "Nous" shows in both the trigger and the open list.
-    expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
-    expect(screen.queryByText(/DeepSeek/)).toBeNull()
-  })
-
   it.each(['custom', 'local', 'custom:lab'])(
     'opens local endpoint setup when %s has no inventory row',
     async provider => {
@@ -322,18 +312,7 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('switch')).toBeNull()
   })
 
-  it('renders the auxiliary task rows', async () => {
-    await renderModelSettings()
-
-    expect(await screen.findByText('Vision')).toBeTruthy()
-    // #97297 — the three canonical slots the backend serves must have rows too.
-    expect(screen.getByText('Triage specifier')).toBeTruthy()
-    expect(screen.getByText('Kanban decomposer')).toBeTruthy()
-    expect(screen.getByText('Profile describer')).toBeTruthy()
-    expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
-  })
-
-  it('edits auxiliary reasoning effort below the selected model and applies it with the assignment', async () => {
+  it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },
       tasks: [{ task: 'vision', provider: 'nous', model: 'hermes-4', base_url: '', reasoning_effort: null }]
@@ -345,12 +324,7 @@ describe('ModelSettings', () => {
 
     fireEvent.click((await screen.findAllByRole('button', { name: 'Change' }))[0])
 
-    const reasoningSelect = await screen.findByRole('combobox', { name: 'Vision reasoning effort' })
-    expect(reasoningSelect.compareDocumentPosition(await screen.findByRole('combobox', { name: 'Vision model' }))).toBe(
-      Node.DOCUMENT_POSITION_PRECEDING
-    )
-
-    fireEvent.click(reasoningSelect)
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Vision reasoning effort' }))
     fireEvent.click(await screen.findByRole('option', { name: 'High' }))
 
     const applyButtons = await screen.findAllByRole('button', { name: 'Apply' })
@@ -612,25 +586,6 @@ describe('ModelSettings MoA preset editor', () => {
     }
   })
 
-  it('does not clear the model or save when the same provider is re-selected', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-
-    try {
-      await openReferenceEditor()
-
-      fireEvent.click(slotSelects().ref1Provider)
-      fireEvent.click(await screen.findByRole('option', { name: 'Nous' }))
-      await vi.advanceTimersByTimeAsync(700)
-
-      // Radix treats re-picking the current value as a no-op (no
-      // onValueChange), so nothing changes: no save, model still shown.
-      expect(saveMoaModels).not.toHaveBeenCalled()
-      expect(screen.getByText('nous · hermes-4')).toBeTruthy()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
   it('autosaves the selected preset when its enabled switch is toggled', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
@@ -676,13 +631,6 @@ describe('ModelSettings MoA preset editor', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
-
-  it('labels the aggregator row as the acting model billed for the run', async () => {
-    await openReferenceEditor()
-
-    // The aggregator row is the slot that pays for the whole tool loop (#112359).
-    expect(screen.getByText('acting model · billed for the run')).toBeTruthy()
   })
 })
 

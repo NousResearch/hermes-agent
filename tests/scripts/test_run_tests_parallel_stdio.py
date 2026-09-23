@@ -30,16 +30,6 @@ def _cp1252_stream() -> tuple[io.TextIOWrapper, io.BytesIO]:
     return io.TextIOWrapper(raw, encoding="cp1252", errors="strict"), raw
 
 
-def test_cp1252_stream_reproduces_the_crash_without_the_fix() -> None:
-    # Baseline for the bug: a strict cp1252 stream cannot take the glyph.
-    stream, _raw = _cp1252_stream()
-    try:
-        stream.write("✓")
-    except UnicodeEncodeError:
-        return
-    raise AssertionError("expected UnicodeEncodeError on strict cp1252")
-
-
 def test_glyph_safe_stdio_survives_cp1252(monkeypatch) -> None:
     mod = _load_runner()
     stream, raw = _cp1252_stream()

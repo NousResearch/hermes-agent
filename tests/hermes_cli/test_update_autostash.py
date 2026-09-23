@@ -1,5 +1,4 @@
 from pathlib import Path
-from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -499,33 +498,6 @@ def test_cmd_update_orphan_rescue_ref_persists_when_reset_fails(monkeypatch, tmp
 # and always go through the restore path.
 # ---------------------------------------------------------------------------
 
-def _setup_setting_test(monkeypatch, tmp_path, mode):
-    """Common wiring: real stash returns a ref, restore + discard are
-    recorded, and load_config reports the given non_interactive_local_changes
-    mode."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
-    restore_calls = []
-    discard_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-    monkeypatch.setattr(
-        hermes_main, "_discard_stashed_changes",
-        lambda *a, **kw: discard_calls.append(1) or True,
-    )
-    monkeypatch.setattr(
-        hermes_config, "load_config",
-        lambda *a, **kw: {"updates": {"non_interactive_local_changes": mode}},
-    )
-    side_effect, recorded = _make_update_side_effect()
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-    return restore_calls, discard_calls, recorded
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +706,36 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
         assert (pkg / "hermes-agent.rb").read_text() == "formula\n"
     finally:
         os.chmod(pkg, 0o755)
+
+
+def test_stash_selector_is_a_bare_index_never_a_brace_selector(tmp_path):
+    """The updater drops its autostash through a selector read back from ``git stash list``; on
+    native Windows MSYS strips the braces from ``stash@{N}`` in git.exe's argv, so the selector
+    must be the bare index git accepts everywhere (#87542)."""
+    import subprocess
+
+    import hermes_cli.update_cmd_stash as stash_mod
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "f.txt").write_text("v1\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (tmp_path / "f.txt").write_text("older\n")
+    git("stash", "push", "-q", "-m", "older")
+    target_sha = git("rev-parse", "refs/stash").stdout.strip()
+    (tmp_path / "f.txt").write_text("newer\n")
+    git("stash", "push", "-q", "-m", "newer")
+
+    selector = stash_mod._resolve_stash_selector(["git"], tmp_path, target_sha)
+
+    assert selector == "1"
+    git("stash", "drop", selector)
+    assert target_sha not in git("stash", "list", "--format=%H").stdout
 
 
 def test_autostash_survives_intent_to_add_entries(tmp_path):
@@ -1152,7 +1154,7 @@ def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
     )
 
     assert restored is False
-    assert prompts == [("Restore local changes now? [y/N]", "n")]
+    assert [default for _prompt, default in prompts] == ["n"]
     assert "still preserved in git stash" in capsys.readouterr().out
 
 

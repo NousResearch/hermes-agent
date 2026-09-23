@@ -41,6 +41,9 @@ MESSAGE_AGENT_TOOL_NAME = "message_agent"
 # Message body cap — generous for real work, small enough that a runaway paste can't
 # turn one DM into a context bomb on the recipient.
 MESSAGE_MAX_CHARS = 16000
+# The delivery process's completion notification IS the reply: size it like a message, plus the
+# runner's header and failure prose, instead of the 2000-char tail a build log gets.
+REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 # A runner owns and removes each DM file; this bounds residual plaintext lifetime if
 # the machine dies between spawn ack and the runner's finally.
 _DM_DIR_NAME = "hermes-dm"
@@ -287,9 +290,10 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
     to drain; a background waiter is spawned immediately so the relayed reply wakes
     the sender through the standard completion-notification path."""
     try:
-        from tools.bot_mode_probe import _handle
+        from tools.bot_mode_probe import _handle, local_taken_forms
         from tools.bot_relay import (
-            EnvelopeRefusedError, enqueue_envelope, read_remote_roster, resolve_remote_target, waiter_command,
+            EnvelopeRefusedError, _target_aliases, enqueue_envelope, read_remote_roster, remote_target_forms,
+            resolve_remote_target, waiter_command,
         )
 
         roster = read_remote_roster(root)
@@ -297,8 +301,9 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         if match is None:
             return None
         if match == "ambiguous":
-            want = raw_target.strip().lstrip("@").lower()
-            forms = ", ".join(f"{r['handle']}@{r['connection_id']}" for r in roster if r["handle"].lower() == want)
+            want = raw_target.strip().lstrip("@").partition("@")[0].lower()
+            forms = ", ".join(form for r, form in zip(roster, remote_target_forms(roster, local_taken_forms(root)))
+                              if want in _target_aliases(r))
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
         try:
             envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me, sender_handle=_handle(me))
@@ -499,15 +504,10 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
-    from tools.bot_live_delivery import read_delivery_result
+    from tools.bot_live_delivery import await_delivery
 
-    deadline = time.monotonic() + _LIVE_WAIT_SECONDS
-    while True:
-        record = read_delivery_result(home, delivery_id)
-        status = record["status"] if record else "ambiguous"
-        if status not in ("queued", "claimed") or time.monotonic() >= deadline:
-            break
-        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+    record = await_delivery(home, delivery_id, _LIVE_WAIT_SECONDS)
+    status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
@@ -639,7 +639,8 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
         from tools.terminal_tool import terminal_tool
 
         raw = terminal_tool(command, background=True, notify_on_complete=True, task_id=task_id,
-                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True)
+                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
+                            _completion_output_chars=REPLY_COMPLETION_CHARS)
         try:
             parsed = json.loads(raw)
         except (ValueError, TypeError):

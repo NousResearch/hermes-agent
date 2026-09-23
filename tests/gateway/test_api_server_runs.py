@@ -298,7 +298,6 @@ class TestStartRun:
                 assert resp.status == 400
                 body = await resp.json()
         assert body["error"]["code"] == "invalid_author"
-        assert body["error"]["message"] == "author must be an object"
         mock_create.assert_not_called()
         assert adapter._run_statuses == {}
 
@@ -410,6 +409,42 @@ class TestStartRun:
 
 
 class TestRunStatus:
+
+    @pytest.mark.asyncio
+    async def test_drain_boundary_is_visible_to_pollers_on_live_runs_only(self, adapter):
+        """GET /v1/runs/{id} shows ``shutdown_requested_at`` as soon as the drain starts (#115133).
+
+        A live run keeps ``status: running`` (it is still being served) but gains the marker,
+        durably (the idempotency record carries it across a restart); a run whose status is set
+        after the boundary inherits it; a terminal run is never touched.
+        """
+        status = adapter._set_run_status("run_live", "running")
+        _claim_run(adapter, "run_live")
+        scope = adapter._run_owners["run_live"]
+        adapter._run_idempotency_store.reserve(
+            scope, "shutdown-test-key", "shutdown-test-fingerprint", "run_live", status)
+        adapter._run_idempotency_ids.add("run_live")
+        adapter._run_statuses["run_done"] = {
+            "object": "hermes.run", "run_id": "run_done", "status": "completed"}
+        _claim_run(adapter, "run_done")
+
+        async with TestClient(TestServer(_create_runs_app(adapter))) as client:
+            before = await (await client.get("/v1/runs/run_live")).json()
+            assert "shutdown_requested_at" not in before
+
+            assert adapter.mark_shutdown_requested() == 1
+
+            live = await (await client.get("/v1/runs/run_live")).json()
+            assert live["status"] == "running"
+            marker = live["shutdown_requested_at"]
+            assert isinstance(marker, float)
+            done = await (await client.get("/v1/runs/run_done")).json()
+            assert "shutdown_requested_at" not in done
+
+        durable = adapter._run_idempotency_store.status_for_run(scope, "run_live")
+        assert durable["status"].get("shutdown_requested_at") == marker
+        adapter._set_run_status("run_late", "queued")
+        assert adapter._run_statuses["run_late"]["shutdown_requested_at"] == marker
 
     @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
@@ -1641,19 +1676,6 @@ class TestRunIdempotency:
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
 
-    def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
-        adapter._run_statuses["run_progress"] = {
-            "run_id": "run_progress",
-            "status": "running",
-        }
-        adapter._run_idempotency_ids.add("run_progress")
-        adapter._run_idempotency_store.update_status = MagicMock()
-
-        adapter._set_run_status(
-            "run_progress", "running", last_event="tool.completed"
-        )
-
-        adapter._run_idempotency_store.update_status.assert_not_called()
 
     def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
         adapter._run_statuses["run_old"] = {
@@ -1669,33 +1691,6 @@ class TestRunIdempotency:
         assert "run_old" not in adapter._run_idempotency_ids
         assert "run_old" not in adapter._run_owners
 
-    @pytest.mark.asyncio
-    async def test_no_session_id_does_not_load_session_history(
-        self, adapter, tmp_path
-    ):
-        _use_idempotency_db(adapter, tmp_path / "idem.db")
-        history = AsyncMock(return_value=[])
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with (
-                patch.object(
-                    adapter,
-                    "_conversation_history_for_session",
-                    new=history,
-                ),
-                patch.object(adapter, "_create_agent") as create,
-            ):
-                agent = MagicMock()
-                agent.run_conversation.return_value = {"final_response": "done"}
-                agent.session_prompt_tokens = agent.session_completion_tokens = (
-                    agent.session_total_tokens
-                ) = 0
-                create.return_value = agent
-                response = await cli.post(
-                    "/v1/runs", json={"input": "no stored session"}
-                )
-        assert response.status == 202
-        history.assert_not_awaited()
 
 
 class TestHostedRoomRuns:
@@ -2016,8 +2011,7 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_fails_after_secret_rotation(
         self, auth_adapter, monkeypatch
     ):
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_room_peer import issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
         monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)

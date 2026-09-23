@@ -246,6 +246,40 @@ def _prune_old_receipts(directory: Path) -> None:
                 stale.unlink()
 
 
+def settle_latest_receipt_fleet(fleet: list[dict[str, Any]], *, discharges) -> bool:
+    """Record on ``latest.json`` that the fleet it still reports as owed now serves the checkout.
+
+    A failed receipt whose plan rows cannot be matched to a live gateway (unknown identity,
+    pre-pull SHAs) keeps ``hermes update`` exiting 1 and every CLI start warning about mixed
+    modules, long after the operator's ``hermes gateway restart`` fixed the fleet (#117051). The
+    caller has just verified every live row is current at the checkout SHA; persisting that
+    matrix as the receipt's post-restart ``fleet`` (and un-flagging ``gateway_restart``) is what
+    lets the stale-runtime readers see the recovery. ``discharges(settled_receipt)`` decides on
+    the in-memory copy; ``latest.json`` is rewritten only when it answers True, so a catch-up
+    that still exits 1 leaves the receipt byte-identical. Only the ``latest.json`` pointer is
+    rewritten; the archived per-run file keeps the original outcome. Never raises.
+    """
+    try:
+        path = _receipt_dir() / "latest.json"
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict):
+            return False
+        receipt["fleet"] = list(fleet)
+        gateway_restart = receipt.get("gateway_restart")
+        if not isinstance(gateway_restart, dict):
+            gateway_restart = {}
+        gateway_restart.update({"incomplete": False, "phase_error": ""})
+        gateway_restart["settled_from_live_fleet_at"] = _utc_now_iso()
+        receipt["gateway_restart"] = gateway_restart
+        if not discharges(receipt):
+            return False
+        path.write_text(json.dumps(receipt, indent=2, default=str), encoding="utf-8")
+        return True
+    except Exception as exc:
+        logger.debug("Could not settle latest update receipt from the live fleet: %s", exc)
+        return False
+
+
 def read_latest_receipt() -> Optional[dict[str, Any]]:
     """Read the most recent update receipt, or None. Never raises."""
     with suppress(Exception):
@@ -294,15 +328,89 @@ def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
         return None
 
 
+_CODE_ROOT_MAX_DEPTH = 8
+
+
+def _code_root_for_path(raw: Any) -> Optional[Path]:
+    """Return the Hermes checkout containing an absolute process path."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    with suppress(Exception):
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            return None
+        for parent in [candidate, *candidate.parents][:_CODE_ROOT_MAX_DEPTH]:
+            if (parent / "hermes_cli" / "main.py").is_file():
+                return parent.resolve()
+    return None
+
+
+def _updater_code_root() -> Optional[Path]:
+    return _code_root_for_path(str(Path(__file__).resolve()))
+
+
+def _gateway_code_root(pid: int, home: Path) -> Optional[Path]:
+    """Resolve the checkout served by a verified live gateway when possible."""
+    # Older gateways cannot publish a new identity field, but their pid-guarded
+    # status record already carries sys.argv (whose first item is the resolved
+    # module path for ``python -m`` launches).
+    with suppress(Exception):
+        from gateway.status import read_runtime_status
+
+        record = read_runtime_status(home / "gateway_state.json") or {}
+        if int(record.get("pid")) == pid:
+            for probe in record.get("argv") or []:
+                root = _code_root_for_path(probe)
+                if root:
+                    return root
+
+    with suppress(Exception):
+        import psutil  # type: ignore
+
+        process = psutil.Process(pid)
+        with suppress(Exception):
+            root = _code_root_for_path((process.environ() or {}).get("VIRTUAL_ENV"))
+            if root:
+                return root
+        probes: list[Any] = []
+        with suppress(Exception):
+            probes.append(process.exe())
+        with suppress(Exception):
+            probes.extend(process.cmdline() or [])
+        for probe in probes:
+            root = _code_root_for_path(probe)
+            if root:
+                return root
+    return None
+
+
+EXTERNAL_STATE = "external"
+# A gateway this updater runs INSIDE that accepted a self-restart request: it is still on the
+# pre-update code by construction and restarts once the updater exits (#100179 / #119597).
+RESTART_PENDING_STATE = "restart_pending"
+
+
+def row_is_external(row: Any) -> bool:
+    """Whether a fleet row serves a checkout this update did not touch."""
+    return isinstance(row, dict) and row.get("state") == EXTERNAL_STATE
+
+
 def _fleet_row(
     profile: str, pid: int, code_sha: Any, code_version: Any, expected_sha: Any,
-    state: str = "unknown", served_profiles: Any = None,
+    state: str = "unknown", code_root: Optional[Path] = None,
+    expected_root: Optional[Path] = None, served_profiles: Any = None,
+    self_restart_pending: Optional[set] = None,
 ) -> dict[str, Any]:
+    if state == "unknown" and code_root and expected_root and code_root != expected_root:
+        state = EXTERNAL_STATE
     if state == "unknown" and code_sha and expected_sha:
         state = "current" if str(code_sha) == str(expected_sha) else "stale"
+    if state == "stale" and self_restart_pending and pid in self_restart_pending:
+        state = RESTART_PENDING_STATE
     row = {
         "profile": profile, "pid": pid, "code_sha": str(code_sha) if code_sha else None,
         "code_version": code_version, "state": state,
+        "code_root": str(code_root) if code_root else None,
     }
     # A live, identity-verified multiplexer represents every profile in this
     # list. Keep the field only when its shape is usable: callers use it to
@@ -319,8 +427,16 @@ def _fleet_row(
 _NOT_EXPECTED_STATES = {"stopped", "startup_failed"}
 
 
-def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> list[dict[str, Any]]:
+def collect_fleet_versions(
+    *, pre_restart_pids: Optional[list[int]] = None, self_restart_pending: Optional[set] = None,
+) -> list[dict[str, Any]]:
     """Snapshot every profile's gateway code identity vs. the current tree.
+
+    ``self_restart_pending`` — pids of gateways that are ancestors of this updater and accepted a
+    self-restart request (cron update inside the gateway tree, #100179). They can only restart after
+    this process exits, so their pre-update ``code_sha`` is expected: such a row is
+    ``restart_pending`` instead of ``stale`` and does not fail the matrix (#119597). Every other
+    live gateway on the old sha keeps its ``stale`` verdict.
 
     Rollout safety: ``down`` requires membership in ``pre_restart_pids`` — a stale state file from a
     long-dead gateway (machine reboot, manual kill weeks ago) must NOT fail every future update.
@@ -338,8 +454,10 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
     verification gap, #88848/#74973 class).
     """
     _pre_restart = {int(p) for p in (pre_restart_pids or []) if isinstance(p, int)}
+    _pending = {int(p) for p in (self_restart_pending or ()) if isinstance(p, int)}
     results: list[dict[str, Any]] = []
     expected_sha = _code_identity(refresh=True).get("sha")
+    expected_root = _updater_code_root()
     try:
         from gateway.status import (
             live_gateway_pid_for_home,
@@ -354,6 +472,8 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
                 row = _fleet_row(
                     profile, pid, identity.get("code_sha"), identity.get("code_version"), expected_sha,
                     served_profiles=identity.get("served_profiles"),
+                    code_root=_gateway_code_root(pid, home), expected_root=expected_root,
+                    self_restart_pending=_pending,
                 )
                 results.append({**row, "source": "socket"})
                 continue
@@ -372,6 +492,8 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
                     _fleet_row(
                         profile, pid, record.get("code_sha"), record.get("code_version"), expected_sha,
                         served_profiles=record.get("served_profiles"),
+                        code_root=_gateway_code_root(pid, home), expected_root=expected_root,
+                        self_restart_pending=_pending,
                     )
                 )
                 continue
@@ -402,6 +524,11 @@ _FLEET_ROW_LINES = {
     "current": "  ✓ {profile} (pid {pid}) @ {short} — up to date",
     "stale": "  ✗ {profile} (pid {pid}) @ {short} — STALE (pre-update code)",
     "down": "  ✗ {profile} — DOWN (gateway was running before the update; pid {pid} is gone and nothing replaced it)",
+    "external": "  ◆ {profile} (pid {pid}) @ {short} — separate checkout, not updated by this run",
+    RESTART_PENDING_STATE: (
+        "  ↻ {profile} (pid {pid}) @ {short} — restart pending (deferred until this process exits;"
+        " the update runs inside this gateway)"
+    ),
 }
 _FLEET_ROW_UNKNOWN = "  ? {profile} (pid {pid}) — version unknown (gateway predates version stamping; restart to enable)"
 # A gateway pid the pre-update snapshot did not know that had not published its code identity when
@@ -421,20 +548,33 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
     provably down (killed by the restart phase, nothing came back), so the caller can escalate.
     ``unknown`` entries are reported but do NOT fail the update: gateways started before the
     code-identity stamp existed have no sha to compare, and failing them would be a false-positive
-    storm.
+    storm. ``restart_pending`` entries (the gateway this updater runs inside, self-restart
+    accepted) are on the old code by construction and do not fail it either (#119597).
     """
     if not fleet:
         return False
     print()
     print("Fleet version check:")
     states = set()
+    external_roots: list[str] = []
     for entry in fleet:
         sha = entry.get("code_sha")
         states.add(entry.get("state"))
+        if row_is_external(entry) and entry.get("code_root"):
+            external_roots.append(f"{entry.get('profile')}: {entry.get('code_root')}")
         fallback = _FLEET_ROW_IDENTITY_PENDING if entry.get("identity_pending") else _FLEET_ROW_UNKNOWN
         print(_FLEET_ROW_LINES.get(entry.get("state"), fallback).format(
             profile=entry.get("profile"), pid=entry.get("pid"), short=sha[:8] if isinstance(sha, str) and sha else "?",
         ))
+    if external_roots:
+        print()
+        print("  ℹ These profiles run their own checkout and are updated separately:")
+        for line in external_roots:
+            print(f"      {line}")
+    if RESTART_PENDING_STATE in states:
+        print()
+        print("  ℹ A restart-pending gateway picks up the new code as soon as this update exits;")
+        print("    verify afterwards with `hermes gateway status`.")
     stale_or_down = sum(1 for entry in fleet if entry.get("state") in ("stale", "down"))
     if stale_or_down:
         print()

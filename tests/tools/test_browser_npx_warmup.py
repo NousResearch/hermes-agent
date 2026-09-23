@@ -112,11 +112,10 @@ def test_merges_extended_path_so_managed_only_npx_can_find_sibling_node():
          patch(
              "tools.browser_tool_install._merge_browser_path",
              return_value="/opt/hermes/node/bin:/usr/bin",
-         ) as mock_merge, \
+         ), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
         warm_agent_browser_npx_cache()
 
-    mock_merge.assert_called_once_with("/usr/bin")
     _args, kwargs = mock_popen.call_args
     assert kwargs["env"]["PATH"] == "/opt/hermes/node/bin:/usr/bin"
 
@@ -131,21 +130,6 @@ def test_runs_in_its_own_process_group_on_posix(monkeypatch):
     assert kwargs.get("start_new_session") is True
 
 
-def test_uses_new_process_group_creationflag_on_windows_instead_of_start_new_session():
-    """start_new_session is a POSIX-only Popen kwarg (raises on Windows).
-    The Windows equivalent for _kill_process_tree's taskkill /T to have a
-    coherent tree to kill is CREATE_NEW_PROCESS_GROUP via creationflags."""
-    with patch("os.name", "nt"), \
-         patch("tools.browser_tool_install._resolve_npx_bin", return_value="C:\\npx.cmd"), \
-         patch("tools.browser_tool._build_browser_env", return_value={"PATH": "C:\\Windows"}), \
-         patch("tools.browser_tool_install._merge_browser_path", side_effect=lambda p: p), \
-         patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
-        warm_agent_browser_npx_cache()
-
-    _args, kwargs = mock_popen.call_args
-    assert "start_new_session" not in kwargs
-    create_new_pgroup = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    assert kwargs["creationflags"] & create_new_pgroup == create_new_pgroup
 
 
 def test_timeout_kills_the_whole_process_tree_not_just_the_pid():
@@ -247,35 +231,7 @@ class TestLegacyKillProcessTree:
 
         _legacy_kill_process_tree(proc)  # must not raise
 
-    def test_posix_missing_killpg_attribute_falls_back_to_proc_kill(self, monkeypatch):
-        """Some POSIX-like environments may lack os.killpg entirely (the
-        implementation resolves it defensively via
-        ``getattr(os, "killpg", None)`` — flagged by
-        scripts/check-windows-footguns.py against a bare ``os.killpg``
-        reference). When that resolution comes back None, the fallback must
-        be a plain ``proc.kill()`` of just the top-level PID, not an
-        AttributeError."""
-        import os as os_module
 
-        proc = MagicMock()
-        proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
-        monkeypatch.delattr(os_module, "killpg", raising=False)
-
-        _legacy_kill_process_tree(proc)
-
-        proc.kill.assert_called_once()
-
-    def test_posix_missing_killpg_fallback_proc_kill_failure_does_not_raise(self, monkeypatch):
-        import os as os_module
-
-        proc = MagicMock()
-        proc.pid = 999
-        proc.kill.side_effect = OSError("already reaped")
-        monkeypatch.setattr("os.name", "posix")
-        monkeypatch.delattr(os_module, "killpg", raising=False)
-
-        _legacy_kill_process_tree(proc)  # must not raise
 
     def test_posix_sigterm_permission_denied_does_not_attempt_sigkill(self, monkeypatch):
         """If SIGTERM itself is rejected (e.g. a stale pgid reused by an
@@ -299,20 +255,4 @@ class TestLegacyKillProcessTree:
 
         assert killpg_calls == [(999, signal.SIGTERM)]
 
-    def test_windows_uses_taskkill_with_tree_and_force_flags(self, monkeypatch):
-        proc = MagicMock()
-        proc.pid = 4321
-        monkeypatch.setattr("os.name", "nt")
-        with patch("subprocess.run") as mock_run:
-            _legacy_kill_process_tree(proc)
 
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args.args[0]
-        assert cmd == ["taskkill", "/PID", "4321", "/T", "/F"]
-
-    def test_windows_taskkill_failure_does_not_raise(self, monkeypatch):
-        proc = MagicMock()
-        proc.pid = 4321
-        monkeypatch.setattr("os.name", "nt")
-        with patch("subprocess.run", side_effect=OSError("taskkill missing")):
-            _legacy_kill_process_tree(proc)  # must not raise

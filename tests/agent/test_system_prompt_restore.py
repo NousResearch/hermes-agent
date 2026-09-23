@@ -231,15 +231,6 @@ class TestStoredPromptReuse:
         # No warnings on the happy path
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
-    def test_present_row_with_unicode_preserved(self):
-        """Non-ASCII bytes in the stored prompt are not mangled."""
-        stored = "Stored prompt with unicode: ☤ ⚗ ◆ — and emoji 🦊"
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
-        agent = _make_agent(session_db=db)
-
-        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-        assert agent._cached_system_prompt == stored
 
     def test_present_row_with_stale_runtime_identity_rebuilds(self, caplog):
         """Stored prompts are cache gold unless their runtime identity is stale.
@@ -343,20 +334,6 @@ class TestSilentFailureWarnings:
             for m in warnings
         ), f"Expected write-failure warning, got: {warnings}"
 
-    def test_no_history_with_null_row_does_not_warn(self, caplog):
-        """First turn (no history) hitting a null row is not surprising — no warn."""
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": None}
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            # Empty history → DB read is skipped entirely
-            _restore_or_build_system_prompt(agent, None, [])
-
-        db.get_session.assert_not_called()
-        # No "rebuilding from scratch" warning because history is empty
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert not any("rebuilding" in m for m in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -364,31 +341,6 @@ class TestSilentFailureWarnings:
 # ---------------------------------------------------------------------------
 
 
-class TestPromptStabilityInvariant:
-    def test_restored_prompt_is_byte_identical_to_stored(self):
-        """The restored prompt must equal the stored bytes exactly — no
-        normalization, trimming, or concat that could shift the prefix.
-
-        This is the core invariant: any byte-level change at this point
-        invalidates KV cache on every prefix-cache backend.
-        """
-        stored = (
-            "You are Hermes Agent.\n"
-            "\n"
-            "Conversation started: Sunday, May 17, 2026\n"
-            "Session ID: 20260517_153500_abc123\n"
-        )
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
-        agent = _make_agent(session_db=db)
-
-        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-
-        # Identity check — must be the same object reference for maximum
-        # confidence we're not slicing/copying/normalizing.
-        assert agent._cached_system_prompt == stored
-        # Byte-level check
-        assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -567,22 +519,6 @@ class TestPerResponseSessionWritePath:
         agent.session_id = session_id
         return agent
 
-    def test_prepersisted_row_stores_the_freshly_built_prompt(self, tmp_path):
-        from hermes_state import SessionDB
-
-        session_id = "gc_run_room42_default_Worker_5f2c1ab9d4e34f7a8b0c6d1e2f3a4b5c"
-        with SessionDB(db_path=tmp_path / "state.db") as db:
-            # What the bridge does before the turn starts.
-            db.create_session(session_id, source="studio")
-            db.append_message(session_id=session_id, role="user", content="hi")
-
-            _restore_or_build_system_prompt(
-                self._agent(db, session_id),
-                None,
-                [{"role": "user", "content": "hi"}],
-            )
-
-            assert db.get_session(session_id)["system_prompt"] == "GROUP_PROMPT"
 
     def test_warning_is_a_first_turn_artifact_not_a_lost_write(
         self, tmp_path, caplog

@@ -14,22 +14,24 @@ import { quarantineHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
+import { readPersistedHandoff } from '@/components/onboarding-chat/persisted-handoff'
 import {
   $handoffError,
   $setupHandoff,
+  $setupSession,
   firstTaskTitle,
   guideHandoffReceiptKey,
   parseHandoffPlan,
   readGuideHandoffReceipt,
   requestSetupHandoff,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
 import { answeredAfter } from '@/lib/chat-messages/parts'
 import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
+import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
@@ -122,6 +124,8 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const brief = (attrs.brief ?? '').trim().slice(0, 240)
   const plan = parseHandoffPlan(attrs.plan)
   const state = useStore($setupHandoff)
+  // `locked` follows this text part; a later part (a tool call, reasoning) settles it while the reply still runs.
+  const replyRunning = useAuiState(s => s.message.status?.type === 'running')
 
   const receipt = useMemo(() => {
     try {
@@ -138,22 +142,33 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const completed = receipt.completed
 
   useEffect(() => {
-    if (!task || !brief || locked || !storedId || !runtimeId || $setupHandoff.get() || completed) {
+    if (!task || !brief || locked || replyRunning || !storedId || !runtimeId || $setupHandoff.get() || completed) {
       return
     }
 
     let cancelled = false
     void resolveSessionOwner(storedId)
-      .then(owner => {
+      .then(async owner => {
         assertSessionOwnerResolved(owner, { method: 'onboarding.handoff', sessionId: storedId })
 
+        const connectionId = isSessionOwnerRoute(owner) ? owner.connectionId : null
+
+        const profile = isSessionOwnerRoute(owner)
+          ? owner.profile
+          : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
+
+        // An unreachable history keeps the rendered attrs: today's behaviour, never a stalled handoff.
+        const persisted = await readPersistedHandoff(connectionId, profile, runtimeId).catch(() => null)
+        const persistedTask = (persisted?.task ?? '').trim().slice(0, 60)
+        const persistedBrief = (persisted?.brief ?? '').trim().slice(0, 240)
+
         if (!cancelled) {
-          requestSetupHandoff(task, brief, plan, {
-            storedId,
-            runtimeId,
-            connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
-          })
+          requestSetupHandoff(
+            persistedTask || task,
+            persistedBrief || brief,
+            persisted ? parseHandoffPlan(persisted.plan) : plan,
+            { storedId, runtimeId, connectionId, profile }
+          )
         }
       })
       .catch(error => {
@@ -166,7 +181,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
     return () => {
       cancelled = true
     }
-  }, [brief, locked, plan, task, storedId, runtimeId, completed])
+  }, [brief, locked, plan, replyRunning, task, storedId, runtimeId, completed])
 
   if (!task || !brief) {
     return null
@@ -195,7 +210,9 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+            profile: isSessionOwnerRoute(owner)
+              ? owner.profile
+              : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
           }
         })
       }

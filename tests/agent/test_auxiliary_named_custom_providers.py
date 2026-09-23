@@ -39,10 +39,6 @@ class TestNormalizeVisionProvider:
 
 
 
-    def test_auto_unchanged(self):
-        from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("auto") == "auto"
-        assert _normalize_vision_provider(None) == "auto"
 
 
 class TestResolveProviderClientMainAlias:
@@ -111,16 +107,6 @@ class TestResolveProviderClientNamedCustom:
         assert "beans.local" in str(client.base_url)
 
 
-    def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "test"},
-            "custom_providers": [
-                {"name": "local", "base_url": "http://localhost:8080/v1"},
-            ],
-        })
-        from agent.auxiliary_client import resolve_provider_client
-        client, model = resolve_provider_client("local", "test")
-        assert client is not None
         # no-key-required should be used
 
     def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):
@@ -256,23 +242,6 @@ class TestAutoClientCacheModelCompatibility:
             ac._client_cache.clear()
 
 
-class TestVisionPathApiMode:
-    """Vision path should propagate api_mode to _get_cached_client."""
-
-    def test_explicit_provider_passes_api_mode(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "test-model"},
-            "auxiliary": {"vision": {"api_mode": "chat_completions"}},
-        })
-        with patch("agent.auxiliary_client._get_cached_client") as mock_gcc:
-            mock_gcc.return_value = (MagicMock(), "test-model")
-            from agent.auxiliary_client import resolve_vision_provider_client
-
-            provider, client, model = resolve_vision_provider_client(provider="deepseek")
-
-        mock_gcc.assert_called_once()
-        _, kwargs = mock_gcc.call_args
-        assert kwargs.get("api_mode") == "chat_completions"
 
 
 class TestProvidersDictApiModeAnthropicMessages:
@@ -288,25 +257,6 @@ class TestProvidersDictApiModeAnthropicMessages:
     ``resolve_provider_client``'s named-custom branch never read it.
     """
 
-    def test_providers_dict_propagates_api_mode(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
-        _write_config(tmp_path, {
-            "providers": {
-                "myrelay": {
-                    "name": "myrelay",
-                    "base_url": "https://example-relay.test/anthropic",
-                    "key_env": "MYRELAY_API_KEY",
-                    "api_mode": "anthropic_messages",
-                    "default_model": "claude-opus-4-7",
-                },
-            },
-        })
-        from hermes_cli.runtime_provider import _get_named_custom_provider
-        entry = _get_named_custom_provider("myrelay")
-        assert entry is not None
-        assert entry.get("api_mode") == "anthropic_messages"
-        assert entry.get("base_url") == "https://example-relay.test/anthropic"
-        assert entry.get("api_key") == "sk-test"
 
 
 

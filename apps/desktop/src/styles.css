@@ -1934,22 +1934,18 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* ── Composer fill — ONE var painted by the surface AND anything docked to it
    (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+   `background: var(--composer-fill)`, so every state matches by construction. */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -3472,8 +3468,7 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* The composer surface paints TWO layers: the surface itself, plus an
-   `absolute inset-0 -z-10` fill+glass div behind it (composerFill /
-   composerSurfaceGlass). Two stacked fills read as a box inside a box, so the
+   `absolute inset-0 -z-10` fill div behind it (composerInputBacking). Two stacked fills read as a box inside a box, so the
    backing layer goes and the surface carries the single fill. */
 [data-hud-shell] [data-slot='composer-surface'] > .pointer-events-none.absolute.inset-0 {
   display: none !important;

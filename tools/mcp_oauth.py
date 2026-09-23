@@ -1019,6 +1019,21 @@ def token_request_user_agent(cfg: dict) -> str | None:
     return ua.strip() if isinstance(ua, str) and ua.strip() else None
 
 
+def login_connect_timeout(config: dict) -> float:
+    """Connect bound for an interactive OAuth login probe (CLI ``hermes mcp login``, dashboard and
+    Desktop re-auth): the server's ``connect_timeout`` or its ``oauth.timeout`` callback window
+    (default 300 s) plus 15 s headroom for the token exchange, whichever is longer. A fixed 315 s
+    floor here made raising ``oauth.timeout`` alone a no-op — the probe timed out first (#116278)."""
+    def _seconds(value, default: float) -> float:
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return default
+    oauth_cfg = config.get("oauth") or {}
+    return max(_seconds(config.get("connect_timeout"), 0.0),
+               _seconds(oauth_cfg.get("timeout"), 300.0) + 15.0)
+
+
 def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = None) -> int:
     """Resolve the callback port into ``cfg['_resolved_port']`` (0 = non-loopback URI). Precedence:
     dashboard flow / cached https redirect URI → CIMD pinned port (sets ``cfg['_cimd_url']``) →

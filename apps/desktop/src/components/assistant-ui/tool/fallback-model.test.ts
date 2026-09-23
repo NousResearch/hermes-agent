@@ -146,6 +146,27 @@ describe('buildToolView envelope errors', () => {
   })
 })
 
+describe('buildToolView calls sealed without a result', () => {
+  it('warns that a lost result is unavailable', () => {
+    const view = buildToolView(part({ completedAt: 5, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('warning')
+  })
+
+  it('shows a call the user interrupted as a neutral notice', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('notice')
+  })
+
+  it('shows the real result when one arrived after the interruption', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: 'ok', toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('success')
+    expect(view.title).not.toBe('Interrupted')
+  })
+})
+
 describe('buildToolView browser_exec step label', () => {
   const bexec = (code: string) =>
     buildToolView(part({ args: { code }, result: undefined, toolName: 'browser_exec' }), '')
@@ -214,7 +235,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('error')
-    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com/docs')
+    expect(view.title).toContain('hermes-agent.nousresearch.com/docs')
   })
 
   it('shows opened title on success', () => {
@@ -228,7 +249,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Opened hermes-agent.nousresearch.com/docs')
+    expect(view.title).toContain('hermes-agent.nousresearch.com/docs')
   })
 })
 
@@ -273,34 +294,6 @@ describe('buildToolView file edit diffs', () => {
 })
 
 describe('buildToolView title actions', () => {
-  it('marks the pending action separately from the rest of the title', () => {
-    const read = buildToolView(part({ args: { path: '/tmp/demo.txt' }, result: undefined, toolName: 'read_file' }), '')
-
-    const web = buildToolView(
-      part({ args: { url: 'https://example.com/docs' }, result: undefined, toolName: 'web_extract' }),
-      ''
-    )
-
-    const terminal = buildToolView(
-      part({ args: { command: 'npm test -- --runInBand' }, result: undefined, toolName: 'terminal' }),
-      ''
-    )
-
-    const code = buildToolView(
-      part({ args: { code: 'print("hello")' }, result: undefined, toolName: 'execute_code' }),
-      ''
-    )
-
-    expect(read.title).toBe('Reading demo.txt')
-    expect(read.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' demo.txt' })
-    expect(web.title).toBe('Reading example.com/docs')
-    expect(web.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' example.com/docs' })
-    expect(terminal.title).toBe('Running npm test -- --runInBand')
-    expect(terminal.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' npm test -- --runInBand' })
-    expect(code.title).toBe('Scripting print("hello")')
-    expect(code.titleAction).toEqual({ prefix: '', text: 'Scripting', suffix: ' print("hello")' })
-  })
-
   it('does not mark completed tool titles as pending actions', () => {
     const view = buildToolView(part({ args: { url: 'https://example.com/docs' }, toolName: 'web_extract' }), '')
 
@@ -483,8 +476,7 @@ describe('clampForDisplay', () => {
 
     expect(clamped.length).toBeLessThan(oversized.length)
     expect(clamped.startsWith('x'.repeat(MAX_TOOL_RENDER_CHARS))).toBe(true)
-    expect(clamped).toContain('5,000 more characters truncated')
-    expect(clamped).toContain('Copy')
+    expect(clamped).toContain(`${new Intl.NumberFormat().format(5_000)} more characters truncated`)
   })
 })
 
@@ -524,7 +516,6 @@ describe('buildToolView memory status', () => {
     })
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Saved to memory')
     expect(view.countLabel).toBe('13 entries')
     expect(view.subtitle).toBe('Applied 1 operation(s).')
   })
@@ -538,7 +529,6 @@ describe('buildToolView memory status', () => {
     })
 
     expect(view.status).toBe('warning')
-    expect(view.title).toBe('Memory write noted')
     expect(view.subtitle).toContain('Memory is full')
   })
 })

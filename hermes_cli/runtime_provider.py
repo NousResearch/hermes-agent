@@ -130,9 +130,13 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
 def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode from config (None if invalid). Legacy/alias spellings (``openai``,
     ``anthropic``, ``responses``, …) are canonicalized first so old configs keep their transport
-    instead of silently falling through to hostname-based detection."""
+    instead of silently falling through to hostname-based detection. A mode with a registered
+    transport (a provider plugin's own dialect) is valid too."""
     normalized = _config_mod._canonical_api_mode(raw).lower() if isinstance(raw, str) else ""
-    return normalized if normalized in _VALID_API_MODES else None
+    if not normalized:
+        return None
+    from agent.transports import registered_api_modes
+    return normalized if normalized in _VALID_API_MODES or normalized in registered_api_modes() else None
 
 
 def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
@@ -189,11 +193,20 @@ def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> 
     return configured_mode or detected_mode or "chat_completions"
 
 
+def _same_registered_provider(provider: str, configured_provider: str) -> bool:
+    """Profile aliases share an auth registry ID; unrelated routes must stay distinct."""
+    if provider == configured_provider:
+        return True
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    configured = PROVIDER_REGISTRY.get(configured_provider)
+    return bool(pconfig and configured and pconfig.id == configured.id)
+
+
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
     """Whether a persisted api_mode may be honored for ``provider`` — only when the config's
     provider matches (or none is recorded), so a stale mode never leaks across a switch."""
     p, c = (provider or "").strip().lower(), (configured_provider or "").strip().lower()
-    return not c or (c == "custom" or c.startswith("custom:") if p == "custom" else c == p)
+    return not c or (c == "custom" or c.startswith("custom:") if p == "custom" else _same_registered_provider(p, c))
 
 
 def _configured_api_mode(provider: str, model_cfg: Dict[str, Any]) -> Optional[str]:
@@ -301,7 +314,21 @@ def _config_base_url_for_provider(model_cfg: Dict[str, Any], provider: str) -> s
     configured_provider = _cfg_provider(model_cfg)
     if provider == "actual":
         configured_provider = _models.normalize_provider(configured_provider)
-    return str(model_cfg.get("base_url") or "").strip().rstrip("/") if configured_provider == provider else ""
+    return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
+
+
+def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:
+    """True when ``base_url`` is another built-in provider's canonical endpoint, not ``provider``'s.
+
+    A persisted session route that pairs one provider with another's endpoint is left over from a
+    switch that kept the old URL (openai-codex + the Nous Portal URL sent the Codex slug to the Portal).
+    Only registered providers are judged: a custom or proxy URL is never another provider's canonical one.
+    """
+    pconfig = PROVIDER_REGISTRY.get(str(provider or "").strip().lower())
+    url = str(base_url or "").strip().rstrip("/")
+    if pconfig is None or not url or url == (pconfig.inference_base_url or "").rstrip("/"):
+        return False
+    return any(url == (other.inference_base_url or "").rstrip("/") for other in PROVIDER_REGISTRY.values())
 
 
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
@@ -522,11 +549,11 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             api_mode = _parse_api_mode(model_cfg.get("api_mode")) or api_mode
         api_mode = _azure_inferred_api_mode(effective_model, api_mode)
         return api_mode, (re.sub(r"/v1/?$", "", base_url) if api_mode == "anthropic_messages" else base_url)
-    # Honour model.base_url only when the pool entry carries no explicit base_url (i.e. it fell
-    # back to the registry default). Env var overrides win.
+    # Missing and registry-default endpoints may use this provider's configured URL.
+    # An explicit per-credential endpoint remains authoritative.
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/"):
-        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+    if pconfig and (not base_url or base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")):
+        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url or pconfig.inference_base_url
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=True), base_url
 
 
@@ -577,6 +604,27 @@ def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str
     return entry, pool_api_key
 
 
+def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
+    """Exchange a copilot pool entry that still carries the RAW GitHub token.
+
+    The seeder skips the exchange while copilot is merely discovered (ambient gh login, not in
+    config); here copilot IS the runtime target (`/model copilot/… --session`, `--provider copilot`,
+    delegation/cron overrides), and a raw token routes to the language-server integrator whose
+    allowlist omits enterprise-only models (400 model_not_available_for_integrator)."""
+    from hermes_cli.copilot_auth import get_copilot_api_token, validate_copilot_token
+    if not pool_api_key or not validate_copilot_token(pool_api_key)[0]:
+        return pool_api_key  # already an exchanged API token
+    api_token, enterprise_base_url = get_copilot_api_token(pool_api_key)
+    if api_token == pool_api_key and not enterprise_base_url:
+        from agent.credential_pool import _warn_copilot_raw_degradation_once
+        _warn_copilot_raw_degradation_once(pool_api_key)
+        return pool_api_key
+    entry.access_token = api_token
+    if enterprise_base_url:
+        entry.base_url = enterprise_base_url
+    return api_token
+
+
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[Dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
@@ -594,6 +642,10 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
     pool_api_key = _pool_entry_api_key(entry)
     if provider == "nous":
         entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
+    elif provider == "copilot":
+        pool_api_key = _exchange_copilot_pool_entry(entry, pool_api_key)
+    if not has_usable_secret(pool_api_key):
+        return None
     if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
                                                 model_cfg=model_cfg, pool=pool, target_model=target_model)
@@ -1069,7 +1121,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth import AuthError, primary_failure_wording
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
@@ -1098,10 +1150,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             runtime["provider"] = effective_runtime_provider(entry, runtime)
             # A rate-limit/quota cap is transient (credentials are fine, re-auth cannot help); the log must not
             # mislabel it as an auth failure (#32790).
-            if is_rate_limited_auth_error(primary_exc):
-                logger.warning("Primary provider rate-limited (429): %s. Falling back to %s/%s",
-                               primary_exc, provider, model)
-            else:
-                logger.warning("Primary provider auth failed (%s). Falling back to %s/%s", primary_exc, provider, model)
+            logger.warning("Primary provider %s (%s). Falling back to %s/%s",
+                           primary_failure_wording(primary_exc)[0], primary_exc, provider, model)
             return runtime, entry
         raise primary_exc

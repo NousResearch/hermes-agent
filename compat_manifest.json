@@ -5470,12 +5470,6 @@
   },
   {
    "facade": "hermes_cli.web_server",
-   "name": "build_cron_model_impact",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.config"
-  },
-  {
-   "facade": "hermes_cli.web_server",
    "name": "bulk_delete_sessions_endpoint",
    "kind": "moved-lazy",
    "target": "hermes_cli.web_routers.sessions"
@@ -6685,12 +6679,6 @@
    "name": "reset_memory",
    "kind": "moved-lazy",
    "target": "hermes_cli.web_routers.ops"
-  },
-  {
-   "facade": "hermes_cli.web_server",
-   "name": "resolve_cron_model_drift_defaults",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.config"
   },
   {
    "facade": "hermes_cli.web_server",
@@ -7921,18 +7909,6 @@
    "name": "save_url_image",
    "kind": "moved-lazy",
    "target": "agent.image_gen_provider"
-  },
-  {
-   "facade": "plugins.memory.hindsight",
-   "name": "dataclass",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "plugins.memory.hindsight",
-   "name": "importlib",
-   "kind": "import",
-   "target": "importlib"
   },
   {
    "facade": "plugins.memory.honcho",

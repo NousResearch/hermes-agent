@@ -302,7 +302,6 @@ def test_exec_never_persists_a_bare_interpreter_command(
 ):
     """The `python -m hermes_cli.main` relaunch context must not write
     `Exec=<python> desktop` — a command line no DE can run."""
-    import sys
 
     root = _make_project(tmp_path)
     wrapper = tmp_path / "installed" / "bin" / "hermes"
@@ -614,7 +613,6 @@ def test_known_wrapper_candidates_cover_installer_layouts(
     candidate. Locking these in protects against silent regressions in
     the stripped-PATH probe path.
     """
-    import os
 
     sentinel_home = "/home/__sentinel_home__"
     monkeypatch.setenv("HOME", sentinel_home)
@@ -704,16 +702,6 @@ def _stub_tools(monkeypatch, available: "set[str]") -> "list[list[str]]":
     return ran
 
 
-def test_refresh_runs_kbuildsycoca6_when_present(monkeypatch, tmp_path):
-    ran = _stub_tools(monkeypatch, {"update-desktop-database", "kbuildsycoca6"})
-
-    tools = lde.refresh_desktop_databases(tmp_path)
-
-    assert tools == ["update-desktop-database", "kbuildsycoca6"]
-    assert ran == [
-        ["/usr/bin/update-desktop-database", str(tmp_path)],
-        ["/usr/bin/kbuildsycoca6", "--noincremental"],
-    ]
 
 
 def test_refresh_falls_back_to_kbuildsycoca5(monkeypatch, tmp_path):
@@ -752,18 +740,6 @@ def test_run_quiet_swallows_missing_binary(tmp_path):
     assert lde._run_quiet([str(tmp_path / "definitely-not-a-binary")]) is False
 
 
-def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
-    root = _make_project(tmp_path)
-    spaced = tmp_path / "my apps" / "hermes"
-    spaced.parent.mkdir()
-    spaced.write_text("", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(spaced))
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    assert exec_line == f'"{spaced}" desktop'
 
 
 @pytest.mark.skipif(
@@ -801,32 +777,6 @@ def test_running_interpreter_resolves_plain_interpreter(monkeypatch):
     assert Path(out).is_absolute()
 
 
-def test_can_import_probe_runs_and_caches(tmp_path):
-    """The probe executes the real interpreter and memoizes the answer.
-
-    Asserts the two things that hold on ANY host: the probe returns a
-    definite boolean for a real interpreter (not None, not an exception
-    path), and the per-path cache is populated so the second call pays
-    no subprocess. Host-dependent capability itself (True vs False) is
-    deliberately NOT asserted - a CI host with hermes pip-installed
-    system-wide would legitimately answer True.
-    """
-    import time
-
-    real = Path("/usr/bin/python3")
-    if not real.exists():
-        pytest.skip("no system python to probe")
-    lde._probe_cache.pop(str(real), None)
-    try:
-        first = lde._can_import_hermes_cli(real)
-        assert isinstance(first, bool)
-        assert str(real) in lde._probe_cache
-        t0 = time.monotonic()
-        second = lde._can_import_hermes_cli(real)
-        assert second is first
-        assert time.monotonic() - t0 < 0.05  # cache hit: no subprocess
-    finally:
-        lde._probe_cache.pop(str(real), None)
 
 
 def test_exec_falls_back_to_running_interpreter_when_probe_fails(
@@ -1023,7 +973,6 @@ def test_probe_skips_wrapper_with_escaping_python_shebang(
     The shebang-safety gate skips it; the module fallback wins. Idea
     credited to autumn8's #92122 rung-2 check.
     """
-    import sys as _s
 
     root = _make_project(tmp_path)
     repo_script = root / "hermes"

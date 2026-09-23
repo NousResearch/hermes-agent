@@ -529,10 +529,21 @@ class _Resume:
         ``overrides`` restores the stored model/provider/reasoning/tier so the deferred build matches eager."""
         if overrides is not None:
             extra.update(model_override=overrides.get("model_override"), resume_runtime_overrides=overrides or None)
-        return _deferred_session_record(
+            model_config = _parse_model_config((self.found or {}).get("model_config"), quiet=True)
+            follows_profile = _row_follows_profile(self.found)
+        else:
+            model_config, follows_profile = {}, False
+        record = _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        if follows_profile:
+            record.update(
+                follow_profile_config=True,
+                composer_override_profile=(model_config.get("composer_override_profile")
+                                           if overrides and overrides.get("model_override") else None),
+            )
+        return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
@@ -593,10 +604,14 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         else:
             _cancel_ws_orphan_reap(live_sid)
     messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
+    # The chat's own pick, not the profile default: a warm reattach that reported `_resolve_model()` flipped the
+    # Desktop picker on every reload while the session was still live, and back once it had been dropped.
+    model, provider = _live_session_identity(live)
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
         "message_count": len(messages), "messages": messages,
-        "info": {"model": _resolve_model(), "lazy": True, "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
+        "info": {"model": model, "provider": provider, "lazy": True,
+                 "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 
 def _resume_adopt_stranded(ctx: _Resume) -> None:
@@ -835,6 +850,12 @@ def _resume_eager(ctx: _Resume) -> dict:
             if (session := _sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
+                model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
+                if _row_follows_profile(ctx.found):
+                    session["follow_profile_config"] = True
+                    session["composer_override_profile"] = (
+                        model_config.get("composer_override_profile")
+                        if stored_runtime_overrides.get("model_override") else None)
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)
@@ -1892,6 +1913,7 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
 
 
 @method("session.compress")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:

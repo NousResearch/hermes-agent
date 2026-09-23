@@ -13,6 +13,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
+from gateway.status import flush_runtime_status
 
 
 class _FakeAdapter:
@@ -165,7 +166,7 @@ class TestProfileRuntimeStatus:
         adapter._runtime_status_platform_key = "reviewer:discord"
         writes = []
         monkeypatch.setattr(
-            "gateway.status.write_runtime_status",
+            "gateway.status.publish_runtime_status",
             lambda **kwargs: writes.append(kwargs),
         )
 
@@ -833,7 +834,7 @@ class TestSecondaryProfileConfigHandling:
             runner._profile_adapters[profile_name] = {}
             return 2
 
-        def fake_profiles_to_serve(multiplex):
+        def fake_profiles_to_serve(multiplex, **kw):
             assert multiplex is True
             return [
                 ("default", Path("/tmp/default")),
@@ -852,7 +853,7 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
         status = {}
         monkeypatch.setattr(
-            "gateway.status.write_runtime_status",
+            "gateway.status.publish_runtime_status",
             lambda **kwargs: status.update(kwargs),
         )
 
@@ -867,7 +868,7 @@ class TestSecondaryProfileConfigHandling:
 
     @pytest.mark.asyncio
     async def test_single_profile_start_clears_inherited_served_profiles(self, monkeypatch, tmp_path):
-        """``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+        """Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
         ``served_profiles`` survived into a later single-profile run and every `hermes -p X` surface
         kept treating X as served (exit 78 on start, "running via multiplexer" on status)."""
         import json
@@ -880,6 +881,7 @@ class TestSecondaryProfileConfigHandling:
         runner.config = GatewayConfig(multiplex_profiles=False)
 
         assert await runner._start_secondary_profile_adapters() == 0
+        flush_runtime_status()
         assert read_runtime_status(tmp_path / "gateway_state.json")["served_profiles"] == []
 
     @pytest.mark.asyncio
@@ -900,7 +902,7 @@ class TestSecondaryProfileConfigHandling:
 
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [
+            lambda multiplex, **kw: [
                 ("default", Path("/tmp/default")),
                 ("unsafe", Path("/tmp/unsafe")),
             ],

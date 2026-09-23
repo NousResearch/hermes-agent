@@ -148,12 +148,16 @@ class MicroCompactionMixin:
         message = response.choices[0].message
         content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
         content = (content if isinstance(content, str) else str(content) if content else "").strip()
+
+        from agent.agent_runtime_helpers import strip_think_blocks
+        content = strip_think_blocks(None, content).strip()
         if not content:
             logger.info("micro-summarization returned empty content")
             return None
-
-        from agent.agent_runtime_helpers import strip_think_blocks
-        return strip_think_blocks(None, content).strip() or None
+        if _cc()._is_refusal_response(response, content):
+            logger.warning("micro-summarization returned refusal content — discarding unusable summary")
+            return None
+        return content
 
     def _needs_defrag(self) -> bool:
         """Return True when the rolling summary is large enough to defrag."""
@@ -348,8 +352,17 @@ class MicroCompactionMixin:
         if not session_db or not session_id:
             return
         try:
-            # Every row except the marker is a carried-forward original: archive rewind-style.
-            session_db.archive_and_compact(session_id, compacted_messages, tail_count=max(0, len(compacted_messages) - 1))
+            # Micro-compaction is prefix + marker + suffix, not a contiguous tail. Identify the exact
+            # byte-identical originals by their persistence marker; the state transaction resolves each
+            # one by row id or durable identity+timestamp. In-place mutations deliberately pop
+            # _DB_PERSISTED_MARKER, and the fresh summary marker never has one. A positional tail_count
+            # can otherwise classify the summarized assistant/tool rows as rewind-only (#118481).
+            carried_messages = [
+                message for message in compacted_messages
+                if isinstance(message, dict) and message.get(_cc()._DB_PERSISTED_MARKER)
+            ]
+            session_db.archive_and_compact(
+                session_id, compacted_messages, carried_messages=carried_messages)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)
@@ -395,8 +408,7 @@ class MicroCompactionMixin:
         cc = _cc()
         return f"{cc.SUMMARY_PREFIX}\n\n{cc.HISTORICAL_TASK_HEADING}\n{summary_text.strip()}\n\n{cc._SUMMARY_END_MARKER}"
 
-    @staticmethod
-    def _merge_adjacent_user_turns(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_adjacent_user_turns(self, result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge consecutive plain-text real user turns left by a supersede. Same ``\\n\\n`` join as
         ``repair_message_sequence`` pass 2, done here so the marker and cursor are never collateral
         damage of the downstream repair. Lists untouched."""
@@ -414,6 +426,12 @@ class MicroCompactionMixin:
             if _plain_user(msg) and _plain_user(prev):
                 prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
                 drop_stale_api_content(prev)  # merged content invalidates the api_content sidecar
+                # The merge rewrites a live dict that may carry _db_persisted: pop the stamp
+                # and flag the finalizer to invalidate the bounded flush-scan cursor, or the
+                # merged text is identity-skipped and never reaches state.db. Same contract
+                # as the defrag rewrite site above.
+                prev.pop(_cc()._DB_PERSISTED_MARKER, None)
+                self._flush_scan_cursor_invalidated = True
             else:
                 merged.append(msg)
         return merged

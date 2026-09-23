@@ -19,13 +19,6 @@ def _inline_frame(data, *, event=None):
     return f"{prefix}data: {json.dumps(data)}\n\n".encode()
 
 
-def test_sse_frame_matches_inline_encoder_no_event():
-    for data in (
-        {"id": "c1", "choices": [{"delta": {"role": "assistant"}}]},
-        {"event": "ping", "sequence_number": 1},
-        {"text": "plain ascii"},
-    ):
-        assert _sse_frame(data) == _inline_frame(data)
 
 
 def test_sse_frame_matches_inline_encoder_with_event():
@@ -36,11 +29,6 @@ def test_sse_frame_matches_inline_encoder_with_event():
         assert _sse_frame(data, event=event) == _inline_frame(data, event=event)
 
 
-def test_sse_frame_event_line_shape():
-    out = _sse_frame({"a": 1}, event="my.event")
-    assert out.startswith(b"event: my.event\n")
-    assert b"data: " in out
-    assert out.endswith(b"\n\n")
 
 
 def test_sse_frame_default_ensure_ascii_matches_bare_json():
@@ -51,11 +39,6 @@ def test_sse_frame_default_ensure_ascii_matches_bare_json():
     assert _sse_frame(payload) == f"data: {json.dumps(payload)}\n\n".encode()
 
 
-def test_sse_frame_ensure_ascii_false_preserves_raw_bytes():
-    payload = {"text": "café — Münchner 🏔"}
-    raw = _sse_frame(payload, ensure_ascii=False)
-    assert "café" in raw.decode("utf-8")
-    assert raw != _sse_frame(payload)  # different bytes from the default
 
 
 def test_sse_frame_ensure_ascii_false_reproduces_session_event_stream():

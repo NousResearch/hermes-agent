@@ -10,6 +10,7 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 from __future__ import annotations
 
 import logging
+import locale
 import math
 import re
 import time
@@ -21,12 +22,13 @@ from agent.model_metadata import is_output_cap_error, parse_available_output_tok
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
-    _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
+    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _sanitize_tools_non_ascii, _strip_images_from_messages, _strip_non_ascii,
+    _strip_images_from_messages, _strip_non_ascii,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
+from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
     provider_label_for, site_copy, stamp_failure,
@@ -36,6 +38,12 @@ from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def _runtime_uses_ascii_encoding() -> bool:
+    """Return whether the process genuinely needs an ASCII-only request fallback."""
+    encoding = locale.getpreferredencoding(False).strip().lower().replace("_", "-")
+    return encoding in {"ascii", "us-ascii", "ansi-x3.4-1968"}
 
 
 def _vlines(agent: Any, *lines: str) -> None:
@@ -104,6 +112,37 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _repair_transport_credentials(agent: Any) -> bool:
+    """Strip non-ASCII from ``_client_kwargs["default_headers"]`` and the API key.
+
+    Non-ASCII in the key makes httpx fail encoding the Authorization header — the usual
+    persistent cause of UnicodeEncodeError that survives message/tool sanitization (#6843,
+    e.g. ʋ instead of v from a bad copy-paste). Entra ID bearer providers are callables
+    minting ASCII JWTs; skip them (``_strip_non_ascii`` would crash). Returns True when
+    either the headers or the key were repaired.
+    """
+    _client_kwargs = getattr(agent, "_client_kwargs", None)
+    _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
+    _repaired = bool(isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers))
+    _raw_key = getattr(agent, "api_key", None) or ""
+    if isinstance(_raw_key, str) and _raw_key:
+        _clean_key = _strip_non_ascii(_raw_key)
+        if _clean_key != _raw_key:
+            agent.api_key = _clean_key
+            if isinstance(_client_kwargs, dict):
+                _client_kwargs["api_key"] = _clean_key
+            # The live client reads its own api_key copy on every request.
+            if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
+                agent.client.api_key = _clean_key
+            _repaired = True
+            _vlines(
+                agent,
+                "⚠️  API key contained non-ASCII characters (bad copy-paste?) — stripped them. "
+                "If auth fails, re-copy the key from your provider's dashboard.",
+            )
+    return _repaired
+
+
 def _recover_unicode_encode_error(
     agent: Any, api_error: Exception, messages: List[Dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
@@ -115,16 +154,18 @@ def _recover_unicode_encode_error(
     _is_ascii_codec = "'ascii'" in _err_str or "ascii" in _err_str
     # utf-8 refusing U+D800..U+DFFF ("surrogates not allowed").
     _is_surrogate_error = "surrogate" in _err_str or ("'utf-8'" in _err_str and not _is_ascii_codec)
-    # Sanitize `messages` AND `api_messages` (may carry reasoning_content/reasoning_details),
-    # plus `api_kwargs` and `prefill_messages`. Every sanitizer runs (no short-circuit).
-    _prefill = getattr(agent, "prefill_messages", None)
+    # Sanitize canonical messages for surrogate recovery, but keep ASCII recovery
+    # request-local: API copies may carry fields absent from the durable transcript.
     _surrogates_found = _sanitize_messages_surrogates(messages)
     _surrogates_found |= isinstance(api_messages, list) and _sanitize_messages_surrogates(api_messages)
     _surrogates_found |= isinstance(api_kwargs, dict) and _sanitize_structure_surrogates(api_kwargs)
-    _surrogates_found |= isinstance(_prefill, list) and _sanitize_messages_surrogates(_prefill)
     # Gate the retry on the error type, not on whether anything was found — a new
     # transformed field could slip through.
     if _surrogates_found or _is_surrogate_error:
+        if _surrogates_found:
+            # In-place rewrites may have popped _DB_PERSISTED_MARKER off stamped live dicts;
+            # force a full flush scan so the repaired rows are rewritten.
+            agent._db_flush_scan_prefix = None
         agent._unicode_sanitization_passes += 1
         agent._buffer_vprint(
             "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
@@ -135,56 +176,37 @@ def _recover_unicode_encode_error(
     if not _is_ascii_codec:
         return False, active_system_prompt
 
+    # Error text is provider-controlled and can mention ``ascii`` even when the
+    # process sends UTF-8. In that normal case, do not rewrite conversation,
+    # tools, prompts, or prefill; only repair values that can poison an ASCII
+    # transport header. If nothing was repaired, an identical retry cannot
+    # succeed — return False so the error surfaces through the normal path
+    # instead of burning both sanitization passes on unchanged requests.
+    if not _runtime_uses_ascii_encoding():
+        if not _repair_transport_credentials(agent):
+            return False, active_system_prompt
+        agent._unicode_sanitization_passes += 1
+        _vlines(
+            agent,
+            "⚠️  Repaired non-ASCII request credentials/headers without changing conversation content. Retrying...",
+        )
+        return True, active_system_prompt
+
     agent._force_ascii_payload = True
-    # Strip all non-ASCII from messages/tool schemas and retry; api_kwargs too so a
-    # non-ASCII transformed field doesn't survive via _build_api_kwargs cache paths.
-    _messages_sanitized = _sanitize_messages_non_ascii(messages)
-    if isinstance(api_messages, list):
-        _sanitize_messages_non_ascii(api_messages)
-    if isinstance(api_kwargs, dict):
-        _sanitize_structure_non_ascii(api_kwargs)
-    _prefill_sanitized = isinstance(_prefill, list) and _sanitize_messages_non_ascii(_prefill)
-    _tools = getattr(agent, "tools", None)
-    _tools_sanitized = isinstance(_tools, list) and _sanitize_tools_non_ascii(_tools)
+    # Strip all non-ASCII from the request-local api_messages (reused across retries). The
+    # failed attempt's api_kwargs is NOT touched: build_api_request rebuilds it from
+    # ``agent.tools`` on the next iteration and ``sanitize_outbound_kwargs`` strips the whole
+    # payload under ``_force_ascii_payload``. Canonical agent state stays byte-stable.
+    _messages_sanitized = isinstance(api_messages, list) and _sanitize_messages_non_ascii(api_messages)
 
     _system_sanitized = False
     if isinstance(active_system_prompt, str):
         _sanitized_system = _strip_non_ascii(active_system_prompt)
         if _sanitized_system != active_system_prompt:
-            active_system_prompt = agent._cached_system_prompt = _sanitized_system
+            active_system_prompt = _sanitized_system
             _system_sanitized = True
-    _ephemeral = getattr(agent, "ephemeral_system_prompt", None)
-    if isinstance(_ephemeral, str) and _strip_non_ascii(_ephemeral) != _ephemeral:
-        agent.ephemeral_system_prompt = _strip_non_ascii(_ephemeral)
-        _system_sanitized = True
 
-    _client_kwargs = getattr(agent, "_client_kwargs", None)
-    _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
-    _headers_sanitized = isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers)
-
-    # Non-ASCII in the API key makes httpx fail encoding the Authorization header — the
-    # usual persistent cause after message/tool sanitization. Entra ID bearer providers
-    # are callables minting ASCII JWTs; skip them (``_strip_non_ascii`` would crash).
-    # Sanitize the API key — non-ASCII characters in credentials (e.g. ʋ instead of v from a bad copy-paste)
-    # cause httpx to fail when encoding the Authorization header as ASCII. This is the most common cause of
-    # persistent UnicodeEncodeError that survives message/tool sanitization (#6843).
-    _credential_sanitized = False
-    _raw_key = getattr(agent, "api_key", None) or ""
-    if _raw_key and isinstance(_raw_key, str):
-        _clean_key = _strip_non_ascii(_raw_key)
-        if _clean_key != _raw_key:
-            agent.api_key = _clean_key
-            if isinstance(getattr(agent, "_client_kwargs", None), dict):
-                agent._client_kwargs["api_key"] = _clean_key
-            # The live client reads its own api_key copy on every request.
-            if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
-                agent.client.api_key = _clean_key
-            _credential_sanitized = True
-            _vlines(
-                agent,
-                "⚠️  API key contained non-ASCII characters (bad copy-paste?) — stripped them. "
-                "If auth fails, re-copy the key from your provider's dashboard.",
-            )
+    _transport_repaired = _repair_transport_credentials(agent)
 
     # Always retry on ASCII codec detection: _force_ascii_payload sanitizes the full
     # api_kwargs next iteration even when the checks above find nothing.
@@ -192,11 +214,21 @@ def _recover_unicode_encode_error(
     _vlines(
         agent,
         "⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying..."
-        if (_messages_sanitized or _prefill_sanitized or _tools_sanitized or _system_sanitized
-            or _headers_sanitized or _credential_sanitized) else
+        if (_messages_sanitized or _system_sanitized or _transport_repaired) else
         "⚠️  System encoding is ASCII — enabling full-payload sanitization for retry...",
     )
     return True, active_system_prompt
+
+
+def _strip_request_images_and_retry(agent: Any, api_messages: Any) -> bool:
+    """Strip image parts from the per-call ``api_messages`` copy; True if anything was removed.
+
+    Shared by the corrupt-image recoveries: a bad payload says nothing about the model, so it
+    is stripped for this attempt only and the model is never recorded as image-rejecting."""
+    if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
+        _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        return True
+    return False
 
 
 def recover_before_classification(
@@ -204,9 +236,10 @@ def recover_before_classification(
     api_kwargs: Any, active_system_prompt: Any,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
-    sanitization, provider image-content rejection (switch session to text-only), and the
-    Bedrock AnthropicBedrock SDK streaming fallback. Returns ``(retry_now,
-    active_system_prompt)``; the prompt may be ASCII-sanitized in place."""
+    sanitization, provider image-content rejection (record the (provider, model);
+    build_api_request strips images from that model's requests only), and the Bedrock
+    AnthropicBedrock SDK streaming fallback. Returns ``(retry_now, active_system_prompt)``;
+    the prompt may be ASCII-sanitized in place."""
     if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
         _recovered, active_system_prompt = _recover_unicode_encode_error(
             agent, api_error, messages, api_messages, api_kwargs, active_system_prompt
@@ -214,8 +247,9 @@ def recover_before_classification(
         if _recovered:
             return True, active_system_prompt
 
-    # Some providers 4xx on image_url content: strip images, mark session
-    # vision-unsupported, retry text-only. English phrase match; extend it.
+    # Some providers 4xx on image_url content: record the (provider, model) and retry;
+    # build_api_request strips images from that model's requests only. English phrase
+    # match; extend it.
     _err_body = ""
     try:
         _err_body = str(getattr(api_error, "body", None) or getattr(api_error, "message", None) or str(api_error))
@@ -224,17 +258,33 @@ def recover_before_classification(
     _err_status = getattr(api_error, "status_code", None)
     # 4xx-only gate: 5xx/timeouts are transient and take the retry path.
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-    if getattr(agent, "_vision_supported", True) and _looks_like_image_content_rejection(_err_body) and _status_ok:
-        agent._vision_supported = False
-        _imgs_removed = _strip_images_from_messages(messages)
-        if isinstance(api_messages, list):
-            _strip_images_from_messages(api_messages)
-        _vlines(
-            agent,
-            "⚠️  Server rejected image content — switching to text-only mode for this session"
-            + (". Stripped images from history and retrying." if _imgs_removed else "."),
-        )
-        return True, active_system_prompt
+    # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
+    # images too, and a turn-wide flag would skip its recovery and fail the turn.
+    _model_key = _provider_model_key(agent)
+    _rejected = agent._image_rejecting_models
+    _corrupt = _looks_like_corrupt_image_rejection(_err_body)
+    if _status_ok and (_corrupt or (_model_key not in _rejected and _looks_like_image_content_rejection(_err_body))):
+        # Send-path only. A rejection says what THIS model accepts, not what the conversation
+        # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
+        # image — and every image-only message — from state.db for good, so a later switch to a
+        # vision model found them gone. Same failure as the ASCII strip in #117802.
+        if _corrupt:
+            # A bad payload says nothing about the model's capability: strip this attempt only
+            # (like the image_corrupt branch below) and leave the model unmarked so a later good
+            # image still reaches it. Retry only if something was stripped, or a text-only
+            # request would loop on the same error.
+            if _strip_request_images_and_retry(agent, api_messages):
+                return True, active_system_prompt
+        else:
+            # Record the model; the retry re-enters build_api_request with the same
+            # api_messages and strip_images_for_rejecting_model strips them there.
+            _rejected.add(_model_key)
+            _vlines(
+                agent,
+                "⚠️  Server rejected image content — sending text only to this model; "
+                "images stay in the session history.",
+            )
+            return True, active_system_prompt
 
     # AnthropicBedrock SDK raises "Unexpected event order" when Bedrock errors before
     # message_start; fall back to native Converse for this session.
@@ -672,8 +722,7 @@ def recover_after_classification(
     # Strip ONLY the per-call copy: replacing msg["content"] on the shallow api_messages
     # rows keeps canonical history's images (transient rejection must not erase history).
     if classified.reason == FailoverReason.image_corrupt:
-        if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
-            _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        if _strip_request_images_and_retry(agent, api_messages):
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
 
@@ -1778,7 +1827,8 @@ def route_classified_error(
         )
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
-            if agent._try_activate_fallback(reason=classified.reason):
+            reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:

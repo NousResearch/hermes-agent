@@ -173,3 +173,45 @@ def test_post_discovery_registration_is_mirrored(_isolated_registries, monkeypat
     )
     assert LATE in auth_mod.PROVIDER_REGISTRY
     assert auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] is auth_mod.PROVIDER_REGISTRY[LATE]
+
+
+def test_user_plugin_alias_repoints_and_display_name_follows(_isolated_registries, monkeypatch, tmp_path):
+    """A $HERMES_HOME plugin owns the aliases it declares and the display name of a same-name row.
+
+    Ownership split (#116668): ``providers.get_provider_profile`` already followed the user's
+    profile for the alias, while the auth registry kept the alias on whichever row got there first
+    and kept the bundled display name on a same-name replacement.
+    """
+    monkeypatch.setattr(providers, "_discover_entry_point_providers", lambda: None)
+    monkeypatch.setattr(providers, "_BUNDLED_PLUGINS_DIR", tmp_path)
+    monkeypatch.setattr(providers, "_user_plugins_dir", lambda: None)
+    monkeypatch.setattr(providers, "_installed_plugins_dir", lambda: None)
+    providers._discover_providers()
+
+    taken_alias = "probe-116668-alias"
+    monkeypatch.setattr(providers, "_current_source", "bundled")
+    providers.register_provider(ProviderProfile(
+        name="probe-116668-bundled", display_name="Bundled", base_url="https://bundled.example/v1",
+        env_vars=("PROBE_116668_BUNDLED_KEY",), aliases=(taken_alias,)))
+    bundled_row = auth_mod.PROVIDER_REGISTRY["probe-116668-bundled"]
+    assert auth_mod.PROVIDER_REGISTRY[taken_alias] is bundled_row
+
+    # A second bundled plugin claiming the same alias does not steal it.
+    providers.register_provider(ProviderProfile(
+        name="probe-116668-other", display_name="Other", base_url="https://other.example/v1",
+        env_vars=("PROBE_116668_OTHER_KEY",), aliases=(taken_alias,)))
+    assert auth_mod.PROVIDER_REGISTRY[taken_alias] is bundled_row
+
+    # The user's plugin does, and its same-name replacement rewrites the display name in place.
+    monkeypatch.setattr(providers, "_current_source", "user")
+    providers.register_provider(ProviderProfile(
+        name="probe-116668-user", display_name="Mine", base_url="https://mine.example/v1",
+        env_vars=("PROBE_116668_USER_KEY",), aliases=(taken_alias,)))
+    assert auth_mod.PROVIDER_REGISTRY[taken_alias] is auth_mod.PROVIDER_REGISTRY["probe-116668-user"]
+
+    providers.register_provider(ProviderProfile(
+        name="probe-116668-bundled", display_name="Bundled (mine)", base_url="https://mine.example/v2",
+        env_vars=("PROBE_116668_BUNDLED_KEY",), aliases=(taken_alias,)))
+    assert bundled_row.name == "Bundled (mine)"
+    assert bundled_row.inference_base_url == "https://mine.example/v2"
+    assert auth_mod.PROVIDER_REGISTRY[taken_alias] is bundled_row

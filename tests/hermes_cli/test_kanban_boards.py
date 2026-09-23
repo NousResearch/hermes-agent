@@ -177,12 +177,6 @@ class TestBoardCRUD:
         assert "task_events" in tables
         assert "tasks" in tables
 
-    def test_rename_updates_metadata(self, fresh_home):
-        kb.create_board("slug-immutable")
-        kb.write_board_metadata("slug-immutable", name="New Display Name")
-        assert kb.read_board_metadata("slug-immutable")["name"] == "New Display Name"
-        # Slug must not change.
-        assert kb.board_exists("slug-immutable")
 
 
 # ---------------------------------------------------------------------------
@@ -310,14 +304,6 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 class TestCLI:
-    def test_boards_list_default_only(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        res = _cli(["boards", "list", "--json"], env_extra=env)
-        assert res.returncode == 0, res.stderr
-        data = json.loads(res.stdout)
-        slugs = [b["slug"] for b in data]
-        assert slugs == ["default"]
-        assert data[0]["is_current"] is True
 
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):

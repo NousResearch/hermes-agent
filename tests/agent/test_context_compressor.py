@@ -3555,9 +3555,8 @@ class TestPreLlmFeasibilityCheck:
         skip path sets _last_summary_fallback_used, which the boundary
         wrapper (conversation_compression.py) records via
         record_completed_compaction(used_fallback=True) — incrementing
-        _fallback_compression_streak, whose second occurrence blocks
-        automatic compression. Two deliberate skips must NOT trip that
-        breaker."""
+        _fallback_compression_streak. A deliberate skip must not count as
+        a failed summary-model attempt."""
         compressor._ineffective_compression_count = 1
         msgs = self._make_messages()
 
@@ -3576,10 +3575,7 @@ class TestPreLlmFeasibilityCheck:
 
         assert compressor._prellm_skip_count == 2
         assert compressor._fallback_compression_streak == 0
-        assert not compressor._automatic_compression_blocked_locally(), (
-            "two deliberate feasibility skips must not disable automatic "
-            "compression via the fallback-streak breaker"
-        )
+        assert not compressor._automatic_compression_blocked_locally()
 
     def test_boundary_accounting_skip_does_not_reset_fallback_streak(self, compressor):
         """A skip proves nothing about the summary model's health: an

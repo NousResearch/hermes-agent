@@ -438,17 +438,8 @@ def test_timing_hooks_propagate_to_protected_call_worker_thread():
     assert "response" in seen
 
 
-def test_explicit_caller_max_tokens_keeps_provider_quirk_handling():
-    """An explicit caller cap must NOT be force-injected as a wire param.
-
-    _build_call_kwargs deliberately omits max_tokens for most
-    OpenAI-compatible providers (ZAI vision 400s on it; GPT-5/Copilot need
-    max_completion_tokens). Only a cap the certified lane itself produced may
-    bypass that handling. Before this guard, a caller-passed max_tokens on
-    the compression task flowed through _compression_fast_lane_controls as a
-    passthrough and was misread as a lane cap — forcing the param onto
-    providers where the omission was intentional (pre-fast-lane behavior).
-    """
+def test_explicit_compression_limit_reaches_wire():
+    """The checkpoint output limit reaches a generic compatible endpoint."""
     from agent.auxiliary_client import call_llm
 
     config = {"provider": "auto", "model": "", "max_output_tokens": 0}
@@ -469,5 +460,4 @@ def test_explicit_caller_max_tokens_keeps_provider_quirk_handling():
         ) is response
 
     request = client.chat.completions.create.call_args.kwargs
-    assert "max_tokens" not in request
-    assert "max_completion_tokens" not in request
+    assert request["max_tokens"] == 1500

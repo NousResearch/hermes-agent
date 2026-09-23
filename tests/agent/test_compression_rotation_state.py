@@ -1322,14 +1322,7 @@ class TestAutomaticCompressionStateRefreshAfterLock:
 
 
 class TestGateLevelGuardRefresh:
-    """The unblock direction must work from the should_compress() pre-gates.
-
-    compress_context refreshes durable guards internally, but the automatic
-    paths (preflight/turn gates) consult should_compress() first — if a stale
-    in-memory fallback streak (which has no expiry timer) blocks there, the
-    refresh inside compress_context is never reached and the agent stays
-    blocked forever.
-    """
+    """The pre-gate uses the measured ineffective count, not summary type."""
 
     def test_should_compress_unblocks_after_another_agent_clears_streak(
         self,
@@ -1342,9 +1335,11 @@ class TestGateLevelGuardRefresh:
         compressor = _bound_context_compressor(db, session_id)
         assert compressor._fallback_compression_streak == 2
 
-        # Another agent's healthy boundary clears the durable breaker.
+        # A previous run's fallback streak is diagnostic, so it never blocks.
+        assert compressor.should_compress(10**9) is True
+        # Another agent's healthy boundary clears the durable diagnostic count.
         db.set_compression_fallback_streak(session_id, 0)
-
+        compressor._load_fallback_compression_streak()
         assert compressor.should_compress(10**9) is True
         assert compressor._fallback_compression_streak == 0
 

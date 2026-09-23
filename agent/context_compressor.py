@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
+    _get_auxiliary_task_config,
     _is_connection_error,
     aux_interrupt_protection,
     call_llm,
@@ -2023,8 +2024,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if feasibility_skip:
             # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
             # A deliberate pre-LLM feasibility skip (#60451) is not a summary-quality verdict: it must
-            # neither extend a fallback streak (two skips would otherwise latch the >= 2 breaker and disable
-            # compression entirely — including the cheap deterministic dropping the skip exists to reach)
+            # neither extend a fallback streak (it is diagnostic, not an ineffectiveness verdict)
             # nor reset one (a skip proves nothing about the summary model's health).
             if not self.quiet_mode:
                 logger.info(
@@ -2183,8 +2183,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     _MIN_CTX_TRIGGER_RATIO = 0.85
 
     # Anti-thrash recovery: after this long blocked, allow ONE probe (counters drop to 1 strike).
-    # Anti-thrash recovery window (#14694): once the ineffective/fallback breaker trips, automatic
-    # compaction stays blocked for this long, then ONE probe attempt is allowed (counters drop to 1 strike,
+    # Anti-thrash recovery window (#14694): once the ineffective breaker trips, automatic
+    # compaction stays blocked for this long, then ONE probe attempt is allowed (the count drops to 1 strike,
     # so another ineffective pass re-trips immediately). Long enough that a genuinely incompressible session
     # isn't compacting in a loop; short enough that a session which has since grown real compressible
     # material recovers well before it rides into the provider's hard context limit.
@@ -2472,14 +2472,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return "ineffective" if self._tripped() else None
 
     def _tripped(self) -> bool:
-        """Anti-thrash breaker state: two ineffective compactions or two fallback summaries in a row."""
-        return self._ineffective_compression_count >= 2 or self._fallback_compression_streak >= 2
+        """Only provider-confirmed ineffective compactions trip the breaker.
+
+        A static fallback can still reclaim most of the request. Its durable streak
+        records degraded summaries, but is not evidence of compaction thrashing.
+        """
+        return self._ineffective_compression_count >= 2
 
     def _refresh_durable_guards(self) -> None:
         """Re-read durable cooldown + breaker state; called only when a gate is about to block."""
         for label, refresh in (
             ("cooldown", lambda: self.get_active_compression_failure_cooldown(refresh=True)),
-            ("fallback-streak", self._load_fallback_compression_streak),
             ("ineffective-count", self._load_ineffective_compression_count),
         ):
             try:
@@ -2531,7 +2534,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 # accumulate plenty of compressible material later. Without a recovery path the session
                 # never auto-compacts again and rides into the provider's hard context limit. Recovery is a
                 # probation probe: after _ANTI_THRASH_RECOVERY_SECONDS of continuous block, allow ONE
-                # attempt by dropping the tripped counter(s) to 1 strike (persisted, so sibling agents on
+                # attempt by dropping the ineffective counter to 1 strike (persisted, so sibling agents on
                 # the same session row unblock too). If the probe is ineffective again the very next verdict
                 # re-trips the guard, so the worst case in the truly-incompressible state is one compaction
                 # attempt per recovery window — bounded, not thrash. The clock is armed lazily on the first
@@ -2541,9 +2544,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 # already-armed deadline resumes that window instead of restarting it.
                 if self._ineffective_compression_count >= 2:
                     self._record_ineffective_compression_verdict(1)
-                if self._fallback_compression_streak >= 2:
-                    self._fallback_compression_streak = 1
-                    self._persist_fallback_compression_streak()
                 if not self.quiet_mode:
                     logger.info(
                         "Anti-thrashing recovery: %.0fs elapsed since the guard tripped — allowing one "
@@ -2896,6 +2896,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
+    def _summary_output_limit(self, summary_budget: int) -> int:
+        """Wire budget for a checkpoint, including the lean log and reasoning headroom."""
+        configured = _get_auxiliary_task_config("compression").get("max_tokens")
+        if isinstance(configured, int) and not isinstance(configured, bool) and configured > 0:
+            return configured
+        target = summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if self.tail_mode == "lean" else 0)
+        return max(8_192, 2 * target)
+
     # Summarizer-input limits: the budget is the summary model's window, not the main model's.
     _CONTENT_MAX = 6000       # total chars per message body
     _CONTENT_HEAD = 4000      # chars kept from the start
@@ -3180,7 +3188,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
-    def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
+    def _call_summary_llm(self, prompt: str, prompt_started_at: float, output_limit: int) -> str:
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
@@ -3193,8 +3201,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 "api_mode": self.api_mode,
             },
             "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
-            # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
-            # (thinking models burn it on reasoning). Timeout comes from call_llm config.
+            "max_tokens": output_limit,
         }
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
@@ -3216,8 +3223,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
             self._record_aux_compression_call(
                 prompt_messages=call_kwargs["messages"],
-                # max_tokens is intentionally absent; .get() keeps the telemetry hook from breaking the call.
-                max_tokens=call_kwargs.get("max_tokens"),
+                max_tokens=output_limit,
                 duration_ms=int((time.monotonic() - _aux_call_start) * 1000),
                 aux_provider=_aux_route.get("provider") or self.provider or "",
                 aux_model=_aux_model,
@@ -3290,7 +3296,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
         prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         try:
-            content = self._call_summary_llm(prompt, prompt_started_at)
+            content = self._call_summary_llm(prompt, prompt_started_at, self._summary_output_limit(summary_budget))
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
             from agent.agent_runtime_helpers import strip_think_blocks
             content = strip_think_blocks(None, content).strip() or content

@@ -184,6 +184,7 @@ auxiliary:
     model: null              # Override model for summaries (default: auto-detect)
     provider: auto           # Provider: "auto", "openrouter", "nous", "main", etc.
     base_url: null           # Custom OpenAI-compatible endpoint
+    max_tokens: null         # Positive output limit; null uses 2× the summary target (8192 minimum)
 ```
 
 ### Parameter Details

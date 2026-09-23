@@ -917,8 +917,10 @@ def cmd_install(
     declared_caps = _declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _run_capability_consent(console, installed_name, declared_caps, context="install")
-    console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
-    console.print("[dim]  hermes gateway restart[/dim]")
+    if enable:
+        # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
+        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
+        console.print(f"[dim]{activation_hint(activate_plugin_now(installed_name, in_process=False))}[/dim]")
     console.print()
 
 
@@ -1278,7 +1280,9 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
             _fail(console, f"[red]Error:[/red] {exc}")
 
     if _activate_key(key, enable=True):
+        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+        console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
 
@@ -2030,11 +2034,16 @@ def dashboard_install_plugin(
         _set_plugin_enabled(installed_name, enable=True)
     deps = _install_python_dependencies_quietly(target, warnings)
     ap = target / "after-install.md"
+    # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)
+    # and in the running gateway; ``activation`` says what is live now vs next session (#87770).
+    from hermes_cli.plugins_activation import activate_plugin_now
+    activated = activate_plugin_now(installed_name) if enable else {
+        "gateway_reloaded": False, "activation": None, "restart_required": False}
     return {
         "ok": True, "plugin_name": installed_name, "warnings": warnings,
         "python_dependencies": deps,
         "missing_env": [s["name"] for s in _missing_env_specs(installed_manifest)],
-        "after_install_path": str(ap) if ap.exists() else None, "enabled": enable,
+        "after_install_path": str(ap) if ap.exists() else None, "enabled": enable, **activated,
     }
 
 
@@ -2112,8 +2121,13 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     changed = _activate_key(key, enable=enabled)
     if changed:
         _toggle_plugin_toolset(key, enable=enabled)
-    # Config-only change: a running gateway/TUI scanned plugins once at start and will not pick it
-    # up, so every UI can say so (the CLI prints "Takes effect on next session") — #71595/#54941.
+    if changed and enabled:
+        # Load it now, here and in the running gateway; ``activation`` tells the UI what is live vs
+        # deferred, and ``restart_required`` only survives when no gateway answered (#87770).
+        from hermes_cli.plugins_activation import activate_plugin_now
+        return {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+    # Disable is config-only: there is no un-wire primitive, so a running gateway keeps the plugin's
+    # handlers until restart and every UI says so — #71595/#54941.
     return {"ok": True, "name": key, "unchanged": not changed, "restart_required": changed}
 
 
@@ -2142,8 +2156,10 @@ def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False
             warnings = list(result.warnings)
             new_target = target.parent / result.installed_name
             deps = _install_python_dependencies_quietly(new_target, warnings) if result.changed else []
+            from hermes_cli.plugins_activation import activate_plugin_now
+            activated = activate_plugin_now(result.installed_name) if result.changed else {}
             return {"ok": True, "name": result.installed_name, "sha": result.sha, "unchanged": not result.changed,
-                    "python_dependencies": deps, "warnings": warnings}
+                    "python_dependencies": deps, "warnings": warnings, **activated}
         msg = _pull_plugin_update(
             target,
             lambda rec: (

@@ -715,6 +715,11 @@ export interface Translations {
         reviewedIntro: string
         restartToApply: string
         restartNow: string
+        connectServers: (name: string, n: number) => string
+        connectNow: string
+        connectSub: string
+        connectFailed: string
+        liveNow: (name: string) => string
         missingEnvAction: string
         alreadyInstalled: (name: string) => string
         desktopTarget: string
@@ -3648,6 +3653,14 @@ export interface Translations {
       saveComment: string
       cancelComment: string
     }
+  }
+
+  interfaceMode: {
+    title: string
+    hint: string
+    sessionNote: string
+    simple: { label: string; description: string }
+    advanced: { label: string; description: string }
   }
 
   zones: {

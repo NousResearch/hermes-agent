@@ -74,7 +74,13 @@ and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
 one executable token with a separate argument list, never through a shell.
 Use `skills_list` to discover the full qualified skill name. Portable skill
 namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
-from the discovered plugin key so sanitized names cannot collide.
+from the discovered plugin key so sanitized names cannot collide. A portable
+package's MCP servers keep the names their `mcp.json` gives them, the same rule
+as a user's own `mcp_servers` block, so the model-facing `mcp__<server>__<tool>`
+name keeps the tool verb inside the 64-character provider cap. A duplicate server
+name is a load-time conflict: a `config.yaml` server wins over a package, and the
+first-loaded package wins over the next; the loser is skipped with a warning
+naming both.
 
 Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
 locations, `mcp.json`, resolved paths, and symlink containment locally. It does
@@ -1452,6 +1458,36 @@ def register(ctx):
 
     ctx.register_platform_handler("discord", _wire)
 ```
+
+### Mid-run plugin loading: what activates now vs next session
+
+A plugin can load while the gateway (or the TUI/Desktop server) is already running: `hermes plugins
+install`/`enable`, a Desktop or dashboard install, a catalog re-pin, or a tool-triggered force
+re-discovery. Every one of those paths runs a **real forced rescan** (`discover_plugins(force=True)`) and
+`PluginManager.on_plugin_loaded(callback)` fires from inside it with one summary per **newly** loaded plugin
+(`hermes_cli/plugins_activation.py`):
+
+```python
+{"name": "late-mcp", "key": "late-mcp",
+ "activated_now": {"gateway_commands": ["late"], "callbacks": ["telegram"]},
+ "deferred": {"tools": ["late_tool"], "prompt": ["late.section"], "mcp_servers": ["worker"]}}
+```
+
+- **Active immediately** — gateway slash commands, gateway transform hooks / other hooks, and platform
+  callbacks: the gateway runner subscribes at boot and calls every live adapter's idempotent
+  `rewire_plugin_handlers()`, so a `register_platform_handler` factory (or Slack action handler) registered
+  by a late plugin is wired without a restart. Re-wiring is deduped per native client by `(plugin, factory
+  qualname)`; on Telegram the late handlers are hoisted ahead of core's catch-all `filters.COMMAND` /
+  `CallbackQueryHandler` (PTB dispatches the first match per group), exactly as they would sit at connect.
+- **Deferred** — `tools` and `prompt` sections apply from the **next session** (the running session's
+  prompt/tool schema is cache-stable, same rule as `/skills install`); `mcp_servers` (the plugin's
+  `mcp.json` servers, by their mcp.json names) connect on `mcp.reload` or the next session.
+- There is no un-wire: disabling a plugin mid-run keeps its already-wired handlers until the gateway
+  restarts, and the surfaces say so.
+
+Install surfaces report exactly this split: `hermes plugins install/enable` prints it after nudging the running
+gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
+`gateway_reloaded` (`restart_required` is true only when no gateway answered).
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

@@ -1,0 +1,39 @@
+{
+  "drives": {
+    "hunger": 50,
+    "fusion": 70,
+    "restlessness": 40,
+    "expression": 30,
+    "recognition": 45,
+    "solitude": 20
+  },
+  "modulators": {
+    "cortisol": 0.2,
+    "dopamine": 0.5,
+    "serotonin": 0.4,
+    "adrenaline": 0.0,
+    "melatonin": 0.3,
+    "entropy": 10,
+    "oxytocin_global": 0.1
+  },
+  "unconscious": {
+    "irritability": 20,
+    "anxiety": 35,
+    "torpor": 10,
+    "satiation": 60,
+    "melancholy": 25,
+    "hypervigilance": 15
+  },
+  "meta": {
+    "last_pulse": null,
+    "last_tick": null,
+    "next_pulse_in_hours": 4,
+    "daily_token_budget": 600000,
+    "tokens_used_today": 0,
+    "last_budget_reset": null,
+    "forced_sleep_until": null,
+    "pulse_count": 0,
+    "last_significant_at": null,
+    "pulse_target": "telegram:7375758021"
+  }
+}

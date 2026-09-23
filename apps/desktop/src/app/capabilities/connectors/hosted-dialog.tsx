@@ -98,7 +98,9 @@ export function HostedConnectorDialog({
 
   return (
     <ConnectorDialog
-      advanced={installed ? <LocalAdvanced controller={controller} name={serverName} onRemove={onRemoveServer} /> : undefined}
+      advanced={
+        installed ? <LocalAdvanced controller={controller} name={serverName} onRemove={onRemoveServer} /> : undefined
+      }
       card={card}
       connectElement={element}
       cost={installed ? localCost(controller, serverName) : undefined}

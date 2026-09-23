@@ -352,7 +352,13 @@ export const zhHant = defineLocale({
       installModal: {
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
-        repoPlaceholder: 'https://github.com/owner/repo'
+        repoPlaceholder: 'https://github.com/owner/repo',
+        connectServers: (name, n) =>
+          n === 1 ? `${name} 已安裝。其 MCP 伺服器尚未連線。` : `${name} 已安裝。其 ${n} 個 MCP 伺服器尚未連線。`,
+        connectNow: '立即連線',
+        connectSub: '開啟的聊天會重新傳送其上下文',
+        connectFailed: '無法連線該外掛的 MCP 伺服器。',
+        liveNow: name => `${name} 已安裝並生效。`
       }
     },
     closeSettings: '關閉設定',
@@ -3251,6 +3257,20 @@ export const zhHant = defineLocale({
       unreachableDescription: '無法連線至預覽頁面。',
       openTarget: url => `開啟 ${url}`,
       fallbackTitle: '預覽'
+    }
+  },
+
+  interfaceMode: {
+    title: '介面模式',
+    hint: '只改變顯示的內容，不改變 Hermes 的能力。',
+    sessionNote: '由簡潔模式設定。此處的變更僅在本次工作階段內生效；切換到進階模式即可保留為你的設定。',
+    simple: {
+      label: '簡潔',
+      description: '用於與 Hermes 對話。只有側邊欄和聊天；沒有終端機、檔案或差異面板。'
+    },
+    advanced: {
+      label: '進階',
+      description: '面向開發者。終端機、檔案、差異、狀態列和版面配置，按你的設定顯示。'
     }
   },
 

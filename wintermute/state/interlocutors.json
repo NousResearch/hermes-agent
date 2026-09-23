@@ -1,0 +1,20 @@
+{
+  "telegram:7375758021": {
+    "label": "",
+    "affinity": 40,
+    "trust": 30,
+    "disappointment": 0,
+    "curiosity": 60,
+    "oxytocin": 0,
+    "no_response_streak": 0,
+    "first_seen": "2026-09-23T11:00:00",
+    "last_interaction": "2026-09-23T11:00:00",
+    "last_message_direction": "from_them",
+    "last_message_from": "telegram:7375758021",
+    "messages_from_them": 0,
+    "messages_to_them": 0,
+    "ignored_count": 0,
+    "known_facts": [],
+    "outreach": null
+  }
+}

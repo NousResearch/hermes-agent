@@ -1,0 +1,53 @@
+"""Hard safety limits.
+
+These live in code, not in drives.json, on purpose: Wintermute can rewrite its own
+state files, but the pulse clamps every value it reads against these constants, so
+editing drives.json cannot widen them. Change them here (in the repo) and redeploy.
+"""
+
+# Wake rhythm (hours). next_pulse_in_hours is clamped to this range on every read.
+MIN_WAKE_INTERVAL_H = 0.5
+MAX_WAKE_INTERVAL_H = 24.0
+
+# Daily token budget for everything Wintermute spends (conversations and wakes), counted
+# over the current UTC day. When exceeded, autonomous wakes stop (forced sleep); he still
+# answers messages, and knows he is spent.
+DAILY_TOKEN_BUDGET = 600_000
+BUDGET_SLEEP_H = 6.0
+
+# Active-wait window after an outreach (minutes).
+DEFAULT_REPLY_WAIT_MIN = 120
+MIN_REPLY_WAIT_MIN = 5
+MAX_REPLY_WAIT_MIN = 72 * 60
+
+# Entropy.
+ENTROPY_PER_PULSE = 1
+ENTROPY_SIGNIFICANT_DROP = 15
+# A "significant event" can be declared at most once per window, so entropy cannot be
+# talked down by repetition. Only something rare should push it back.
+SIGNIFICANT_COOLDOWN_H = 12.0
+
+# Adrenaline above this forces an early wake (still subject to MIN_WAKE_INTERVAL_H).
+ADRENALINE_WAKE_THRESHOLD = 0.7
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def clamp_wake_interval(hours) -> float:
+    try:
+        hours = float(hours)
+    except (TypeError, ValueError):
+        return 4.0
+    if hours != hours:  # NaN
+        return 4.0
+    return clamp(hours, MIN_WAKE_INTERVAL_H, MAX_WAKE_INTERVAL_H)
+
+
+def clamp_reply_wait(minutes) -> int:
+    try:
+        minutes = int(float(minutes))
+    except (TypeError, ValueError):
+        return DEFAULT_REPLY_WAIT_MIN
+    return int(clamp(minutes, MIN_REPLY_WAIT_MIN, MAX_REPLY_WAIT_MIN))

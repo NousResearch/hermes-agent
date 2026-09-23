@@ -528,7 +528,17 @@ export const ar = defineLocale({
       disable: 'تعطيل',
       failed: 'فشل',
       empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
-      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' }
+      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
+      installModal: {
+        connectServers: (name, n) =>
+          n === 1
+            ? `تم تثبيت ${name}. خادم MCP الخاص به لم يتصل بعد.`
+            : `تم تثبيت ${name}. خوادم MCP ال${n} الخاصة به لم تتصل بعد.`,
+        connectNow: 'الاتصال الآن',
+        connectSub: 'الدردشات المفتوحة تعيد إرسال سياقها',
+        connectFailed: 'تعذر الاتصال بخوادم MCP الخاصة بالإضافة.',
+        liveNow: name => `تم تثبيت ${name} وهو مفعّل.`
+      }
     },
     notifications: {
       title: 'الإشعارات',
@@ -2833,6 +2843,19 @@ export const ar = defineLocale({
       unreachableDescription: 'تعذّر الوصول إلى صفحة المعاينة.',
       openTarget: url => `فتح ${url}`,
       fallbackTitle: 'معاينة'
+    }
+  },
+  interfaceMode: {
+    title: 'وضع الواجهة',
+    hint: 'يغيّر ما يظهر، وليس ما يستطيع Hermes فعله.',
+    sessionNote: 'يحدده الوضع البسيط. التغيير هنا يستمر لهذه الجلسة فقط؛ بدّل إلى المتقدم لجعله خيارك.',
+    simple: {
+      label: 'بسيط',
+      description: 'للتحدث مع Hermes. الشريط الجانبي والدردشة؛ بلا طرفية أو لوحات ملفات أو فروقات.'
+    },
+    advanced: {
+      label: 'متقدم',
+      description: 'للمطورين. الطرفية والملفات والفروقات وشريط الحالة والتخطيطات، كما أعددتها.'
     }
   },
   zones: {

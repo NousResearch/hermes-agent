@@ -343,6 +343,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
     # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
+    "gpt-6-sol": 1050000, "gpt-6-terra": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
     "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000, "gpt-5.4-mini": 400000, "gpt-5.4": 1050000,
     "gpt-5.3-codex-spark": 128000, "gpt-5.1-chat": 128000, "gpt-5": 400000,
@@ -1721,7 +1722,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
-    "gpt-6-astra": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6-sol": 272_000, "gpt-6-terra": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1730,9 +1731,14 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 # Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
 # gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
 # picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` is a FAMILY
-# PREFIX (``-pro`` slugs aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K.
-_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {"gpt-5.6": 900_000}  # sol / terra / luna
+# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
+# tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
+# aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
+# carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
+# catalog's ``max_context_window`` still caps the bump (#105443) if it publishes a lower ceiling.
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
+    "gpt-5.6": 900_000, "gpt-6-sol": 900_000, "gpt-6-terra": 900_000, "gpt-6-luna": 900_000,
+}
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
     "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
     "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
@@ -1740,8 +1746,8 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
-# dead ``-pro`` variants); dated snapshots of the 5.6 bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
-_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+# dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
+_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-terra", "gpt-6-luna")
 _CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -1760,7 +1766,7 @@ def is_codex_900k_base(model: Optional[str]) -> bool:
     slug = _bare_codex_slug(model)
     if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
         return False
-    # Dated snapshots of the routable 5.6 bases (gpt-5.6-sol-2026-07-09) also qualify.
+    # Dated snapshots of the routable tier bases (gpt-5.6-sol-2026-07-09, gpt-6-sol-2026-09-22) also qualify.
     return slug in _CODEX_900K_ELIGIBLE_BASES or any(
         slug.startswith(base + "-") and _CODEX_900K_SNAPSHOT_RE.match(slug[len(base) + 1:]) for base in _CODEX_900K_SNAPSHOT_BASES
     )
@@ -1807,12 +1813,37 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
-# hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
-# "1.0.0") silently drops future models. "0.0.0" is the backend's ungated sentinel returning
-# the full account catalog; other out-of-sequence values return an empty catalog and omitting
-# the parameter is HTTP 400.
+# hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
+# returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
+# legacy list (astra + the 5.6 trio) while any version at or above the newest
+# ``minimal_client_version`` (0.155.0, 1.0.0, 99.0.0 alike, live 2026-09-22) returns everything the
+# account is entitled to (#119412). So ask as the newest possible client first and keep "0.0.0" as
+# the fallback for the day the backend rejects out-of-sequence versions again (it used to return an
+# empty catalog for them; omitting the parameter is HTTP 400).
+CODEX_MODELS_CATALOG_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
+CODEX_NEWEST_CLIENT_VERSION = "99.0.0"
 CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
-CODEX_MODELS_CATALOG_URL = f"https://chatgpt.com/backend-api/codex/models?client_version={CODEX_UNGATED_CLIENT_VERSION}"
+CODEX_MODELS_CATALOG_URLS = tuple(
+    f"{CODEX_MODELS_CATALOG_ENDPOINT}?client_version={v}"
+    for v in (CODEX_NEWEST_CLIENT_VERSION, CODEX_UNGATED_CLIENT_VERSION)
+)
+
+
+def fetch_codex_catalog_entries(get: Callable[[str], Any]) -> Tuple[List[Any], Optional[int]]:
+    """``(models, last_status)`` from the first catalog URL that answers HTTP 200 with a non-empty
+    ``models`` list; ``get(url)`` is any client returning an object with ``status_code``/``json()``.
+    An empty or non-200 answer on the newest-client URL falls through to the ``0.0.0`` sentinel."""
+    status: Optional[int] = None
+    for url in CODEX_MODELS_CATALOG_URLS:
+        resp = get(url)
+        status = resp.status_code
+        if status != 200:
+            continue
+        data = resp.json()
+        entries = data.get("models") if isinstance(data, dict) else None
+        if isinstance(entries, list) and entries:
+            return entries, status
+    return [], status
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
@@ -1836,17 +1867,18 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
     headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
         _ensure_requests()
-        resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
-        if resp.status_code != 200:
-            logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
+        entries, status = fetch_codex_catalog_entries(
+            lambda url: requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        )
+        if status != 200:
+            logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
             return {}, False
-        data = resp.json()
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False
     result: Dict[str, int] = {}
     max_result: Dict[str, int] = {}
-    for item in data.get("models", []) if isinstance(data, dict) else []:
+    for item in entries:
         slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
         if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
             result[slug.strip()] = ctx

@@ -383,6 +383,7 @@ export const zh = defineLocale({
       'view.toggleStatusbar': '切换状态栏',
       'view.toggleTabStrip': '切换标签',
       'view.toggleProfileRail': '切换配置档案栏',
+      'view.toggleSimpleMode': '切换简洁模式',
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
@@ -631,6 +632,12 @@ export const zh = defineLocale({
         reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
         restartToApply: '重启网关后插件才会生效。',
         restartNow: '重启网关',
+        connectServers: (name, n) =>
+          n === 1 ? `${name} 已安装。其 MCP 服务器尚未连接。` : `${name} 已安装。其 ${n} 个 MCP 服务器尚未连接。`,
+        connectNow: '立即连接',
+        connectSub: '打开的聊天会重新发送其上下文',
+        connectFailed: '无法连接该插件的 MCP 服务器。',
+        liveNow: name => `${name} 已安装并生效。`,
         missingEnvAction: '去设置',
         alreadyInstalled: (name: string) => `${name} 已安装。`,
         desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',
@@ -4033,6 +4040,20 @@ export const zh = defineLocale({
       commentTitle: n => `批注 ${n}`,
       saveComment: '保存',
       cancelComment: '取消批注'
+    }
+  },
+
+  interfaceMode: {
+    title: '界面模式',
+    hint: '只改变显示的内容，不改变 Hermes 的能力。',
+    sessionNote: '由简洁模式设定。此处的更改仅在本次会话内生效；切换到高级模式即可保留为你的设置。',
+    simple: {
+      label: '简洁',
+      description: '用于与 Hermes 对话。只有侧边栏和聊天；没有终端、文件或差异面板。'
+    },
+    advanced: {
+      label: '高级',
+      description: '面向开发者。终端、文件、差异、状态栏和布局，按你的设置显示。'
     }
   },
 

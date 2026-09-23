@@ -251,3 +251,29 @@ def test_cli_stop_refuses_for_a_served_profile_without_its_own_gateway(served_ro
     with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
         gw._cmd_stop(argparse.Namespace(system=False, all=False))
     assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+
+def test_the_multiplexer_restart_names_the_root_even_under_a_sticky_active_profile(served_root, monkeypatch):
+    """From a dashboard whose own home is the DEFAULT one, restarting a served profile must still address
+    the multiplexer. A bare `gateway restart` child re-reads the sticky active_profile (the root home is
+    not trusted as-is, #22502) and restarts that profile instead, which the multiplexer serves: the
+    action log says restarted and the multiplexer never was."""
+    from pathlib import Path
+
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli.main import _apply_profile_override
+    from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment
+    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
+    monkeypatch.setenv("HERMES_HOME", str(served_root))  # the dashboard runs as the default profile
+    (served_root / "active_profile").write_text("coder")
+    monkeypatch.setattr(Path, "home", lambda: served_root.parent)
+    restart = _gateway_subcommand("coder", "restart")
+    for var, value in _profile_action_environment(restart).items():
+        if var == "HERMES_HOME":
+            monkeypatch.setenv(var, value)
+    for var in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD", "INVOCATION_ID",
+                "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("sys.argv", ["hermes", *restart])
+    _apply_profile_override()  # what the spawned child does first
+    assert os.environ["HERMES_HOME"] == str(served_root)

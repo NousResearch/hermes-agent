@@ -518,8 +518,8 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     profile = _own_profile_selector(profile)
     args = _profile_cli_args(profile)
     if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
-        from hermes_constants import get_process_hermes_home, profile_name_for_home
-        args = [] if profile_name_for_home(get_process_hermes_home()) == "default" else ["-p", "default"]
+        # Always explicit, even from the default home: a bare child re-reads the sticky active_profile.
+        args = ["-p", "default"]
     return args + ["gateway", verb]
 
 

@@ -989,7 +989,9 @@ def _begin_update_receipt_and_plan(args, *, begin_receipt=True, require_complete
     _pre_update_plan = None
     with _best_effort('Update plan phase failed: %s'):
         from hermes_cli.update_inventory import collect_runtime_inventory, record_plan_in_receipt
-        _pre_update_plan = collect_runtime_inventory(require_complete=require_complete)
+        _pre_update_plan = (
+            collect_runtime_inventory(require_complete=True)
+            if require_complete else collect_runtime_inventory())
         record_plan_in_receipt(_pre_update_plan)
         if _pre_update_plan.runtimes:
             _n = len(_pre_update_plan.runtimes)
@@ -1308,20 +1310,19 @@ def _sibling_snapshots_module():
 def _cmd_pinned_update_impl(args, gateway_mode: bool):
     """Prepare the same safety state as an ordinary update, then apply one exact target."""
     from hermes_cli.update_receipt import (
-        begin_update_receipt, finalize_update_receipt, record_refusal, record_step,
+        begin_update_receipt, finalize_update_receipt, record_failure, record_refusal, record_step,
     )
 
     request = args.target_request
     correlation_id = uuid.uuid4().hex
     requested_branch = getattr(args, "branch", None)
-    # Refusals before Git admission still need the exact reviewed source in
-    # their receipt. The reviewed ref names the admitted branch even if the
-    # live checkout has drifted to another branch since review.
+    # Keep the reviewed ref in refusals even if the checkout branch drifted.
     receipt_branch = request.source.resolved_ref.removeprefix("refs/remotes/origin/")
     begin_update_receipt(intent=_pinned_intent(
         request, branch=receipt_branch, correlation_id=correlation_id,
     ))
     _windows_gateway_resume = None
+    apply_started = False
     try:
         opts = _resolve_update_options(args, gateway_mode)
         _pre_update_plan = _begin_update_receipt_and_plan(
@@ -1361,6 +1362,7 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
         if _m()._is_windows() and not getattr(args, "force_venv", False):
             _clear_windows_venv_holders_or_exit(args, gateway_mode, _windows_gateway_resume)
         had_desktop_app_before_update = _desktop_app_present(_m().PROJECT_ROOT / "apps" / "desktop")
+        apply_started = True
         result = apply_pinned_target(
             _m().PROJECT_ROOT, request, branch=requested_branch
         )
@@ -1370,6 +1372,9 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
             if _current is not None:
                 _current.set_intent(intent)
         record_step("pinned_apply", True, f"post_sha={result.target_sha}")
+        _write_fleet_restart_pending_marker(
+            expected_sha=result.target_sha, runtimes=_pre_update_plan.to_dict().get("runtimes"))
+        _sweep_bytecode_after_update(result.branch)
         _hand_off_post_swap(
             args, swap="pinned-git", branch=result.branch, pre_pull_sha=result.prior_sha,
             is_fork=False, opts=opts, gateway_mode=gateway_mode,
@@ -1379,17 +1384,37 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
             target_request=request, correlation_id=correlation_id,
         )
     except TargetAdmissionError as exc:
-        record_step("pinned_admission", False, exc.reason)
-        record_refusal(exc.reason)
-        finalize_update_receipt("refused", stop_reason=exc.reason)
+        post_apply = exc.reason in {"pinned-apply-refused", "post-apply-head-mismatch"}
+        record_step("pinned_apply" if post_apply else "pinned_admission", False, exc.reason)
+        if post_apply:
+            record_failure(exc.reason)
+            _write_fleet_restart_pending_marker(
+                expected_sha=request.revision, runtimes=_pre_update_plan.to_dict().get("runtimes"))
+            _m()._write_update_incomplete_marker()
+        else:
+            record_refusal(exc.reason)
+        finalize_update_receipt("failed" if post_apply else "refused", stop_reason=exc.reason)
         if gateway_mode:
             _write_gateway_update_exit_code(False)
-        print(f"✗ Pinned update refused: {exc}")
-        raise SystemExit(2)
+        print(f"✗ Pinned update {'incomplete' if post_apply else 'refused'}: {exc}")
+        raise SystemExit(1 if post_apply else 2)
     except SystemExit as exc:
         if exc.code == 2:
             record_refusal("pre-update-safety-refused")
             finalize_update_receipt("refused", stop_reason="pre-update-safety-refused")
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+        raise
+    except BaseException as exc:
+        if apply_started:
+            # An unexpected exit after entering Git apply cannot prove the checkout stayed put.
+            reason = f"post-apply-error:{type(exc).__name__}"
+            record_step("pinned_apply", False, reason)
+            record_failure(reason)
+            _write_fleet_restart_pending_marker(
+                expected_sha=request.revision, runtimes=_pre_update_plan.to_dict().get("runtimes"))
+            _m()._write_update_incomplete_marker()
+            finalize_update_receipt("failed", stop_reason=reason)
             if gateway_mode:
                 _write_gateway_update_exit_code(False)
         raise

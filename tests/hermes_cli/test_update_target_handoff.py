@@ -17,6 +17,7 @@ import pytest
 
 from hermes_cli import update_handoff, update_receipt
 from hermes_cli.update_target import (
+    PinnedApplyResult,
     TargetRequest,
     SourceBinding,
     validate_source_binding,
@@ -104,6 +105,24 @@ def test_post_swap_head_mismatch_is_refused_without_repair(tmp_path):
         verify_pinned_post_swap(checkout, _request(checkout, b_sha, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == a_sha
+
+
+def test_post_apply_head_probe_failure_reports_uncertainty_after_checkout_moves(tmp_path, monkeypatch):
+    from hermes_cli import update_target
+
+    checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
+    read_git = update_target._git_value
+
+    def read_head(root, *args):
+        if args == ("rev-parse", "HEAD") and _git(checkout, "rev-parse", "HEAD") == b_sha:
+            return None
+        return read_git(root, *args)
+
+    monkeypatch.setattr(update_target, "_git_value", read_head)
+    with pytest.raises(TargetAdmissionError, match="post-apply-head-mismatch"):
+        apply_pinned_target(checkout, _request(checkout, b_sha, a_sha))
+
+    assert _git(checkout, "rev-parse", "HEAD") == b_sha
 
 
 def test_post_swap_install_identity_mismatch_is_refused_without_repair(tmp_path):
@@ -438,6 +457,10 @@ def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
     )
     monkeypatch.setattr(update_cmd, "_resolve_pre_update_backup_mode", lambda _args: mode)
     monkeypatch.setattr(update_cmd, "_desktop_app_present", lambda _dir: events.append("desktop") or True)
+    monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker",
+                        lambda **kwargs: events.append(("marker", kwargs)))
+    monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update",
+                        lambda branch: events.append(("bytecode", branch)))
     monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *_args: events.append("holders"))
     monkeypatch.setattr("atexit.register", lambda *_args: None)
     monkeypatch.setattr(
@@ -463,7 +486,11 @@ def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
         expected = ["options", "plan", "backup", "pause"]
         if sys.platform == "win32":
             expected.append("holders")
-        assert events[:len(expected) + 3] == expected + ["desktop", "apply", "handoff"]
+        assert events[:len(expected) + 5] == expected + [
+            "desktop", "apply",
+            ("marker", {"expected_sha": request.revision, "runtimes": []}),
+            ("bytecode", "release/1"), "handoff",
+        ]
         assert captured["branch"] == "release/1"
         assert captured["target_request"] == request
         assert captured["correlation_id"]
@@ -482,9 +509,10 @@ def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
 
 @pytest.mark.parametrize("failure", [
     "plan", "plan-sha", "backup", "backup-outcome", "full", "sibling", "sibling-enumeration",
-    pytest.param("holder", marks=pytest.mark.windows_only), "admission",
+    pytest.param("holder", marks=pytest.mark.windows_only), "admission", "post-apply",
+    "merge-attempt", "bytecode",
 ])
-def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypatch, failure):
+def test_pinned_pre_handoff_failure_never_leaves_gateway_paused(tmp_path, monkeypatch, failure):
     from hermes_cli import update_cmd
     from hermes_cli import backup
     from hermes_cli.update_inventory import UpdatePlan
@@ -528,9 +556,14 @@ def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypat
             _resume_windows_gateways_after_update=lambda value: (
                 events.append("resume"), value.update(resume_needed=False)
             ) if value and value.get("resume_needed") else None,
+            _write_update_incomplete_marker=lambda: events.append("incomplete-marker"),
             _is_windows=lambda: sys.platform == "win32",
         ),
     )
+    monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker",
+                        lambda **_kwargs: events.append("fleet-marker"))
+    monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update",
+                        lambda _branch: (_ for _ in ()).throw(RuntimeError("bytecode sweep failed")))
     def refuse_holder(*_args):
         events.append("holder")
         if failure == "holder":
@@ -538,17 +571,38 @@ def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypat
     monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", refuse_holder)
     def apply(*_args, **_kwargs):
         events.append("apply")
-        raise TargetAdmissionError("dirty-checkout")
+        if failure == "bytecode":
+            return PinnedApplyResult(
+                "applied", request.current_sha, request.revision, "main", "origin")
+        raise TargetAdmissionError(
+            "post-apply-head-mismatch" if failure == "post-apply" else
+            "pinned-apply-refused" if failure == "merge-attempt" else "dirty-checkout"
+        )
     monkeypatch.setattr(update_cmd, "apply_pinned_target", apply)
     monkeypatch.setattr(update_cmd, "_hand_off_post_swap", lambda *_args, **_kwargs: events.append("handoff"))
 
     try:
-        with pytest.raises(SystemExit) as raised:
+        with pytest.raises(RuntimeError if failure == "bytecode" else SystemExit) as raised:
             update_cmd._cmd_pinned_update_impl(args, gateway_mode=False)
-        assert raised.value.code == 2
+        after_merge = failure in {"post-apply", "merge-attempt", "bytecode"}
+        if failure != "bytecode":
+            assert raised.value.code == (1 if after_merge else 2)
         assert "handoff" not in events
-        assert ("apply" in events) == (failure == "admission")
-        assert ("resume" in events) == (failure in {"holder", "admission"})
+        assert ("apply" in events) == (failure in {"admission", "post-apply", "merge-attempt", "bytecode"})
+        assert ("resume" in events) == (failure in {"holder", "admission", "post-apply", "merge-attempt", "bytecode"})
+        if after_merge:
+            receipt_path = tmp_path / "home" / "logs" / "update_receipts" / "latest.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            assert receipt["outcome"] == "failed"
+            expected_reason = {
+                "post-apply": "post-apply-head-mismatch",
+                "merge-attempt": "pinned-apply-refused",
+                "bytecode": "post-apply-error:RuntimeError",
+            }[failure]
+            assert any(
+                expected_reason in reason for reason in receipt["failure_reasons"]
+            )
+            assert "fleet-marker" in events and "incomplete-marker" in events
         if failure == "full":
             receipt_path = tmp_path / "home" / "logs" / "update_receipts" / "latest.json"
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))

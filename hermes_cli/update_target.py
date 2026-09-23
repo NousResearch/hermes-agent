@@ -138,7 +138,7 @@ class TargetRequest:
 
 
 class TargetAdmissionError(RuntimeError):
-    """A pinned target failed a pre-mutation admission predicate."""
+    """Pinned admission failed, or the Git apply result could not be verified."""
 
     def __init__(self, reason: str, detail: str = "") -> None:
         self.reason = reason
@@ -378,9 +378,9 @@ def apply_pinned_target(
 ) -> PinnedApplyResult:
     """Admit and apply one exact target from the existing ``origin`` remote.
 
-    Every refusal is raised before the one ``merge --ff-only <sha>`` movement.
-    The origin branch may advance after review; the requested object remains the
-    only object this function can apply.
+    Admission refusals precede the one ``merge --ff-only <sha>`` movement.
+    Git apply or post-apply verification failures leave the outcome uncertain.
+    The origin branch may advance after review; only the requested object is applied.
     """
     root = Path(root)
     request = _require_request(request)

@@ -49,9 +49,6 @@ _FAKES = (
 # Files that faked macOS before this check existed (#111866). Burn down, never extend.
 _BASELINE = frozenset(
     {
-        "tests/hermes_cli/test_doctor.py",
-        "tests/hermes_cli/test_gateway.py",
-        "tests/hermes_cli/test_gateway_proc_fallback.py",
         "tests/hermes_cli/test_linux_sandbox_fixup.py",
         "tests/hermes_cli/test_macos_fda_guidance.py",
         "tests/hermes_cli/test_orphan_desktop_serve_reap.py",

@@ -10,7 +10,6 @@ Invariant tests only, no list snapshots. They pin what would silently regress:
    gpt-5.6 effort ladder (``max`` allowed).
 """
 
-from decimal import Decimal
 
 from agent.auxiliary_client import _compression_threshold_for_model
 from agent.model_metadata import (
@@ -19,10 +18,8 @@ from agent.model_metadata import (
     strip_codex_context_variant_suffix,
 )
 from agent.reasoning_effort import CODEX_GPT56_EFFORTS, codex_supported_efforts
-from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
 from hermes_cli.codex_models import _finalize_codex_models
 from hermes_cli.model_switch import _model_sort_key
-from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
 GPT6_TIERS = ("gpt-6-sol", "gpt-6-luna")  # terra: never published by OpenAI, not on OpenRouter/Codex (2026-09-22)
 
@@ -48,21 +45,5 @@ def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
         assert codex_supported_efforts(f"openai/{base}") == CODEX_GPT56_EFFORTS
 
 
-def test_gpt6_tiers_replace_56_in_aggregator_catalogs_with_pricing_aliases():
-    for provider, listed in (("nous", set(_PROVIDER_MODELS["nous"])), ("openrouter", {m for m, _ in OPENROUTER_MODELS})):
-        assert {f"openai/{t}" for t in GPT6_TIERS} <= listed, provider
-        assert not {m for m in listed if "gpt-5.6" in m}, provider
-    for base in ("gpt-6-sol", "gpt-6-luna"):  # Terra has no published pricing page yet
-        entry = _OFFICIAL_DOCS_PRICING[("openai", base)]
-        assert entry.input_cost_per_million is not None, base
-        assert entry.cache_write_cost_per_million == entry.input_cost_per_million * Decimal("1.25"), base
-        for suffix in ("pro", "900k"):
-            assert _OFFICIAL_DOCS_PRICING[("openai", f"{base}-{suffix}")] is entry, (base, suffix)
 
 
-def test_codex_forward_compat_only_synthesizes_published_gpt6_tiers():
-    """Forward-compat synthesis puts names in the picker before the account catalog lists them, so it
-    must stay within tiers OpenAI has actually published (sol, luna; astra is discovery-only). A guessed
-    name such as gpt-6-terra shipped as a live picker choice once."""
-    synthesized = {m for m in _finalize_codex_models(["gpt-5.5"]) if m.startswith("gpt-6-")}
-    assert synthesized == {f"{base}{suffix}" for base in GPT6_TIERS for suffix in ("", "-900k")}

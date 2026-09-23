@@ -139,11 +139,22 @@ def _refuse_failed_read(config_path: Path, data: Any) -> None:
         config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display()))
 
 
-def _refuse_overwrite(config_path: Path, reason: str, exc: Exception, fix: str) -> RuntimeError:
+class ConfigWriteRefusedError(RuntimeError):
+    """A config.yaml write refused because the existing file cannot be read or parsed; the message
+    names the file and how to fix it, so surfaces show it instead of a generic failure."""
+
+
+class UnparseableConfigError(ConfigWriteRefusedError):
+    """The refusal for a readable file that is not a YAML mapping — the one case a full-document
+    replacement may overwrite, since it reads nothing back from the old file."""
+
+
+def _refuse_overwrite(
+        config_path: Path, reason: str, exc: Exception, fix: str, *, unparseable: bool = False) -> ConfigWriteRefusedError:
     """Error for a write that must not replace an existing config.yaml. Plain lead + ``Details:``."""
     where = _yaml_error_location(exc)
     at = f" ({where})" if where else ""
-    return RuntimeError(
+    return (UnparseableConfigError if unparseable else ConfigWriteRefusedError)(
         f"Your settings file ({config_path}) {reason}{at}, so this change was not saved. {fix} "
         f"Details: {_yaml_error_details(exc)}")
 

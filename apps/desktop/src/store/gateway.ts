@@ -19,7 +19,12 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
-import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -726,6 +731,12 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     // this secondary (SSH terminal, messaging DELETE, session send, …) never
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
+    //
+    // Two bring-ups with different legitimate worst cases: a registry route is a
+    // backend coming up on ANOTHER machine (ssh connect + probes + remote spawn +
+    // ready sentinel), which is the SOURCE_SWITCH_DIAL budget, while a local
+    // profile's pooled child spawns on this machine (measured ~9 s; the
+    // reconnect-class budget is not the binding constraint there).
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
@@ -734,7 +745,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
               profile: entry.profile,
               ...dialPriority(spawnPriority)
             }),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            SOURCE_SWITCH_DIAL_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
         : await withTimeout(

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { SOURCE_SWITCH_DIAL_TIMEOUT_MS } from '@/lib/with-timeout'
 
 import { deferred } from '../test/deferred'
 
@@ -624,6 +625,47 @@ describe('selectConnection', () => {
     }
   })
 
+  it('a slow-but-healthy dial is not a failed switch: the source caps only past the ssh layer budget, and the click lands', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const dial = deferred<void>()
+
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+      openGatewayAgent.mockImplementationOnce(() => dial.promise)
+
+      let outcome = 'pending'
+
+      const attempt = selectConnection('homelab').then(
+        () => {
+          outcome = 'resolved'
+        },
+        (error: Error) => {
+          outcome = error.message
+        }
+      )
+
+      // A cold remote dial is a chain of main-process stages (ssh connect, the
+      // platform/locate/version execs, the spawned backend's ready sentinel, the
+      // forward) that routinely outruns the 20 s reconnect-class budget: measured
+      // 37-64 s against a small VPS. The switch must keep waiting instead of
+      // toasting "Could not connect to <source>" for a source that is arriving.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(outcome).toBe('pending')
+      expect($pendingConnectionId.get()).toBe('homelab')
+
+      dial.resolve()
+      await attempt
+
+      expect(outcome).toBe('resolved')
+      expect($connection.get()?.connectionId).toBe('homelab')
+      expect($gatewaySwitching.get()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a dial that never answers times out: nothing severed, the click fails visibly, and the source can be retried', async () => {
     vi.useFakeTimers()
 
@@ -638,7 +680,7 @@ describe('selectConnection', () => {
         (error: Error) => error.message
       )
 
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(SOURCE_SWITCH_DIAL_TIMEOUT_MS)
 
       expect(await outcome).toMatch(/Timed out connecting to "Homelab"/)
       expect(ensureGatewayAgent).not.toHaveBeenCalled()

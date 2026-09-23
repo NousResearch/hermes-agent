@@ -4,7 +4,12 @@ import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
 import {
@@ -34,7 +39,12 @@ const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 // handshake or IPC (the #93454 class) must surface as a failed click — not a
 // spinner that also swallows every later click on the same source, and never
 // a barrier left up or a wipe left unpainted.
-const SWITCH_DIAL_TIMEOUT_MS = 20_000
+//
+// The dial and the commit are different work and so carry different budgets.
+// The commit is local (sever the old bindings, activate, publish) and stays at
+// the reconnect-class 20 s. The dial is the main process's whole remote
+// bring-up chain, which the renderer cannot time from here — see
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS in lib/with-timeout.ts for its composition.
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // Matches the primary spawn budget: a healthy cold boot publishes well within
@@ -407,7 +417,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // and a registry primary can differ from a legacy per-profile override.
     await withTimeout(
       openGatewayAgent(connectionId, targetProfile),
-      SWITCH_DIAL_TIMEOUT_MS,
+      SOURCE_SWITCH_DIAL_TIMEOUT_MS,
       `Timed out connecting to "${targetConnection.label}".`
     )
 
@@ -427,7 +437,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
       // the exact failure for caller UX (network failures are not sign-in errors).
       await withTimeout(
         getProfiles({ connectionId, profile: targetProfile }),
-        SWITCH_DIAL_TIMEOUT_MS,
+        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
         `Timed out connecting to "${targetConnection.label}".`
       )
 

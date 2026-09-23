@@ -108,6 +108,70 @@ test('inactive SSH crash recovery keeps ordinary dials fenced until positive cle
   assert.doesNotThrow(() => relaunchedGate.assertCanDial('homelab'))
 })
 
+test('durable recovery clears journal after positive clearance even if one scope restore fails', async () => {
+  let durable: string | null = CORRELATION
+  const gate = new ManagedConnectionUpdateGate(id => (id === 'homelab' ? durable : null))
+  const results = await recoverManagedSshScopes({
+    scopes: [{ profile: 'primary' }, { profile: 'gone' }],
+    awaitClearance: async () => {},
+    restoreScope: async (s) => { if (s.profile === 'gone') throw new Error('missing target') },
+    completeRecovery: async () => { durable = null }
+  })
+  assert.equal(results.filter(r => r.status === 'rejected').length, 1)
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1)
+  assert.doesNotThrow(() => gate.assertCanDial('homelab'))
+  assert.doesNotThrow(() => gate.assertCanMutate('homelab'))
+})
+
+test('clearance failure retains durable journal (do not unwedge a live update)', async () => {
+  let durable = CORRELATION
+  let cleared = false
+  await assert.rejects(() => recoverManagedSshScopes({
+    scopes: [{ profile: 'primary' }],
+    awaitClearance: async () => { throw new Error('marker unavailable') },
+    restoreScope: async () => {},
+    completeRecovery: async () => { cleared = true; durable = null }
+  }))
+  assert.equal(cleared, false)
+})
+
+test('managed update clears journal after clearance even if one scope restore fails', async () => {
+  let journalCleared = false
+
+  const result = await runManagedSshUpdate({
+    connectionId: 'homelab',
+    correlationId: CORRELATION,
+    scopes: [
+      { key: 'a', profile: 'primary' },
+      { key: 'b', profile: 'gone' }
+    ],
+    preflightRemote: async () => {},
+    prepareRecovery: async () => {},
+    drainScope: async () => {},
+    updateRemote: async () => ({
+      exitCode: 0,
+      receipt: { correlationId: CORRELATION, outcome: 'success' }
+    }),
+    awaitRestoreClearance: async () => {},
+    closeTransports: async () => {},
+    restoreScope: async scope => {
+      if (scope.profile === 'gone') {
+        throw new Error('missing target')
+      }
+    },
+    completeRecovery: async () => {
+      journalCleared = true
+    },
+    releaseGate: () => {}
+  })
+
+  assert.equal(journalCleared, true)
+  assert.equal(result.restoreOk, false)
+  assert.equal(result.ok, false)
+  assert.equal(result.updateOk, true)
+  assert.equal(result.outcome, 'restore-failed')
+})
+
 test('managed update joins a pre-claim bootstrap until its final gate check rolls back the serve', async () => {
   const gate = new ManagedConnectionUpdateGate()
   const coordinator = createBootstrapCoordinator()

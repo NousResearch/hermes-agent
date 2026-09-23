@@ -2,10 +2,11 @@
 
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
-Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus exact
-gpt-6-astra on official Codex OAuth. The local compressor
-stays armed as fallback (native threshold clamped below the local trigger); compaction items
-ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
+Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus
+gpt-6 Astra/Sol/Luna on official Codex OAuth (Sol/Luna also allow Hermes' -900k
+aliases). The local compressor stays armed as fallback (native threshold clamped below
+the local trigger); compaction items ride the ``codex_reasoning_items`` sidecar.
+No transport imports (shared gate, no cycles).
 """
 
 from __future__ import annotations
@@ -31,10 +32,13 @@ _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
 def is_native_compaction_model(
     model: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
 ) -> bool:
-    """Preserve gpt-5.6 eligibility; Astra additionally requires official Codex OAuth."""
+    """Preserve gpt-5.6 eligibility; GPT-6 requires official Codex OAuth."""
     model_name = (model or "").lower()
     return _ELIGIBLE_MODEL_MARKER in model_name or (
-        model_name == "gpt-6-astra"
+        model_name in {
+            "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+            "gpt-6-sol-900k", "gpt-6-luna-900k",
+        }
         and (provider or "").strip().lower() == "openai-codex"
         and is_official_codex_base_url(base_url or "")
     )

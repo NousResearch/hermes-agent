@@ -148,7 +148,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
         logger.info("HERMES_SAFE_MODE=1 — shell-hook registration skipped")
         return []
     effective_accept = _resolve_effective_accept(cfg, accept_hooks)
-    specs = _parse_hooks_block(cfg.get("hooks"))
+    specs = _parse_hooks_block(cfg.get("hooks"), max_timeout=_configured_max_timeout(cfg))
     if not specs:
         return []
     from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
@@ -178,7 +178,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
 
 def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
     """Parse config hooks without registering (``hermes hooks list`` / doctor)."""
-    return _parse_hooks_block(cfg.get("hooks")) if isinstance(cfg, dict) else []
+    return _parse_hooks_block(cfg.get("hooks"), max_timeout=_configured_max_timeout(cfg)) if isinstance(cfg, dict) else []
 
 
 def re_register_config_hooks() -> None:
@@ -208,7 +208,19 @@ def reset_for_tests() -> None:
 
 # --- Config parsing ---
 
-def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
+def _configured_max_timeout(cfg: Dict[str, Any]) -> int:
+    """Return the profile's shell-hook timeout cap, falling back safely on bad config."""
+    try:
+        timeout = int(cfg.get("hooks_max_timeout", MAX_TIMEOUT_SECONDS))
+    except (TypeError, ValueError):
+        timeout = 0
+    if timeout < 1:
+        logger.warning("hooks_max_timeout must be an int >= 1; using default %ds", MAX_TIMEOUT_SECONDS)
+        return MAX_TIMEOUT_SECONDS
+    return timeout
+
+
+def _parse_hooks_block(hooks_cfg: Any, *, max_timeout: int = MAX_TIMEOUT_SECONDS) -> List[ShellHookSpec]:
     """Normalise ``hooks:`` into specs; malformed entries warn-and-skip, never raise."""
     from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
     if not isinstance(hooks_cfg, dict):
@@ -233,11 +245,11 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
         if not isinstance(entries, list):
             logger.warning("hooks.%s must be a list of hook definitions; got %s", event_name, type(entries).__name__)
             continue
-        specs.extend(filter(None, (_parse_single_entry(event_name, i, raw) for i, raw in enumerate(entries))))
+        specs.extend(filter(None, (_parse_single_entry(event_name, i, raw, max_timeout) for i, raw in enumerate(entries))))
     return specs
 
 
-def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookSpec]:
+def _parse_single_entry(event: str, index: int, raw: Any, max_timeout: int = MAX_TIMEOUT_SECONDS) -> Optional[ShellHookSpec]:
     def warn(msg: str, *args: Any) -> None:
         logger.warning("hooks.%s[%d]" + msg, event, index, *args)
 
@@ -264,9 +276,9 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
     if timeout < 1:
         warn(".timeout must be >=1; using default %ds", DEFAULT_TIMEOUT_SECONDS)
         timeout = DEFAULT_TIMEOUT_SECONDS
-    elif timeout > MAX_TIMEOUT_SECONDS:
-        warn(".timeout=%ds exceeds max %ds; clamping", timeout, MAX_TIMEOUT_SECONDS)
-        timeout = MAX_TIMEOUT_SECONDS
+    elif timeout > max_timeout:
+        warn(".timeout=%ds exceeds max %ds; clamping", timeout, max_timeout)
+        timeout = max_timeout
     # ``fail_closed`` (canonical) wins over ``failClosed`` (Cursor/Claude-Code compat).
     fail_closed = raw.get("fail_closed", raw.get("failClosed", False))
     if not isinstance(fail_closed, bool):
@@ -374,6 +386,9 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
+    # Plugin dispatch uses this to wait for the subprocess's configured deadline rather than
+    # the shorter generic Python-plugin callback deadline.
+    _callback._shell_hook_timeout_seconds = spec.timeout
     return _callback
 
 
@@ -462,7 +477,7 @@ def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     message = data.get("message") or data.get("reason")
     if action in {"continue", "block"} and isinstance(message, str) and message.strip():
-        return {"action": "continue", "message": message.strip()}
+        return {"action": action, "message": message.strip()}
     return None
 
 

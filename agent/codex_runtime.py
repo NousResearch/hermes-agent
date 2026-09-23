@@ -366,11 +366,13 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         args = _codex_item_to_args(item)
         if item_id:
             started[item_id] = (name, args, time.monotonic())
+        call_id = _stable_call_id(item, name)
         agent_cb("tool_progress_callback", "tool_progress_callback raised on tool.started for %s", name,
-                 args=("tool.started", name, _codex_item_to_preview(item), args))
+                 args=("tool.started", name, _codex_item_to_preview(item), args),
+                 kwargs={"call_id": call_id} if item_id else None)
         # Stable-ID tool card (TUI/desktop) fires alongside the progress bubble.
         agent_cb("tool_start_callback", "tool_start_callback raised for %s", name,
-                 args=(_stable_call_id(item, name), name, args))
+                 args=(call_id, name, args))
 
     def _fire_tool_completed(item: dict) -> None:
         name = _codex_item_to_tool_name(item)

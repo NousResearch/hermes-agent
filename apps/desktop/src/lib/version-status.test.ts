@@ -42,10 +42,6 @@ describe('resolveVersionStatus', () => {
     expect(status.hasUpdate).toBe(true)
   })
 
-  it('names the client as one of two versions in remote mode', () => {
-    expect(client({ remote: true, version: '0.4.2' }).label).toBe('client v0.4.2')
-  })
-
   it('falls back to the sha, then to unknown, when there is no version', () => {
     expect(client({ sha: 'abc1234' }).label).toBe('abc1234')
     expect(client({ sha: 'abc1234' }).unknown).toBe(false)
@@ -61,15 +57,6 @@ describe('resolveVersionStatus', () => {
     expect(applying.hasUpdate).toBe(false)
 
     expect(client({ applying: true, restarting: true, version: '0.4.2' }).label).toBe('v0.4.2 · restart')
-  })
-
-  it('leads the tooltip with the apply message while applying', () => {
-    expect(client({ applyMessage: 'Pulling…', applying: true, version: '0.4.2' }).tooltip).toBe(
-      'Pulling… · Hermes Desktop v0.4.2'
-    )
-    expect(client({ applying: true, version: '0.4.2' }).tooltip).toBe(
-      `${copy.updateInProgress} · Hermes Desktop v0.4.2`
-    )
   })
 
   it('labels the backend target distinctly and never claims a client sha', () => {

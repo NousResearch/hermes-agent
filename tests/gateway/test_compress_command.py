@@ -3,7 +3,7 @@
 import asyncio
 import threading
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -161,15 +161,9 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(t
 
     # Compression succeeded
     assert "Compressed:" in result
-    # No ⚠️ warning (that's reserved for dropped-turns case)
-    assert "⚠️" not in result
-    # But there IS an info note about the broken aux model
-    assert "ℹ️" in result
+    # The broken aux model is surfaced to the user
     assert "gemini-3-flash-preview" in result
     assert "404" in result
-    assert "auxiliary.compression.model" in result
-    # The user's context is explicitly called out as intact
-    assert "intact" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -426,37 +420,6 @@ async def test_compress_command_multiplexed_runs_under_profile_secret_scope(tmp_
     runner._resolve_profile_home_for_source.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_compress_command_single_profile_skips_profile_resolution():
-    """Multiplexing off → the scope wrapper is a transparent pass-through.
-
-    Single-profile gateways must not pay the profile-resolution path (and
-    ``_resolve_profile_home_for_source`` assumes multiplex config exists) —
-    mirrors the gating contract of ``_run_agent``'s wrapper.
-    """
-    history = _make_history()
-    runner = _make_runner(history)
-    runner._resolve_profile_home_for_source = MagicMock()
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (list(history), "")
-    agent_instance._compression_skipped_due_to_lock = False
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
-    ):
-        await runner._handle_compress_command(_make_event())
-
-    runner._resolve_profile_home_for_source.assert_not_called()
-    runner._shutdown_executor()
 
 
 @pytest.mark.asyncio

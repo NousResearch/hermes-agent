@@ -84,7 +84,7 @@ def update(bot, uid=10, kind="text", *, edited=False, chat=42, text="hello", gro
 
 
 @asynccontextmanager
-async def connected(monkeypatch, *, extra=None, bot_id=111):
+async def connected(monkeypatch, *, extra=None, bot_id=111, is_reconnect=False):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token=f"{bot_id}:offline-test", extra=extra or {}))
     # Only transport/lifecycle services and the final model-work boundary are replaced.
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88")
@@ -102,7 +102,7 @@ async def connected(monkeypatch, *, extra=None, bot_id=111):
         return True
 
     monkeypatch.setattr(adapter, "_start_session_processing", start)
-    assert await adapter.connect()
+    assert await adapter.connect(is_reconnect=is_reconnect)
     try:
         yield adapter, adapter._app, delivered
     finally:
@@ -192,13 +192,14 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
             await app.process_update(update(app.bot, **args))
             assert len(delivered) == 2
         if mode == "owners":
-            for profile, bot_id in (("alpha", 222), ("beta", 333), ("alpha", 222)):
+            for profile, bot_id, fresh in (("alpha", 222, 1), ("beta", 333, 1), ("alpha", 222, 0)):
                 token = set_hermes_home_override(tmp_path / profile)
                 try:
                     async with connected(monkeypatch, bot_id=bot_id) as (other, other_app, other_delivered):
                         await other_app.process_update(update(other_app.bot))
                         await asyncio.gather(*other._pending_text_batch_tasks.values())
-                        assert len(other_delivered) == 1
+                        # A rebuilt adapter for the same bot and home reads that home's receipt.
+                        assert len(other_delivered) == fresh
                 finally:
                     reset_hermes_home_override(token)
             await app.process_update(update(app.bot))
@@ -739,3 +740,53 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
         assert len(delivered) == 1
         assert delivered[0].text == ("/status" if stage == "dispatch" else "hello")
         assert adapter._platform_event_handler.await_count == (1 if stage in ("prepare", "pressure", "batch_prepare") else 0)
+
+
+@pytest.mark.asyncio
+async def test_redelivery_to_rebuilt_adapter_is_dropped(monkeypatch, tmp_path):
+    """The reconnect watcher and a gateway restart both build a new adapter, and a new PTB
+    Updater polls from offset 0: Telegram resends every update whose acknowledgement never
+    landed. The receipt must outlive the adapter that completed the update."""
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.telegram.update_admission import RECEIPT_TTL_SECONDS
+
+    receipts = get_hermes_home() / "telegram_update_receipts_111.json"
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        with monkeypatch.context() as broken:
+            broken.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+            await app.process_update(update(app.bot, 20, text="unaccepted"))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert [event.text for event in delivered] == ["hello"]
+    # disconnect() waits for the receipt write; the failed preparation is not a receipt.
+    assert set(json.loads(receipts.read_text())["update_ids"]) == {"10"}
+
+    # A fresh adapter, connected the way the gateway reconnect watcher does it.
+    async with connected(monkeypatch, is_reconnect=True) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        await app.process_update(update(app.bot, 20, text="unaccepted"))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        await app.process_update(update(app.bot, 21, edited=True, text="changed"))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        # Old update dropped; the retry of an unaccepted one and an edit of message 472 still run.
+        assert [event.text for event in delivered] == ["unaccepted", "changed"]
+        assert adapter._updates_dispatched_total == 3
+
+    # Receipts are bot-scoped, and older than Telegram's 24h retention they cannot match.
+    async with connected(monkeypatch, bot_id=222) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert len(delivered) == 1
+    stale = time.time() - RECEIPT_TTL_SECONDS - 1
+    receipts.write_text(json.dumps({"update_ids": {"10": stale, "20": "bad", "x": time.time()}}))
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert len(delivered) == 1
+    assert set(json.loads(receipts.read_text())["update_ids"]) == {"10"}
+
+    receipts.write_text("{not json")
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 30))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert len(delivered) == 1

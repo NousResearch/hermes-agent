@@ -3583,12 +3583,14 @@ def _commit_compaction(
     agent: Any, messages: list, compressed: list, *, in_place: bool, lease: _CompressionLease,
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
+    verbatim_tail: Optional[list] = None,
 ) -> _CommitOutcome:
     """Persist the compacted transcript: memory extraction, anti-growth guard, then the
     in-place archive or the parent->child rotation.
 
     Failures roll the live list back and arm the split-failure cooldown; a refused (would-grow) candidate returns
-    ``refused_prompt`` so the caller hands back the input unchanged.
+    ``refused_prompt`` so the caller hands back the input unchanged. ``verbatim_tail`` (``/compress here N``) is
+    re-inserted after the compacted head by the in-place commit and stamped once durable; rotation ignores it.
     """
     session_commit_succeeded = False
     compacted_in_place = False
@@ -3619,16 +3621,40 @@ def _commit_compaction(
                 from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
+                tail_count = sum(1 for m in compressed if id(m) in _tail_tagged_ids)
+                # The rewind takes the newest `tail_count` durable rows as the tail's originals, so a tail row
+                # with none (this turn's user row, which the CLI and gateway persist after preflight; unflushed
+                # scaffolding) would flag a summarized row superseded instead: gone from display and search.
+                # Only while a turn holds the session: between turns (manual /compress, gateway hygiene) the
+                # anchor is the last turn's, and the rows it points at are durable, just unmarked.
+                _turn_idx = getattr(agent, "_persist_user_message_idx", None)
+                if (getattr(agent, "_active_session_turn_lease_holder", None) is not None
+                        and isinstance(_turn_idx, int) and 0 <= _turn_idx < len(messages)):
+                    from agent.context_compressor import _DB_PERSISTED_MARKER
+                    tail_count -= sum(
+                        1 for m in messages[max(_turn_idx, len(messages) - tail_count):]
+                        if isinstance(m, dict) and not m.get(_DB_PERSISTED_MARKER)
+                        and not isinstance(m.get("_row_id"), int))
+                persisted = compressed
+                if verbatim_tail:
+                    # The kept exchanges are durable rows under the watermark, so the archive below covers
+                    # them too. Store them after the head in the same transaction, with the seam the caller
+                    # would build, and count their originals as carried duplicates like compress()'s tail.
+                    from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+                    persisted = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
+                    tail_count += len(verbatim_tail)
                 agent._session_db.archive_and_compact(
-                    agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
-                    watermark=lease.watermark, lock_holder=lease.holder,
-                    tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
+                    agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                    watermark=lease.watermark, lock_holder=lease.holder, tail_count=tail_count,
                 )
+                compressed = persisted
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next
                 # flush re-INSERTs the whole compacted transcript, doubling the live set. Reset
                 # the flush identity set so next turn diffs against the COMPACTED transcript.
-                stamp_db_persisted_markers(compressed)
+                # The verbatim tail is stamped as well: a seam fold drops its first row from
+                # `compressed`, and the stamps tell the caller the tail is already in the list.
+                stamp_db_persisted_markers([*compressed, *(verbatim_tail or ())])
                 agent._flushed_db_message_ids = set()
                 # Rotation-independent signal; the gateway reads this (not an id diff) to
                 # re-baseline transcript handling.
@@ -3903,7 +3929,7 @@ def compress_context(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
-    commit_fence: Optional[CompressionCommitFence] = None,
+    commit_fence: Optional[CompressionCommitFence] = None, verbatim_tail: Optional[list] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -3924,7 +3950,8 @@ def compress_context(
     failed attempt records its cooldown normally. defer_context_engine_notification: Delay the existing
     context-engine hook until a manual host commits its outer history transaction. commit_fence: Optional
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
-    session state after its caller has moved on.
+    session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
+    after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
     """
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
 
@@ -4057,7 +4084,7 @@ def compress_context(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
-            attempt=attempt,
+            attempt=attempt, verbatim_tail=verbatim_tail,
         )
         if commit.refused_prompt is not None:
             return messages, commit.refused_prompt

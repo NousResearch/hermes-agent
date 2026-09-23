@@ -660,12 +660,15 @@ def _process_hermes_home() -> Path:
       (mtime,size)-keyed config cache is safe to reuse; under an override it
       must fall through to an isolated parse of the scoped profile.
 
-    ``hermes_constants.get_process_hermes_home()`` is the override-immune
-    resolver built for exactly this; delegate to it.
+    ``hermes_constants.get_routing_process_hermes_home()`` is the override-immune
+    resolver built for exactly this; delegate to it. It is also immune to a host
+    that mirrors the served profile into the live ``HERMES_HOME`` env var
+    (``pin_process_hermes_home``): without that, the mirrored profile satisfied
+    the guard above and bridged ITS ``terminal.*`` into the shared env.
     """
     try:
-        from hermes_constants import get_process_hermes_home
+        from hermes_constants import get_routing_process_hermes_home
 
-        return get_process_hermes_home()
+        return get_routing_process_hermes_home()
     except Exception:
         return Path.home() / ".hermes"

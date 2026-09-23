@@ -994,9 +994,10 @@ class PluginContext:
         self, name: str, path: Path, description: str = "",
         frontmatter: Optional[Mapping[str, Any]] = None,
     ) -> PluginRegistration:
-        """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``.
-        Not in ``~/.hermes/skills/`` nor ``<available_skills>`` — explicit loads only. Raises
-        ``ValueError`` (``':'``/invalid chars) or ``FileNotFoundError``."""
+        """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``
+        and listed by ``skills_list``. Not copied into ``~/.hermes/skills/`` and not in the system
+        prompt's ``<available_skills>``. Raises ``ValueError`` (``':'``/invalid chars) or
+        ``FileNotFoundError``."""
         from agent.skill_utils import _NAMESPACE_RE
         if ":" in name:
             raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "

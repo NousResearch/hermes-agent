@@ -1022,6 +1022,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if grace <= 0:
             return
         _wait_for_exit(targets)
+        # A parent that ignored SIGTERM (the interactive ``bash -lic`` wrapper does) keeps
+        # running its script through both grace windows and can spawn children the first
+        # snapshot never saw. Re-snapshot while it is still alive: once it is SIGKILLed
+        # they reparent to init and nothing can find them again.
+        with suppress(gone):
+            if cls._proc_alive(parent):
+                known = {proc.pid for proc in targets}
+                targets.extend(p for p in parent.children(recursive=True) if p.pid not in known)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
@@ -1328,7 +1336,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
         poll()/wait() remains the safety net. See #68915, #8340.
         """
-        first_chunk = True
+        # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
+        # reader can wake between them; strip leading noise from every chunk until the
+        # process has produced real output, not just from the first read.
+        head_noise = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -1339,10 +1350,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # same treatment the foreground path already has in
         # ``tools/environments/base.py::_wait_for_process``. (Ported from openclaw/openclaw#112325.)
         def _append_chunk(chunk: str):
-            nonlocal first_chunk
-            if first_chunk:
+            nonlocal head_noise
+            if head_noise:
                 chunk = self._clean_shell_noise(chunk)
-                first_chunk = False
+                head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
         try:
             proc = session.process

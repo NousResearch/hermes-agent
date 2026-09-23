@@ -534,14 +534,10 @@ export const ru = defineLocale({
         agentFailed: 'Не удалось установить плагин агента',
         desktopFailed: 'Не удалось установить плагин приложения',
         missingEnv: (_name, vars) => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`,
-        connectServers: (name, n) =>
-          n === 1
-            ? `${name} установлен. Его MCP-сервер ещё не подключён.`
-            : `${name} установлен. Его ${n} MCP-сервера ещё не подключены.`,
-        connectNow: 'Подключить сейчас',
-        connectSub: 'Открытые чаты повторно отправят свой контекст',
-        connectFailed: 'Не удалось подключить MCP-серверы плагина.',
-        liveNow: name => `${name} установлен и активен.`
+        toolsConnected: n => `Подключено инструментов: ${n}`,
+        skillsReady: names => (names.length === 1 ? `навык ${names[0]} готов` : `готово навыков: ${names.length}`),
+        nextChat: 'остальные инструменты появятся в следующем чате',
+        serverNotConnected: (server, reason) => `MCP-сервер ${server} не подключён${reason ? `: ${reason}` : '.'}`
       }
     },
     notifications: {
@@ -1495,7 +1491,7 @@ export const ru = defineLocale({
       loading: 'Загрузка архивных сеансов…',
       archivedTitle: 'Архивные сеансы',
       archivedIntro:
-        'Архивированные чаты скрыты из боковой панели, но сохраняют все сообщения. Чтобы архивировать чат из боковой панели — Ctrl/⌘-клик по нему.',
+        'Архивированные чаты скрыты из боковой панели, но сохраняют все сообщения. Чтобы архивировать чат из боковой панели — Alt/⌥+Shift-клик по нему.',
       emptyArchivedTitle: 'Архив пуст',
       emptyArchivedDesc: 'Архивируйте чат, чтобы скрыть его отсюда.',
       unarchive: 'Восстановить',
@@ -3126,6 +3122,13 @@ export const ru = defineLocale({
     everythingSkipped: 'Пропущено',
     everythingRowFailed: 'Обновление не удалось',
     everythingFanoutFailedTitle: 'Не удалось обновить другие инстанции',
+    changeLogNew: 'Новое',
+    changeLogFixed: 'Исправления',
+    changeLogFaster: 'Быстродействие',
+    changeLogImproved: 'Улучшения',
+    changeLogOther: 'Другие улучшения',
+    changeLogFallbackLabel: 'В этом обновлении',
+    changeLogFallbackItem: 'Улучшения и исправления',
     applyStatus: {
       preparing: 'Обновляем бэкенд…',
       pulling: 'Бэкенд обновляется…',
@@ -3753,6 +3756,29 @@ export const ru = defineLocale({
       lateAnswerTip: 'Составить этот ответ как продолжение',
       lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.'
     },
+    catalogInstall: {
+      preparing: 'Готовим установку…',
+      install: 'Установить',
+      advanced: 'Дополнительно',
+      skip: 'Пропустить',
+      installing: 'Установка…',
+      installed: 'Установлено',
+      notInstalled: 'Не установлено',
+      failed: 'Ошибка',
+      showNames: 'показать имена',
+      hideNames: 'скрыть имена',
+      skill: name => `навык ${name}`,
+      kind: { plugin: 'плагин', skill: 'навык' },
+      tier: { official: 'официальный', community: 'сообщество' },
+      targetProfile: profile => `Установка в ваш профиль ${profile}`,
+      sendFailed: 'Не удалось отправить ответ. Попробуйте ещё раз.',
+      commitLabel: 'Коммит',
+      subdirLabel: 'Папка',
+      securityHeading: 'Безопасность',
+      scan: { passed: 'Проверка пройдена', warnings: 'Проверка нашла предупреждения', failed: 'Проверка не пройдена' },
+      requirementsLabel: 'Требования',
+      credentialsHeading: 'Учётные данные'
+    },
     mcpSetup: {
       installTitle: 'Добавить MCP-серверы',
       enableTitle: 'Включить MCP-серверы',
@@ -3893,6 +3919,8 @@ export const ru = defineLocale({
     sudoDesc:
       'Проверьте команду перед вводом пароля sudo. Пароль отправляется агенту, который её выполняет, и кэшируется на время сеанса.',
     sudoCommandUnavailable: 'Агент не предоставил команду. Отмените запрос, если не можете проверить её в разговоре.',
+    sudoInstallDesc:
+      'Hermes нужен ваш пароль sudo, чтобы установить пакеты Bot Screen (TigerVNC + Xfce) на хосте шлюза. Он отправляется только на этот хост.',
     sudoPlaceholder: 'пароль sudo',
     secretTitle: 'Требуется секрет',
     secretDesc: 'Hermes нужны учётные данные, чтобы продолжить.',

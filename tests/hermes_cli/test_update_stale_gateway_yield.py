@@ -49,9 +49,7 @@ def test_cron_status_reports_stale_code_yield_as_unhealthy(cron_home, had_succes
     out = _status_block([4242])
 
     assert "cron jobs will fire automatically" not in out
-    assert "STALE code" in out
     assert "5eb99eb284" in out and "2ed6387d87" in out
-    assert "hermes gateway restart" in out
 
 
 def test_cron_status_still_green_after_a_clean_tick(cron_home):

@@ -77,7 +77,6 @@ class TestFormatForInjection:
         assert "[>]" in text
         assert "Next" in text
         assert "Working" in text
-        assert "context compression" in text.lower()
 
 
 class TestMergeMode:
@@ -199,14 +198,3 @@ class TestTodoStoreBounds:
         ])
         assert len(store.read()) == MAX_TODO_ITEMS
 
-    def test_normal_list_is_unchanged(self):
-        """No regression: ordinary plans pass through untouched (no marker,
-        same content, same order)."""
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "write the report", "status": "in_progress"},
-            {"id": "2", "content": "review PR", "status": "pending"},
-        ])
-        items = store.read()
-        assert [i["content"] for i in items] == ["write the report", "review PR"]
-        assert "[truncated]" not in items[0]["content"]

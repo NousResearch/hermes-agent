@@ -30,33 +30,44 @@ def _handoff_source() -> str:
     )
 
 
-def test_no_gateway_switch_is_declared() -> None:
-    assert re.search(r"^\s{4}\[switch\]\$NoGateway,\s*$", _handoff_source(), re.M), (
-        "scripts/desktop-update/windows.ps1 must declare [switch]$NoGateway so "
-        "a remote-served Desktop (#117529) can opt out of the local gateway "
-        "restart."
-    )
+def test_successful_local_update_restarts_all_gateways_after_verification() -> None:
+    """Desktop stops every profile before hand-off, outside update's inventory.
 
-
-def test_gateway_flag_is_conditional_not_inline() -> None:
-    """`--gateway` may only reach the update argv through $gatewayArg.
-
-    An inline literal would mean someone reintroduced an unconditional local
-    gateway restart — the exact regression (#117529) this guards against.
+    A successful local hand-off must consequently restore the same all-profile
+    set itself. The restart belongs after runtime verification, and a
+    remote-served Desktop must retain its ``-NoGateway`` opt-out.
     """
     source = _handoff_source()
-
-    gateway_literals = [line for line in source.splitlines() if '"--gateway"' in line]
-    assert len(gateway_literals) == 1, (
-        "Expected exactly one \"--gateway\" literal in windows.ps1 (the "
-        f"$gatewayArg default); found: {gateway_literals}"
+    verify = 'Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"'
+    restart = (
+        'Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", '
+        '"gateway", "start", "--all") "gateway restart"'
     )
-    assert "$gatewayArg = @(\"--gateway\")" in gateway_literals[0]
 
-    assert re.search(r"if \(\$NoGateway\)\s*\{\s*\n\s*\$gatewayArg = @\(\)", source), (
-        "-NoGateway must empty $gatewayArg before the update argv is assembled."
+    assert verify in source
+    assert restart in source, (
+        "a verified successful Desktop update must restore every gateway "
+        "that Desktop stopped before the hand-off"
     )
-    assert "$gatewayArg + @(\"--force\"" in source, (
-        "The update argv must be assembled from $gatewayArg so -NoGateway "
-        "actually removes --gateway from the invocation."
+    assert source.index(verify) < source.index(restart), (
+        "gateway restoration must not run before the update runtime verifies"
+    )
+
+    restart_block = source[source.index(restart) - 240:source.index(restart) + len(restart)]
+    assert "-not $NoGateway" in restart_block, (
+        "-NoGateway must keep remote-served Desktop from starting a local "
+        "messaging gateway"
+    )
+
+    # The update has already succeeded when the restart runs: a restart
+    # failure surfaces as a manual follow-up (Write-Result's manual flag, the
+    # Desktop's boot dialog), never as a non-zero exit that reads as a failed
+    # update and triggers the error finale.
+    after_restart = source[source.index(restart):]
+    # The failure branch is the `if ($gatewayRestart.Code -ne 0) { ... }` block right
+    # after the step; the normal success finale that follows it is out of scope.
+    failure_branch = after_restart[: after_restart.index("if ($res.Code -eq 0 -and -not $desktopBuildFailed) {")]
+    assert "$manualAction = $true" in failure_branch
+    assert "$finalCode =" not in failure_branch, (
+        "a gateway restart failure must not rewrite the update's exit code"
     )

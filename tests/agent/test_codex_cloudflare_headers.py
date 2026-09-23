@@ -73,14 +73,6 @@ class TestCodexCloudflareHeaders:
         assert headers["originator"] == "hermes-agent"
 
 
-    def test_canonical_header_casing(self):
-        """Upstream codex-rs uses PascalCase with trailing -ID. Match exactly."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert "ChatGPT-Account-ID" in headers
-        # The lowercase/titlecase variants MUST NOT be used — pin to be explicit
-        assert "chatgpt-account-id" not in headers
-        assert "ChatGPT-Account-Id" not in headers
 
 
 

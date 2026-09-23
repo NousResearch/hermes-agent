@@ -167,6 +167,19 @@ class BillingBlock(Payload):
     unverified: bool | None = None
 
 
+class PersistedTurn(Payload):
+    """Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are
+    unproven, never negative acknowledgements. ``complete`` permits retiring the whole local
+    turn only when the original turn boundary, every row and final body are still accounted
+    for; compaction, redirects and partial writes conservatively leave it false. Row ids are
+    scoped to the owning profile's store, as in ``SessionMessage.row_id``."""
+
+    row_ids: list[int]
+    complete: bool
+    user_row_id: int | None = None
+    final_assistant_row_id: int | None = None
+
+
 class MessageCompletePayload(Payload):
     """``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /
     ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /
@@ -185,6 +198,7 @@ class MessageCompletePayload(Payload):
     recoverable: bool | None = None
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
+    persisted_turn: PersistedTurn | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")

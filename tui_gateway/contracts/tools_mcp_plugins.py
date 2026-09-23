@@ -12,6 +12,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionLiveInfo
+from .connectors_operation import CatalogAppState, CatalogTier
 from .registry import method
 
 
@@ -585,6 +586,7 @@ class PluginsAction(WireEnum):
     update = "update"
     remove = "remove"
     settings = "settings"
+    onboarding = "onboarding"
 
 
 class PluginsManageParams(ProfileParams):
@@ -671,19 +673,55 @@ class AgentPluginRow(Result):
     settings_schema: list[PluginSettingField] | None = None
 
 
+class PluginLiveServer(Result):
+    """One plugin MCP server connected at activation: its callable tool names, or the reason it did not connect."""
+
+    name: str
+    connected: bool
+    tools: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class PluginLiveSkill(Result):
+    """One plugin skill usable now through ``skill_view`` (qualified ``<plugin>:<skill>``)."""
+
+    name: str
+    description: str = ""
+
+
+class PluginLiveNow(Result):
+    mcp_servers: list[PluginLiveServer] = Field(default_factory=list)
+    skills: list[PluginLiveSkill] = Field(default_factory=list)
+
+
 class PluginActivation(Result):
-    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}``
-    with only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names),
-    ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in
-    the running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and
-    ``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server
-    names (exactly as ``mcp.servers.*`` know them) — not connected until ``mcp.reload``.
-    The Desktop "Installed. Connect its servers now" card reads exactly ``deferred.mcp_servers``."""
+    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
+    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook
+    names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
+    (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
+    error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
+    note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
+    apply from the next session."""
 
     name: str
     key: str
     activated_now: dict[str, list[str]] = Field(default_factory=dict)
+    live_now: PluginLiveNow | None = None
     deferred: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class OnboardingCatalogPlugin(Result):
+    """A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.
+    ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what
+    is missing (empty when present or unknown)."""
+
+    name: str
+    title: str
+    description: str
+    tier: CatalogTier
+    platforms: list[str]
+    app_state: CatalogAppState
+    sentence: str
 
 
 class PluginsManageResult(Result):
@@ -720,6 +758,8 @@ class PluginsManageResult(Result):
     delta_lines: list[str] | None = None
     error: str | None = None
     written: list[str] | None = None
+    # ``onboarding`` → the curated catalog plugins for the onboarding card.
+    onboarding: list[OnboardingCatalogPlugin] | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

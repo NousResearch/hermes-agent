@@ -82,7 +82,8 @@ def _ra():
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview",
-    "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour",
+    "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "manage_catalog", "setup_mcp",
+    "gui_tour",
     "delegate_task",
 })
 
@@ -1861,8 +1862,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
-    # pinned by tests/agent/test_create_openai_client_reuse.py and
-    # test_sequential_chats_live.py. What IS shared across those per-client wrappers is the
+    # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the
     # connection pool: ``build_keepalive_http_client`` mounts a process-shared ``HTTPTransport``
     # behind a per-client view whose ``close()`` is a no-op for the pool, so a closed wrapper
     # never takes a sibling's (or the successor's) connections with it
@@ -2692,10 +2692,10 @@ def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
     ]
     result_call_ids: set[str] = set().union(*(v for _, v in result_entries))
     orphaned_results = [msg for msg, v in result_entries if v and not (v & surviving_call_ids)]
-    orphaned_ids = {id(msg) for msg in orphaned_results}
-    surviving_result_variants = [v for msg, v in result_entries if v and id(msg) not in orphaned_ids]
+    # Orphan result variants are disjoint from every declared call, so they
+    # cannot contribute a match. Reuse the union instead of scanning each result.
     missing_tool_calls = [
-        tc for tc, v in assistant_call_variants if not any(v & rv for rv in surviving_result_variants)
+        tc for tc, v in assistant_call_variants if not (v & result_call_ids)
     ]
     return surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls
 

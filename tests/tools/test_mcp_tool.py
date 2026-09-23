@@ -1634,14 +1634,18 @@ class TestBuildSafeEnv:
         with patch.dict("os.environ", fake_env, clear=True):
             result = _build_safe_env(None)
 
-        assert result["ProgramFiles"] == r"C:\Program Files"
-        assert result["ProgramData"] == r"C:\ProgramData"
-        assert result["ProgramW6432"] == r"C:\Program Files"
-        assert result["LOCALAPPDATA"].endswith("Local")
-        assert result["APPDATA"].endswith("Roaming")
-        assert result["USERPROFILE"] == r"C:\Users\alice"
-        assert "GITHUB_TOKEN" not in result
-        assert "OPENAI_API_KEY" not in result
+        # os.environ upper-cases keys on Windows (nt.environ is case-insensitive) but
+        # preserves them verbatim on POSIX, so the filter's output keys differ by host.
+        # Assert case-insensitively rather than pinning one platform's spelling.
+        folded = {key.upper(): value for key, value in result.items()}
+        assert folded["PROGRAMFILES"] == r"C:\Program Files"
+        assert folded["PROGRAMDATA"] == r"C:\ProgramData"
+        assert folded["PROGRAMW6432"] == r"C:\Program Files"
+        assert folded["LOCALAPPDATA"].endswith("Local")
+        assert folded["APPDATA"].endswith("Roaming")
+        assert folded["USERPROFILE"] == r"C:\Users\alice"
+        assert "GITHUB_TOKEN" not in folded
+        assert "OPENAI_API_KEY" not in folded
 
 
 # ---------------------------------------------------------------------------
@@ -3347,7 +3351,7 @@ class TestMCPDiscoveryCrossProcessLock:
         # Must still run local discovery
         reg_spy.assert_called_once_with(mock_config)
 
-    def test_posix_flock_acquire_and_release(self):
+    def test_posix_flock_acquire_and_release(self, fake_os_name):
         """_acquire_lock_on_fh uses fcntl.flock on POSIX."""
         import sys
         import tempfile
@@ -3362,8 +3366,13 @@ class TestMCPDiscoveryCrossProcessLock:
 
         try:
             fh = open(lock_path, "w", encoding="utf-8")
-            with patch.dict("sys.modules", {"fcntl": mock_fcntl}), \
-                 patch("tools.mcp_tool.os.name", "posix"):
+            # NB: the lock lives in tools.mcp_tool_loop, and faking os.name globally
+            # (patch("tools.mcp_tool.os.name", ...) mutates the shared os module)
+            # makes every later pathlib.Path() raise NotImplementedError on Windows.
+            import tools.mcp_tool_loop as _mcp_tool_loop
+
+            with patch.dict("sys.modules", {"fcntl": mock_fcntl}):
+                fake_os_name("posix", _mcp_tool_loop)
                 from tools.mcp_tool_loop import _acquire_lock_on_fh
                 result = _acquire_lock_on_fh(fh)
             assert result is True

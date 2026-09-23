@@ -5,7 +5,19 @@ from hermes_state_common import FTS_TOOL_CONTENT_PREFIX_CHARS
 SEARCH_CONTENT_CHARS = 8_192
 SEARCH_TOOL_CALLS_CHARS = 4_096
 SEARCH_TOOL_NAME_CHARS = 256
-POSTGRES_SCHEMA_VERSION = 4
+POSTGRES_SCHEMA_VERSION = 5
+
+UPSTREAM_STORAGE_SCHEMA_SQL = """
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS transport_profile TEXT;
+ALTER TABLE cron_incidents
+    ADD COLUMN IF NOT EXISTS alerted_at TEXT;
+ALTER TABLE cron_incidents
+    DROP CONSTRAINT IF EXISTS cron_incidents_state_check;
+ALTER TABLE cron_incidents
+    ADD CONSTRAINT cron_incidents_state_check
+    CHECK(state IN ('detected', 'alerted', 'resolved', 'closed'));
+"""
 
 ASYNC_DELEGATION_SCHEMA_SQL = """
 ALTER TABLE async_delegations

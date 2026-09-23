@@ -1536,6 +1536,8 @@ class GatewayStartupMixin:
         # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
         # line next to "Gateway running with N platform(s)".
         self._update_runtime_status(self._serving_state())
+        if self._should_run_proxy_outbox_watcher():
+            self._spawn_supervised(self._proxy_outbox_watcher, "proxy_outbox_watcher")
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         logger.info("Press Ctrl+C to stop")

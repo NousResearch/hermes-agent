@@ -1,5 +1,6 @@
 import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -9,6 +10,7 @@ import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } fro
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalModelLoadProgress } from '@/types/hermes'
@@ -147,7 +149,8 @@ export function ModelPickerDialog({
     })
   }, [open, refetchOptions])
 
-  const providers = modelOptions.data?.providers ?? []
+  const customModels = useStore($customModels)
+  const providers = withCustomModels(modelOptions.data?.providers ?? [], customModels)
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
     { model: currentModel, provider: currentProvider },
@@ -165,6 +168,11 @@ export function ModelPickerDialog({
   const selectModel = (provider: ModelOptionProvider, model: string) => {
     onSelect({ provider: provider.slug, model })
     onOpenChange(false)
+  }
+
+  const selectCustomModel = (provider: ModelOptionProvider, model: string) => {
+    addCustomModel(provider.slug, model, provider)
+    selectModel(provider, model)
   }
 
   // Open the full onboarding provider selector to add/switch a provider.
@@ -201,6 +209,7 @@ export function ModelPickerDialog({
               error={error}
               loading={loading}
               loadingModels={loadingModels}
+              onSelectCustomModel={selectCustomModel}
               onSelectModel={selectModel}
               providers={providers}
               search={search}
@@ -230,16 +239,18 @@ function ModelResults({
   downloads,
   loadingModels,
   onSelectModel,
+  onSelectCustomModel,
   search
 }: {
   loading: boolean
   error: string | null
-  providers: ModelOptionProvider[]
+  providers: readonly ModelOptionProvider[]
   currentModel: string
   currentProvider: string
   downloads: { jobId: string; target: string }[]
   loadingModels: Record<string, LocalModelLoadProgress>
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
+  onSelectCustomModel: (provider: ModelOptionProvider, model: string) => void
   search: string
 }) {
   const { t } = useI18n()
@@ -293,6 +304,17 @@ function ModelResults({
   // nothing staged yet, so the backend reports no Local provider at all).
   const visibleDownloads = downloads.filter(job => !q || foldIncludes(job.target || '', q))
   const hasLocalGroup = configured.some(p => p.slug === LOCAL_PROVIDER_SLUG)
+
+  // A typed id no provider lists: one row per configured provider, current
+  // provider first, so the slug is one Enter away and remembered afterwards.
+  const customSlug = customModelCandidate(search, configured)
+
+  const customProviders = customSlug
+    ? [...configured].sort(
+        (a, b) =>
+          Number(catalogProviderMatches(b, currentProvider)) - Number(catalogProviderMatches(a, currentProvider))
+      )
+    : []
 
   return (
     <>
@@ -378,6 +400,21 @@ function ModelResults({
         <CommandGroup heading={copy.localDownloadsHeading} key="local-downloads">
           {visibleDownloads.map(job => (
             <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+          ))}
+        </CommandGroup>
+      )}
+      {customSlug && customProviders.length > 0 && (
+        <CommandGroup heading={copy.customModel} key="custom-model">
+          {customProviders.map(provider => (
+            <CommandItem
+              className="flex items-center gap-2 pl-6 font-mono"
+              key={`custom:${provider.slug}`}
+              onSelect={() => onSelectCustomModel(provider, customSlug)}
+              value={`custom:${provider.slug}:${customSlug}`}
+            >
+              <span className="min-w-0 flex-1 truncate">{customSlug}</span>
+              <span className="shrink-0 text-[0.66rem] text-muted-foreground">{provider.name}</span>
+            </CommandItem>
           ))}
         </CommandGroup>
       )}

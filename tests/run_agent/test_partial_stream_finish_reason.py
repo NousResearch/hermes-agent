@@ -789,3 +789,34 @@ class TestSendTimePadMultimodalSafety:
         assert out[2]["content"] == ""
         # input list untouched (repair is copy-on-write)
         assert api_messages[1]["content"] == ""
+
+    def test_repair_owner_repairs_final_empty_assistant_and_preserves_final_user(self):
+        """Regression for #91027: an empty final assistant turn (no tool_calls)
+        is repaired with placeholder on replay to prevent 400 from strict upstreams,
+        while an empty final user turn is preserved untouched."""
+        from agent.agent_runtime_helpers import repair_empty_non_final_messages
+
+        # Case 1: empty final assistant message -> repaired
+        messages_final_assistant = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": ""},
+        ]
+        out1 = repair_empty_non_final_messages(messages_final_assistant)
+        assert out1[1]["content"] == "[response interrupted]"
+
+        # Case 2: empty final user message -> untouched
+        messages_final_user = [
+            {"role": "assistant", "content": "ready"},
+            {"role": "user", "content": ""},
+        ]
+        out2 = repair_empty_non_final_messages(messages_final_user)
+        assert out2[1]["content"] == ""
+
+        # Case 3: empty final assistant with tool_calls -> untouched
+        messages_final_tool_calls = [
+            {"role": "user", "content": "check"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+        ]
+        out3 = repair_empty_non_final_messages(messages_final_tool_calls)
+        assert out3[1]["content"] == ""
+

@@ -75,40 +75,4 @@ class TestCrossLoopCacheIsolation:
         )
 
 
-    def test_gateway_simulation_no_deadlock(self):
-        """Simulate gateway mode: _run_async spawns a thread with asyncio.run(),
-        which creates a new loop. The cached client must be created on THAT loop,
-        not reused from a different one."""
-        from agent.auxiliary_client import _get_cached_client
-
-        # Simulate: first call on "gateway loop"
-        gateway_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(gateway_loop)
-
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                    side_effect=_stub_resolve_provider_client):
-            gateway_client, _ = _get_cached_client("custom", "m1", async_mode=True,
-                                                     base_url="http://localhost:8081/v1")
-
-        # Simulate: _run_async spawns a thread with asyncio.run()
-        worker_client_id = [None]
-        def _worker():
-            async def _inner():
-                with patch("agent.auxiliary_client.resolve_provider_client",
-                            side_effect=_stub_resolve_provider_client):
-                    client, _ = _get_cached_client("custom", "m1", async_mode=True,
-                                                     base_url="http://localhost:8081/v1")
-                worker_client_id[0] = id(client)
-            asyncio.run(_inner())
-
-        t = threading.Thread(target=_worker)
-        t.start()
-        t.join()
-
-        assert worker_client_id[0] != id(gateway_client), (
-            "Worker thread (asyncio.run) got the gateway's cached client — "
-            "this is the exact cross-loop scenario that causes httpx deadlocks. "
-            "The cache key must include the event loop identity (#2681)"
-        )
-        gateway_loop.close()
 

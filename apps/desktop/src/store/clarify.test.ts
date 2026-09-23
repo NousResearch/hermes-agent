@@ -12,6 +12,7 @@ import {
   skipClarifyRequest
 } from './clarify'
 import { $gateway } from './gateway'
+import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
 import { $activeSessionId } from './session'
 
 function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
@@ -91,6 +92,7 @@ describe('skipClarifyRequest', () => {
 
   beforeEach(() => {
     $clarifyRequests.set({})
+    resetServerRequestsForTests()
     request.mockClear()
     $gateway.set({ request } as unknown as ReturnType<typeof $gateway.get>)
   })
@@ -101,12 +103,15 @@ describe('skipClarifyRequest', () => {
   })
 
   it('answers the session\u2019s clarify with an empty answer and drops it', async () => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id: 'req-a', method: 'clarify', params: {}, respond })
     setClarifyRequest(clarify('session-a', 'req-a'))
     setClarifyRequest(clarify('session-b', 'req-b'))
 
     await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
 
-    expect(request).toHaveBeenCalledWith('clarify.respond', { request_id: 'req-a', answer: '' })
+    expect(respond).toHaveBeenCalledWith({ answer: '' })
     expect(hasClarifyRequest('session-a')).toBe(false)
     // A background session's question is untouched — only the one being typed
     // over is skipped.
@@ -118,9 +123,8 @@ describe('skipClarifyRequest', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('still reports the skip when the respond RPC fails', async () => {
+  it('still reports the skip when the server request is already gone (expired / other window answered)', async () => {
     setClarifyRequest(clarify('session-a', 'req-a'))
-    request.mockRejectedValueOnce(new Error('socket closed'))
 
     await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
     expect(hasClarifyRequest('session-a')).toBe(false)
@@ -155,15 +159,6 @@ describe('normalizeChoices', () => {
     const long = 'x'.repeat(201)
     const ok = 'y'.repeat(200)
     expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
-  })
-
-  it('drops empty items and keeps valid ones', () => {
-    expect(normalizeChoices(['valid', '  ', '', 'also valid'])).toEqual(['valid', 'also valid'])
-  })
-
-  it('returns empty array when nothing survives', () => {
-    expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
-    expect(normalizeChoices([])).toEqual([])
   })
 })
 

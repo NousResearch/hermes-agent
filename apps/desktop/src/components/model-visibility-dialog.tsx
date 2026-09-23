@@ -1,6 +1,7 @@
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -20,12 +21,12 @@ import {
   collapseModelFamilies,
   effectiveVisibleKeys,
   modelVisibilityKey,
+  seedKnownModels,
   setProviderVisibility,
   setVisibleModels,
   toggleModelVisibility
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -54,7 +55,7 @@ export function ModelVisibilityDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, profile, sessionId }),
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, profile, sessionId }),
     enabled: open
   })
 
@@ -63,14 +64,16 @@ export function ModelVisibilityDialog({
     [modelOptions.data]
   )
 
+  useEffect(() => seedKnownModels(providers), [providers])
+
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
+    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model), providers)
   }
 
   const setProviderVisible = (provider: ModelOptionProvider, next: boolean) => {
-    setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next))
+    setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next), providers)
   }
 
   const q = normalize(search)

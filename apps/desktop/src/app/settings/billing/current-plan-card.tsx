@@ -33,7 +33,7 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
         </div>
         <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
           {plan.action && (
-            <Button onClick={onViewPlans} size="sm" type="button" variant="outline">
+            <Button onClick={plan.action.onSelect ?? onViewPlans} size="sm" type="button" variant="outline">
               {plan.action.label}
             </Button>
           )}

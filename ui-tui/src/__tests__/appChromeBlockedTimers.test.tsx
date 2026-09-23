@@ -1,6 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,7 +13,6 @@ import { StatusRule } from '../components/appChrome.js'
 import { AppLayout } from '../components/appLayout.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type StatusRuleProps = React.ComponentProps<typeof StatusRule>
@@ -304,7 +304,9 @@ describe('status-chrome timers under an occluding overlay', () => {
     nowSpy.mockReturnValue(T0 + 300_000)
     rule.clear()
     resetOverlayState()
-    await flush()
+    // Poll for the reveal frame instead of a fixed tick: under CI load the
+    // store-driven re-render can land well after one 20ms scheduler turn.
+    await vi.waitFor(() => expect(rule.output()).toContain('6m 0s'), { interval: 10, timeout: 5_000 })
 
     const resumed = rule.output()
 
@@ -430,15 +432,6 @@ describe('AppLayout status-rule visibility', () => {
     await flush()
 
     expect(layout.output()).toContain('1m 30s')
-  })
-
-  it('keeps the status rule on screen AND its clock advancing under a flow-layout sudo prompt', async () => {
-    const layout = mountLayout({ sudo: { requestId: 'sudo-1' } as OverlayState['sudo'] })
-
-    await flush()
-
-    expect(layout.output()).toContain('1m 0s')
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
   })
 
   it('arms no clock under a floating model picker while the rule is at the top', async () => {

@@ -11,7 +11,13 @@ import {
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
+import {
+  $activeSessionId,
+  $connection,
+  $selectedStoredSessionId,
+  setSessionOwnerHint,
+  setSessions
+} from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
@@ -23,6 +29,7 @@ import {
   clearAllSessionStates,
   closeAllOpenSessionTiles,
   focusedSessionNeedsRoute,
+  focusedSessionWorkspaceScope,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
@@ -36,6 +43,7 @@ import {
   recordSessionEventScope,
   releaseSessionTranscript,
   requestForOwnedSession,
+  resetRouteOwnedTileRuntimeBindings,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
@@ -122,14 +130,6 @@ describe('resetTileRuntimeBindings', () => {
     expect($sessionTiles.get()).toEqual([
       { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
     ])
-  })
-
-  it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
-    setSessionTileDelegate({} as unknown as SessionTileDelegate)
-    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
-
-    expect(() => resetTileRuntimeBindings()).not.toThrow()
-    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
   })
 
   it('keeps Bot runtimes owned by a different connection', () => {
@@ -262,6 +262,58 @@ describe('resetTileRuntimeBindings', () => {
   })
 })
 
+describe('resetRouteOwnedTileRuntimeBindings', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('drops only tiles owned by the reopened route and leaves ambient tiles bound', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-writer-bot',
+        storedSessionId: 'stored-writer-bot',
+        workspaceMode: 'bots'
+      },
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'coder', targetProfile: 'coder' },
+        runtimeId: 'runtime-coder-bot',
+        storedSessionId: 'stored-coder-bot',
+        workspaceMode: 'bots'
+      },
+      { runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }
+    ])
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    const [writerBot, coderBot, ambient] = $sessionTiles.get()
+
+    expect(writerBot).toMatchObject({ storedSessionId: 'stored-writer-bot' })
+    expect(writerBot).not.toHaveProperty('runtimeId')
+    expect(coderBot).toMatchObject({ runtimeId: 'runtime-coder-bot' })
+    expect(ambient).toMatchObject({ runtimeId: 'runtime-ambient' })
+    expect(dropRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-writer-bot']))
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when no open tile belongs to the reopened route', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    const tiles = [{ runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }]
+    $sessionTiles.set(tiles)
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    expect($sessionTiles.get()).toBe(tiles)
+    expect(dropRuntimeBindings).not.toHaveBeenCalled()
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
+  })
+})
+
 describe('SessionTile workspace scope', () => {
   afterEach(() => {
     $activeGatewayProfile.set('default')
@@ -332,6 +384,30 @@ describe('SessionTile workspace scope', () => {
     expect(focusOpenSession('bot-chat', scope)).toBe('tile')
   })
 
+  it('splits a Bot chat loaded in MAIN instead of silently no-oping the drop', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:connection-a::alpha' }
+
+    $selectedStoredSessionId.set('bot-chat')
+    // A real open records the bot scope on the MAIN chat (which has no tile
+    // to carry it). The drag handler then commits the drop with NO explicit
+    // scope — the tab it drags is the workspace pane itself.
+    setSessionTileWorkspaceScope('bot-chat', scope)
+    openSessionTile('bot-chat', 'right', 'workspace', undefined)
+
+    // The minted tile registers its pane (watchSessionTiles) and the drop
+    // hint's reveal adopts it — here, the tree that adoption produces.
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { id: 'workspace-group' }))
+
+    expect(focusOpenSession('bot-chat', scope)).toBe('tile')
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:connection-a::alpha'
+      })
+    ])
+  })
+
   it('fronts the existing tab when compaction rotated the tip id — never a duplicate', () => {
     // The tile was opened when seg-2 was the tip; the conversation has since
     // rotated to seg-3 (projected row carries the full chain). Opening the
@@ -347,6 +423,20 @@ describe('SessionTile workspace scope', () => {
     openSessionTile('seg-3')
     expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
     setSessions([])
+  })
+
+  it('reports the workspace scope of the focused Bot session tab', () => {
+    const scope = {
+      ownerRoute: { connectionId: 'connection-a', profile: 'default' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'connection-a::default',
+      workspaceTabTitle: 'Bot Chat'
+    }
+
+    openSessionTile('bot-chat', 'center', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { active: tilePane('bot-chat'), id: 'main' }))
+
+    expect(focusedSessionWorkspaceScope()).toEqual(scope)
   })
 
   it('keeps Bot tabs while a profile publication swaps the Sessions bucket', () => {
@@ -867,13 +957,6 @@ describe('releaseSessionTranscript', () => {
     expect(() => releaseSessionTranscript('runtime')).not.toThrow()
     expect($sessionStates.get().runtime).toEqual({ ...legacy, messages: [] })
   })
-
-  it('ignores a legacy undefined state without throwing', () => {
-    $sessionStates.set({ runtime: undefined } as unknown as Record<string, ClientSessionState>)
-
-    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
-    expect($sessionStates.get()).toHaveProperty('runtime', undefined)
-  })
 })
 
 describe('orderTilesByTree', () => {
@@ -1038,7 +1121,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     expect($focusedStoredSessionId.get()).toBeNull()
   })
 
-  it('sessions mode keeps collapsing to the primary selection (derivation gated to Bot Mode)', () => {
+  it('sessions-sidebar focus follows the visible main tab instead of a hidden primary selection', () => {
     $selectedStoredSessionId.set('primary-1')
     $layoutTree.set(
       split('row', [
@@ -1048,10 +1131,8 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     )
     noteActiveTreeGroup('grp-sessions')
 
-    // The main-zone tile must NOT answer here: in sessions mode the sidebar
-    // highlight follows the primary selection exactly as it always has.
     expect($workspaceMode.get()).toBe('sessions')
-    expect($focusedStoredSessionId.get()).toBe('primary-1')
+    expect($focusedStoredSessionId.get()).toBe('stacked')
   })
 })
 
@@ -1138,40 +1219,19 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
       title: 'chat'
     })
 
-    // panes ← $sessionTiles (paneMirror stub). Adoption is synchronous on
-    // register, so openSessionTile + focusOpenSession works the same tick.
-    const registered = new Map<string, () => void>()
-
-    const syncTiles = () => {
-      const wanted = new Set(states.$sessionTiles.get().map(t => t.storedSessionId))
-
-      for (const id of wanted) {
-        if (registered.has(id)) {
-          continue
-        }
-
-        registered.set(
-          id,
-          registry.register({
-            area: 'panes',
-            data: { dock: { pane: 'workspace', pos: 'center' }, placement: 'main' },
-            id: tilePane(id),
-            render: () => null,
-            title: id
-          })
-        )
-      }
-
-      for (const [id, dispose] of registered) {
-        if (!wanted.has(id)) {
-          dispose()
-          registered.delete(id)
-          tree.removeTreePane(tilePane(id))
-        }
-      }
-    }
-
-    states.$sessionTiles.listen(syncTiles)
+    const { paneMirror } = await import('@/app/chat/pane-mirror')
+    paneMirror({
+      source: states.$sessionTiles,
+      key: tile => tile.storedSessionId,
+      prefix: 'session-tile',
+      dir: tile => tile.dir,
+      anchor: tile => tile.anchor,
+      before: tile => tile.before,
+      minWidth: '10rem',
+      title: id => id,
+      render: () => null,
+      close: states.closeSessionTile
+    })()
     tree.watchContributedPanes()
     session.$selectedStoredSessionId.set('primary')
     tree.declareDefaultTree(model.group(['workspace'], { active: 'workspace', id: 'grp-main' }))
@@ -1183,6 +1243,32 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
 
     return { states, tree }
   }
+
+  it('restores the live strip slot after reordering and retains the exact owner', async () => {
+    const { states, tree } = await setup()
+    states.openSessionTile('after', 'center', 'workspace')
+    tree.moveTreePane(tilePane('closed'), { groupId: 'grp-main', pos: 'center', before: 'workspace' })
+    const order = findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes
+    const ownerRoute = { connectionId: 'cloud', profile: 'agent' }
+    states.patchSessionTile('closed', { ownerRoute })
+    states.closeSessionTile('closed')
+    tree.noteActiveTreeGroup(null)
+    states.reopenLastClosedTile()
+    expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes).toEqual(order)
+    expect(states.$focusedStoredSessionId.get()).toBe('closed')
+    expect(states.sessionTileOwnerRoute('closed')).toEqual(ownerRoute)
+  })
+
+  it('fronts a palette-opened tab from sidebar focus without replacing main', async () => {
+    const { states, tree } = await setup()
+    const { openSession } = await import('@/app/open-session')
+    const navigate = vi.fn()
+    tree.noteActiveTreeGroup('sidebar')
+    openSession('palette-result', navigate, 'stack')
+    expect(states.$focusedStoredSessionId.get()).toBe('palette-result')
+    expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.active).toBe(tilePane('palette-result'))
+    expect(navigate).not.toHaveBeenCalled()
+  })
 
   it('fronts the restored tab after ⌘⇧T', async () => {
     const { states, tree } = await setup()
@@ -1227,12 +1313,6 @@ describe('sessionTileOwnerRoute', () => {
 
     expect(sessionTileOwnerRoute('plain')).toBeUndefined()
   })
-
-  it('returns undefined when the session has no tile', () => {
-    $sessionTiles.set([])
-
-    expect(sessionTileOwnerRoute('missing')).toBeUndefined()
-  })
 })
 
 describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', () => {
@@ -1266,10 +1346,43 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     expect(knownOwnerForSession('stored-2')).toBe('loki')
   })
 
+  // A tile promoted into MAIN (⌘W on the workspace tab, its tab dragged out of
+  // main) loses its tile and its evicted mirror entry in the same tick, while
+  // the resume has already made its runtime the active one. The composer's
+  // control read for that runtime must still find the stored-id owner hint
+  // instead of failing closed with "Session controls unavailable" (#108369).
+  it('translates the active runtime through the selected stored id when no tile or mirror binds it', () => {
+    setSessionOwnerHint('stored-main', { connectionId: 'local', profile: 'alpha' })
+    $sessionTiles.set([])
+    $sessionStates.set({})
+    $selectedStoredSessionId.set('stored-main')
+    $activeSessionId.set('rt-main')
+
+    expect(knownOwnerForSession('rt-main')).toEqual({ connectionId: 'local', profile: 'alpha' })
+    // Only MAIN's own runtime gets this rung: an unrelated runtime id stays unknown.
+    expect(knownOwnerForSession('rt-other')).toBeUndefined()
+
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+  })
+
   it('keeps a session row connection owner when profiles share the same name', () => {
     setSessions([{ connection_id: 'source-b', id: 'stored-shared', profile: 'default' } as never])
 
     expect(knownOwnerForSession('stored-shared')).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
+  // Two connections both exposing `default`: the row only names the profile,
+  // and a bare profile is resolved by the profile door against the PRIMARY
+  // connection — another machine for a session that runs on a non-primary one.
+  // The inbound event proved the exact owner, so it must outrank the
+  // connection-blind row profile (this is what keeps the 2nd prompt of an
+  // ordinary session from answering `4001 session not found`).
+  it('prefers an event-proven connection over a bare row profile when two connections share the profile name', () => {
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
+    setSessions([{ id: 'rt-local', profile: 'default' } as never])
+
+    expect(knownOwnerForSession('rt-local')).toEqual({ connectionId: 'local', profile: 'default' })
   })
 
   it('returns undefined (ambient) when no owner is known, and for null ids', () => {

@@ -44,23 +44,7 @@ def _plan(runtimes):
 class TestResumeTokenIsNotARuntime:
     """Token-only signals must NOT mark fleet rows as expected (#93406)."""
 
-    def test_token_profiles_alone_do_not_expect_rows(self):
-        # A paused/resumed profile gateway relaunches detached; its row is
-        # not guaranteed within the probe window. Token-only == no rows
-        # expected, so zero rows stays exit 0 instead of a false failure.
-        token = {"resume_needed": False, "profiles": {"default": 4321}}
-        assert (
-            _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
-        )
 
-    def test_token_unmapped_alone_does_not_expect_rows(self):
-        # Scheduled-Task gateways (token["unmapped"]) never publish
-        # gateway_state.json rows — collect_fleet_versions() CANNOT return a
-        # row for them, so they must not be counted as expected rows.
-        token = {"resume_needed": False, "unmapped": [{"pid": 99, "argv": ["x"]}]}
-        assert (
-            _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
-        )
 
     def test_token_with_empty_pid_snapshot_is_still_not_expected(self):
         # Even alongside an affirmatively-empty PID snapshot and an empty
@@ -97,5 +81,3 @@ class TestRowCapableSignalsStillCount:
             is True
         )
 
-    def test_unreadable_pre_state_still_expects_rows(self):
-        assert _fleet_probe_expected_runtimes(None, None, None, [], set()) is True

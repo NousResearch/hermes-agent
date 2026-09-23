@@ -68,9 +68,10 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
 
     sessions_export = sessions_subparsers.add_parser(
         "export", help="Export sessions to JSONL, Markdown, or QMD")
-    sessions_export.add_argument("output", nargs="?",
-        help="Output path. JSONL: file path (use - for stdout, required). "
-            "md/qmd: output directory (default: <hermes home>/session-exports)")
+    sessions_export.add_argument("output", nargs="?", metavar="OUTPUT",
+        help="Where to write. jsonl/html/trace: a file path, or a directory (existing, or ending in /) "
+            "to write a default-named file into; - for stdout (jsonl/trace only; jsonl requires OUTPUT). "
+            "md/qmd: a directory, one file per session (default: <hermes home>/session-exports)")
     sessions_export.add_argument(
         "--format", choices=["jsonl", "md", "qmd", "html", "trace"], default="jsonl",
         help="Export format (default: jsonl). 'trace' emits Claude Code JSONL "
@@ -116,6 +117,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "opened and never used (no messages, tokens, tool calls or title) "
             "and are older than AGE (default 30 days). Ordinary prune can "
             "never reach these — it only ever selects ended sessions")
+    _flag(sessions_prune, "--force",
+        help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
 
     sessions_archive = sessions_subparsers.add_parser(
         "archive", help="Bulk-archive (soft-hide) sessions matching filters — no deletion")
@@ -123,8 +126,10 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         sessions_archive, "Only archive sessions older than AGE (duration like '5h'/'2d', "
         "bare number of days, or ISO timestamp)")
 
-    sessions_subparsers.add_parser(
+    sessions_optimize = sessions_subparsers.add_parser(
         "optimize", help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)")
+    _flag(sessions_optimize, "--force",
+        help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
 
     sessions_clean_markers = sessions_subparsers.add_parser("clean-markers",
         help="Permanently clear stale tool-call marker content left by sessions from before #78148",
@@ -155,6 +160,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)")
     _flag(sessions_optimize_storage, "--yes", "-y", default=False,
         help="Skip the disk-space confirmation prompt")
+    _flag(sessions_optimize_storage, "--force",
+        help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
 
     sessions_repair = sessions_subparsers.add_parser(
         "repair", help="Repair a malformed state.db schema so hidden sessions reappear",
@@ -165,6 +172,21 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _flag(sessions_repair, "--check-only",
         help="Only report whether the database opens cleanly; do not modify it")
     _flag(sessions_repair, "--no-backup", help="Skip the timestamped backup copy (not recommended)")
+
+    sessions_set_journal_mode = sessions_subparsers.add_parser(
+        "set-journal-mode", help="Convert state.db between journal_mode=WAL and DELETE offline (every holder stopped)",
+        description="Switch the on-disk journal mode of the session store. Hermes never "
+            "live-downgrades a WAL database at startup (other processes may hold "
+            "uncheckpointed commits), so `database.journal_mode: delete` cannot "
+            "self-apply to an existing WAL store. Run this with the gateway, "
+            "dashboard and every CLI stopped: it refuses while any process holds "
+            "the file, switches the mode, and verifies the file header.")
+    sessions_set_journal_mode.add_argument("mode", choices=("delete", "wal"), help="Target journal mode")
+    sessions_set_journal_mode.add_argument("--db", default=None, metavar="PATH",
+        help="Convert another Hermes SQLite store (e.g. kanban.db) instead of the profile's state.db")
+    _flag(sessions_set_journal_mode, "--force",
+        help="Windows only: proceed without the holder scan (which does not exist there) after stopping "
+            "every Hermes process yourself")
 
     sessions_repair_routing = sessions_subparsers.add_parser(
         "repair-routing", help="Re-stamp gateway sessions that lost their routing identity",
@@ -181,6 +203,26 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Window between a keyed predecessor's last activity and an "
             "orphan's start for them to count as the same conversation "
             "(default: 900)")
+
+    sessions_repair_profiles = sessions_subparsers.add_parser(
+        "repair-profiles", help="Settle session/routing state that landed under the wrong profile",
+        description="Scan every profile's state.db (and the gateway's voice-mode / sessions.json "
+            "files) for durable state crossed between profiles: rows whose profile_name "
+            "disagrees with their session key, rows sitting in another profile's store, "
+            "parent links crossing namespaces, routing rows outside the default store or for a "
+            "profile that no longer exists, and Telegram topic / voice-mode entries missing "
+            "their bot's profile. Reports without touching anything unless --apply is given; "
+            "--apply refuses while a gateway is running, snapshots every store first, and is "
+            "safe to re-run.")
+    _flag(sessions_repair_profiles, "--apply", help="Perform the repairs (default: report only)")
+    _flag(sessions_repair_profiles, "--json", help="Machine-readable report")
+    _flag(sessions_repair_profiles, "--yes", "-y", default=False, help="Skip the confirmation prompt")
+    sessions_repair_profiles.add_argument(
+        "--legacy-main", choices=("report", "rekey", "move"), default="report",
+        help="What to do with agent:main rows found inside a named profile's store: 'rekey' them "
+            "to that profile (a standalone gateway's own history, e.g. after multiplexing was "
+            "switched on), 'move' them to the default store (a default chat that leaked in), or "
+            "'report' (default) — the rows themselves cannot tell the two cases apart")
 
     sessions_recover = sessions_subparsers.add_parser(
         "recover", help="Rebuild canonical session data into a separate clean database",

@@ -87,7 +87,7 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True)]
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -123,13 +123,19 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     return canon, profiles_mod.get_profile_dir(canon)
 
 
-def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+def _annotate_cron_job(
+    job: Dict[str, Any], profile: str, home: Path, heartbeat_age: Optional[float] = None,
+) -> Dict[str, Any]:
     return {
         **job,
         "profile": profile,
         "profile_name": profile,
         "hermes_home": str(home),
-        "is_default_profile": profile == "default"}
+        "is_default_profile": profile == "default",
+        # Seconds since this profile's ticker last iterated (None = never/unknown): a
+        # `next_run_at` parked in the past is only explained by a scheduler that stopped
+        # ticking, so the dashboard can date it (#114309).
+        "scheduler_heartbeat_age_s": heartbeat_age}
 
 
 @contextlib.contextmanager
@@ -158,10 +164,11 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
             result = create_job_with_scheduler_registration(*args, **kwargs)
         else:
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
+        heartbeat_age = cron_jobs.get_ticker_heartbeat_age()
     if isinstance(result, list):
-        return [_annotate_cron_job(j, profile_name, home) for j in result]
+        return [_annotate_cron_job(j, profile_name, home, heartbeat_age) for j in result]
     if isinstance(result, dict):
-        return _annotate_cron_job(result, profile_name, home)
+        return _annotate_cron_job(result, profile_name, home, heartbeat_age)
     return result
 
 
@@ -278,7 +285,7 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
     and external callers on the web_deps late-binding seam; do not add new uses.
     """
     _profile_name, home = _cron_profile_home(profile)
-    from cron.scheduler_provider import provider_supports_force_fire, resolve_cron_scheduler
+    from cron.scheduler_provider import provider_fire_due_accepts, provider_supports_force_fire, resolve_cron_scheduler
     with _cron_store_scope(home):
         provider = resolve_cron_scheduler()
         if force:
@@ -289,25 +296,18 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
                         f"Cron provider '{getattr(provider, 'name', 'custom')}' "
                         "does not support atomic forced firing of paused jobs"))
             return bool(provider.fire_due(job_id, adapters=None, loop=None, force=True))
+        # Off-tick run-now: never stamp next_run_at as the occurrence (#104790); third-party
+        # providers without the kwarg keep the legacy call.
+        if provider_fire_due_accepts(provider, "manual"):
+            return bool(provider.fire_due(job_id, adapters=None, loop=None, manual=True))
         return bool(provider.fire_due(job_id, adapters=None, loop=None))
 
 
 def _profile_env_value(home: Path, key: str) -> str:
-    """Best-effort read of one KEY=VALUE line from a profile's .env file."""
-    try:
-        env_path = home / ".env"
-        if not env_path.is_file():
-            return ""
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            if k.strip() == key:
-                return v.strip().strip('"').strip("'")
-    except Exception:
-        pass
-    return ""
+    """One value from a profile's .env (``""`` when absent/unreadable)."""
+    from agent.secret_scope import load_env_file
+
+    return load_env_file(home / ".env").get(key, "")
 
 
 def _gateway_fire_endpoint(profile: str, home: Path) -> str:
@@ -326,11 +326,10 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     import os as _os
     multiplex = False
     try:
-        from gateway.config import _env_multiplex_profiles_override
-        multiplex = bool(cfg_get(load_config(), "gateway", "multiplex_profiles", default=False))
-        env_flag = _env_multiplex_profiles_override()
-        if env_flag is not None:
-            multiplex = env_flag
+        # The live default gateway's own record, else the explicit flag — never the merged default:
+        # an unset gateway.multiplex_profiles is settled by the gateway at boot, not by this process.
+        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        multiplex = default_gateway_multiplexes()
     except Exception:
         _log.debug("cron fire: multiplex detection failed; assuming single-profile", exc_info=True)
 

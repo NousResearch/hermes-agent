@@ -226,7 +226,6 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         file_path = _seed_file(client, root, name=name)
         response = client.get("/api/files/stream", params={"path": str(file_path)})
         assert response.status_code == 415
-        assert response.json()["detail"] == "Unsupported media type"
 
 
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):

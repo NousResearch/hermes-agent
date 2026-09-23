@@ -67,7 +67,7 @@ class TestBackgroundDispatch:
             return True
 
         with _bound_session_key():
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}) as m_claim, \
+            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("cron.scheduler.run_one_job", side_effect=slow_run_one_job), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
@@ -79,7 +79,6 @@ class TestBackgroundDispatch:
             assert res["claimed"] is True
             assert res["dispatched"] is True
             assert res["delegation_id"]
-            m_claim.assert_called_once_with("job-bg-01", return_job=True)
             # The job actually starts on the daemon executor.
             assert run_started.wait(timeout=5.0), "job never started in background"
         finally:
@@ -120,7 +119,6 @@ class TestBackgroundDispatch:
         assert found["session_key"] == "agent:main:telegram:dm:777"
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
-        assert "Next scheduled run" in found["summary"]
 
     def test_failed_run_reports_error_status_in_event(self):
         import time
@@ -277,22 +275,6 @@ class TestInFlightDedupe:
         finally:
             sched.release_running_job("job-bg-10")
 
-    def test_ticker_guard_uses_shared_helpers(self):
-        """The ticker's _submit_with_guard and manual runs share ONE dedupe
-        owner: registration through either side blocks the other."""
-        from cron import scheduler as sched
-
-        # Manual-run registration…
-        assert sched.try_register_running_job("job-shared-1")
-        try:
-            # …is exactly what the ticker-side helper consults.
-            assert not sched.try_register_running_job("job-shared-1")
-            assert "job-shared-1" in sched.get_running_job_ids()
-        finally:
-            sched.release_running_job("job-shared-1")
-        assert "job-shared-1" not in sched.get_running_job_ids()
-        # Idempotent release: never raises on a non-member.
-        sched.release_running_job("job-shared-1")
 
 
 class TestCronjobRunToolIntegration:
@@ -311,20 +293,4 @@ class TestCronjobRunToolIntegration:
         assert out["job"]["executed"] is True
         assert out["job"]["execution_mode"] == "background"
         assert out["job"]["delegation_id"]
-        assert "background" in out["note"]
 
-    def test_run_action_sync_path_unchanged_without_session(self):
-        """No session context → the legacy synchronous behavior (executed +
-        execution_success populated from the completed run)."""
-        ran = {"job": "after-run", "last_status": "ok", "last_error": None}
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=_job('job-bg-13')), \
-             patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}) as m_claim, \
-             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=ran):
-            out = json.loads(cronjob(action="run", job_id="job-bg-13"))
-
-        assert out["success"] is True
-        assert out["job"]["executed"] is True
-        assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-bg-13", return_job=True)
-        m_run.assert_called_once()

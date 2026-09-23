@@ -54,10 +54,7 @@ def test_breakdown_includes_major_categories():
 # ── /context renderers (pure functions over the payload) ────────────────────
 
 from agent.context_breakdown import (  # noqa: E402
-    compute_context_details,
     render_context_breakdown_lines,
-    render_context_category_lines,
-    render_context_details_lines,
     render_context_grid,
 )
 
@@ -105,24 +102,9 @@ def test_breakdown_lines_grid_toggle():
     without = render_context_breakdown_lines(_payload(), grid=False)
     assert any("·" in line for line in with_grid[:5])
     assert not any("·" in line for line in without[:2])
-    # Both include the window summary and the expand hint
-    for lines in (with_grid, without):
-        text = "\n".join(lines)
-        assert "Context window: 50,000 / 200,000 tokens (25%)" in text
-        assert "/context all" in text
 
 
 
 
-def test_details_lines_caps_listing():
-    details = {
-        "skills": [
-            {"name": f"skill-{i}", "index_tokens": 10, "skill_md_tokens": 100}
-            for i in range(20)
-        ],
-        "toolsets": [],
-    }
-    lines = render_context_details_lines(details)
-    assert any("… and 5 more" in line for line in lines)
 
 

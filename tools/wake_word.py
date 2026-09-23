@@ -31,6 +31,7 @@ SAMPLE_RATE = 16000  # 16 kHz mono int16 — Whisper-native and what every engin
 # several frames while the caller is still reacting.
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
+_READ_POLL_SECONDS = 0.05  # slice between read_available polls; bounds halt latency
 
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
 # (a stray phoneme spikes one frame; a real phrase holds several).
@@ -430,19 +431,39 @@ class _Capture:
     rate: int = SAMPLE_RATE
     frame_length: int = 1280  # samples per read at ``rate``
 
-    def read(self):
-        """One raw block; None when no client frame arrived within 250 ms. Stream errors propagate."""
+    def read(self, stop: Optional[threading.Event] = None):
+        """One raw block; None when nothing arrived within ~250 ms (client) or ``stop`` was
+        set while waiting (local). Stream errors propagate.
+
+        A PortAudio ``read(n)`` blocks until ``n`` samples exist and, on a wedged ALSA/
+        PipeWire device, never returns — so the halting thread's ``join`` timed out and
+        ``close()`` raced the still-pending read. Poll ``read_available`` in short slices
+        against ``stop`` and only call ``read`` once the block is guaranteed to be there.
+        """
         if self.stream is not None:
+            available = getattr(self.stream, "read_available", None)
+            if stop is not None and available is not None:
+                while self.stream.read_available < self.frame_length:
+                    if stop.wait(_READ_POLL_SECONDS):
+                        return None
             return self.stream.read(self.frame_length)[0]
         with suppress(Exception):
             return self.queue.get(timeout=0.25)
         return None
 
     def close(self) -> None:
+        """``abort()`` first: it discards pending buffers and unblocks any in-flight read,
+        which ``stop()`` (drains, waits) cannot do on a dead device."""
+        if self.stream is None:
+            return
+        abort = getattr(self.stream, "abort", None)
         with suppress(Exception):
-            if self.stream is not None:
+            if abort is not None:
+                abort()
+            else:
                 self.stream.stop()
-                self.stream.close()
+        with suppress(Exception):
+            self.stream.close()
 
 
 class WakeWordDetector:
@@ -533,9 +554,14 @@ class WakeWordDetector:
         with self._lock:
             self._stop.set()
             t = self._thread
-            if t is not None and t is not threading.current_thread():
-                t.join(timeout=2.0)
-            if self._thread is t:
+        # Join OUTSIDE the lock: a reader wedged in PortAudio would otherwise pin the lock
+        # for the whole timeout and stall every start()/pause() caller behind it.
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=2.0)
+        with self._lock:
+            # Keep the handle while the thread is still alive (join timed out) so
+            # ``running`` stays truthful and the next start() does not double-arm.
+            if self._thread is t and (t is None or not t.is_alive()):
                 self._thread = None
 
     def _dispatch_wake(self) -> None:
@@ -633,7 +659,7 @@ class WakeWordDetector:
         try:
             while not self._stop.is_set():
                 try:
-                    data = cap.read()
+                    data = cap.read(self._stop)
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
                     failed = not self._stop.is_set()

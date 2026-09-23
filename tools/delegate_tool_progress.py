@@ -44,24 +44,53 @@ def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
     return line[: max_chars - 3] + "..." if len(line) > max_chars else line
 
+
+def describe_subagent_failure(failure_reason: Any, error: Any, max_chars: int = 200) -> str:
+    """Plain-language reason for a failed child: the classified ``failure_reason`` gloss when there is one,
+    else the child's own error text reduced to one clean line."""
+    # One gloss table for every surface (agent/turn_failure_copy.py); the child is the subject.
+    from agent.turn_failure_copy import failure_cause_gloss
+
+    gloss = failure_cause_gloss(failure_reason, subject="it", possessive="its")
+    return gloss or _clean_error_text(error, max_chars)
+
+
+def _format_duration(seconds: Any) -> str:
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return ""
+    return f"{round(seconds / 60)} min" if seconds >= 120 else f"{round(seconds)}s"
+
+
 def format_subagent_failure_line(
     goal: Optional[str], status: Optional[str], error: Any = None, duration_seconds: Any = None,
+    failure_reason: Any = None,
 ) -> str:
-    """One clean, human-readable line describing a failed subagent, rendered
-    directly to the user (CLI spinner echo, gateway platform notice), e.g.
-    ``⚠️ Subagent failed — "research competitor pricing": Error code: 404 (after 12s)``."""
+    """One clean, human-readable line describing a failed subagent, rendered directly to the user (CLI spinner
+    echo, gateway platform notice). Says what happened and what to do next; never the raw exception when the
+    child loop classified the failure, e.g.
+    ``⚠️ Subagent failed — "research competitor pricing" after 12s: the model it was given was not found at the
+    AI model service. Details: /agents, or ask me to retry with a smaller task.``"""
     goal_label = (goal or "").strip().replace("\n", " ")
     if len(goal_label) > 60:
         goal_label = goal_label[:57] + "..."
-    line = f"⚠️ Subagent {'timed out' if status == 'timeout' else 'failed'}"
-    if goal_label:
-        line += f' — "{goal_label}"'
-    err = _clean_error_text(error)
-    if err:
-        line += f": {err}"
-    if isinstance(duration_seconds, (int, float)) and duration_seconds > 0:
-        line += f" (after {round(duration_seconds)}s)"
-    return line
+    goal_part = f' — "{goal_label}"' if goal_label else ""
+    elapsed = _format_duration(duration_seconds)
+    if status == "timeout":
+        # The child's own timeout text repeats the duration and names mechanisms (API/tool calls); the
+        # user needs the outcome and the knob.
+        after = f" after {elapsed}" if elapsed else ""
+        return (
+            f"⚠️ Subagent timed out{goal_part}{after} without finishing. I will carry on without it; ask me to "
+            "retry it, or raise delegation.child_timeout_seconds in config.yaml if these tasks legitimately "
+            "take longer."
+        )
+    line = f"⚠️ Subagent failed{goal_part}"
+    if elapsed:
+        line += f" after {elapsed}"
+    reason = describe_subagent_failure(failure_reason, error)
+    if reason:
+        line += f": {reason.rstrip('.')}"
+    return line + ". Details: /agents, or ask me to retry with a smaller task."
 
 
 class DelegateEvent(str, enum.Enum):
@@ -138,12 +167,12 @@ _ORCHESTRATOR_BLOCK = (
     "for the final summary, not your workers.\n\n"
 )
 _LEAF_CHILDREN_NOTE = (
-    "Your own children MUST be leaves (cannot delegate further) because they would be at the depth floor — you cannot "
-    "pass role='orchestrator' to your own delegate_task calls."
+    "Your own children MUST be leaves (cannot delegate further) because they will reach the maximum nesting depth. "
+    "The system manages this automatically; no parameter override is available."
 )
 _NESTED_CHILDREN_NOTE = (
-    "Your own children can themselves be orchestrators or leaves, depending on the `role` you pass to delegate_task. "
-    "Default is 'leaf'; pass role='orchestrator' explicitly when a child needs to further decompose its work."
+    "Your own children can themselves delegate because depth remains. The system determines this automatically "
+    "from the nesting depth; children at the maximum depth cannot delegate further. No parameter override is available."
 )
 
 def _build_child_system_prompt(
@@ -153,7 +182,10 @@ def _build_child_system_prompt(
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
     can't confabulate nesting."""
-    parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
+    # The goal is the child's first user turn (see ``_ChildRun.await_child``).
+    # Keeping it out of the system prompt avoids sending OAuth Anthropic the
+    # same task in both roles, while preserving the normal user-turn contract.
+    parts = ["You are a focused subagent working on a specific delegated task."]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -187,8 +219,9 @@ def _build_child_system_prompt(
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
     absolute directory is ever injected (never a fake container path)."""
+    from agent.runtime_cwd import scope_terminal_cwd
     candidates = [
-        os.getenv("TERMINAL_CWD"), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
+        scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
         getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
     ]
     for candidate in filter(None, candidates):
@@ -268,6 +301,7 @@ class _ChildProgressRelay:
             subagent_id, parent_id, depth, model, toolsets
         )
         self.batch: List[str] = []
+        self.parent_scope: Any = None  # owning parent agent; set by _build_child_progress_callback
         self.tool_count = 0  # per-subagent running counter
 
     def _prefix(self) -> str:
@@ -319,11 +353,20 @@ class _ChildProgressRelay:
     def _on_complete(self, tool_name, preview, args, kwargs):
         # Failed child: echo one clean reason line into the CLI tree so the human
         # sees WHY, not just a vanished branch (gateway renders off the relayed event).
+        # The echo is an automatic diagnostic presentation: it goes through the warning
+        # boundary under the parent's turn snapshot. The relayed event (the gateway's
+        # producer, which classifies it) and the child result are never gated here.
         if kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
-            self._tree_line(format_subagent_failure_line(
-                self.goal_label, kwargs.get("status"), error=kwargs.get("summary") or preview,
-                duration_seconds=kwargs.get("duration_seconds"),
-            ))
+            from gateway.warning_notifications import render_notification
+            parent = self.parent_scope
+            render_notification(
+                lambda: self._tree_line(format_subagent_failure_line(
+                    self.goal_label, kwargs.get("status"), error=kwargs.get("summary") or preview,
+                    duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
+                )),
+                platform=getattr(parent, "_notification_platform", getattr(parent, "platform", "cli")),
+                user_config=getattr(parent, "_notification_config", None),
+            )
         self._relay("subagent.complete", preview=preview, **kwargs)
 
     def _on_text(self, tool_name, preview, args, kwargs):
@@ -386,6 +429,8 @@ def _build_child_progress_callback(
     if session_ref is not None:
         # Not an identity kwarg (underscore-prefixed, never relayed); only scopes the batch ordinal.
         session_ref["_parent_scope"] = parent_agent
-    return _ChildProgressRelay(
+    relay = _ChildProgressRelay(
         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
     )
+    relay.parent_scope = parent_agent
+    return relay

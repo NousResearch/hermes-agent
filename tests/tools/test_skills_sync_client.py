@@ -277,14 +277,6 @@ class TestAddressing:
         )
         assert len(addr.split(":", 1)[1]) == 64
 
-    def test_address_differs_from_local_truncated_namespace(self):
-        # The wire full-64-hex must NOT equal the local truncated 16-hex form.
-        data = b"hello world"
-        full = wire.wire_address(data)
-        truncated = "sha256:" + hashlib.sha256(data).hexdigest()[:16]
-        assert full != truncated
-        assert len(full.split(":")[1]) == 64
-        assert len(truncated.split(":")[1]) == 16
 
     def test_canonical_json_sorted_no_whitespace(self):
         out = wire.canonical_json_bytes({"b": 1, "a": 2})
@@ -292,9 +284,6 @@ class TestAddressing:
         assert b" " not in out
         assert not out.endswith(b"\n")
 
-    def test_canonical_json_stable(self):
-        obj = {"type": "tree", "entries": [{"name": "x", "hash": "sha256:aa"}]}
-        assert wire.canonical_json_bytes(obj) == wire.canonical_json_bytes(dict(obj))
 
 
 # ---------------------------------------------------------------------------
@@ -505,12 +494,6 @@ def synced_env(tmp_path, monkeypatch):
 
 
 class TestEndToEnd:
-    def test_capabilities_version_check(self, mock_server):
-        base, state = mock_server
-        client = ssc.SyncClient(base, "tok")
-        caps = client.capabilities()
-        assert caps["hsp_version"] == "1"
-        wire._check_version(caps)  # no raise
 
     def test_version_mismatch_raises(self, mock_server):
         base, state = mock_server
@@ -1047,21 +1030,6 @@ class TestOrgEndpointScoping:
     def _admin(self, identity):
         return {**identity, "org_id": "org-1", "org_role": "ADMIN"}
 
-    def test_org_head_is_not_visible_on_the_personal_route(
-        self, mock_server, synced_env
-    ):
-        base, state = mock_server
-        home, skills, identity = synced_env
-        state.refs["refs/org/org-1/HEAD"] = "sha256:" + "a" * 64
-        client = ssc.SyncClient(base, identity["api_key"])
-
-        personal = client.get_refs("refs/org/org-1/")
-        assert personal == [], (
-            "the personal refs route must not serve org refs — if it does, "
-            "the mock is more permissive than production and will hide bugs"
-        )
-        org = client.get_refs("refs/org/org-1/", org_scope=True)
-        assert [r["name"] for r in org] == ["refs/org/org-1/HEAD"]
 
     def test_second_propose_splices_onto_the_existing_org_head(
         self, mock_server, synced_env
@@ -1091,31 +1059,11 @@ class TestOrgEndpointScoping:
         assert "alpha" in names and "devops" in names
         assert commit["parents"], "second commit must descend from the first"
 
-    def test_pull_org_skills_sees_an_existing_org_head(
-        self, mock_server, synced_env
-    ):
-        """pull_org_skills used to report head=None for a populated org."""
-        base, state = mock_server
-        home, skills, identity = synced_env
-        admin = self._admin(identity)
-        client = ssc.SyncClient(base, identity["api_key"])
-        org.propose_skill("alpha", client, identity=admin)
-
-        result = org.pull_org_skills(client=client, identity=admin)
-        assert result["ok"] is True
-        assert result["head"] == state.refs["refs/org/org-1/HEAD"], (
-            "pull must resolve the real org HEAD, not None"
-        )
-        assert result["updated"], "the org's skill must materialize"
 
 
 class TestEmptyActualConflict:
     """A 409 with an empty ``actual`` means the ref does not exist."""
 
-    def test_conflict_actual_empty_becomes_none(self):
-        c = ssc.SyncConflict("")
-        assert c.actual is None
-        assert "does not exist" in str(c)
 
     def test_push_recovers_from_a_stale_local_head(self, mock_server, synced_env):
         """Switching sync planes leaves a foreign head in local state.

@@ -4,14 +4,15 @@ launch decisions.
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, WindowDecision, initial_window, launch_args, ub_logits_bytes)
+    RUNTIME_OVERHEAD_BYTES, launch_args, plan_launch, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, profile_from_gguf)
+    HardwareBudget, PhysicsRefusal, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
 
 logger = logging.getLogger(__name__)
@@ -56,53 +57,30 @@ def _asset_path(asset) -> "Path | None":
     return path if path.exists() else None
 
 
-def _choose_mtp_posture(profile: ModelProfile, budget: HardwareBudget,
-                        fixed_overhead: int) -> tuple[bool, int]:
-    """(mtp_prefill, logits_bytes) for an MTP model — window first, prefill second.
+def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhead: int) -> bool:
+    """Optional draft never shrinks the advertised window or displaces its GPU buffers.
 
-    Price the launch under both postures and keep whichever grants the larger window: the stacked
-    posture's bigger compute buffer buys ~3x short-prompt prefill but costs ~2 GiB that would
-    otherwise be window (measured at 256K the ub512 posture still prefills at 2.7K tok/s), so
-    never trade context away for prefill. Same window -> stacked.
+    The catalog does not know the draft's context layout. Admit it only after reading the file;
+    draft KV defaults to f16, independently of the target's q8 cache.
     """
-    plain_logits = ub_logits_bytes(profile.n_vocab, mtp_capable=True)
-    stacked_logits = ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
-    stacked = initial_window(profile, budget, overhead_bytes=fixed_overhead + stacked_logits)
-    plain = initial_window(profile, budget, overhead_bytes=fixed_overhead + plain_logits)
-    if (not isinstance(stacked, PhysicsRefusal) and not stacked.spilled
-            and (isinstance(plain, PhysicsRefusal) or stacked.window >= plain.window)):
-        return True, stacked_logits
-    return False, plain_logits
-
-
-def _restore_grown_window(model_id: str, profile: ModelProfile, budget: HardwareBudget,
-                          decision: WindowDecision, overhead: int) -> WindowDecision:
-    """Session growth (growth.py): a persisted override lifts the launch window to where the ladder
-    last grew it — capped at native, and only when physics still clears the bigger window on THIS
-    boot's budget (a smaller-VRAM day re-fits honestly back down)."""
     try:
-        from hermes_cli.local_runtime.growth import load_window_overrides
-
-        override = load_window_overrides().get(model_id)
-        native = profile.n_ctx_train or decision.window
-        if override and override > decision.window:
-            target = min(int(override), native)
-            kv = ctx_bytes(profile, target)
-            need = profile.weights_bytes + kv + overhead
-            if need <= budget.usable_vram_bytes + budget.ram_available_bytes:
-                return WindowDecision(
-                    window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
-                    kv_on_gpu=kv <= budget.usable_vram_bytes,
-                    reasons=[f"grown window restored ({target // 1024}K)"])
-    except Exception as exc:  # noqa: BLE001 — overrides are advisory
-        logger.debug("window override skipped for %s: %s", model_id, exc)
-    return decision
+        draft = profile_from_gguf(read_gguf_header(path))
+        draft_need = footprint_bytes(
+            draft, window, flash_attention=False,
+            overhead_bytes=RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(draft.n_vocab, mtp_capable=False))
+    except (ValueError, OSError) as exc:
+        logger.warning("draft omitted %s: %s", path.name, exc)
+        return False
+    return (footprint_bytes(profile, window, overhead_bytes=overhead) + draft_need
+            <= budget.usable_vram_bytes + budget.ram_available_bytes
+            and ctx_bytes(profile, window) + overhead + draft_need <= budget.usable_vram_bytes)
 
 
-def _preset_for(gguf: Path, budget: HardwareBudget,
-                mtp_capable: set[str]) -> PresetEntry | None:
+def preset_for_model(gguf: Path, budget: HardwareBudget,
+                     mtp_capable: set[str], *, requested_window: int | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
+    from hermes_cli.local_runtime.growth import load_window_overrides
 
     model_id = model_id_from_stem(gguf.stem)
     try:
@@ -113,30 +91,22 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
         return None
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
-    if is_mtp and profile.kv_scale == 1.0:
-        # Header-derived profiles don't know about MTP's draft context; apply the calibrated KV
-        # multiplier so the launch fit prices what the server will actually allocate.
-        profile = replace(profile, kv_scale=1.2)
+
     mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
-    # Overhead beyond weights+KV: runtime buffers, the vision projector when present, and the
-    # logits buffers of whichever microbatch/MTP posture launch_args will choose — flag and price
-    # decided together, from the same facts.
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + (
         entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
-    if is_mtp:
-        mtp_prefill, logits_bytes = _choose_mtp_posture(profile, budget, fixed_overhead)
-    else:
-        mtp_prefill, logits_bytes = False, ub_logits_bytes(profile.n_vocab, mtp_capable=False)
-    overhead = fixed_overhead + logits_bytes
-    decision = initial_window(profile, budget, overhead_bytes=overhead)
+    plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
+                       requested_window=(load_window_overrides().get(model_id)
+                                         if requested_window is None else requested_window))
+    decision = plan.decision
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
-    decision = _restore_grown_window(model_id, profile, budget, decision, overhead)
 
-    # The launch flags MUST match the pricing above (same entry/is_mtp/posture).
+    # Router discovery is preset-only: refused files must never autoload with stock fit.
     keys = _args_to_keys(launch_args(
-        profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=mtp_prefill,
+        profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
+    keys["model"] = str(gguf)
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).
@@ -155,13 +125,68 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
         if mmproj_path is not None:
             keys["mmproj"] = str(mmproj_path)
         draft_path = _asset_path(entry.draft) if decision.spilled else None
-        if draft_path is not None:
+        if draft_path is not None and _draft_fits(draft_path, profile, budget, decision.window, plan.overhead_bytes):
             keys["model-draft"] = str(draft_path)
             keys["spec-type"] = "draft-dspark"
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
             keys["spec-draft-n-max"] = "3"
     return PresetEntry(model_id=model_id, window=decision.window,
                        spilled=decision.spilled, keys=keys)
+
+
+def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
+    """Estimated resident bytes for one staged model at the window this policy grants it, or None
+    when it cannot be priced: an unreadable header, or a model the physics check refuses outright
+    (it never loads, so it must not shrink the residency cap)."""
+    from hermes_cli.local_runtime.catalog import entry_for_model
+    from hermes_cli.local_runtime.growth import load_window_overrides
+
+    model_id = model_id_from_stem(gguf.stem)
+    try:
+        profile = profile_from_gguf(read_gguf_header(gguf))
+    except (ValueError, OSError) as exc:
+        logger.debug("footprint skip %s: %s", gguf.name, exc)
+        return None
+    entry = entry_for_model(model_id)
+    is_mtp = entry.mtp if entry is not None else False
+    mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    plan = plan_launch(profile, budget, mtp_capable=is_mtp,
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj,
+                       requested_window=load_window_overrides().get(model_id))
+    if isinstance(plan.decision, PhysicsRefusal):
+        return None
+    # Priced whole even when the plan spills: a spilled model still holds part of its weights on
+    # the device, and over-counting errs toward the side that cannot thrash.
+    return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
+
+
+def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
+    """How many models the card may hold resident at once: priced against the budget, not a count.
+
+    Residency used to be bounded by a count alone, so a second model was admitted against an
+    already-full card. On Windows/WDDM that over-commit is not refused — the allocation is paged
+    to host memory, and that child decodes at a third of its speed for the rest of its life: no
+    error, no UI hint, and ejecting the incumbent afterwards does not repair it (only a clean
+    reload does). Capping the count instead has llama.cpp evict its LRU *before* the incoming
+    child allocates, which is the only placement that fits.
+
+    The cap rises above one only while the LARGEST staged model still fits TWICE — any pair of
+    staged models then fits by construction. ``configured`` stays a ceiling (a user's smaller
+    number is honoured), and an unpriceable input (no usable device memory, no readable model)
+    keeps today's behaviour.
+    """
+    from hermes_cli.local_runtime.bootstrap import staged_in
+
+    if configured <= 1 or budget.usable_vram_bytes <= 0:
+        return configured
+    largest = 0
+    for gguf in staged_in(models_dir):
+        need = _launch_footprint(gguf, budget)
+        if need:
+            largest = max(largest, need)
+    if largest <= 0:
+        return configured
+    return max(1, min(configured, budget.usable_vram_bytes // largest))
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
@@ -172,18 +197,22 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
 
     entries: list[PresetEntry] = []
     sections: list[str] = []
-    for gguf in staged_in(models_dir, require_complete=False):
-        entry = _preset_for(gguf, budget, mtp_capable or set())
+    for gguf in staged_in(models_dir):
+        entry = preset_for_model(gguf, budget, mtp_capable or set())
         if entry is None:
             continue
         entries.append(entry)
+        # INI comments preserve non-flag facts atomically with the launch policy.
+        sections.append("# hermes-decision: " + json.dumps({
+            "model_id": entry.model_id, "window": entry.window,
+            "spilled": entry.spilled, "refusal": entry.refusal}) + "\n")
         if entry.keys is not None:
             body = "\n".join(f"{k} = {v}" for k, v in entry.keys.items())
             sections.append(f"[{entry.model_id}]\n{body}\n")
 
-    preset_path.parent.mkdir(parents=True, exist_ok=True)
-    preset_path.write_text("\n".join(sections), encoding="utf-8")
-    logger.info("wrote %d preset sections to %s", len(sections), preset_path)
+    from utils import atomic_write_text
+    atomic_write_text(preset_path, "\n".join(sections), tmp_prefix=f".{preset_path.name}_", mode=0o600)
+    logger.info("wrote %d preset sections to %s", sum(e.keys is not None for e in entries), preset_path)
     return entries
 
 
@@ -198,12 +227,21 @@ def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEn
         preset_path = runtimes_root() / "presets.ini"
     out: dict[str, PresetEntry] = {}
     try:
-        parser = configparser.ConfigParser()
-        parser.read(preset_path, encoding="utf-8")
+        parser = configparser.ConfigParser(interpolation=None)
+        text = preset_path.read_text(encoding="utf-8")
+        parser.read_string(text)
+        recorded = {}
+        for line in text.splitlines():
+            if line.startswith("# hermes-decision: "):
+                fact = json.loads(line.removeprefix("# hermes-decision: "))
+                recorded[fact["model_id"]] = fact
+                if fact.get("refusal"):
+                    out[fact["model_id"]] = PresetEntry(**fact)
         for section in parser.sections():
             out[section] = PresetEntry(
                 model_id=section, window=parser.getint(section, "ctx-size", fallback=0),
-                spilled=parser.has_option(section, "override-tensor"))
+                spilled=recorded.get(section, {}).get("spilled", parser.has_option(section, "override-tensor")),
+                keys=dict(parser[section]))
     except Exception as exc:  # noqa: BLE001
         logger.debug("preset read-back failed: %s", exc)
     return out

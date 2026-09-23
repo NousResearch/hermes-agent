@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from typing import Optional, Tuple
+from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_install as _install
@@ -94,7 +95,8 @@ def _surviving_chrome_cdp(data_dir: str) -> Optional[str]:
     http_cdp = f"http://127.0.0.1:{port}"
     try:
         import requests
-        ws_url = str(requests.get(f"{http_cdp}/json/version", timeout=2).json().get("webSocketDebuggerUrl") or "")
+        ws_url = str(requests.get(f"{http_cdp}/json/version", timeout=2, **loopback_request_kwargs(http_cdp))
+                     .json().get("webSocketDebuggerUrl") or "")
     except Exception:
         return None
     return http_cdp if ws_url.endswith(browser_path) else None
@@ -163,12 +165,14 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     except OSError:
         pass
     chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
-    _has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    _session._ensure_screen_for_headed_chromium()
+    browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
+    _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
         chrome_argv.append("--headless=new")
     try:
         chrome_proc = subprocess.Popen(chrome_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                       stdin=subprocess.DEVNULL, start_new_session=True, env=_bt._build_browser_env())
+                                       stdin=subprocess.DEVNULL, start_new_session=True, env=browser_env)
     except (subprocess.SubprocessError, OSError) as e:
         return None, f"{_RP}the launch failed: {e}"
     _bt._real_profile_chrome_procs.append(chrome_proc)

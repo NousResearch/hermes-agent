@@ -39,7 +39,6 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import build_session_key
 from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -491,10 +490,7 @@ class RaftAdapter(BasePlatformAdapter):
             return
         if not self._message_handler:
             return
-        session_key = build_session_key(
-            event.source, group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source))
+        session_key = self._event_session_key(event)
         if session_key in self._active_sessions:
             logger.debug("[raft] Wake queued for busy session %s", session_key)
             merge_pending_message_event(self._pending_messages, session_key, event)
@@ -527,15 +523,14 @@ def _env_enablement() -> Optional[dict]:
 def interactive_setup() -> None:
     """``hermes gateway setup`` flow: persists ``RAFT_PROFILE`` to the Hermes env file.
     CLI helpers are lazy-imported so the plugin stays importable in gateway runtime and tests."""
-    from hermes_cli.cli_output import print_header, print_info, print_success, print_warning, prompt, prompt_yes_no
+    from hermes_cli.cli_output import print_header, print_info, print_success, print_warning, prompt
     from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("Raft")
     existing_profile = get_env_value("RAFT_PROFILE")
-    if existing_profile:
-        print_info(f"Raft: already configured (profile: {existing_profile})")
-        if not prompt_yes_no("Reconfigure Raft?", False):
-            print_info(f"Keeping RAFT_PROFILE={existing_profile}.")
-            return
+    if declines_reconfigure("Raft", "Reconfigure Raft?", "RAFT_PROFILE"):
+        print_info(f"Keeping RAFT_PROFILE={existing_profile}.")
+        return
     for line in ("Connect Hermes to Raft as an external agent.", "Create the External Agent in Raft first, then run:",
                  "  raft agent login --server <server-url> --agent <agent-id> --profile-slug <slug>"):
         print_info(line)

@@ -20,6 +20,13 @@ from .method_ctx import bind_module
 # (b) the idle-reaper scan piggybacks an incremental flush so a SIGKILL loses at most one interval.
 
 
+def _session_has_pending_flush(session: dict | None) -> bool:
+    """Would :func:`_flush_session_messages` write anything for this session? (The exit flush counts
+    these to tell a complete flush from a budget overrun.)"""
+    agent = session.get("agent") if isinstance(session, dict) else None
+    return bool(hasattr(agent, "_persist_session") and getattr(agent, "_session_messages", None))
+
+
 def _flush_session_messages(session: dict | None) -> bool:
     """Best-effort durable flush of one session's transcript via ``agent._persist_session`` (same marker-deduped
     contract as ``_finalize_session``: repeated calls never duplicate rows).
@@ -30,8 +37,19 @@ def _flush_session_messages(session: dict | None) -> bool:
     snapshot = getattr(agent, "_session_messages", None) if hasattr(agent, "_persist_session") else None
     if not snapshot:
         return False
+    # config.yaml, the token ledger and the memory/provider lookups ``_persist_session`` touches are
+    # resolved at CALL time, and every caller of this helper is an unscoped reaper / exit-flush thread
+    # with no turn on the stack — so a SERVED profile's flush resolved them against the LAUNCH home.
+    # (The transcript ROWS were never at risk: a profile session gets its own SessionDB whose db_path
+    # is frozen at construction, tui_gateway/server.py::_open_profile_session_db). Same binding
+    # _finalize_session makes at the identical chokepoint (session_lifecycle.py).
+    #
+    # hydrate_secrets=False: persisting a transcript needs no external credential, and hydration
+    # shells out to the operator's secret command (30s CLI budget, process-global lock) inside a
+    # worker whose whole budget is 5s — one slow source silently lost the transcript.
     try:
-        agent._persist_session(snapshot)
+        with _session_profile_runtime_scope(session or {}, hydrate_secrets=False):
+            agent._persist_session(snapshot)
         return True
     except Exception:
         logger.debug("incremental session flush failed", exc_info=True)
@@ -71,10 +89,12 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     if budget <= 0:
         return 0
     result = {"flushed": 0}
+    sessions = _reaper_session_snapshot()
+    flushable = sum(1 for s in sessions if _session_has_pending_flush(s))
 
     def _run() -> None:
         deadline = time.monotonic() + budget
-        for session in _reaper_session_snapshot():
+        for session in sessions:
             if time.monotonic() >= deadline:
                 break
             result["flushed"] += _flush_session_messages(session)
@@ -82,6 +102,14 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     worker = threading.Thread(target=_run, daemon=True, name="hermes-exit-flush")
     worker.start()
     worker.join(budget)
+    # Silent loss is the failure mode this guard exists to prevent: both callers discard the return
+    # value, so a budget overrun (a slow state.db write, a scope binding that shells out) looks
+    # exactly like a clean exit.
+    if result["flushed"] < flushable:
+        logger.warning(
+            "Exit flush persisted %d of %d in-memory session transcript(s) within %.1fs; the rest "
+            "may have been lost (HERMES_TUI_EXIT_FLUSH_BUDGET_S)",
+            result["flushed"], flushable, budget)
     return result["flushed"]
 
 
@@ -160,6 +188,18 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     return _transport_is_dead(session.get("transport"))
 
 
+def _sessions_quiescent(exclude: str | None = None) -> bool:
+    """No session but ``exclude`` is mid-turn, building, awaiting input, holding live delegations, or on a live
+    transport. A non-forced memory trim holds the GIL (gc.collect) and every glibc arena lock (malloc_trim) for
+    its whole duration — 20-50 s on multi-GB heaps — which stalls the event loop, drops WS clients past the
+    write deadline and interrupts their turns (#58576); this is the moment it costs no other session. The
+    predicate is advisory (a turn can start right after), so the per-session checks — one may read state.db —
+    run outside ``_sessions_lock``."""
+    with _sessions_lock:
+        others = [(sid, s) for sid, s in _sessions.items() if sid != exclude]
+    return all(_session_is_lru_evictable(sid, s) for sid, s in others)
+
+
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     """TTL eviction: the LRU exemptions plus idle-for-TTL AND older-than-TTL."""
     if not _session_is_lru_evictable(sid, session):
@@ -185,7 +225,11 @@ def _reap_idle_sessions() -> None:
     _enforce_session_cap()
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
-    # every scan to prevent unbounded RSS growth over days/weeks.
+    # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
+    # pressure) are unaffected.
+    if not _sessions_quiescent():
+        logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
+        return
     try:
         from hermes_cli.mem_trim import trim_memory
         trim_memory(reason="idle reaper periodic trim")
@@ -290,7 +334,7 @@ def _schedule_session_cap_enforcement() -> None:
 # conservative. Disable via `dashboard.startup_orphan_sweep: false`.
 # This is the startup complement every other resource type already has (docker_orphan_reaper, compression
 # orphans). See #65194.
-_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent")
+_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent", "unknown")
 _startup_orphan_sweep_ran = False
 _startup_orphan_sweep_lock = threading.Lock()
 

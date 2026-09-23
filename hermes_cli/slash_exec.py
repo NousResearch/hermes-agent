@@ -105,8 +105,11 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
     """Core gateway /help body (pre platform mention decoration)."""
     from agent.i18n import t
     from hermes_cli.commands import gateway_help_lines
-    lines = [t("gateway.help.header"), *gateway_help_lines()]
-    skill_cmds = _skill_commands()
+    # ``allowed_commands`` (gateway, non-admin caller): only the commands the slash-access
+    # policy lets this user run; skill commands are hidden too since the gate refuses them.
+    allowed = ctx.options.get("allowed_commands")
+    lines = [t("gateway.help.header"), *gateway_help_lines(allowed)]
+    skill_cmds = _skill_commands() if allowed is None else {}
     try:
         if skill_cmds:
             lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
@@ -132,14 +135,20 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
     except ValueError:
         return CommandReply(t("gateway.commands.usage"), format="markdown")
 
-    entries = list(gateway_help_lines())
-    skill_cmds = _skill_commands()
+    allowed = ctx.options.get("allowed_commands")
+    entries = list(gateway_help_lines(allowed))
+    skill_cmds = _skill_commands() if allowed is None else {}
     try:
         if skill_cmds:
             entries.extend(["", t("gateway.commands.skill_header")])
             for cmd in sorted(skill_cmds):
                 desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                 entries.append(f"`{cmd}` — {desc}")
+        # Skills kept off the menu because a built-in owns the name (agent.skill_commands guard).
+        from agent.skill_commands import skill_command_collision_note
+        from tools.skills_tool import _find_all_skills
+        entries.extend(f"⚠ {note}" for note in filter(None, map(
+            skill_command_collision_note, sorted(s["name"] for s in _find_all_skills()))))
     except Exception:
         pass
 

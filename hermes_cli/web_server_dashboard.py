@@ -153,11 +153,22 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
+        # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
+        initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
+        # This backend's OWN profile name (empty when it cannot be named unambiguously). The SPA
+        # falls back to it when neither the URL nor --open-profile names one, so requests carry an
+        # explicit scope from the first paint: destructive routes 400 on an unnamed profile as soon
+        # as the host serves more than one, and the switcher shows the same profile it writes.
+        from hermes_cli.web_server_profiles import serving_profile_name as _serving_profile_name
+        serving_profile_js = json.dumps(_serving_profile_name()).replace("</", "<\\/")
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
+            f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
+            f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"
             f"</script>"
         )
         if prefix:
@@ -540,21 +551,28 @@ def _discover_dashboard_plugins() -> list:
     plugins = []
     seen_names: set = set()
     for plugins_root, source in _dashboard_plugin_search_dirs():
-        if not plugins_root.is_dir():
+        try:
+            if not plugins_root.is_dir():
+                continue
+            with os.scandir(plugins_root) as scan:
+                children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        except OSError as exc:
+            _log.warning("Skipping unreadable dashboard plugin root %s: %s", plugins_root, exc)
             continue
-        with os.scandir(plugins_root) as scan:
-            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
         for child in children:
             manifest_file = child / "dashboard" / "manifest.json"
-            if not child.is_dir() or not manifest_file.exists():
-                continue
             try:
+                if not child.is_dir() or not manifest_file.exists():
+                    continue
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue
                 seen_names.add(name)
                 plugins.append(_dashboard_plugin_entry(data, name, child / "dashboard", source))
+            except OSError as exc:
+                _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
+                continue
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
                 continue
@@ -634,6 +652,11 @@ def _plugin_auth_hint(name: str, provides_tools: list) -> tuple:
     return False, ""
 
 
+def _plugin_runtime_status(aliases: set, enabled_set: set, disabled_set: set) -> str:
+    """enabled / disabled / inactive for a plugin's name+key alias set (disabled wins)."""
+    return "disabled" if aliases & disabled_set else "enabled" if aliases & enabled_set else "inactive"
+
+
 def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     """Agent discovery + dashboard manifests + provider picker metadata.
 
@@ -654,14 +677,18 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
     started_at = time.monotonic()
     from hermes_cli.plugins_cmd import (
+        _category_active_names,
         _discover_all_plugins,
         _get_current_context_engine,
         _get_current_memory_provider,
         _discover_context_engines,
         _get_disabled_set,
         _get_enabled_set,
+        _plugin_status,
         _read_manifest as _read_plugin_manifest_at,
     )
+    from hermes_cli.plugins_cmd_catalog import removed_annotation
+    from hermes_cli.plugin_catalog import resolved_removed_entries
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -671,15 +698,18 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
 
+    # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
+    # fetch per installed plugin when the catalog host is slow or unreachable.
+    removed_entries = resolved_removed_entries()
+    active = _category_active_names()
+
     for name, version, description, source, dir_str, key in _discover_all_plugins():
-        # Both the path-derived key (nested category plugins) and the bare manifest name
-        # count for enabled/disabled state, matching the runtime loader's back-compat lookup.
-        aliases = {name, key} if key else {name}
-        if aliases & disabled_set:
-            runtime_status = "disabled"
-        elif aliases & enabled_set:
-            runtime_status = "enabled"
-        else:
+        # Same verdict as `hermes plugins list` / the TUI hub: name+key aliases for the lists, bundled
+        # backends/platforms/providers and the live memory provider count as enabled without a list
+        # entry (#73131, #82898).
+        runtime_status = _plugin_status(
+            name, enabled_set, disabled_set, key=key, source=source, dir_path=dir_str, active=active)
+        if runtime_status == "not enabled":
             runtime_status = "inactive"
 
         dir_path = Path(dir_str)
@@ -708,11 +738,21 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
+            "removed_reason": removed_annotation(name, dir_str, removed_entries),
         })
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [_strip_dashboard_manifest(p) for p in dashboard_list if str(p["name"]) not in agent_names]
-    memory_providers = _discover_memory_provider_statuses()
+    # ``_discover_memory_provider_statuses`` reads provider credentials through ``get_secret``
+    # (mem0's ``get_config_schema``/``is_available``). Under multiplexing an unscoped read raises
+    # ``UnscopedSecretError``; ``probe_availability`` swallows it and the provider renders
+    # "unavailable" in the dashboard with no user-visible error. This hub is built for the
+    # dashboard's own (launch) profile, so bind its scope explicitly — a no-op on single-profile
+    # hosts.
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+
+    with launch_profile_scope_if_multiplexed():
+        memory_providers = _discover_memory_provider_statuses()
     try:
         context_engines = [{"name": n, "description": desc} for n, desc in _discover_context_engines()]
     except Exception:

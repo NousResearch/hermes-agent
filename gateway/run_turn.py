@@ -4103,7 +4103,7 @@ class GatewayTurnMixin:
         turn_ctx._progress_metadata, turn_ctx._progress_reply_to, _status_thread_metadata = (
             self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
         )
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if (
             turn_ctx.interim_assistant_messages_enabled
             and adapter is not None

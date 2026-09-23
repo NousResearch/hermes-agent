@@ -257,3 +257,26 @@ async def test_adapter_sanitizes_html_on_send_and_edit_and_keeps_star_prefix_wit
     assert approval["formatted_body"].startswith("* ")
     stripped = _sanitize_matrix_html(dirty)
     assert "<script>" not in stripped
+
+
+@pytest.mark.asyncio
+async def test_bind_turn_wiring_uses_delivery_adapter_for_commentary_pane():
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session import SessionSource
+
+    adapter = SimpleNamespace(name="matrix")
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", user_id="@user:example.org")
+    ctx = TurnContext(source=source, interim_assistant_messages_enabled=True)
+    host = SimpleNamespace(
+        _delivery_adapter_for=lambda _source: adapter,
+        _run_agent_progress_threading=lambda *_a, **_k: ({"thread_id": "$t"}, "$reply", None),
+        hooks=object(),
+    )
+    turn_runner = SimpleNamespace(
+        _step_callback_sync=object(),
+        _event_callback_sync=object(),
+        _status_callback_sync=object(),
+    )
+    GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
+    assert ctx.matrix_commentary_pane is not None
+    assert ctx.matrix_commentary_pane.adapter is adapter

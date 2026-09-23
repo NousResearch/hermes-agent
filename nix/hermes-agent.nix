@@ -57,7 +57,7 @@ let
   };
 
   hermesWeb = callPackage ./web.nix {
-    inherit hermesNpmLib;
+    inherit hermesNpmLib rev;
   };
 
   bundledSkills = lib.cleanSourceWith {

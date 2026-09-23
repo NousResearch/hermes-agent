@@ -12,9 +12,111 @@ function compilerPreset() {
   return preset;
 }
 import tailwindcss from "@tailwindcss/vite";
+import { execFileSync } from "node:child_process";
 import path from "path";
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
+
+export const BUILD_PROVENANCE_FILE = "build-provenance.json";
+
+interface BuildProvenance {
+  schemaVersion: 1;
+  commitSha: string | null;
+  branch: string | null;
+  dirty: boolean | null;
+  builtAt: string;
+  invocation: string;
+}
+
+function gitOutput(repoRoot: string, args: string[]): string | null {
+  try {
+    return execFileSync("git", ["-C", repoRoot, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2_000,
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function buildTimestamp(): string {
+  // Reproducible package builders conventionally provide SOURCE_DATE_EPOCH.
+  // Honor it when present instead of injecting wall-clock entropy into their
+  // outputs; ordinary dashboard builds still record their actual build time.
+  const sourceDateEpoch = process.env.SOURCE_DATE_EPOCH;
+  if (sourceDateEpoch && /^\d+$/.test(sourceDateEpoch)) {
+    const timestamp = new Date(Number(sourceDateEpoch) * 1_000);
+    if (!Number.isNaN(timestamp.getTime())) return timestamp.toISOString();
+  }
+  return new Date().toISOString();
+}
+
+function buildInvocation(): string {
+  const viteArgv = process.argv
+    .slice(1)
+    .map((arg, index) => (index === 0 ? path.basename(arg) : arg))
+    .join(" ");
+  const npmEvent = process.env.npm_lifecycle_event;
+  if (npmEvent) return `npm run ${npmEvent}${viteArgv ? ` -> ${viteArgv}` : ""}`;
+  return viteArgv || "vite build";
+}
+
+function packagedDirtyState(): boolean | null {
+  const value = process.env.BUILD_SOURCE_DIRTY?.trim().toLowerCase();
+  if (["1", "true", "yes", "dirty"].includes(value ?? "")) return true;
+  if (["0", "false", "no", "clean"].includes(value ?? "")) return false;
+  return null;
+}
+
+function collectBuildProvenance(repoRoot: string): BuildProvenance {
+  const insideWorkTree =
+    gitOutput(repoRoot, ["rev-parse", "--is-inside-work-tree"]) === "true";
+  const commitSha = insideWorkTree
+    ? gitOutput(repoRoot, ["rev-parse", "HEAD"])
+    : (process.env.HERMES_GIT_SHA ??
+      process.env.HERMES_REVISION ??
+      process.env.GITHUB_SHA ??
+      null);
+  const branch = insideWorkTree
+    ? (gitOutput(repoRoot, ["symbolic-ref", "--short", "-q", "HEAD"]) ?? "detached")
+    : (process.env.BUILD_SOURCE_BRANCH ??
+      process.env.GITHUB_HEAD_REF ??
+      (process.env.GITHUB_REF_TYPE === "branch" ? process.env.GITHUB_REF_NAME : null) ??
+      null);
+  const status = insideWorkTree
+    ? gitOutput(repoRoot, ["status", "--porcelain=v1", "--untracked-files=normal"])
+    : null;
+
+  return {
+    schemaVersion: 1,
+    commitSha: commitSha || null,
+    branch: branch || null,
+    dirty:
+      insideWorkTree && status !== null
+        ? status.length > 0
+        : packagedDirtyState(),
+    builtAt: buildTimestamp(),
+    invocation: buildInvocation(),
+  };
+}
+
+/** Emit source identity from Vite itself so every build path is stamped. */
+export function hermesBuildProvenance(
+  repoRoot = path.resolve(__dirname, ".."),
+): Plugin {
+  return {
+    name: "hermes:build-provenance",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: BUILD_PROVENANCE_FILE,
+        source: `${JSON.stringify(collectBuildProvenance(repoRoot), null, 2)}\n`,
+      });
+    },
+  };
+}
 
 /**
  * In production the Python `hermes dashboard` server injects a one-shot
@@ -79,6 +181,7 @@ export default defineConfig({
     babel({ presets: [compilerPreset()] }),
     tailwindcss(),
     hermesDevToken(),
+    hermesBuildProvenance(),
   ],
   resolve: {
     alias: {

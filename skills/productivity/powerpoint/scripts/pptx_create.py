@@ -100,6 +100,20 @@ def copy_layout_placeholder(slide, ph_idx):
     return None
 
 
+def set_slide_title(slide, text, slide_width):
+    """Set a layout title or add a conventional title box as fallback."""
+    if slide.shapes.title is not None:
+        slide.shapes.title.text = text
+        return slide.shapes.title
+    shape = slide.shapes.add_textbox(
+        Inches(0.5), Inches(0.3), slide_width - Inches(1), Inches(0.8))
+    run = shape.text_frame.paragraphs[0].add_run()
+    run.text = text
+    run.font.size = Pt(28)
+    run.font.bold = True
+    return shape
+
+
 def build_slide(prs, spec):
     layout_idx = LAYOUTS.get(spec.get("layout", "title_content"), 1)
     slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
@@ -115,8 +129,8 @@ def build_slide(prs, spec):
         if shape is not None:
             shape.text_frame.text = spec["footer"]
 
-    if spec.get("title") is not None and slide.shapes.title is not None:
-        slide.shapes.title.text = spec["title"]
+    if spec.get("title") is not None:
+        set_slide_title(slide, spec["title"], prs.slide_width)
     if spec.get("subtitle") is not None:
         for ph in slide.placeholders:
             if ph.placeholder_format.idx == 1:

@@ -140,3 +140,35 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     adapter.play_tts.assert_not_awaited()
     # Text reply still goes out.
     assert adapter.sent and adapter.sent[0]["content"] == "reply text"
+
+
+@pytest.mark.asyncio
+async def test_base_auto_tts_speaks_explicit_payload_but_sends_display_text():
+    adapter = _DummyAdapter(Platform.DISCORD)
+    adapter._keep_typing = _hold_typing()
+    adapter._should_auto_tts_for_chat = lambda _chat_id: True
+    adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
+    displayed = "-# 💭 Reasoning\n-# private reasoning\n\nFinal answer"
+
+    async def answer(event):
+        event._hermes_spoken_response = "Final answer"
+        return displayed
+
+    adapter.set_message_handler(answer)
+    event = _make_voice_event(Platform.DISCORD)
+    synthesized = []
+
+    def fake_tts(*, text, output_path=None):
+        from pathlib import Path
+        synthesized.append(text)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"fake audio")
+        return json.dumps({"success": True, "file_path": output_path})
+
+    with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+        "tools.tts_tool.text_to_speech_tool", side_effect=fake_tts
+    ):
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert synthesized == ["Final answer"]
+    assert adapter.sent and adapter.sent[0]["content"] == displayed

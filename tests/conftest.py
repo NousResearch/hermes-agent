@@ -1225,10 +1225,14 @@ def _wal_is_usable() -> bool:
 #    gateway call sites late-import, so patching the module attribute catches
 #    them wherever they import it from.
 #  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
-#    ``speak_text`` actually plays through. Patching the binding inside
-#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
-#    available to the tests that legitimately exercise it with a mocked
-#    audio backend (``tests/tools/test_voice_mode.py``).
+#    ``speak_text`` actually plays through.
+#  • ``tools.voice_mode.play_audio_file`` — the common sink used by late-import
+#    call sites such as the streaming speaker pipeline.
+#  • ``tools.voice_mode._play_int16_via_tempfile`` — the direct tempfile
+#    fallback used by beeps when sounddevice output is unavailable.
+#
+# Tests that intentionally exercise real playback code opt out with
+# ``@pytest.mark.real_audio_playback`` and keep their own backend mocks.
 #
 # Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
 # only selects *which* provider speaks, never *whether* to speak — that gate
@@ -1974,9 +1978,19 @@ def _audio_playback_guard(request, monkeypatch):
         yield
         return
 
+    _voice = None
     try:
         import hermes_cli.voice as _voice
     except Exception:
+        pass
+
+    _voice_mode = None
+    try:
+        import tools.voice_mode as _voice_mode
+    except Exception:
+        pass
+
+    if _voice is None and _voice_mode is None:
         # Optional audio deps missing — nothing importable to speak with.
         yield
         return
@@ -1987,10 +2001,22 @@ def _audio_playback_guard(request, monkeypatch):
     def _blocked_play_audio_file(path, *args, **kwargs):
         return False
 
-    if hasattr(_voice, "speak_text"):
+    def _blocked_play_int16(audio, sample_rate, *args, **kwargs):
+        return None
+
+    if _voice is not None and hasattr(_voice, "speak_text"):
         monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
-    if hasattr(_voice, "play_audio_file"):
+    if _voice is not None and hasattr(_voice, "play_audio_file"):
         monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+    if _voice_mode is not None:
+        if hasattr(_voice_mode, "play_audio_file"):
+            monkeypatch.setattr(
+                _voice_mode, "play_audio_file", _blocked_play_audio_file
+            )
+        if hasattr(_voice_mode, "_play_int16_via_tempfile"):
+            monkeypatch.setattr(
+                _voice_mode, "_play_int16_via_tempfile", _blocked_play_int16
+            )
 
     yield
 

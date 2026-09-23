@@ -5,6 +5,7 @@
 // Mirrored by `PREVIEW_EXTERNAL_CHANNEL` in src/lib/preview-external.ts — the
 // renderer tsconfig cannot import from electron/.
 export const GUEST_EXTERNAL_CHANNEL = 'preview-open-external'
+export const GUEST_WIDGET_INTENT_CHANNEL = 'preview-widget-intent'
 
 interface GuestEventTarget {
   closest(selector: string): { href: string } | null
@@ -17,8 +18,12 @@ export interface GuestClickEvent {
 }
 
 export interface GuestHandoffHost {
-  addEventListener(type: 'click', listener: (event: GuestClickEvent) => void, capture?: boolean): void
+  addEventListener(type: string, listener: (event: GuestClickEvent | GuestWidgetIntentEvent) => void, capture?: boolean): void
   sendToHost(channel: string, ...args: unknown[]): void
+}
+
+export interface GuestWidgetIntentEvent {
+  detail?: unknown
 }
 
 /**
@@ -36,11 +41,13 @@ export function installGuestExternalHandoff(host: GuestHandoffHost): void {
   host.addEventListener(
     'click',
     event => {
-      if (event.isTrusted !== true || (event.button ?? 0) !== 0) {
+      const click = event as GuestClickEvent
+
+      if (click.isTrusted !== true || (click.button ?? 0) !== 0) {
         return
       }
 
-      const target = event.target as GuestEventTarget | null
+      const target = click.target as GuestEventTarget | null
 
       if (!target || typeof target.closest !== 'function') {
         return
@@ -63,4 +70,25 @@ export function installGuestExternalHandoff(host: GuestHandoffHost): void {
     },
     true
   )
+}
+
+/** Forward only the token-scoped intent event installed by the host renderer.
+ * The preload exposes no Electron API to the page; it merely carries an
+ * already-validated primitive payload back to its owning webview. */
+export function installGuestWidgetIntentHandoff(host: GuestHandoffHost): void {
+  host.addEventListener('hermes-widget-intent', event => {
+    const detail = (event as GuestWidgetIntentEvent).detail
+
+    if (!detail || typeof detail !== 'object') {
+      return
+    }
+
+    const { prompt, token } = detail as { prompt?: unknown; token?: unknown }
+
+    if (typeof token !== 'string' || typeof prompt !== 'string' || !prompt.trim()) {
+      return
+    }
+
+    host.sendToHost(GUEST_WIDGET_INTENT_CHANNEL, token, prompt)
+  })
 }

@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import { GUEST_EXTERNAL_CHANNEL, type GuestClickEvent, installGuestExternalHandoff } from './preview-guest-preload'
+import {
+  GUEST_EXTERNAL_CHANNEL,
+  GUEST_WIDGET_INTENT_CHANNEL,
+  type GuestClickEvent,
+  type GuestWidgetIntentEvent,
+  installGuestExternalHandoff,
+  installGuestWidgetIntentHandoff
+} from './preview-guest-preload'
 
 // Preview-pane guest bridge (#112941): the preload forwards a user's click on a
 // `_blank` anchor to the host and nothing else.
@@ -47,5 +54,25 @@ describe('installGuestExternalHandoff', () => {
     click({ button: 0, isTrusted: true, target: null })
 
     assert.deepEqual(sent, [])
+  })
+})
+
+describe('installGuestWidgetIntentHandoff', () => {
+  test('forwards intact token-scoped payloads and rejects malformed events', () => {
+    const sent: { channel: string; args: unknown[] }[] = []
+    let listener: ((event: GuestClickEvent | GuestWidgetIntentEvent) => void) | undefined
+
+    installGuestWidgetIntentHandoff({
+      addEventListener: (_type, next) => {
+        listener = next
+      },
+      sendToHost: (channel, ...args) => sent.push({ args, channel })
+    })
+
+    const payload = `FC-FLUSH ${JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ index, rating: 5 })) )}`
+    listener?.({ detail: { prompt: payload, token: 'pane-token' } })
+    listener?.({ detail: { prompt: 42, token: 'pane-token' } })
+
+    assert.deepEqual(sent, [{ args: ['pane-token', payload], channel: GUEST_WIDGET_INTENT_CHANNEL }])
   })
 })

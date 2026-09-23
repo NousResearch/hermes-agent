@@ -183,6 +183,14 @@ async def _lifespan(app: "FastAPI"):
     from tui_gateway import methods_groups as _hosted_groups
     import tui_gateway.server  # noqa: F401
 
+    # Start the change-watcher daemon (sessions.changed / cron.changed / ...) at
+    # backend boot — external processes (CLI ``hermes``, cron, messaging-gateway)
+    # write to state.db without touching this backend's transports, so the sidebar
+    # would otherwise stay stale until the next legacy poll. Idempotent: ws.py:308
+    # also arms it on the first /api/ws client connect (#103420).
+    from tui_gateway.change_watcher import _ensure_skin_watcher
+    _ensure_skin_watcher()
+
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:

@@ -10,13 +10,10 @@ Five outcomes, in order:
 * ``ATTACH``       — a live host gateway already serves this profile. Nothing to start; exit 0.
 * ``RESCAN``→ATTACH — it does not serve it yet: ask it to reconcile ``profiles/`` now (control
   socket ``rescan-profiles``) and attach once the answer includes us.
-* ``REPLACE_HOST`` — ``--replace`` names the host process as the target when it serves this
-  profile, whichever home launched it. An owner that has not published its served set yet is
-  also targeted, but the ownership guard (``run._replace_target_belongs_to_other_profile``) can
-  then only prove it from THIS home's pid record, so a served-unknown owner launched from another
-  home is refused (exit 1, one supervisor retry). An owner known not to serve us is another
-  profile's gateway and falls through to REFUSE/START below; ``--force`` is the explicit
-  takeover-anything switch.
+* ``REPLACE_HOST`` — ``--replace`` targets the host process when it serves this profile, whichever
+  home launched it. An owner that has not published its served set yet is targeted too, but the
+  ownership guard (``run._replace_target_belongs_to_other_profile``) can then only prove it from
+  THIS home's pid record, so from another home the replace is refused (exit 1).
 * ``REFUSE``       — a live MULTIPLEXING gateway exists and cannot be made to serve this profile.
   Never start a second one silently.
 * ``START``        — no live owner, or the owner answers ``multiplex: False``: it is another
@@ -346,9 +343,7 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     if gateway is None or gateway.pid == os.getpid():
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
     if replace and (gateway.serves(profile) or not gateway.served_known):
-        # --replace is authority over the process SERVING THIS PROFILE (whichever home launched it;
-        # a served-unknown owner is provable only from this home's pid record). An owner known not
-        # to serve us is another profile's gateway: replacing it is always refused
+        # An owner known not to serve us is another profile's gateway: replacing it is always refused
         # (_replace_target_belongs_to_other_profile fails closed) and the gateway exits, so on a
         # one-process-per-profile fleet, whose generated units all carry --replace, every unit but
         # the lock holder respawn-storms. Such an owner takes the non-replace path below instead.
@@ -384,10 +379,12 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         # every unit but the first to claim the host lock. Start beside it. decide() runs twice per
         # start (CLI guard + start_gateway), so this is INFO; the host-lock claim in run.py logs the
         # one WARNING with the `gateway migrate --multiplex` converge hint.
+        from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+
         logger.info(
             "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it. "
-            "Fold every profile onto one gateway with: hermes gateway migrate --multiplex",
-            attached.describe(), profile)
+            "Fold every profile onto one gateway with: %s",
+            attached.describe(), profile, MIGRATE_COMMAND)
         return HostAttachDecision(START, "")
     if not gateway.served_known:
         # The owner never answered, so we know only that it exists. ATTACH here (on the record's

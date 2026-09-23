@@ -5484,22 +5484,18 @@ def _owner_is_standalone() -> bool:
 def _refuse_second_host_gateway(owner) -> None:
     """Print the named refusal and exit 75 so a supervisor retries instead of parking the unit.
 
-    Reached only after losing the host lock to a live process, so ``--replace`` is not offered as
-    the way past it: it only takes over an owner that serves this profile (which would have been
-    handled before the claim), and it does not skip the lock check. A holder with no readable
-    record (its publish failed, or it runs another HOST_PROTOCOL_VERSION) can only be stopped or
-    bypassed with ``--force``.
+    Reached only after losing the host lock, so ``--replace`` is not offered: an owner that serves
+    this profile was already handled before the claim, and ``--replace`` does not skip the lock.
     """
     from gateway import host_rendezvous as hr
     from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
 
     who = hr.describe(owner) if owner else "owner unknown (its record is gone)"
     message = (
         f"❌ Another gateway already owns this host: {who}\n"
         f"   Exactly one gateway per host serves every profile, so this process will not start a\n"
         f"   second one (it would double-bind this profile's platforms).\n"
-        f"   Fold every profile onto the owner:  {MIGRATE_COMMAND}\n"
+        f"   Fold every profile onto the owner:  {_migrate_command()}\n"
         f"   Or stop the other gateway first, then start this one.\n"
         f"   Or start one anyway (skips the host-lock check):  hermes gateway run --force\n"
         f"   (--replace does not skip this check; it only replaces an owner that serves this profile.)")
@@ -5581,8 +5577,7 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
         print(decision.message)
         return False
     if decision.outcome == REPLACE_HOST and decision.owner is not None:
-        # decide() already filtered: the owner serves this profile (whichever home launched it) or
-        # has not published its served set yet (then only this home's pid record can prove it).
+        # decide() only targets an owner that serves this profile or has not published its served set.
         if not await _start_gateway_replace_existing_instance(decision.owner.pid, True):
             return False
     return None
@@ -5885,10 +5880,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # PID file BEFORE adapters: of two concurrent `run --replace`, only the O_EXCL winner opens sockets.
     # Only --force skips the host-lock refusal. Every generated unit carries --replace, so reading it as
     # --force there disabled the one arbiter of the two-units-at-once race; a replace that took the
-    # owner over already freed the lock with that process. Consequence: a live holder with no
-    # readable record (publish_record failed after the claim, or a different HOST_PROTOCOL_VERSION
-    # during a rolling upgrade) blocks every other unit with exit 75 until it exits; only --force
-    # gets past it.
+    # owner over already freed the lock with that process. Consequence: a live holder this process
+    # cannot interrogate (its record never published, or it speaks another HOST_PROTOCOL_VERSION
+    # mid-upgrade) blocks every other unit with exit 75 until it exits; only --force gets past it.
     if not _start_gateway_claim_pid_file(force=force):
         return False
 

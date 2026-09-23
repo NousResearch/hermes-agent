@@ -583,7 +583,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not isinstance(d, dict):
             return
         msg_id = str(d.get("id", ""))
-        if not msg_id or await self._is_duplicate(msg_id):
+        if not msg_id or await self._is_replayed_message(msg_id):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
         handler = self._INBOUND_HANDLERS.get(event_type)
@@ -615,7 +615,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 "[%s] Failed to persist dedup state to %s",
                 self._log_tag, self._dedup_state_path, exc_info=True)
 
-    async def _is_duplicate(self, msg_id: str) -> bool:
+    async def _is_replayed_message(self, msg_id: str) -> bool:
         if self._dedup.is_duplicate(msg_id):
             return True
         snapshot = self._dedup.snapshot()

@@ -97,7 +97,7 @@ class SessionTitlesMixin:
                 return 0
             if title:
                 conflict = conn.execute(
-                    "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+                    "SELECT id, archived FROM sessions WHERE title = ? AND id != ?", (title, session_id),
                 ).fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
@@ -105,12 +105,14 @@ class SessionTitlesMixin:
                     # user, so transfer it onto the tip (uniqueness + lineage kept).
                     if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
                         conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
-                    # A deliberately archived hidden Bot Chat is a retired registry
-                    # entry, not a live identity. Retire its name in the same title
+                    # A deliberately archived Bot Chat — born-hidden canonical or a
+                    # legacy visible row predating that contract (archived=1,
+                    # hidden=0, end_reason=NULL sits outside every recoverable
+                    # end_reason resurrection path) — is a retired registry entry,
+                    # not a live identity. Retire its name in the same title
                     # transaction so a replacement can become the sole canonical row;
                     # the old session remains archived and otherwise untouched.
-                    elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-                          and bool(conflict["hidden"])):
+                    elif title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"]):
                         conn.execute(
                             "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
                             (conflict_id,),

@@ -78,6 +78,28 @@ def test_deliberately_archived_canonical_chat_releases_name_for_replacement(db):
     assert row and row["id"] == "replacement"
 
 
+def test_archived_visible_bot_chat_releases_name_for_replacement(db):
+    """A legacy visible "Bot Chat" row (pre born-hidden contract) that later got
+    archived lands at archived=1, hidden=0, end_reason=NULL — outside both the
+    retire branch and every recoverable-end_reason resurrection path, so the
+    canonical title stayed locked forever and each Bot Mode open minted another
+    untitled orphan (#119730)."""
+    legacy = db.create_session("legacy", source="desktop")
+    assert db.set_session_title("legacy", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.set_session_archived("legacy", True)  # no end_reason: deliberate archive
+    row = db.get_session("legacy")
+    assert row["archived"] and not row["hidden"] and row["end_reason"] is None
+
+    db.create_session("replacement", source="desktop")
+    assert db.set_session_title("replacement", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.set_session_hidden("replacement", True)
+
+    assert db.get_session("legacy")["archived"]
+    assert db.get_session("legacy")["title"] is None
+    row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert row and row["id"] == "replacement"
+
+
 def test_auto_archive_sweep_skips_the_canonical_chat(db):
     """Only a deliberate archive may retire a Bot Chat; the idle sweep must not
     (it would strand an unrecoverable, soon-to-be-untitled row)."""

@@ -894,26 +894,93 @@ class TestWebServerEndpoints:
 
 
 
+    # A user-installed memory provider with a DECLARED config surface (``config_schema.py``, flat
+    # ``<home>/<name>/config.json`` storage) and a live ``get_config_schema``/``save_config`` pair.
+    # Bundled providers no longer ship a flat-storage declared schema (hindsight moved to the
+    # plugin catalog), so the generic router paths are exercised against this synthetic one.
+    _FLATPROV_INIT = """
+import json
+from pathlib import Path
+from agent.memory_provider import MemoryProvider
+
+
+class FlatProvMemoryProvider(MemoryProvider):
+    @property
+    def name(self):
+        return "flatprov"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+    def get_config_schema(self):
+        return [
+            {"key": "mode", "label": "Mode", "choices": ["cloud", "local_external"], "default": "cloud"},
+            {"key": "api_url", "label": "API URL", "default": ""},
+            {"key": "api_key", "label": "API key", "secret": True, "env_var": "FLATPROV_API_KEY"},
+            {"key": "bank_id", "label": "Bank", "default": "hermes"},
+            {"key": "recall_budget", "label": "Budget", "choices": ["low", "mid", "high"], "default": "mid"},
+        ]
+
+    def save_config(self, values, hermes_home):
+        path = Path(hermes_home) / "flatprov" / "config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = json.loads(path.read_text()) if path.exists() else {}
+        existing.update(values)
+        path.write_text(json.dumps(existing))
+"""
+    _FLATPROV_SCHEMA = """
+from plugins.memory.config_schema import (
+    KIND_SECRET, KIND_SELECT, KIND_TEXT, ProviderConfigSchema, ProviderField, ProviderFieldOption,
+)
+
+CONFIG_SCHEMA = ProviderConfigSchema(
+    name="flatprov",
+    label="Flat Provider",
+    fields=(
+        ProviderField(key="mode", label="Mode", kind=KIND_SELECT, description="", default="cloud",
+                      options=(ProviderFieldOption("cloud", "Cloud"), ProviderFieldOption("local_external", "Local"))),
+        ProviderField(key="api_url", label="API URL", kind=KIND_TEXT, description=""),
+        ProviderField(key="api_key", label="API key", kind=KIND_SECRET, description="", env_key="FLATPROV_API_KEY"),
+    ),
+)
+"""
+
+    def _install_flatprov(self):
+        from hermes_constants import get_hermes_home
+
+        plugin_dir = get_hermes_home() / "plugins" / "flatprov"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "__init__.py").write_text(self._FLATPROV_INIT, encoding="utf-8")
+        (plugin_dir / "config_schema.py").write_text(self._FLATPROV_SCHEMA, encoding="utf-8")
+        return plugin_dir
+
     def test_declared_surface_put_writes_config_and_secret(self):
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_env
 
+        self._install_flatprov()
         resp = self.client.put(
-            "/api/memory/providers/hindsight/config?surface=declared",
+            "/api/memory/providers/flatprov/config?surface=declared",
             json={
                 "values": {
                     "mode": "local_external",
                     "api_url": "http://localhost:8888",
-                    "api_key": "hs-declared-key",
+                    "api_key": "fp-declared-key",
                 }
             },
         )
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        assert load_env()["HINDSIGHT_API_KEY"] == "hs-declared-key"
+        assert load_env()["FLATPROV_API_KEY"] == "fp-declared-key"
 
-        config_path = get_hermes_home() / "hindsight" / "config.json"
+        config_path = get_hermes_home() / "flatprov" / "config.json"
         provider_config = json.loads(config_path.read_text(encoding="utf-8"))
         assert provider_config["mode"] == "local_external"
         assert provider_config["api_url"] == "http://localhost:8888"
@@ -976,13 +1043,14 @@ class TestWebServerEndpoints:
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_config, load_env
 
+        self._install_flatprov()
         resp = self.client.put(
-            "/api/memory/providers/hindsight/config",
+            "/api/memory/providers/flatprov/config",
             json={
                 "values": {
                     "mode": "local_external",
                     "api_url": "http://localhost:8888",
-                    "api_key": "hs-test-key",
+                    "api_key": "fp-test-key",
                     "bank_id": "ben-bank",
                     "recall_budget": "high",
                 }
@@ -990,11 +1058,11 @@ class TestWebServerEndpoints:
         )
 
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "active": "hindsight"}
-        assert load_config()["memory"]["provider"] == "hindsight"
-        assert load_env()["HINDSIGHT_API_KEY"] == "hs-test-key"
+        assert resp.json() == {"ok": True, "active": "flatprov"}
+        assert load_config()["memory"]["provider"] == "flatprov"
+        assert load_env()["FLATPROV_API_KEY"] == "fp-test-key"
 
-        config_path = get_hermes_home() / "hindsight" / "config.json"
+        config_path = get_hermes_home() / "flatprov" / "config.json"
         provider_config = json.loads(config_path.read_text(encoding="utf-8"))
         assert provider_config["mode"] == "local_external"
         assert provider_config["api_url"] == "http://localhost:8888"
@@ -1004,12 +1072,13 @@ class TestWebServerEndpoints:
 
 
     def test_get_memory_provider_config_does_not_return_secret(self):
+        self._install_flatprov()
         self.client.put(
-            "/api/memory/providers/hindsight/config",
+            "/api/memory/providers/flatprov/config",
             json={
                 "values": {
                     "mode": "cloud",
-                    "api_url": "https://api.hindsight.vectorize.io",
+                    "api_url": "https://api.example.invalid",
                     "api_key": "secret-value",
                     "bank_id": "hermes",
                     "recall_budget": "mid",
@@ -1017,7 +1086,7 @@ class TestWebServerEndpoints:
             },
         )
 
-        resp = self.client.get("/api/memory/providers/hindsight/config")
+        resp = self.client.get("/api/memory/providers/flatprov/config")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -2818,7 +2887,7 @@ class TestBuildSchemaFromConfig:
         monkeypatch.setattr(
             _web_server_config,
             "_memory_provider_options",
-            lambda: ["", "honcho", "hindsight", "freshly_installed"],
+            lambda: ["", "honcho", "mem0", "freshly_installed"],
         )
 
         fields = _web_server_config._schema_with_dynamic_provider_options()

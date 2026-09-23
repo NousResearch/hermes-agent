@@ -17,7 +17,9 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 ## What may live in this tree (policy)
 
 - **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (honcho, mem0,
-  supermemory, byterover, hindsight, holographic, openviking, retaindb stay; bug fixes welcome). New
+  supermemory, byterover, holographic, openviking, retaindb stay; bug fixes welcome; hindsight moved
+  to the plugin catalog in Sep 2026 — `plugin-catalog/hindsight.yaml`, auto-installed by
+  `hermes_cli/memory_provider_migration.py` for homes still configured for it). New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
@@ -119,4 +121,4 @@ External-plugin compat is handled ONCE here — never add per-PR re-export shims
 
 `tests/plugins/`. Load through real discovery with a temp `HERMES_HOME`; assert behaviour (tool
 registered, hook fired with expected kwargs), not counts. Opt-in telemetry rule applies to plugins
-too: no attribution tag ships by default (`tests/plugins/memory/test_hindsight_provider.py`).
+too: no attribution tag ships by default.

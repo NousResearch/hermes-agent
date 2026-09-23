@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 from contextlib import contextmanager
 from typing import Optional
 
@@ -12,11 +11,13 @@ router = APIRouter(prefix="/api/memory/providers")
 
 
 def _resolve_flow(provider: str):
-    """Return a provider's OAuth flow module by convention, or raise 404."""
+    """Return a provider's ``oauth_flow`` module (bundled or user-dir copy), or raise 404."""
     if not provider.isidentifier():
         raise HTTPException(status_code=404, detail=f"unknown memory provider {provider!r}")
+    from plugins.memory import import_provider_module
+
     try:
-        return importlib.import_module(f"plugins.memory.{provider}.oauth_flow")
+        return import_provider_module(provider, "oauth_flow")
     except ImportError:
         raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")
 

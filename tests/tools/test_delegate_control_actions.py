@@ -273,6 +273,35 @@ def test_concurrent_reserves_never_collide():
             release_display_name(n)
 
 
+def test_build_failure_releases_display_name(monkeypatch):
+    """A child that fails to construct must give its reserved name back to the pool:
+    the release was imported next to reserve_display_name but never wired into the
+    BaseException path (nit in review of #118104). Asserted as a pool diff so the
+    test stays immune to suite-order residue in the shared reservation set."""
+    import run_agent
+    from unittest.mock import MagicMock
+
+    from tools import delegate_tool
+    from tools.delegate_tool_registry import _active_subagents_lock, _reserved_display_names
+
+    def _boom(*args, **kwargs):
+        raise ValueError("construct failed")
+
+    monkeypatch.setattr(run_agent, "AIAgent", _boom)
+    parent = MagicMock()
+    parent._delegate_depth = 0
+
+    with _active_subagents_lock:
+        before = set(_reserved_display_names)
+    with pytest.raises(ValueError, match="construct failed"):
+        delegate_tool._build_child_agent(
+            0, "goal", "context", None, "test/model", 10, 1, parent,
+        )
+    with _active_subagents_lock:
+        after = set(_reserved_display_names)
+    assert after <= before, f"display-name reservation leaked on build failure: {sorted(after - before)}"
+
+
 def test_steer_requires_subagent_id():
     out = _handle_control_action("steer", "", "text", _StubParent())
     assert "requires subagent_id" in out

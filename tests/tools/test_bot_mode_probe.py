@@ -171,6 +171,23 @@ def test_never_raises_on_garbage(tmp_path, monkeypatch):
 # ── capability epoch ─────────────────────────────────────────────────────────
 
 
+def test_chat_paragraph_states_the_conversational_contract(tmp_path):
+    """A Bot Chat is a conversation, not a work log: the section tells the bot how to
+    talk in its own chat, and keeps the substance an ask needs in the shape the ask
+    calls for (a report is still a report when the user asked for one)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "In your own chat with the user, talk like a person, not a status page" in section
+    assert "a one-liner" in section
+    assert "what changed and what is left" in section
+    # The escape hatch that keeps real work intact: structure when it was asked for.
+    assert "in the shape the ask calls for" in section
+
+
 def test_fingerprint_stable_when_nothing_changes(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -1663,7 +1663,9 @@ export {
   ModelCatalogMenu,
   type ModelChoice,
   ModelMenuCloseContext,
-  type ModelMenuController
+  type ModelMenuController,
+  type ModelRowExtra,
+  type ModelRowRef
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'

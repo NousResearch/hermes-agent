@@ -405,6 +405,9 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
         from gateway.readiness import _probe_state_db
         storage_check = await run_in_threadpool(_probe_state_db, get_hermes_home())
         components["storage"] = {"status": storage_check.get("status", "degraded")}
+        # The one reason enum consumers key off; same latch as readiness and the session lists.
+        if storage_check.get("detail") == "corrupt":
+            components["storage"]["reason"] = "corrupt"
     except Exception:
         components["storage"] = {"status": "degraded"}
     # ``disabled`` entries are platforms the multiplexer deliberately does not run for a served profile

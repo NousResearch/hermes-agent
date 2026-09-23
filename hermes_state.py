@@ -33,6 +33,9 @@ from hermes_state_common import (
     escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
+from hermes_state_health import (
+    STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
+)
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -958,6 +961,13 @@ class SessionDB(
         ioerr_begin_retried = False
         while True:
             self._raise_if_db_corrupt()
+            if storage_state(self.db_path) == STORAGE_CORRUPT:
+                # Another handle in this process already saw structural damage on this file.
+                # Quarantine this one before it touches SQLite; the error type is the same
+                # StateDbCorruptError, so every transcript-diversion owner handles it unchanged.
+                self._halt_db_corrupt(sqlite3.DatabaseError(
+                    "database disk image is malformed (reported earlier in this process: "
+                    f"{storage_corrupt_reason(self.db_path)})"))
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
             # not here. close() mutates _conn and _db_sidecar_identity under that
             # same lock, ending the WAL generation (SQLite unlinks the -wal/-shm
@@ -1098,8 +1108,14 @@ class SessionDB(
                     return fn(conn)
             except sqlite3.OperationalError as exc:
                 if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or _DISK_IO_ERROR_MARKER not in str(exc).lower():
+                    note_storage_error(self.db_path, exc)
                     raise
                 time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)
+            except sqlite3.DatabaseError as exc:
+                # A reader is often the only observer (the sidebar poll on a store nobody is
+                # writing to): publish structural damage so the list is not read as empty.
+                note_storage_error(self.db_path, exc)
+                raise
 
     def _ensure_db_file_generation(self) -> None:
         """Mint a once-per-file generation stamp (state_meta + application_id). First opener wins (INSERT
@@ -1272,6 +1288,9 @@ class SessionDB(
         """Quarantine this handle and raise; never run in-file repair here."""
         self._db_corrupt = True
         self._db_corrupt_reason = str(exc)
+        # Publish the profile-level state first: readiness, /api/status and the session list
+        # endpoints read it, and every other handle in this process refuses writes on it.
+        mark_storage_corrupt(self.db_path, exc)
         self._disable_close_time_checkpoint()
         logger.error(
             "state.db %s reported structural corruption outside the FTS "

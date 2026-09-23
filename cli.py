@@ -25,6 +25,31 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Bridge import-time redaction settings before CLI mixins can import agent.redact.
+from hermes_constants import get_hermes_home
+from hermes_cli.env_loader import load_hermes_dotenv
+from utils import fast_safe_load
+
+_hermes_home = get_hermes_home()
+_project_env = Path(__file__).parent / ".env"
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+try:
+    _early_config_path = _hermes_home / "config.yaml"
+    if _early_config_path.exists():
+        _early_config = fast_safe_load(_early_config_path.read_text(encoding="utf-8")) or {}
+        _early_security = _early_config.get("security", {})
+        if isinstance(_early_security, dict):
+            if "HERMES_REDACT_SECRETS" not in os.environ:
+                _early_redact_secrets = _early_security.get("redact_secrets")
+                if _early_redact_secrets is not None:
+                    os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact_secrets).lower()
+            if "HERMES_REDACT_LEVEL" not in os.environ:
+                _early_redact_level = _early_security.get("redact_level")
+                if _early_redact_level is not None:
+                    os.environ["HERMES_REDACT_LEVEL"] = str(_early_redact_level).lower()
+except Exception:
+    pass
+
 os.environ["HERMES_QUIET"] = "1"  # suppress our modules' startup chatter
 
 

@@ -110,3 +110,33 @@ def test_pending_trace_cleared_after_flush(tmp_path, monkeypatch):
     assert len(lines) == 1
 
 
+def test_trace_jsonl_redacts_nested_inputs_and_preserves_live_operands(tmp_path, monkeypatch):
+    """Opt-in MoA diagnostics remain useful without durable raw secrets."""
+    trace_dir = _enable_traces(tmp_path, monkeypatch)
+    from agent.moa_trace import save_moa_turn
+
+    secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+    ref_messages = [{"role": "user", "content": {"api_key": secret}}]
+    ref_output = f"reference output {secret}"
+    aggregator_input = [{"role": "user", "content": {"token": secret}}]
+    aggregator_output = f"aggregator output {secret}"
+    accounting = type("Accounting", (), {
+        "messages": ref_messages, "output": ref_output, "usage": None,
+        "model": "reference", "provider": "test", "temperature": 0,
+        "cost_usd": 0, "cost_status": "known", "cost_source": "test",
+    })()
+
+    save_moa_turn(
+        session_id="redacted-moa", preset_name="test", reference_outputs=[("ref", ref_output, accounting)],
+        aggregator_label="agg", aggregator_model="model", aggregator_provider="test", aggregator_temperature=0,
+        aggregator_input_messages=aggregator_input, aggregator_output=aggregator_output, aggregator_streamed=False,
+    )
+
+    persisted = (trace_dir / "redacted-moa.jsonl").read_text(encoding="utf-8")
+    assert secret not in persisted
+    assert "references" in persisted and "aggregator" in persisted and "input_messages" in persisted
+    assert ref_messages[0]["content"]["api_key"] == secret
+    assert aggregator_input[0]["content"]["token"] == secret
+    assert accounting.output == ref_output
+
+

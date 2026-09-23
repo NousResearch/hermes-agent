@@ -156,6 +156,48 @@ class TestRestartRebindWithoutMirror:
 
 
 class TestFallbacks:
+    def test_loading_legacy_raw_sessions_json_rewrites_redacted_projection(self, tmp_path, monkeypatch):
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        sessions_json = tmp_path / "sessions" / "sessions.json"
+        legacy = json.loads(sessions_json.read_text(encoding="utf-8"))
+        legacy[entry.session_key]["display_name"] = secret
+        legacy[entry.session_key]["metadata"] = {secret: secret}
+        legacy[entry.session_key]["origin"]["user_name"] = secret
+        sessions_json.write_text(json.dumps(legacy), encoding="utf-8")
+        store._db.close()
+
+        restarted = _make_store(tmp_path, monkeypatch)
+        rebound = restarted.get_or_create_session(_source())
+        assert rebound.session_id == entry.session_id
+        assert secret.encode("utf-8") not in sessions_json.read_bytes()
+        restarted._db.close()
+
+    def test_sessions_json_redacts_display_provenance_and_metadata_but_keeps_restart_routing(self, tmp_path, monkeypatch):
+        """The legacy mirror is a durable projection, not an unredacted SessionEntry dump."""
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        with store._lock:
+            store._entries[entry.session_key].display_name = f"display {secret}"
+            store._entries[entry.session_key].metadata = {secret: {"credential": secret}}
+            store._entries[entry.session_key].model_override = {"model": "restart-model", "provider": "provider"}
+            store._entries[entry.session_key].origin.user_name = f"person {secret}"
+            store._entries[entry.session_key].origin.chat_name = f"room {secret}"
+            store._save()
+
+        raw = (tmp_path / "sessions" / "sessions.json").read_bytes()
+        assert secret.encode("utf-8") not in raw
+        mirror = json.loads(raw)
+        saved = mirror[entry.session_key]
+        assert saved["session_key"] == entry.session_key
+        assert saved["session_id"] == entry.session_id
+        assert saved["origin"]["chat_id"] == "cli"
+        # Model selection is a documented restart-critical operational exception.
+        assert saved["model_override"]["model"] == "restart-model"
+        store._db.close()
+
     def test_no_db_falls_back_to_full_rewrite(self, tmp_path, monkeypatch):
         """DB-less installs keep sessions.json durable every turn."""
         store = _make_store(tmp_path, monkeypatch)

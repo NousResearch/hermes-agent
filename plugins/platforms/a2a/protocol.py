@@ -438,10 +438,12 @@ def _conv_path(context_id: str) -> Path:
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
+        from hermes_state_messages import _redact_durable_projection
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"ts": time.time(), "role": role,
+                                 "text": _redact_durable_projection(text), "task_id": task_id}, ensure_ascii=False) + "\n")
     except Exception:
         pass
 

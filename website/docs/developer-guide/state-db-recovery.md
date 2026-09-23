@@ -17,6 +17,45 @@ maintenance commands refuse while a writer is live) see
 The derived indexes may be detached temporarily. They must not turn a live
 message write or search into an unbounded full-transcript rebuild.
 
+## v31 durable-redaction storage sanitation
+
+When a pre-v31 database is opened, the v31 migration redacts the durable
+message and prompt projections, rebuilds available FTS indexes, enables
+SQLite `secure_delete`, commits those logical changes, then requires a
+`wal_checkpoint(TRUNCATE)`, `VACUUM`, and final `wal_checkpoint(TRUNCATE)`.
+The schema marker advances only after all of those steps succeed. A blocked
+checkpoint, failed rewrite, or non-empty freelist fails startup with the
+database still below v31 so a later sole-opener can retry; it never reports a
+completed migration without that cleanup.
+
+After a clean close, this removes the legacy raw token bytes from the active
+`state.db` and its active `state.db-wal`. This is a current-live-store
+guarantee only. It does **not** erase bytes from backups, prior copied or
+external journal files, filesystem snapshots, storage-device remanence, or
+other media outside the active SQLite image.
+
+## Durable-redaction boundary and exceptions
+
+Durable redaction covers display, history, audit, and provenance projections:
+session/message display fields and FTS, the legacy `sessions/sessions.json`
+mirror's display/provenance/metadata fields, and A2A audit/conversation JSONL.
+Existing legacy mirrors are rewritten when loaded, and recovery applies the
+same fail-closed checkpoint/VACUUM/freelist verification before accepting an
+output database.
+
+This is not general metadata encryption at rest. The documented raw
+operational exceptions are restart-critical routing/session/model fields:
+`gateway_routing.session_key`; `sessions.json` session keys and IDs, timestamps,
+origin routing IDs (`platform`, chat/user/thread/scope/profile IDs), resume and
+active-turn state, counters/cost state, reset state, and model overrides; and
+state-db session routing/peer identity, workspace/Git/model/tool restoration,
+and structured lifecycle fields. `delivery_obligations.content` and all of its
+routing/delivery state remain raw so owed deliveries can be dispatched after a
+restart. A2A audit envelope IDs (`peer`, `task_id`) and conversation context/task
+IDs also remain raw routing metadata; only their summary/transcript text is
+redacted. Encryption at rest for operational metadata is a separate future
+capability.
+
 ## Live behavior when FTS is corrupt
 
 If an FTS write or search reports the corruption error class, `SessionDB`:

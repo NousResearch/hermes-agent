@@ -31,7 +31,7 @@ def two_homes(tmp_path, monkeypatch):
             "terminal": {"backend": "local" if name == "a" else "docker",
                          "credential_files": [f"cred_{name}.txt"]},
             "command_allowlist": [f"{name}-only-cmd *"],
-            "security": {"redact_secrets": name == "b"},
+            "security": {"redact_secrets": name == "b", "redact_level": "basic" if name == "a" else "strict"},
             "browser": {"engine": "chrome" if name == "a" else "lightpanda", "headed": name == "b"},
             "lsp": {"enabled": name == "b"},
         }), encoding="utf-8")
@@ -143,3 +143,21 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
         for fh in mcp_tool_config._mcp_stderr_log_fh.values():
             fh.close()
         mcp_tool_config._mcp_stderr_log_fh.clear()
+
+
+def test_routed_redact_level_does_not_leak_from_launcher_profile(two_homes, monkeypatch):
+    """Launcher basic must not weaken routed strict PII coverage or retain it on return."""
+    from agent import redact
+    from gateway.run import _profile_runtime_scope
+
+    a, b = two_homes
+    monkeypatch.setattr(redact, "_REDACT_LEVEL", "basic")
+    redact._REDACT_LEVEL_BY_HOME.clear()
+    email = "person@example.test"
+
+    with _profile_runtime_scope(a):
+        assert redact.redact_sensitive_text(email) == email
+    with _profile_runtime_scope(b):
+        assert redact.redact_sensitive_text(email) != email
+    with _profile_runtime_scope(a):
+        assert redact.redact_sensitive_text(email) == email

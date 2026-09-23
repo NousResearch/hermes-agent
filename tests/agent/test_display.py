@@ -74,6 +74,25 @@ class TestBuildToolPreview:
         assert safe_args["ref"] == "@e3"
         assert safe_args["text"].startswith("ghp_AB")
 
+    def test_write_file_display_args_redact_recursively_without_mutating_content(self):
+        secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+        args = {
+            "path": "fixture.txt",
+            "content": f"fixture token: {secret}\n",
+            "metadata": {"nested": [secret]},
+        }
+
+        safe_args = redact_tool_args_for_display("write_file", args)
+
+        assert safe_args is not args
+        assert secret not in safe_args["content"]
+        assert secret not in safe_args["metadata"]["nested"][0]
+        assert args == {
+            "path": "fixture.txt",
+            "content": f"fixture token: {secret}\n",
+            "metadata": {"nested": [secret]},
+        }
+
 
 
 

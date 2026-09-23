@@ -427,11 +427,16 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
     sessions_dir = get_hermes_home() / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     path = sessions_dir / f"{sid}.jsonl"
+    # The recovery artifact is durable display data, not a retry payload. Project a
+    # fresh copy so a replaced/corrupt DB cannot turn raw tool operands or API
+    # sidecars into a second long-lived transcript, while the live caller retains
+    # its exact operands for recovery handling.
+    from hermes_state_messages import _redact_durable_projection
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:
             if msg is not None:
                 record = msg if isinstance(msg, dict) else {"content": str(msg)}
-                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+                handle.write(json.dumps(_redact_durable_projection(record), ensure_ascii=False, default=str) + "\n")
     return path
 
 
@@ -502,10 +507,15 @@ class SessionDB(
     def _store_system_prompt(conn, system_prompt: Optional[str]) -> Optional[str]:
         if system_prompt is None:
             return None
-        prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+        # Prompt snapshots are a durable display/replay projection. Never hash or
+        # persist raw prompt material; the redacted value is the canonical stored
+        # snapshot and therefore deduplicates consistently with later reads.
+        from hermes_state_messages import _redact_durable_projection
+        stored_prompt = _redact_durable_projection(system_prompt)
+        prompt_hash = hashlib.sha256(stored_prompt.encode("utf-8")).hexdigest()
         conn.execute(
             "INSERT OR IGNORE INTO system_prompts (hash, prompt) VALUES (?, ?)",
-            (prompt_hash, system_prompt),
+            (prompt_hash, stored_prompt),
         )
         return prompt_hash
 

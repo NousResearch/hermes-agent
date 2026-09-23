@@ -14,18 +14,27 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
     _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
+from hermes_state_messages import _redact_durable_projection
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
+
+
+def _redact_origin_json(origin_json):
+    if origin_json is None:
+        return None
+    try:
+        parsed = json.loads(origin_json) if isinstance(origin_json, str) else origin_json
+    except (TypeError, ValueError):
+        parsed = "[REDACTED: invalid durable JSON projection]"
+    projected = _redact_durable_projection(parsed)
+    return origin_json if isinstance(origin_json, str) and projected == parsed else json.dumps(projected)
 
 _COOLDOWN_ROW_SQL = (
     "SELECT compression_failure_cooldown_until, compression_failure_error FROM sessions WHERE id = ?"
 )
 
-# One forward step of get_compression_chain: the preferred continuation child of ``?``. A reset
-# fork is a separate user-visible conversation (_LISTABLE_CHILD_SQL already surfaces it as its
-# own row), so following it here would hijack the lineage tip projection onto the reset sibling
-# and make the real continuation invisible (#114271).
+# One forward step of get_compression_chain: the preferred continuation child of ``?``.
 _CHAIN_STEP_SQL = f"""
                     SELECT child.id
                     FROM sessions parent
@@ -34,7 +43,6 @@ _CHAIN_STEP_SQL = f"""
                       AND parent.end_reason = 'compression'
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
@@ -102,7 +110,7 @@ class SessionCompressionMixin:
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"
                 + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="") + " LIMIT 1",
-                (session_id,) * 4).fetchone()
+                (session_id, session_id, session_id)).fetchone()
             if superseded is not None:
                 return None
             conn.execute(
@@ -141,7 +149,7 @@ class SessionCompressionMixin:
                 ORDER BY s.started_at ASC
                 LIMIT 2
                 """,
-                (parent_session_id,) * 4,
+                (parent_session_id, parent_session_id, parent_session_id),
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
@@ -154,7 +162,7 @@ class SessionCompressionMixin:
         def _do(conn):
             if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 return False
-            # Any non-branch/non-delegate/non-reset/non-tool child is a continuation, ended or not.
+            # Any non-branch/non-delegate/non-tool child is a continuation, ended or not.
             child = conn.execute(
                 """
                 SELECT 1
@@ -165,7 +173,7 @@ class SessionCompressionMixin:
                 + """
                 LIMIT 1
                 """,
-                (session_id,) * 4,
+                (session_id, session_id, session_id),
             ).fetchone()
             if child is not None:
                 return False
@@ -224,7 +232,7 @@ class SessionCompressionMixin:
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time()),
+                parent["thread_id"], parent["display_name"], _redact_origin_json(parent["origin_json"]), time.time()),
         )
 
     def publish_compression_child(
@@ -330,7 +338,7 @@ class SessionCompressionMixin:
             "UPDATE sessions SET compression_failure_cooldown_until = CASE "
             "WHEN compression_failure_cooldown_until IS NOT NULL  AND compression_failure_cooldown_until > ? "
             "THEN compression_failure_cooldown_until ELSE ? END, compression_failure_error = ? WHERE id = ?",
-            (cooldown_until, cooldown_until, error, session_id))
+            (cooldown_until, cooldown_until, _redact_durable_projection(error), session_id))
 
     def get_compression_failure_cooldown(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Return the active (unexpired) compression-failure cooldown, or None."""
@@ -361,7 +369,8 @@ class SessionCompressionMixin:
         def _do(conn):
             cursor = conn.execute(
                 "UPDATE sessions SET compression_failure_cooldown_until = ?, "
-                "compression_failure_error = ? WHERE id = ?", (deadline, error, session_id))
+                "compression_failure_error = ? WHERE id = ?",
+                (deadline, _redact_durable_projection(error), session_id))
             return cursor.rowcount == 1
         if not self._execute_write(_do):
             logger.warning("compression cooldown rollback session missing: %s", session_id)
@@ -505,7 +514,7 @@ class SessionCompressionMixin:
         seen = {session_id}
         while current:
             parent_id = current.get("parent_session_id")
-            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current, include_reset=True):
+            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current):
                 break
             parent = _row(parent_id)
             if not parent or parent.get("end_reason") != "compression":
@@ -680,8 +689,7 @@ class SessionCompressionMixin:
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
-        # A reset fork of a compression-ended parent is its own conversation, not the continuation (#114271).
-        if not parent_id or self._is_explicit_fork_child_row(child, include_reset=True):
+        if not parent_id or self._is_explicit_fork_child_row(child):
             return False
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")

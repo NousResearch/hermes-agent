@@ -2691,6 +2691,29 @@ class TestSessionDbOffEventLoop:
             assert data["session"]["model"] is None
 
     @pytest.mark.asyncio
+    async def test_create_session_redacts_title_and_system_prompt_before_sqlite_write(self, auth_adapter, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        auth_adapter._session_db = db
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+        secret = "sk-proj-API-DURABLE-REDACTION-SECRET"
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/api/sessions", json={"id": "api-redacted", "title": secret, "system_prompt": secret},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert response.status == 201
+        db = auth_adapter._session_db
+        row = db._conn.execute(
+            "SELECT title, system_prompt, system_prompt_hash FROM sessions WHERE id = 'api-redacted'",
+        ).fetchone()
+        assert secret not in (row["title"] or "")
+        assert row["system_prompt"] is None
+        assert secret.encode() not in (tmp_path / "state.db").read_bytes()
+
+    @pytest.mark.asyncio
     async def test_create_session_with_explicit_virtual_alias_does_not_persist_it(self, auth_adapter):
         """Sending ``model: "hermes-agent"`` explicitly (the virtual alias
         itself, e.g. a client that just echoes /v1/models' advertised id)

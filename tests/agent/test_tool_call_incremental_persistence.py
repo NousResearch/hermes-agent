@@ -23,6 +23,8 @@ makes the corresponding assertion fail.
 """
 
 import copy
+import json
+import sqlite3
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
@@ -175,6 +177,47 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
     assert last[-1]["role"] == "assistant"
     assert last[-1]["tool_calls"][0]["id"] == "c1"
     assert result["final_response"] == "done"
+
+
+def test_raw_file_write_args_execute_and_preserve_session_replay_operands(tmp_path):
+    """Replay operands remain literal while other durable fields are redacted."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    db = _attach_real_session_db(agent, db_path, "raw-tool-args")
+    secret = "sk_SessionRawSecretAbcdefghijklmnop"
+    destination = tmp_path / "fixture.txt"
+    arguments = json.dumps({"path": str(destination), "content": secret})
+    tool_call = _mock_tool_call(name="file_write", arguments=arguments, call_id="write-raw")
+    messages = [{
+        "role": "assistant", "content": "", "tool_calls": [{
+            "id": "write-raw", "type": "function",
+            "function": {"name": "file_write", "arguments": arguments},
+        }],
+    }]
+    agent._flush_messages_to_session_db(messages)
+
+    def _file_write(_name, function_args, _task_id, **_kwargs):
+        destination.write_text(function_args["content"], encoding="utf-8")
+        return "wrote fixture"
+
+    try:
+        with (
+            patch("model_tools.handle_function_call", side_effect=_file_write),
+            patch("agent.tool_executor.maybe_persist_tool_result", side_effect=lambda **kwargs: kwargs["content"]),
+        ):
+            agent._execute_tool_calls_sequential(
+                SimpleNamespace(content="", tool_calls=[tool_call]), messages, "task-raw")
+    finally:
+        db.close()
+
+    assert destination.read_text(encoding="utf-8") == secret
+    with sqlite3.connect(db_path) as conn:
+        stored = conn.execute("SELECT tool_calls FROM messages WHERE session_id = ?", ("raw-tool-args",)).fetchone()[0]
+        # The raw replay operand remains searchable as tool-call JSON; that is
+        # the documented storage limitation, not a display projection.
+        assert conn.execute(
+            "SELECT 1 FROM messages_fts WHERE messages_fts MATCH ?", (f'"{secret}"',)
+        ).fetchone() is not None
 
 
 def test_interim_assistant_is_durable_before_ui_projection_on_abnormal_exit(tmp_path):
@@ -681,6 +724,33 @@ def test_empty_final_response_updates_already_flushed_blank_assistant_row(tmp_pa
         1 for m in assistants
         if not (m.get("content") or "").strip() and not m.get("tool_calls")
     ) == 0
+
+
+def test_batch_repair_redacts_content_before_persistence_and_fts(tmp_path):
+    """A blank assistant repair must cross the durable-redaction boundary without changing live content."""
+    from hermes_state import SessionDB
+
+    raw = "credential sk-abc" + "3" * 14 + "ZZZZ"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("repair-redaction", source="cli")
+    try:
+        initial = {"role": "assistant", "content": ""}
+        assert db.append_messages_batch("repair-redaction", [initial]) == 1
+        repair = {"role": "assistant", "content": raw, "_row_id": initial["_row_id"]}
+
+        assert db.append_messages_batch("repair-redaction", [repair]) == 0
+        stored = db.get_messages_as_conversation("repair-redaction", include_row_ids=True)
+        assert len(stored) == 1
+        assert raw not in stored[0]["content"]
+        assert repair["content"] == raw
+        for table in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"):
+            if db._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone() is not None:
+                row = db._conn.execute(f"SELECT content FROM {table} WHERE rowid = ?", (initial["_row_id"],)).fetchone()
+                assert row is not None and raw not in (row["content"] or "")
+    finally:
+        db.close()
 
 
 def test_flush_stale_row_id_from_other_session_still_inserts(tmp_path):

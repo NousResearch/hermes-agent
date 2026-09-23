@@ -134,18 +134,54 @@ def _redact_enabled() -> bool:
         _REDACT_ENABLED_BY_HOME[home_key] = enabled
     return enabled
 
+
+# Optional PII coverage uses the same import-time snapshot as the secret toggle,
+# so a tool command cannot change the active policy mid-session.
+_REDACT_LEVEL = os.getenv("HERMES_REDACT_LEVEL", "basic").lower().strip()
+if _REDACT_LEVEL not in {"basic", "standard", "strict"}:
+    _REDACT_LEVEL = "basic"
+_REDACT_LEVEL_BY_HOME: dict = {}
+_REDACT_LEVEL_LOCK = threading.Lock()
+
+
+def _redact_level() -> str:
+    """Effective PII coverage for the active profile.
+
+    The launcher snapshot preserves CLI/default/dotenv precedence for the
+    primary profile. A multiplex-routed home resolves its own scoped dotenv
+    value before its config fallback and caches the resulting valid level.
+    """
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _REDACT_LEVEL
+    home_key = hermes_home_key()
+    cached = _REDACT_LEVEL_BY_HOME.get(home_key)
+    if cached is not None:
+        return cached
+    level = "basic"
+    try:
+        from agent.secret_scope import current_secret_scope
+        scope = current_secret_scope()
+        raw = scope.get("HERMES_REDACT_LEVEL") if scope else None
+        if raw is None:
+            from hermes_cli.config import load_config_readonly
+            raw = (load_config_readonly().get("security") or {}).get("redact_level")
+        candidate = str(raw).lower().strip() if raw is not None else "basic"
+        if candidate in {"basic", "standard", "strict"}:
+            level = candidate
+    except Exception:
+        pass  # unreadable profile policy: use least-surprising secure default
+    with _REDACT_LEVEL_LOCK:
+        _REDACT_LEVEL_BY_HOME[home_key] = level
+    return level
+
 # Known API key prefixes -- match the prefix + contiguous token chars.
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
 _PREFIX_PATTERNS = [
-    # Some provider-issued ``sk-`` keys carry dot-delimited body segments (Alibaba
-    # ``sk-sp-…``/``sk-ws-…``). Each unit is one body char optionally preceded by
-    # a single dot, so the body ends on its last non-dot char (sentence punctuation
-    # is never consumed) and can never span ``..``: the ``sk-pro...EFGH`` display
-    # mask is left alone by a second redaction pass instead of collapsing to
-    # ``***``. Kept free of nested unbounded repeats so the pattern passes the
-    # same structural gate plugins must.
-    r"sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){9,}",
+    # Some provider keys include dot-separated opaque segments. Do not accept
+    # empty segments: display masks use ``...`` and must remain idempotent.
+    r"sk-(?=[A-Za-z0-9_.-]{10,}(?![A-Za-z0-9_.-]))[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?![A-Za-z0-9_.-])",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -189,6 +225,9 @@ _PREFIX_PATTERNS = [
     r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
+    r"AC[A-Za-z0-9]{32}",               # Twilio Account SID
+    r"SK[A-Za-z0-9]{32}",               # Twilio API key
+    r"whsec_[A-Za-z0-9+/]{32,}",        # Stripe webhook signing secret
     # GitLab token families (each keeps a full literal prefix for the pre-screen).
     # Ported from openclaw/openclaw#112954; follow-up invited in #4541.
     r"glpat-[A-Za-z0-9_\-]{10,}",       # GitLab personal access token
@@ -207,6 +246,17 @@ _PREFIX_PATTERNS = [
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
 ]
+
+# Mailchimp keys are recognizable by their datacenter suffix rather than a vendor prefix.
+_MAILCHIMP_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{32}-us[0-9]{1,2}\b")
+_DISCORD_BOT_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"
+)
+# Zhipu keys have a 32-character hexadecimal ID followed by an opaque suffix.
+# Require the complete shape so dotted filenames and content hashes do not match.
+_ZHIPU_API_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
+)
 
 # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys
 # tolerate spaces around "=" and allow the keyword embedded anywhere
@@ -545,6 +595,12 @@ _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+_PAYMENT_CARD_RE = re.compile(r"(?<![\d-])\d(?:[- ]?\d){12,18}(?![\d-])")
+_SSN_RE = re.compile(r"(?<!\d)(?!000|666|9\d\d)(\d{3})[- ](?!00)(\d{2})[- ](?!0000)(\d{4})(?!\d)")
+_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b")
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+_IPV4_RE = re.compile(r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)")
+
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).
 _URL_WITH_QUERY_RE = re.compile(r"(https?|wss?|ftp)://([^\s/?#]+)([^\s?#]*)\?([^\s#]+)(#\S*)?")
@@ -579,15 +635,6 @@ def _compile_prefix_matcher(patterns: list) -> "re.Pattern[str]":
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
-
-# Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
-# provider-shaped instead of applying a generic high-entropy dotted-token rule:
-# the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
-# at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
-# ``<md5>.sqlite3``) never match.
-_ZHIPU_API_KEY_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
-)
 
 
 def _mask_control_split_tokens(text: str, mask_fn) -> str:
@@ -791,6 +838,50 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
+def _luhn_valid(value: str) -> bool:
+    """Return whether a payment-card candidate contains a valid Luhn number."""
+    digits = "".join(character for character in value if character.isdigit())
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    total = 0
+    for index, character in enumerate(reversed(digits)):
+        digit = int(character)
+        if index % 2:
+            digit = digit * 2 - 9 if digit > 4 else digit * 2
+        total += digit
+    return total % 10 == 0
+
+
+def _iban_valid(value: str) -> bool:
+    """Return whether an IBAN-shaped value passes the ISO 13616 checksum."""
+    rearranged = value[4:] + value[:4]
+    digits = "".join(character if character.isdigit() else str(ord(character) - ord("A") + 10) for character in rearranged)
+    return int(digits) % 97 == 1
+
+
+def _redact_standard_pii(text: str) -> str:
+    def redact_card(match: re.Match) -> str:
+        value = match.group(0)
+        if not _luhn_valid(value):
+            return value
+        digits = "".join(character for character in value if character.isdigit())
+        return f"****-****-****-{digits[-4:]}"
+    text = _PAYMENT_CARD_RE.sub(redact_card, text)
+    text = _SSN_RE.sub(r"***-**-\3", text)
+    return _IBAN_RE.sub(lambda match: f"{match.group(0)[:4]}****" if _iban_valid(match.group(0)) else match.group(0), text)
+
+
+def _redact_strict_pii(text: str) -> str:
+    text = _EMAIL_RE.sub(lambda match: f"{match.group(0).split('@', 1)[0][:2]}***@***", text)
+    def redact_ipv4(match: re.Match) -> str:
+        address = match.group(0)
+        if address.startswith("127."):
+            return address
+        first, second, _third, _fourth = address.split(".")
+        return f"{first}.{second}.***.***"
+    return _IPV4_RE.sub(redact_ipv4, text)
+
+
 def _assignment_sub(render, *, check_keyword: bool):
     """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
     def _sub(m):
@@ -931,6 +1022,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
+    if "-us" in text:
+        text = _MAILCHIMP_API_KEY_RE.sub(lambda m: _mask_token(m.group(0)), text)
+    if text.count(".") >= 2:
+        text = _DISCORD_BOT_TOKEN_RE.sub(lambda m: _mask_token(m.group(0)), text)
     if "." in text:
         _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
@@ -976,6 +1071,12 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "+" in text:
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    level = _redact_level()
+    if level in {"standard", "strict"}:
+        text = _redact_standard_pii(text)
+    if level == "strict":
+        text = _redact_strict_pii(text)
 
     return text
 

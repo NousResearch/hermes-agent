@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import logging
 import re
 import time
@@ -113,6 +114,65 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
+_UNSERIALIZABLE_DURABLE_VALUE = "[REDACTED: unserializable durable projection]"
+
+
+def _redact_durable_projection(value: Any) -> Any:
+    """Copy a display-only JSON projection, redacting strings and keys without touching live operands."""
+    from agent.redact import redact_sensitive_text
+
+    def project(item: Any) -> Any:
+        if isinstance(item, str):
+            return redact_sensitive_text(_sanitize_surrogates(item), force=True)
+        if item is None or isinstance(item, (bool, int)):
+            return item
+        if isinstance(item, float):
+            return item if math.isfinite(item) else _UNSERIALIZABLE_DURABLE_VALUE
+        if isinstance(item, list):
+            return [project(child) for child in item]
+        if isinstance(item, dict):
+            if not all(isinstance(key, str) for key in item):
+                return _UNSERIALIZABLE_DURABLE_VALUE
+            projected = {}
+            for key, child in item.items():
+                # Structured projection keys are persisted/displayed too, so they must cross
+                # the same redaction boundary as values. A redacted key can collide with a
+                # previous key; retain every display-only value under a stable suffix.
+                base_key = redact_sensitive_text(_sanitize_surrogates(key), force=True)
+                projected_key = base_key
+                duplicate = 2
+                while projected_key in projected:
+                    projected_key = f"{base_key} [redacted key {duplicate}]"
+                    duplicate += 1
+                projected[projected_key] = project(child)
+            return projected
+        return _UNSERIALIZABLE_DURABLE_VALUE
+
+    try:
+        projected = project(value)
+        json.dumps(projected, allow_nan=False)
+        return projected
+    except (RecursionError, TypeError, ValueError, OverflowError):
+        return _UNSERIALIZABLE_DURABLE_VALUE
+
+
+def _json_safe_tool_operands(value: Any) -> Any:
+    """Make tool operands JSON-serializable without redacting their replay values."""
+    if isinstance(value, str):
+        return _sanitize_surrogates(value)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _UNSERIALIZABLE_DURABLE_VALUE
+    if isinstance(value, list):
+        return [_json_safe_tool_operands(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            return _UNSERIALIZABLE_DURABLE_VALUE
+        return {key: _json_safe_tool_operands(item) for key, item in value.items()}
+    return _UNSERIALIZABLE_DURABLE_VALUE
+
+
 def _stale_holder(row, now: float) -> bool:
     """A lock/lease row whose holder is expired or a provably dead local process."""
     from hermes_state import _compression_lock_holder_process_is_dead
@@ -174,7 +234,7 @@ class SessionMessagesMixin:
         elif not isinstance(display_metadata, dict):
             logger.warning("Ignoring unexpected display metadata type on write: %s", type(display_metadata).__name__)
             return None
-        return json.dumps(display_metadata)
+        return json.dumps(_redact_durable_projection(display_metadata))
 
     @staticmethod
     def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
@@ -264,25 +324,31 @@ class SessionMessagesMixin:
         ``message_id`` (yuanbao's message-dict convention)."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
-        encoded_content = self._encode_content(msg.get("content"))
-        encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
-        encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
+        encoded_content = self._encode_content(_redact_durable_projection(msg.get("content")))
+        # Tool-call arguments are live replay operands, not a display projection.
+        # Redacting them here corrupts write_file/patch payloads after session resume.
+        encoded_tool_calls = json.dumps(_json_safe_tool_operands(tool_calls)) if tool_calls else None
+        # Every durable text projection crosses this boundary. Keep ``msg`` and
+        # ``tool_calls`` untouched so the caller retains raw live tool operands.
+        _durable_scalar = lambda key: _redact_durable_projection(_scrub_surrogates(msg.get(key)))  # noqa: E731
+        _durable_string = lambda key: _redact_durable_projection(_str_or_none(msg.get(key)))  # noqa: E731
+        encoded_tool_name = _durable_scalar("tool_name")
         display_metadata = self._encode_display_metadata(msg.get("display_metadata"))
         identity_row = {
-            "role": role, "content": encoded_content, "timestamp": message_timestamp,
+            "role": _durable_scalar("role"), "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
             "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
             "display_metadata": display_metadata,
         }
-        return (session_id, role, encoded_content, msg.get("tool_call_id"),
+        return (session_id, _redact_durable_projection(_scrub_surrogates(role)), encoded_content, _durable_scalar("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
-            msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
-            _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
-            *(self._reasoning_json_text(_reasoning(k))
+            _durable_scalar("effect_disposition"), message_timestamp, msg.get("token_count"), _durable_scalar("finish_reason"),
+            _redact_durable_projection(_reasoning("reasoning")), _redact_durable_projection(_reasoning("reasoning_content")),
+            *(self._reasoning_json_text(_redact_durable_projection(_reasoning(k)))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
-            msg.get("platform_message_id") or msg.get("message_id"),
+            _redact_durable_projection(_scrub_surrogates(msg.get("platform_message_id") or msg.get("message_id"))),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
-            _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
+            _redact_durable_projection(msg.get("api_content")), _durable_string("display_kind"),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
 
     @staticmethod
@@ -400,7 +466,8 @@ class SessionMessagesMixin:
             if row is None:
                 return False
             conn.execute("UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
-                (_scrub_surrogates(display_kind), self._encode_display_metadata(display_metadata), row[0]))
+                (_redact_durable_projection(_scrub_surrogates(display_kind)),
+                 self._encode_display_metadata(display_metadata), row[0]))
             return True
         return self._execute_write(_do)
 
@@ -827,7 +894,7 @@ class SessionMessagesMixin:
             "UPDATE messages SET api_content = ? WHERE id = (SELECT id FROM messages "
             "WHERE session_id = ? AND role = 'user' AND active = 1 ORDER BY id DESC LIMIT 1"
             ") AND content IS ?",
-            (_scrub_surrogates(api_content), session_id, self._encode_content(content)))
+            (_redact_durable_projection(api_content), session_id, self._encode_content(content)))
 
     def set_message_api_content(
         self, session_id: str, row_id: int, content: Any, api_content: str
@@ -854,7 +921,7 @@ class SessionMessagesMixin:
         return self._write_rowcount(
             "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
             "AND role = 'user' AND active = 1 AND content IS ?",
-            (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
+            (_redact_durable_projection(api_content), row_id, session_id, self._encode_content(content)))
 
     def set_user_message_content(self, session_id: str, row_id: int, content: Any) -> int:
         """Rewrite the content of ONE known active user row. Used when a user turn was written at submit

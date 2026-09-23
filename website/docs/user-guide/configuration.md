@@ -355,7 +355,10 @@ terminal:
   docker_run_as_host_user: false   # See "Running container as host user" below
   docker_snap_compat: false        # See "Snap-packaged Docker (AppArmor)" below
   docker_forward_env:              # Host env vars to forward into container
-    - "GITHUB_TOKEN"
+    -  —  keeps credential-pattern redaction only;  additionally redacts validated payment cards, SSNs, and IBANs;  additionally redacts email addresses and phone numbers.
+
+Tool operands are never changed by redaction: a tool receives the exact path, command, or file content it was called with. Tool-start displays and logs use a redacted copy of those arguments, but the canonical `state.db` tool-call arguments remain literal so resumed `write_file`/`patch` calls and fixtures cannot be corrupted. This means conversation databases, their WAL/backups, FTS search index, and any tooling that reads raw tool-call JSON are **not storage-scrubbed for tool-call arguments**. Redaction still protects display/log projections and cannot recall or revoke a secret already sent to a tool, provider, remote host, or any other external system.
+- "GITHUB_TOKEN"
   docker_env:                      # Literal env vars to inject (KEY=value)
     DEBUG: "1"
     PYTHONUNBUFFERED: "1"
@@ -2811,6 +2814,9 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+- `redact_level` — `basic` keeps credential-pattern redaction only; `standard` additionally redacts validated payment cards, SSNs, and IBANs; `strict` additionally redacts email addresses and non-loopback IPv4 addresses. Phone masking is independent of `redact_level`.
+
+Tool operands are never changed by redaction: a tool receives the exact path, command, or file content it was called with. UI/chat and log projections are redacted before display or persistence. Durable `state.db` transcript and system-prompt projections (including FTS), state-DB recovery/divert JSONL, and opt-in MoA trace JSONL redact strings and structured key names before writing; current state rows are migrated once. This cannot securely erase raw material already persisted in SQLite WAL or journal pages, backups, exports, or external systems. Where appropriate, use SQLite checkpoint/vacuum and a backup-retention lifecycle; do not treat them as a secure-deletion guarantee.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.

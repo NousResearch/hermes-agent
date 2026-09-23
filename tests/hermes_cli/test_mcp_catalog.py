@@ -389,6 +389,39 @@ class TestInstall:
         assert server["tools"]["include"] == ["tool_a"]
         assert "exclude" not in server["tools"]
 
+    def test_install_from_worker_thread_skips_checklist_even_on_a_tty(
+        self, catalog_dir, monkeypatch
+    ):
+        """A serve dashboard install runs install_entry on a worker thread while
+        the owning console is still a TTY: the interactive checklist must not
+        open there (it would block the thread forever and, via the profile
+        lock, park every thread-pool slot). Instead the non-TTY branch applies
+        the manifest default_enabled."""
+        body = _basic_manifest(tools={"default_enabled": ["tool_a"]})
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        import hermes_cli.curses_ui as cui
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config
+
+        def _fail_checklist(*args, **kwargs):
+            raise AssertionError("interactive checklist must not open on a worker thread")
+
+        probed = [("tool_a", "a"), ("tool_b", "b")]
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cui, "curses_checklist", _fail_checklist)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(mc.install_entry, _entry("demo"), enable=True)
+            future.result(timeout=10)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["include"] == ["tool_a"]
+        assert "exclude" not in server["tools"]
+
     def test_reinstall_preserves_user_edited_exclude_list(
         self, catalog_dir, monkeypatch
     ):

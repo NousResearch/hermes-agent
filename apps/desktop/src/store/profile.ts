@@ -2,7 +2,7 @@ import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
-import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS, updateProfileColor } from '@/hermes'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -122,7 +122,31 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
         const { profiles } = await getProfiles()
 
         if (epoch === profileListEpoch) {
+          const remoteColors = Object.fromEntries(profiles
+            .filter(profile => Boolean(profile.profile_color))
+            .map(profile => [normalizeProfileKey(profile.name), profile.profile_color as string]))
+
+          // Move legacy machine-local picks into profile.yaml on the first
+          // compatible roster refresh. A failed request stays eligible for a
+          // later retry and localStorage remains the fail-open display value.
+          for (const profile of profiles) {
+            const key = normalizeProfileKey(profile.name)
+            const legacyColor = $profileColors.get()[key]
+
+            if (!profile.profile_color && legacyColor && !migratedProfileColors.has(key)) {
+
+              void updateProfileColor(key, legacyColor)
+                .then(() => migratedProfileColors.add(key))
+                .catch(() => undefined)
+            }
+          }
+
           batch(() => {
+            if (Object.keys(remoteColors).length) {
+
+              $profileColors.set({ ...$profileColors.get(), ...remoteColors })
+            }
+
             if (source !== null) {
               $profilesByConnection.set(new Map($profilesByConnection.get()).set(source, profiles))
             }
@@ -214,10 +238,11 @@ export function sortByProfileOrder<T extends { name: string }>(items: T[], order
 }
 
 // ── Rail colors ────────────────────────────────────────────────────────────
-// Optional per-profile color override (long-press a rail square to pick). Absent
-// names fall back to the deterministic hue from profileColor(); a local-only
-// cosmetic preference, so single-profile users never touch it.
+// Optional per-profile color override (long-press a rail square to pick). The
+// server copy follows the profile; this local copy migrates old installs and
+// remains a fail-open fallback for older or unreachable gateways.
 const PROFILE_COLORS_STORAGE_KEY = 'hermes.desktop.profileColors'
+const migratedProfileColors = new Set<string>()
 
 export const $profileColors = atom<Record<string, string>>(storedStringRecord(PROFILE_COLORS_STORAGE_KEY))
 
@@ -235,6 +260,9 @@ export function setProfileColor(name: string, color: null | string): void {
   }
 
   $profileColors.set(next)
+  // Persist best-effort. The local value remains a migration/fail-open fallback
+  // when an older or temporarily unreachable gateway does not support this API.
+  void updateProfileColor(key, color ?? '').catch(() => undefined)
 }
 
 interface ActiveProfileResponse {

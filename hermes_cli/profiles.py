@@ -553,6 +553,8 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Desktop rail color (``profile.yaml`` ``ui_meta['hermes-bots'].color``).
+    profile_color: str = ""
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
@@ -794,15 +796,18 @@ def read_profile_meta(profile_dir: Path) -> dict:
         data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
         ui_meta = data.get("ui_meta")
         bot_title = ""
+        profile_color = ""
         if isinstance(ui_meta, dict):
             hermes_bots = ui_meta.get("hermes-bots")
             if isinstance(hermes_bots, dict):
                 bot_title = str(hermes_bots.get("title") or "").strip()
+                profile_color = str(hermes_bots.get("color") or "").strip()
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
+            "profile_color": profile_color,
             "previous_names": _clean_previous_names(data.get("previous_names")),
             "role": data.get("role") if data.get("role") in PROFILE_ROLES else None,
         }
@@ -832,7 +837,7 @@ def _clean_previous_names(raw) -> List[str]:
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
     display_name: Optional[str] = None, previous_names: Optional[List[str]] = None,
-    role: Optional[str] = None,
+    role: Optional[str] = None, profile_color: Optional[str] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
     created if missing. The profile directory itself must exist. ``role`` grants backend
@@ -863,6 +868,25 @@ def write_profile_meta(
             existing["previous_names"] = cleaned
         else:
             existing.pop("previous_names", None)
+    if profile_color is not None:
+        # Keep Bot Mode metadata together and preserve unrelated keys such as title.
+        ui_meta = existing.get("ui_meta")
+        if not isinstance(ui_meta, dict):
+            ui_meta = {}
+            existing["ui_meta"] = ui_meta
+        hermes_bots = ui_meta.get("hermes-bots")
+        if not isinstance(hermes_bots, dict):
+            hermes_bots = {}
+            ui_meta["hermes-bots"] = hermes_bots
+        cleaned_color = profile_color.strip()
+        if cleaned_color:
+            hermes_bots["color"] = cleaned_color
+        else:
+            hermes_bots.pop("color", None)
+            if not hermes_bots:
+                ui_meta.pop("hermes-bots", None)
+            if not ui_meta:
+                existing.pop("ui_meta", None)
     # Atomic write: bare open("w") truncates before the dump, and the read path swallows
     # parse errors as {}, so a crashed write would silently drop unspecified fields.
     # See #51356.

@@ -1029,6 +1029,8 @@ export interface ProfileInfo {
   /** Bot Mode title (profile.yaml ui_meta['hermes-bots'].title) — the name the
    *  Bots roster shows for this profile. Presentation-only. */
   bot_title?: string
+  /** Shared rail override (profile.yaml ui_meta['hermes-bots'].color). */
+  profile_color?: string
   has_env: boolean
   is_default: boolean
   model: null | string

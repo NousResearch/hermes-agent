@@ -223,6 +223,7 @@ def _reap_idle_sessions() -> None:
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
     _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
+    _touch_own_leases()
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
     # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
@@ -273,6 +274,30 @@ def _reclaim_orphaned_leases() -> None:
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:
         logger.debug("orphaned lease reclaim failed", exc_info=True)
+
+
+def _touch_own_leases() -> None:
+    """Keep the leases this process still holds fresh for everybody else.
+
+    The counterpart of ``_reclaim_orphaned_leases``: that sweep drops entries this process no
+    longer vouches for, this one stamps the entries it does, so another surface's
+    ``is_stale_lease`` can tell a live-but-idle holder from one that stopped existing. Only a
+    lane that stops ticking (wedged backend) goes stale, which is the reclaim the fence has
+    no other exit for (#112028).
+    """
+    try:
+        from hermes_cli.active_sessions import touch_active_session
+    except Exception:
+        logger.debug("lease heartbeat refresh unavailable", exc_info=True)
+        return
+    with _sessions_lock:
+        leases = [lease for session in _sessions.values()
+                  if (lease := session.get("active_session_lease")) is not None]
+    for lease in leases:
+        try:
+            touch_active_session(lease)
+        except Exception:
+            logger.debug("lease heartbeat refresh failed", exc_info=True)
 
 
 # Soft LRU cap on in-memory sessions: the TTL reaper only frees sessions idle for hours, so a heavy reconnecting

@@ -19,9 +19,11 @@ treated as "concurrent writers to one session are fine", which it never is.
 
 import itertools
 import os
+import time
 
 import pytest
 
+from hermes_cli import active_sessions
 from hermes_cli.active_sessions import (
     MAX_CONCURRENT_SESSIONS,
     PER_SESSION_EXCLUSIVE_SUBMIT,
@@ -222,3 +224,81 @@ def test_the_same_live_session_may_re_acquire_its_own_lease():
 def test_the_capability_is_advertised_because_the_check_exists():
     """The flag lives beside the enforcement, so it cannot drift from it."""
     assert PER_SESSION_EXCLUSIVE_SUBMIT is True
+
+
+def _age_lease(seconds: float) -> None:
+    """Backdate the only holder's heartbeat, leaving its pid alive.
+
+    A live pid with a stopped heartbeat is what a wedged/vanished backend leaves
+    in the registry: the process-local orphan sweep cannot see another process's
+    entry, and pid pruning never fires because the pid still exists.
+    """
+    from hermes_cli.active_sessions import _read_entries, _state_path, _write_entries
+
+    entries = _read_entries(_state_path())
+    for entry in entries:
+        entry["updated_at"] = time.time() - seconds
+    _write_entries(_state_path(), entries)
+
+
+def _desktop_owner(session_id="S", live_id="desktop-live"):
+    """A liveness-tracked (desktop) owner, the surface the mobile dashboard collides with."""
+    return try_acquire_active_session(
+        session_id=session_id,
+        surface="desktop",
+        config={},
+        metadata={"live_session_id": live_id},
+        track_liveness=True,
+    )
+
+
+def test_a_stale_liveness_tracked_lease_is_reclaimed_by_another_surface():
+    """The #112028 ask, option 3: a lease whose owner stopped heartbeating is reclaimable.
+
+    The owner's pid is still alive here (a wedged backend, or one whose refill
+    loop died), so pid pruning cannot help and the entry blocks every other
+    surface forever -- the reported "already has a live owner" dead end.
+    """
+    owner_lease, owner_refusal = _desktop_owner()
+    assert owner_lease is not None and owner_refusal is None
+
+    _age_lease(active_sessions.LEASE_HEARTBEAT_TIMEOUT_S + 60)
+
+    successor, refusal = acquire("S", surface="tui", live_id="phone")
+    assert successor is not None, f"a stale lease must be reclaimable: {refusal}"
+    held = active_session_registry_snapshot()
+    assert [entry["surface"] for entry in held] == ["tui"], "the stale entry must not linger"
+    assert len(held) == 1
+
+
+def test_a_live_owner_is_still_refused_while_its_heartbeat_is_fresh():
+    """The protection the reclaim must never erode: a live owner keeps its session.
+
+    This is the concurrency guarantee, not a nicety: a second writer reasons from
+    a transcript that does not include the first one's in-flight turn.
+    """
+    owner_lease, _ = _desktop_owner()
+    assert owner_lease is not None
+
+    _age_lease(active_sessions.LEASE_HEARTBEAT_TIMEOUT_S - 60)
+
+    blocked, refusal = acquire("S", surface="tui", live_id="phone")
+    assert blocked is None, "a live owner must not be preempted"
+    assert refusal.reason == SESSION_NOT_OWNED
+    assert len(active_session_registry_snapshot()) == 1
+
+
+def test_untracked_leases_never_go_stale():
+    """CLI/gateway one-shots keep the exact contract: a live pid holds the session.
+
+    Only liveness-tracked (desktop) leases carry a heartbeat, because only their
+    owner runs a refresher. A CLI process may sit inside a long turn with no
+    timer running at all, so age must never be read as abandonment there.
+    """
+    assert acquire("S")[0] is not None
+
+    _age_lease(active_sessions.LEASE_HEARTBEAT_TIMEOUT_S * 100)
+
+    blocked, refusal = acquire("S", surface="tui", live_id="phone")
+    assert blocked is None, "an untracked lease is fenced by its live pid, not by age"
+    assert refusal.reason == SESSION_NOT_OWNED

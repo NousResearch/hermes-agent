@@ -50,6 +50,7 @@ import {
   loadBotSections,
   moveBotsToSection,
   renameBotSection,
+  resetBotSectionDeletes,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
 
@@ -77,6 +78,7 @@ beforeEach(() => {
   storage.clear()
   $botMeta.set({})
   $botSections.set([])
+  resetBotSectionDeletes()
   saveBotMeta.mockClear()
 })
 
@@ -173,6 +175,39 @@ describe('user sections', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(Object.values($botMeta.get()).map(meta => meta.sectionId)).toEqual([null, null])
     expect($botSections.get()).toEqual([])
+  })
+
+  it('the shield on a deleted section lasts exactly until its latest delete finishes clearing members', async () => {
+    const section = createBotSection('Clients', [bot('nanox')])!
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBe(section.id))
+    const roster = [bot('nanox')]
+
+    // Another desktop that still has "Clients" files scout into it.
+    const adoptWithScout = () =>
+      adoptBotSectionsFromMeta([bot('nanox'), bot('scout')], {
+        ...$botMeta.get(),
+        scout: { sectionId: section.id, sectionName: 'Clients' }
+      })
+
+    const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+    // Delete, Undo, delete again: the first delete's clear finishing must not
+    // lift the shield while the second delete is still clearing.
+    const releaseFirst = holdNextSave()
+    deleteBotSection(section.id, roster).undo()
+    const releaseSecond = holdNextSave()
+    deleteBotSection(section.id, roster)
+    releaseFirst()
+    await flush()
+    adoptWithScout()
+    expect($botSections.get()).toEqual([])
+
+    // Once the clear is done, a member carrying the id was filed there again
+    // elsewhere, and the section is adopted like any other desktop's.
+    releaseSecond()
+    await flush()
+    adoptWithScout()
+    expect($botSections.get()).toEqual([{ id: section.id, name: 'Clients' }])
   })
 
   it('a second desktop rebuilds sections it never created from the id + name on each member', () => {

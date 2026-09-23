@@ -961,6 +961,29 @@ holds across gateway crashes, restarts, and updates:
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
 
+:::warning Sessions are per profile
+Each profile keeps its session history in its own `state.db`, inside that profile's
+`HERMES_HOME`. The `~/.hermes/state.db` paths above belong to the default profile; a
+session started under profile `work` lives in `~/.hermes/profiles/work/state.db`.
+
+`hermes sessions list` and the CLI's `/sessions` read the active profile's database only.
+If a session seems to have vanished, check the other profiles before concluding it was lost:
+
+```bash
+hermes profile list
+hermes --profile work sessions list
+```
+
+Reading another profile's sessions is explicit. `session_search` takes a `profile`
+argument and opens that profile's database read-only, which is how
+`@session:<profile>/<id>` links resolve. A bare session id that is not in the current
+profile is reported as not found; it is not looked up in other profiles. The dashboard
+lists one profile's sessions at a time.
+
+This is also why `hermes profile create --clone-all` does not copy `state.db`: history
+belongs to the source profile. See [Profiles](./profiles.md).
+:::
+
 :::warning `sessions.json` is not the session list
 The gateway routing index lives in the `gateway_routing` table inside
 `state.db`; `~/.hermes/sessions/sessions.json` is a **legacy mirror** of it,

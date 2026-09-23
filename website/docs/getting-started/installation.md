@@ -106,6 +106,8 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you. Just make sure `git` is available (`git --version`). On Linux, ensure `curl` and `xz-utils` are installed (`sudo apt install curl xz-utils` on Debian/Ubuntu). For the desktop app, also install `build-essential` (`sudo apt install build-essential`).
 :::
 
+**Hardware:** what you need depends on where the model runs. To run models on your own machine, see [Local Models: Requirements and limits](../user-guide/local-models.md#requirements-and-limits) and the [What You Need](../guides/local-ollama-setup.md#what-you-need) table in the Ollama guide. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).
+
 :::tip Nix users
 Nix is **no longer an explicitly supported install path** (best-effort only). If you already use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with a Nix flake, declarative NixOS module, and optional container mode. See the **[Nix & NixOS Setup](./nix-setup.md)** guide.
 :::

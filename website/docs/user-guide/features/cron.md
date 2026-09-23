@@ -1007,12 +1007,13 @@ From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and 
 
 ## Provider recovery
 
-Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:
+Cron jobs inherit your configured fallback providers and credential pool rotation. Recovery happens at two points.
 
-- **Fall back to an alternate provider** if you have `fallback_providers` (or the legacy `fallback_model`) configured in `config.yaml`
-- **Rotate to the next credential** in your [credential pool](../configuration.md#credential-pool-strategies) for the same provider
+**Before the agent is built.** If resolving the job's provider fails with an authentication error or a transient network error (such as a DNS failure), the scheduler walks `fallback_providers` (or the legacy `fallback_model`) from `config.yaml` and builds the agent with the first entry that resolves. Provider and model switch together, so a fallback entry never sends the primary model through a different provider. A one-line `⚠️ Provider fallback:` notice naming both routes is added above the delivered output.
 
-This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
+**During the run.** The agent carries the same fallback chain and your [credential pool](../configuration.md#credential-pool-strategies). A rate limit or billing/credit exhaustion first rotates to the next credential in the pool for the same provider. When rotation cannot recover, the agent switches to the fallback chain and continues the run there. A rate limit reported by an upstream aggregator switches straight away, because another key on the same provider cannot help. An authentication failure that survives a credential refresh also switches to the fallback chain. See [When Fallback Triggers](fallback-providers.md#when-fallback-triggers) for the full list of triggers.
+
+A single rate-limited key therefore does not fail the run, as long as a pool credential or fallback entry can serve the request. When nothing can take over, the run fails and records `last_error` (see [Run failures](#run-failures-last_error)).
 
 ## Run failures (`last_error`)
 
@@ -1331,6 +1332,8 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 ## Job storage
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+
+These paths belong to the default profile. Each profile keeps its own cron store under its own `HERMES_HOME`: a job created in profile `coder` is stored in `~/.hermes/profiles/coder/cron/jobs.json` and runs with that profile's `.env`, `config.yaml`, and skills.
 
 Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
 

@@ -30,6 +30,8 @@ If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded
 
 `AGENTS.md` is the primary project context file. It tells the agent how your project is structured, what conventions to follow, and any special instructions.
 
+`AGENTS.md` is project context: Hermes finds it from the working directory, not from the Hermes home, so it is not tied to a profile. For instructions that belong to a profile rather than a project, use that profile's `SOUL.md`. A cron job loads project context files only when the job has a working directory set; see [Running a job inside a project directory](./cron.md#running-a-job-inside-a-project-directory).
+
 ### Directory Chain (git root → working directory)
 
 When your working directory sits inside a git repository, Hermes loads a **merged chain** of `AGENTS.md` files at session start: the git-root `AGENTS.md` first, then the `AGENTS.md` in every intermediate directory down to your working directory. Deeper files appear later in the prompt, so more specific guidance takes precedence. Each file gets its own provenance header (e.g. `## ../../AGENTS.md`), and identical copies along the chain are deduplicated.
@@ -104,6 +106,8 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 
 - `~/.hermes/SOUL.md`
 - or `$HERMES_HOME/SOUL.md` if you run Hermes with a custom home directory
+
+Each [profile](../profiles.md) is its own `HERMES_HOME`, so each profile has its own `SOUL.md` at `~/.hermes/profiles/<name>/SOUL.md`, and a session started in a profile loads that profile's file.
 
 Important details:
 

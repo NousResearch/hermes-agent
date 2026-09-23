@@ -14,6 +14,10 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](../../integrations/nous-portal.md) subscription bundles all of them.
 :::
 
+:::note Connecting Hermes Desktop
+The messaging gateway is not the backend Hermes Desktop connects to. Desktop talks to a `hermes serve` backend: the app runs its own locally, and the **Remote gateway** connection mode expects the URL of a `hermes serve` backend you run yourself. See [Connecting to a remote backend](../desktop.md#connecting-to-a-remote-backend). Desktop still shows the messaging status of the selected profile, as described below.
+:::
+
 ## Messaging status in Desktop and the dashboard
 
 Messaging status belongs to the selected profile on the selected machine. Credentials
@@ -863,6 +867,22 @@ Scheduled auto-resume for N restart-interrupted session(s)
 ```
 
 No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
+
+### Moving a session between surfaces
+
+A session is not locked to the surface it started on. From a CLI session, `/handoff <platform>` transfers the live conversation to that platform's home channel, keeping the same session id and the full transcript, tool calls included. The destination adapter opens a fresh thread where it can (a Telegram forum topic, a Discord thread, a Slack or Matrix thread) and falls back to the home channel where it cannot.
+
+`/handoff` runs from the CLI only. It is not one of the chat commands above, so typing it in a messaging chat does not start a handoff.
+
+The destination needs a home channel, set once with `/sethome` from that chat.
+
+To come back, run `/resume <title>` in the CLI (or `hermes -r "<title>"` from the shell).
+
+See [Cross-Platform Handoff](../sessions.md#cross-platform-handoff) for the full flow, per-platform thread behaviour, and failure modes.
+
+:::note
+This is distinct from [session resume across gateway restarts](#session-resume-across-gateway-restarts), which recovers an interrupted session on the same surface after the gateway restarts.
+:::
 
 ### Mobile-friendly progress defaults
 

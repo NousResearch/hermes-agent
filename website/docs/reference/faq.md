@@ -163,7 +163,7 @@ The installer handles this automatically — if you see this error during manual
 
 **Cause:** Hermes builds a per-session environment snapshot by running `bash -l` once at startup. A bash login shell reads `/etc/profile`, `~/.bash_profile`, and `~/.profile`, but **does not source `~/.bashrc`** — so tools that install themselves there (`nvm`, `asdf`, `pyenv`, `cargo`, custom `PATH` exports) stay invisible to the snapshot. This most commonly happens when Hermes runs under systemd or in a minimal shell where nothing has pre-loaded the interactive shell profile.
 
-**Solution:** Hermes auto-sources `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.hermes/config.yaml`:
+**Solution:** On non-Windows, Hermes auto-sources `~/.profile`, `~/.bash_profile`, then `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.hermes/config.yaml`:
 
 ```yaml
 terminal:
@@ -171,8 +171,10 @@ terminal:
     - ~/.zshrc                     # zsh users: pulls zsh-managed PATH into the bash snapshot
     - ~/.nvm/nvm.sh                # direct nvm init (works regardless of shell)
     - /etc/profile.d/cargo.sh      # system-wide rc files
-  # When this list is set, the default ~/.bashrc auto-source is NOT added —
-  # include it explicitly if you want both:
+  # When this list is set, the default auto-source list is NOT added.
+  # Include whichever of those you still want:
+  #   - ~/.profile
+  #   - ~/.bash_profile
   #   - ~/.bashrc
   #   - ~/.zshrc
 ```

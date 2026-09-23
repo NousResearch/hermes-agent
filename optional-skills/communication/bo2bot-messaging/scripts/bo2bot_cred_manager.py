@@ -55,7 +55,7 @@ class Bo2botCredentialManager:
         if not interactive:
             raise EnvironmentError(
                 "Bo2bot credentials not found. "
-                "Run: bash ~/.hermes/skills/messaging/bo2bot-messaging/scripts/bo2bot-setup.sh"
+                "Run: bash ~/.hermes/skills/communication/bo2bot-messaging/scripts/bo2bot-setup.sh"
             )
         
         existing = Bo2botCredentialManager.load_credentials()
@@ -139,7 +139,7 @@ class Bo2botCredentialManager:
             missing = [f for f in Bo2botCredentialManager.REQUIRED_FIELDS if f not in creds]
             raise EnvironmentError(
                 f"Bo2bot credentials incomplete. Missing: {', '.join(missing)}\n"
-                f"Run: bash ~/.hermes/skills/messaging/bo2bot-messaging/scripts/bo2bot-setup.sh"
+                f"Run: bash ~/.hermes/skills/communication/bo2bot-messaging/scripts/bo2bot-setup.sh"
             )
         
         new_creds = Bo2botCredentialManager.prompt_for_credentials(interactive=True)
@@ -194,7 +194,7 @@ def main():
         creds = Bo2botCredentialManager.prompt_for_credentials(interactive=True)
         Bo2botCredentialManager.save_credentials(creds)
         print("Next steps:")
-        print("  1. Run validation: bash ~/.hermes/skills/messaging/bo2bot-messaging/scripts/bo2bot-validate.sh")
+        print("  1. Run validation: bash ~/.hermes/skills/communication/bo2bot-messaging/scripts/bo2bot-validate.sh")
         print("  2. Or use the skill: hermes chat -s bo2bot-messaging")
 
     else:

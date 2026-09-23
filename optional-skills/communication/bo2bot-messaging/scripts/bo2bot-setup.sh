@@ -1,7 +1,7 @@
 #!/bin/bash
 # Bo2bot Credential Setup Script
 # Run this interactively to set up or update your Bo2bot credentials
-# Usage: bash ~/.hermes/skills/messaging/bo2bot-messaging/scripts/bo2bot-setup.sh
+# Usage: bash ~/.hermes/skills/communication/bo2bot-messaging/scripts/bo2bot-setup.sh
 
 set -e
 
@@ -83,6 +83,6 @@ echo ""
 echo "✅ Credentials saved securely to: $CREDS_FILE"
 echo ""
 echo "Next steps:"
-echo "  1. Run validation: bash ~/.hermes/skills/messaging/bo2bot-messaging/scripts/bo2bot-validate.sh"
+echo "  1. Run validation: bash ~/.hermes/skills/communication/bo2bot-messaging/scripts/bo2bot-validate.sh"
 echo "  2. Or use the skill: hermes chat -s bo2bot-messaging"
 echo ""

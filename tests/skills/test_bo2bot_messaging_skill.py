@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-SKILL_DIR = REPO / "optional-skills" / "messaging" / "bo2bot-messaging"
+SKILL_DIR = REPO / "optional-skills" / "communication" / "bo2bot-messaging"
 SKILL_PATH = SKILL_DIR / "SKILL.md"
 
 BUNDLED = [

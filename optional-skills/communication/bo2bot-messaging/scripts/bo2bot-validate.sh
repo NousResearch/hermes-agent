@@ -1,7 +1,7 @@
 #!/bin/bash
 # Bo2bot First-Contact Validation Script
 # Run this once to validate your Bo2bot setup end-to-end
-# Usage: bash ~/.hermes/skills/messaging/bo2bot-messaging/scripts/bo2bot-validate.sh
+# Usage: bash ~/.hermes/skills/communication/bo2bot-messaging/scripts/bo2bot-validate.sh
 
 set -e
 

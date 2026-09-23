@@ -12,105 +12,105 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-elevenlabs = false
-setuptools = false
-modal = false
-pyyaml = false
-maturin = false
-numpy = false
-pvporcupine = false
-google-auth = false
-aiohttp = false
-starlette = false
-mistralai = false
-firecrawl-py = false
-parallel-web = false
-markdown = false
-opentelemetry-sdk = false
-prompt-toolkit = false
-fastapi = false
-anthropic = false
-pathspec = false
-openwakeword = false
-defusedxml = false
-ruff = false
-exa-py = false
-mcp = false
-python-olm = false
-wheel = false
-websockets = false
-pytest = false
-pillow = false
-setuptools-rust = false
-tenacity = false
-pyjwt = false
-slack-bolt = false
-fal-client = false
-asyncpg = false
-boto3 = false
-ruamel-yaml = false
-sherpa-onnx = false
-huggingface-hub = false
-pytest-asyncio = false
-google-cloud-pubsub = false
-slack-sdk = false
-discord-py = false
-honcho-ai = false
-faster-whisper = false
-certifi = false
-debugpy = false
-packaging = false
-rich = false
-supermemory = false
-unpaddedbase64 = false
-h2 = false
-youtube-transcript-api = false
-edge-tts = false
-microsoft-teams-apps = false
-aiohttp-socks = false
+agent-client-protocol = false
 ai-edge-litert = false
-onnxruntime = false
-croniter = false
-opentelemetry-exporter-otlp-proto-http = false
-azure-identity = false
-lark-oapi = false
-sentencepiece = false
-firecrawl-anydoc = false
-google-api-python-client = false
-brotlicffi = false
-mem0ai = false
-qrcode = false
-vercel = false
+aiohttp = false
+aiohttp-socks = false
 aiosqlite = false
-tzdata = false
-python-dotenv = false
+alibabacloud-dingtalk = false
+anthropic = false
+asyncpg = false
+azure-identity = false
+boto3 = false
+brotlicffi = false
+certifi = false
+concurrent-log-handler = false
+croniter = false
+cryptography = false
 daytona = false
-uvicorn = false
-nemo-relay = false
-requests = false
+debugpy = false
+defusedxml = false
+dingtalk-stream = false
+discord-py = false
+edge-tts = false
+elevenlabs = false
+exa-py = false
+fal-client = false
+fastapi = false
+faster-whisper = false
+fire = false
+firecrawl-anydoc = false
+firecrawl-py = false
+google-api-python-client = false
+google-auth = false
+google-auth-httplib2 = false
+google-auth-oauthlib = false
+google-cloud-pubsub = false
+h2 = false
+hindsight-client = false
+honcho-ai = false
 httplib2 = false
 httpx = false
-pyasn1 = false
-snowballstemmer = false
-concurrent-log-handler = false
-cryptography = false
-pydantic = false
-agent-client-protocol = false
-fire = false
 httpx2 = false
-google-auth-oauthlib = false
-python-multipart = false
-ty = false
-openai = false
-mautrix = false
-google-auth-httplib2 = false
-python-telegram-bot = false
-psutil = false
+huggingface-hub = false
 jinja2 = false
-hindsight-client = false
+lark-oapi = false
+markdown = false
+maturin = false
+mautrix = false
+mcp = false
+mem0ai = false
+microsoft-teams-apps = false
+mistralai = false
+modal = false
+nemo-relay = false
+numpy = false
+onnxruntime = false
+openai = false
+opentelemetry-exporter-otlp-proto-http = false
+opentelemetry-sdk = false
+openwakeword = false
+packaging = false
+parallel-web = false
+pathspec = false
+pillow = false
+prompt-toolkit = false
+psutil = false
+pvporcupine = false
+pyasn1 = false
+pydantic = false
+pyjwt = false
+pytest = false
+pytest-asyncio = false
+python-dotenv = false
+python-multipart = false
+python-olm = false
+python-telegram-bot = false
+pyyaml = false
+qrcode = false
+requests = false
+rich = false
+ruamel-yaml = false
+ruff = false
+sentencepiece = false
+setuptools = false
+setuptools-rust = false
+sherpa-onnx = false
+slack-bolt = false
+slack-sdk = false
+snowballstemmer = false
 sounddevice = false
-alibabacloud-dingtalk = false
-dingtalk-stream = false
+starlette = false
+supermemory = false
+tenacity = false
+ty = false
+tzdata = false
+unpaddedbase64 = false
+uvicorn = false
+vercel = false
+websockets = false
+wheel = false
+youtube-transcript-api = false
 
 [manifest]
 overrides = [
@@ -1216,6 +1216,15 @@ wheels = [
 ]
 
 [[package]]
+name = "durationpy"
+version = "0.11"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/5d/5f8571bd5dedc80863191621ac4be001f3f3dd8315d2ec078705dab7dec1/durationpy-0.11.tar.gz", hash = "sha256:181898e1ae282e288f0a2291829656bf1b6b3aadf30a97993b85db4943642905", size = 3582, upload-time = "2026-08-26T13:56:00.991Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/c4/ebdf7837bc4ef6fd98cfb013c28855bb358467bf86c1af011bbc21e21df0/durationpy-0.11-py3-none-any.whl", hash = "sha256:a739fe2b8972c250ff72f8e2c488d18cf25f7b852f49ee76048775d5171df30c", size = 4133, upload-time = "2026-08-26T13:55:59.456Z" },
+]
+
+[[package]]
 name = "edge-tts"
 version = "7.2.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1869,6 +1878,9 @@ homeassistant = [
 honcho = [
     { name = "honcho-ai" },
 ]
+kubernetes = [
+    { name = "kubernetes" },
+]
 matrix = [
     { name = "aiohttp" },
     { name = "aiohttp-socks" },
@@ -2064,6 +2076,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'dev'", specifier = "==2.7.0" },
     { name = "httpx2", marker = "extra == 'mcp'", specifier = "==2.7.0" },
     { name = "jinja2", specifier = "==3.1.6" },
+    { name = "kubernetes", marker = "extra == 'kubernetes'", specifier = "==36.0.3" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
     { name = "markdown", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.1" },
@@ -2139,7 +2152,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
+provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "kubernetes", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2495,6 +2508,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "kubernetes"
+version = "36.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "certifi" },
+    { name = "durationpy" },
+    { name = "python-dateutil" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "requests-oauthlib" },
+    { name = "six" },
+    { name = "urllib3" },
+    { name = "websocket-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ca/57/b07b96353f902aa1bdbe00e878e3a12a137977d03a962479785576aa8ec9/kubernetes-36.0.3.tar.gz", hash = "sha256:36993ed25ce59b789c9341473a228fcf268504a2fec7c2b2b1531d73072e5ce7", size = 2337528, upload-time = "2026-07-13T20:38:12.128Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/30/a96d47df739689ac0001ade0afefc16e3b477fc2fb426b568515fdc8afce/kubernetes-36.0.3-py2.py3-none-any.whl", hash = "sha256:8fde9241c4b298e6374a069dcf728359b4e72c2fb29489a975ba4e1c047cf10f", size = 4618066, upload-time = "2026-07-13T20:38:10.172Z" },
 ]
 
 [[package]]

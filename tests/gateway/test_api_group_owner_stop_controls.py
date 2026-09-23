@@ -73,7 +73,7 @@ async def test_second_listener_cannot_claim_local_stop_but_existing_sweeper_cons
             assert all(record["locally_managed"] is False for record in body["runs"])
             assert not interrupted.is_set()
             tasks = list(adapter._active_run_tasks.values())
-            adapter._sweep_orphaned_runs_once()
+            await adapter._sweep_orphaned_runs_once()
             assert interrupted.is_set()
             await asyncio.wait_for(asyncio.gather(*tasks), 3)
             readback = await owner.get(STOP + "/owner-stop-1", headers=OWNER)

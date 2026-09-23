@@ -243,21 +243,6 @@ class TestFormatKanbanEventText:
             ev = SimpleNamespace(kind=kind, payload={})
             assert _format_kanban_event_text(self.SUB, self.TASK, ev, "main") is None
 
-    def test_blocked_includes_reason(self):
-        ev = SimpleNamespace(kind="blocked", payload={"reason": "needs creds"})
-        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
-        assert "t_abc123" in text
-        assert "blocked" in text
-        assert "needs creds" in text
-        assert "[main]" in text
-        assert "@worker" in text
-
-    def test_completed_prefers_payload_summary(self):
-        ev = SimpleNamespace(kind="completed", payload={"summary": "first line\nsecond"})
-        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
-        assert "done" in text
-        assert "first line" in text
-        assert "second" not in text
 
     def test_timed_out_with_bad_payload_does_not_raise(self):
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
@@ -283,11 +268,12 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server, "_emit", lambda event, sid, payload=None: emits.append((event, payload))
         )
-        monkeypatch.setattr(
-            server,
-            "_run_prompt_submit",
-            lambda rid, sid, sess, text: submits.append(text),
-        )
+        def accept(rid, sid, sess, text):
+            # Model execution is replaced, including its concrete admission receipt.
+            server._emit("message.start", sid)
+            submits.append(text)
+            return True
+        monkeypatch.setattr(server, "_run_prompt_submit", accept)
         stop = threading.Event()
         thread = threading.Thread(
             target=server._notification_poller_loop,

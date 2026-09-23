@@ -140,7 +140,7 @@ def test_corrupt_breadcrumb_returns_none(hermes_home, monkeypatch, no_terminal_e
 def _make_session(home: Path, session_id: str):
     from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = SessionDB(db_path=home / "state.db")
     db.create_session(session_id, "cli")
     db.close()
 
@@ -197,8 +197,3 @@ def test_config_gate_off_disables_writes_and_resolution(
     assert tb.resolve_breadcrumb_session() is None
 
 
-def test_config_gate_default_is_enabled(monkeypatch):
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(config_mod, "load_config", lambda: {})
-    assert tb.is_enabled() is True

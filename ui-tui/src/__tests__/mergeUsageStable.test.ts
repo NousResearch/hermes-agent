@@ -1,7 +1,7 @@
+import type { Usage } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import { mergeUsageStable, usageChanged } from '../app/createGatewayEventHandler.js'
-import type { Usage } from '../types.js'
 
 const baseUsage: Usage = {
   calls: 3,

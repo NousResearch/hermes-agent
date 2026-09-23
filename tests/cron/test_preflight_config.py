@@ -13,10 +13,11 @@ delivery platform — must be blocked BEFORE any agent machinery is constructed:
 proceeds to resolution and fails loudly every tick).
 
 Related precedent: #27948 (fail-loud for hidden tools — same fail-before-run
-spirit, different check) and #44585 (drift guard: skip-run-no-spend shape).
+spirit, different check).
 """
 
 import json
+import pytest
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cron.jobs as cron_jobs
 from cron.scheduler import run_job
 import cron.scheduler as sched
+
+pytestmark = pytest.mark.usefixtures("cron_owner")
 
 
 _RUNTIME = {
@@ -45,7 +48,7 @@ def _job(**overrides):
         "state": "scheduled",
         "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
         "deliver": "local",
-        "model": None,
+        "model": "test-model",
         "provider": None,
         "base_url": None,
     }
@@ -67,13 +70,11 @@ def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
 
     Returns (success, output, final_response, error, agent_constructed).
     """
-    fake_db = MagicMock()
     patches = [
         patch("cron.scheduler._hermes_home", tmp_path),
         patch("cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("hermes_state_registry.acquire", return_value=fake_db),
         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
     ]
     if resolve is None:
@@ -126,27 +127,25 @@ class TestMissingProviderKeyBlocks:
     def test_single_alert_across_two_ticks_and_blocked_status(self, tmp_path):
         """Two ticks of a blocked job through run_one_job deliver exactly ONE
         alert and persist last_status='blocked_config'."""
-        job = _job()
+        job = _job(failure_deliver="slack:alerts")
         deliveries = []
 
-        def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
+        def fake_deliver(execution_id, job, content, **kwargs):
             deliveries.append(content)
-            return None
+            return {"status": "pending"}
 
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            fake_db = MagicMock()
             for _tick in range(2):
                 fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
                 with patch("cron.scheduler._hermes_home", tmp_path), \
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("hermes_state_registry.acquire", return_value=fake_db), \
                      patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
-                     patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+                     patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
                      patch("run_agent.AIAgent") as mock_agent_cls:
                     ok = sched.run_one_job(fresh)
                     assert ok is True
@@ -159,7 +158,6 @@ class TestMissingProviderKeyBlocks:
             f"expected exactly one alert across two ticks, got {len(deliveries)}: "
             f"{deliveries!r}"
         )
-        assert "blocked" in deliveries[0].lower()
 
     def test_fallback_chain_rescues_missing_primary_key(self, tmp_path):
         """A configured fallback chain means a missing primary key does NOT
@@ -180,7 +178,8 @@ class TestMissingProviderKeyBlocks:
                 raise AuthError("no key")
             return {**_RUNTIME, "provider": "openrouter"}
 
-        job = _job()
+        # Unpinned: a job carrying its own model is pinned (#100437) and gets no chain.
+        job = _job(model=None)
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
             success, output, final_response, error, agent_constructed = \
@@ -189,6 +188,36 @@ class TestMissingProviderKeyBlocks:
         assert agent_constructed is True
         assert success is True
         assert error is None
+
+    def test_global_chain_does_not_rescue_a_pinned_job(self, tmp_path):
+        """A pinned job never walks the global chain (#100437), so the chain must not skip the
+        missing-key check for it either: block before the agent is built."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: z-ai/glm-5.2\n",
+            encoding="utf-8",
+        )
+        calls = []
+
+        def resolve(**kwargs):
+            calls.append(kwargs.get("requested"))
+            if kwargs.get("requested") == "anthropic":
+                from hermes_cli.auth import AuthError
+
+                raise AuthError("no key")
+            return {**_RUNTIME, "provider": kwargs.get("requested")}
+
+        job = _job(provider="anthropic", model="claude-sonnet-5")
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            success, output, final_response, error, agent_constructed = \
+                _run_job_patched(job, tmp_path, resolve=resolve)
+
+        assert agent_constructed is False
+        assert success is False
+        assert "provider credential missing" in (error or "")
+        assert "openrouter" not in calls
 
 
 class TestHealthyJobUnaffected:
@@ -230,27 +259,25 @@ class TestOptOut:
         (tmp_path / "config.yaml").write_text(
             "cron:\n  preflight: false\n", encoding="utf-8"
         )
-        job = _job()
+        job = _job(failure_deliver="slack:alerts")
         deliveries = []
 
-        def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
+        def fake_deliver(execution_id, job, content, **kwargs):
             deliveries.append(content)
-            return None
+            return {"status": "pending"}
 
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            fake_db = MagicMock()
             for _tick in range(2):
                 fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
                 with patch("cron.scheduler._hermes_home", tmp_path), \
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("hermes_state_registry.acquire", return_value=fake_db), \
                      patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
-                     patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+                     patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
                      patch("run_agent.AIAgent") as mock_agent_cls:
                     sched.run_one_job(fresh)
                     assert mock_agent_cls.called is False

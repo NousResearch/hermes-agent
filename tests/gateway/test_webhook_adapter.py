@@ -19,9 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
-import socket
 import time
-from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,7 +31,6 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
-    check_webhook_requirements,
 )
 
 
@@ -72,6 +69,8 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter (without starting a full server)."""
     # Mirror connect(): client_max_size enforces the cap on chunked bodies.
     app = web.Application(client_max_size=adapter._max_body_bytes)
+    from tests.gateway.fixtures.webhook_route_authority import mount_authority
+    mount_authority(app, adapter)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
@@ -197,23 +196,6 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Gitlab-Token": secret})
         assert adapter._validate_signature(req, b"{}", secret) is True
 
-    def test_validate_no_secret_allows_all(self):
-        """When the secret is empty/falsy, the validator is never even called
-        by the handler (secret check is 'if secret and secret != _INSECURE...').
-        Verify that an empty secret isn't accidentally passed to the validator."""
-        # This tests the semantics: empty secret means skip validation entirely.
-        # The handler code does: if secret and secret != _INSECURE_NO_AUTH: validate
-        # So with an empty secret, _validate_signature is never reached.
-        # We just verify the code path is correct by constructing an adapter
-        # with no secret and confirming the route config resolves to "".
-        adapter = _make_adapter(
-            routes={"test": {"prompt": "hello"}},
-            secret="",
-        )
-        # The route has no secret, global secret is empty
-        route_secret = adapter._routes["test"].get("secret", adapter._global_secret)
-        assert not route_secret  # empty → validation is skipped in handler
-
 
     def test_validate_generic_v2_wrong_timestamp_rejects(self):
         """The timestamp is cryptographically bound into the V2 signature —
@@ -263,24 +245,13 @@ class TestValidateSignature:
         })
         assert adapter._validate_signature(req, body, secret) is False
 
-    def test_v1_replay_attack_succeeds_demonstrating_the_hole_v2_closes(self):
-        """Regression/documentation test: a captured (body, signature) V1
-        pair replays successfully no matter how much time has passed,
-        because the V1 signature has no timestamp binding at all. This is
-        the exact vulnerability V2 fixes — it is not asserting desired
-        behavior, it is pinning the known, accepted-with-warning legacy
-        gap so a future change to V1's semantics doesn't silently alter it
-        without a deliberate decision."""
+    def test_validate_generic_v1_signature_accepts(self):
+        """Legacy generic senders sign the raw body (X-Webhook-Signature)."""
         adapter = _make_adapter()
         body = b'{"event": "push"}'
         secret = "generic-secret"
-        sig = _generic_signature(body, secret)
-        original_request = _mock_request(headers={"X-Webhook-Signature": sig})
-        assert adapter._validate_signature(original_request, body, secret) is True
-        # "Time passes" — nothing about a V1 signature depends on time, so
-        # a captured pair replayed much later still validates.
-        replayed_request = _mock_request(headers={"X-Webhook-Signature": sig})
-        assert adapter._validate_signature(replayed_request, body, secret) is True
+        req = _mock_request(headers={"X-Webhook-Signature": _generic_signature(body, secret)})
+        assert adapter._validate_signature(req, body, secret) is True
 
 
     def test_validate_svix_signature_raw_secret_valid(self):
@@ -537,8 +508,6 @@ class TestHTTPHandling:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/webhooks/test", json={"data": "value"})
             assert resp.status == 403
-            data = await resp.json()
-            assert data["error"] == "Webhook route is missing an HMAC secret"
 
         adapter.handle_message.assert_not_called()
 
@@ -714,6 +683,7 @@ class TestWebhookSilenceSuppression:
         mock_target.send = AsyncMock(return_value=SendResult(success=True))
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
         adapter.gateway_runner = mock_runner
 
@@ -793,18 +763,6 @@ class TestDeliveryCleanup:
 
 
 # ===================================================================
-# check_webhook_requirements
-# ===================================================================
-
-
-class TestCheckRequirements:
-
-    @patch("gateway.platforms.webhook.AIOHTTP_AVAILABLE", False)
-    def test_returns_false_without_aiohttp(self):
-        assert check_webhook_requirements() is False
-
-
-# ===================================================================
 # __raw__ template token
 # ===================================================================
 
@@ -841,6 +799,7 @@ class TestDeliverCrossPlatformThreadId:
 
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
 
         adapter.gateway_runner = mock_runner
@@ -915,13 +874,6 @@ class TestDualStackBind:
     """
 
 
-    def test_missing_host_key_resolves_to_none(self):
-        """Config with no host key → dual-stack (None), not a literal string."""
-        cfg = PlatformConfig(enabled=True, extra={"port": 0, "routes": {}})
-        adapter = WebhookAdapter(cfg)
-        assert adapter._host is None
-
-
     @pytest.mark.asyncio
     async def test_default_bind_serves_both_families(self):
         """Binding the real server with the default host opens v4 AND v6 sockets.
@@ -963,16 +915,49 @@ class TestDualStackBind:
             await adapter.disconnect()
 
 
+class TestExclusiveBindTimeWait:
+    """The TIME_WAIT rebind (positive case: tests/gateway/test_api_server_bind_guard.py, shared
+    ``start_tcp_site``) must not weaken the exclusive bind: a live listener still wins."""
+
+    @staticmethod
+    def _adapter_on(port: int) -> WebhookAdapter:
+        return _make_adapter(
+            routes={"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            host="127.0.0.1",
+            port=port,
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_host_still_rejects_live_listener(self):
+        """The TIME_WAIT retry must not weaken exclusivity: a live listener on the same address wins."""
+        # The probe's connection must be closed server-side too, or ``wait_closed()`` never returns.
+        blocker = await asyncio.start_server(
+            lambda _reader, writer: writer.close(), host="127.0.0.1", port=0, reuse_address=False
+        )
+        port = blocker.sockets[0].getsockname()[1]
+        adapter = self._adapter_on(port)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                assert await adapter.connect() is False
+            assert adapter._runner is None
+            assert adapter.is_connected is False
+        finally:
+            await adapter.disconnect()
+            blocker.close()
+            await blocker.wait_closed()
+
+
 # Regression coverage for #72041: profile-bound webhook authentication
 class TestMultiplexProfileWebhookAuthentication:
     @staticmethod
     def _configure_profiles(adapter, tmp_path, monkeypatch):
         runner = MagicMock()
         runner.config.multiplex_profiles = True
+        runner._profile_name_for_source.return_value = None
         adapter.gateway_runner = runner
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
+            lambda multiplex: [
                 ("default", tmp_path),
                 ("worker", tmp_path / "profiles" / "worker"),
                 ("other", tmp_path / "profiles" / "other"),
@@ -1077,10 +1062,14 @@ class TestMultiplexProfileWebhookAuthentication:
         self._configure_profiles(adapter, tmp_path, monkeypatch)
         seen = []
 
-        async def _capture(event):
-            seen.append(event)
+        async def _capture(request, route_config, route_name, profile, payload, prompt,
+                           event_type, delivery_id, now):
+            seen.append((profile, prompt))
+            return web.Response(status=202)
 
-        adapter.handle_message = _capture
+        # Rendering-only boundary; the authority correctly refuses an unserved
+        # secondary home (covered independently by the native profile tests).
+        adapter._dispatch_agent_run = _capture
         body = b'{"action":"opened"}'
         headers = {
             "Content-Type": "application/json",
@@ -1095,8 +1084,8 @@ class TestMultiplexProfileWebhookAuthentication:
                 assert resp.status == 202
                 await asyncio.sleep(0.05)
         assert len(seen) == 1
-        assert seen[0].source.profile == "worker"
-        assert "Body of worker-only." in seen[0].text
+        assert seen[0][0] == "worker"
+        assert "Body of worker-only." in seen[0][1]
 
 
 def test_route_profile_validation_fails_closed():

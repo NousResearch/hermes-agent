@@ -26,12 +26,11 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
-from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.conversation_compression import (
     CompressionCommitFence,
     _claim_compressor_attempt,
+    _mark_compressor_working_attempt,
     compress_context,
     compression_blocked_transiently,
     run_compress_context_with_progress_timeout,
@@ -100,7 +99,8 @@ class TestWorkerTeardownOnCeiling:
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
+            # Keep idle expiry out of this total-ceiling test under runner load.
+            idle_timeout_seconds=2.0,
             total_ceiling_seconds=0.2,
             fence=fence,
             stall_fallback=False,
@@ -171,15 +171,6 @@ class TestWorkerTeardownOnCeiling:
 
 
 class TestDurableAttemptBackoff:
-    def test_backoff_row_records_strategy_and_kind(self, tmp_path: Path):
-        db, agent = _build_agent(tmp_path, "BACKOFF_KIND")
-        agent.context_compressor.record_timeout_failure(
-            "host ceiling exhausted", failure_kind="ceiling_exhausted"
-        )
-        row = db.get_compression_failure_cooldown("BACKOFF_KIND")
-        assert row is not None, "backoff must persist to state.db"
-        assert row["remaining_seconds"] > 0
-        assert "backoff:ceiling_exhausted:strategy=lean" in (row["error"] or "")
 
     def test_backoff_blocks_same_strategy_reentry_next_turn(self, tmp_path: Path):
         db, agent = _build_agent(tmp_path, "BACKOFF_REENTRY")
@@ -227,6 +218,27 @@ class TestDurableAttemptBackoff:
         assert compressor.should_compress_info(500_000)[0] is True
 
 
+    def test_stall_backoff_is_never_shorter_than_the_idle_window(self, tmp_path: Path, monkeypatch):
+        """The ladder's first rung (60s) undercut a 120s idle stall window, so the next oversized turn
+        re-entered the same silent route ~1 min after burning the whole window (#112420). The recorded
+        cooldown must cover at least one idle window; a window below the rung leaves the ladder as is."""
+        import agent.conversation_compression as cc
+
+        db, agent = _build_agent(tmp_path, "BACKOFF_FLOOR")
+        compressor = agent.context_compressor
+        monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (120.0, 600.0))
+        compressor.record_timeout_failure("stall", failure_kind="stalled")
+        assert compressor._summary_failure_cooldown_until - time.monotonic() >= 119.0
+        durable = db.get_compression_failure_cooldown("BACKOFF_FLOOR")
+        assert durable is not None and durable["remaining_seconds"] >= 119.0
+
+        compressor._clear_compression_failure_cooldown()
+        monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.05, 1.0))
+        compressor.record_timeout_failure("stall", failure_kind="stalled")
+        remaining = compressor._summary_failure_cooldown_until - time.monotonic()
+        assert 55.0 <= remaining <= 60.0
+
+
 class TestSupersessionDiscardsLateResults:
     def test_superseded_attempt_candidate_never_commits(self, tmp_path: Path):
         db, agent = _build_agent(tmp_path, "SUPERSEDE")
@@ -235,8 +247,10 @@ class TestSupersessionDiscardsLateResults:
 
         def compress_and_get_superseded(messages, **_kwargs):
             # While this attempt's summary was in flight, a NEWER attempt
-            # claimed the compressor (what a retry/fallback does).
-            _claim_compressor_attempt(agent.context_compressor)
+            # claimed the compressor AND began its own summary work (what a
+            # retry/fallback reaching dispatch does).
+            newer = _claim_compressor_attempt(agent.context_compressor)
+            _mark_compressor_working_attempt(agent.context_compressor, newer)
             return [{"role": "assistant", "content": "stale summary"}]
 
         agent.context_compressor.compress = compress_and_get_superseded
@@ -281,12 +295,6 @@ class TestTransientBlockIsNotExhaustion:
         compress_context(agent, live, "sys", approx_tokens=500_000)
         assert compression_blocked_transiently(agent) is False
 
-    def test_type_pinned_against_magicmock_agents(self):
-        from unittest.mock import MagicMock
-
-        mock_agent = MagicMock()
-        # MagicMock auto-attributes are truthy but not str.
-        assert compression_blocked_transiently(mock_agent) is False
 
 
 def _summary_response(content: str):

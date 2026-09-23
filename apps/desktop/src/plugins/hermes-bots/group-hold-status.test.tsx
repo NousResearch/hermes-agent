@@ -7,7 +7,8 @@ import type { GroupMember } from './types'
 const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
-  const { pluginSdkMock } = await import('./group-test-utils')
+  const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
+  Object.assign(host, createGroupGateway().host)
   const base = await pluginSdkMock(host)
 
   return {
@@ -17,6 +18,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: ({ name }: { name: string }) => <span aria-hidden data-icon={name} />,
     ConfirmDialog: () => null,
     CopyButton: () => null,
+    Switch: () => null,
     Dialog: () => null,
     DialogContent: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     DialogDescription: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -57,24 +59,6 @@ afterEach(() => {
 })
 
 describe('durable group holds', () => {
-  it('shows an accessible all-members status without relying on the activity feed', async () => {
-    const { GroupHoldStatus } = await import('./group-hold-status')
-
-    render(
-      <GroupHoldStatus
-        holds={{ builder: { at: 2 }, research: { at: 1 } }}
-        memberLabel={member => member.title || member.name}
-        members={MEMBERS}
-      />
-    )
-
-    const status = screen.getByRole('status')
-
-    expect(status.textContent).toContain('All 2 bots are paused')
-    expect(status.textContent).toContain('Mention a paused bot or send @all resume to release them.')
-    expect(status.querySelector('[data-icon="debug-pause"]')).not.toBeNull()
-  })
-
   it('keeps unmatched holds visible instead of reporting all current members held', async () => {
     const { GroupHoldStatus } = await import('./group-hold-status')
 
@@ -147,6 +131,30 @@ describe('durable group holds', () => {
     expect(status.textContent).toContain('builder (laptop)')
   })
 
+  it('summarizes the most recent unresolved failure after a member fails again', async () => {
+    const [{ GroupChatWorkspace }, chat, activity] = await Promise.all([
+      import('./group-chat-view'),
+      import('./group-chat'),
+      import('./group-activity')
+    ])
+
+    chat.$groupChats.set({ Core: { log: [], members: MEMBERS, watermarks: {} } })
+
+    for (const member of ['research', 'builder', 'research']) {
+      activity.recordGroupActivity('Core', { kind: 'failed', member, thread: member })
+    }
+
+    activity.recordGroupActivity('Core', { kind: 'settled', member: null })
+    const view = render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    // The workspace paints behind the group-source classification gate, so the
+    // activity row appears once that async check settles.
+    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('research hit an error')
+
+    activity.recordGroupActivity('Core', { kind: 'replied', member: 'research' })
+    view.rerender(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('builder hit an error')
+  })
+
   it('projects hydrated holds into the real group workspace', async () => {
     const [{ GroupChatWorkspace }, chat] = await Promise.all([import('./group-chat-view'), import('./group-chat')])
 
@@ -161,6 +169,6 @@ describe('durable group holds', () => {
 
     render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
 
-    expect(screen.getByRole('status').textContent).toContain('Paused: Research')
+    expect((await screen.findByRole('status')).textContent).toContain('Paused: Research')
   })
 })

@@ -1,0 +1,240 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "name": "concurrent-cold-start",
+      "stimulus": "Desktop + classic + Ink + two serve launches hit one empty profile together",
+      "required_observation": "One runtime epoch/owner, one scheduler, one adapter connection per credential; every successful client attaches to that owner."
+    },
+    {
+      "name": "service-existing",
+      "stimulus": "Installed running service",
+      "required_observation": "No spawn/install/restart; existing authenticated owner returned."
+    },
+    {
+      "name": "service-stopped",
+      "stimulus": "Installed stopped service",
+      "required_observation": "Correct backend starts it; real API readiness verified."
+    },
+    {
+      "name": "service-uncertain",
+      "stimulus": "Delayed/retrying/inaccessible/masked service",
+      "required_observation": "No unmanaged rival; typed state/deadline."
+    },
+    {
+      "name": "no-service",
+      "stimulus": "User declined installation",
+      "required_observation": "Unmanaged owner starts; no service files/tasks/linger changes."
+    },
+    {
+      "name": "no-platforms",
+      "stimulus": "CLI-only install, no bots",
+      "required_observation": "Interactive chat and configured cron work; no messaging dependency prompt."
+    },
+    {
+      "name": "stale-metadata",
+      "stimulus": "Dead PID, reused PID, old port, malicious/unsafe pointer",
+      "required_observation": "No false attachment or destructive cleanup of an unrelated process."
+    },
+    {
+      "name": "multiplex-race",
+      "stimulus": "Root multiplexer and secondary launch race",
+      "required_observation": "Each home has one legitimate owner; loser attaches or reports explicit conflict."
+    },
+    {
+      "name": "profile-revocation",
+      "stimulus": "Remove/exclude a secondary while clients/workers exist",
+      "required_observation": "Admission revoked in that profile, scoped work drains, no default-profile fallback."
+    },
+    {
+      "name": "explicit-stop",
+      "stimulus": "Stop gateway with attached clients",
+      "required_observation": "Drain/stop; clients do not auto-respawn until deliberate fresh launch."
+    },
+    {
+      "name": "update-pause",
+      "stimulus": "Pause while a new client launches",
+      "required_observation": "No auto-start storm, stale code dispatch, or second writer."
+    },
+    {
+      "name": "two-surfaces-one-session",
+      "stimulus": "Same session in Desktop + gateway bot + CLI + Ink",
+      "required_observation": "Same live handle/agent, ordered turns, no exclusive viewer refusal."
+    },
+    {
+      "name": "independent-session-concurrency",
+      "stimulus": "Two unrelated sessions run",
+      "required_observation": "Concurrent progress; no global turn lock."
+    },
+    {
+      "name": "duplicate-submit",
+      "stimulus": "Retry after losing real accepted ACK",
+      "required_observation": "One admission and execution; identical receipt."
+    },
+    {
+      "name": "conflicting-submit",
+      "stimulus": "Reuse ID with changed text/target/media/intent",
+      "required_observation": "Conflict; no mutation."
+    },
+    {
+      "name": "prepared-before-send-crash",
+      "stimulus": "Immediate real Electron termination after journal ACK, before send",
+      "required_observation": "Native journal survives; exact target/ID/text recovered."
+    },
+    {
+      "name": "owner-crash-queued",
+      "stimulus": "Kill owner after queue ACK",
+      "required_observation": "Never-started inputs recover FIFO."
+    },
+    {
+      "name": "owner-crash-started",
+      "stimulus": "Kill after started marker/tool effect",
+      "required_observation": "State unknown; no automatic repeat; later queued work governed explicitly by recovery policy."
+    },
+    {
+      "name": "disk-failure",
+      "stimulus": "Full disk/SQLite contention during accept",
+      "required_observation": "No accepted ACK, prepared input retained, eventual retry safe."
+    },
+    {
+      "name": "compression-lineage",
+      "stimulus": "Compression rotates while input queued",
+      "required_observation": "Canonical successor receives it; forks/rewinds do not steal it."
+    },
+    {
+      "name": "stale-finally",
+      "stimulus": "Old worker completes after stop/reset/new generation",
+      "required_observation": "Old cleanup cannot clear/persist into successor execution."
+    },
+    {
+      "name": "revision-conflict",
+      "stimulus": "Two viewers edit/rewind/delete with same revision",
+      "required_observation": "One winner or explicit busy conflict; no silent overwrite."
+    },
+    {
+      "name": "route-binding",
+      "stimulus": "`/new` in one of two routes/views",
+      "required_observation": "Only invoking binding changes; original shared history remains."
+    },
+    {
+      "name": "readonly-client",
+      "stimulus": "Observe/list/export/search",
+      "required_observation": "No migration/repair/write from client processes."
+    },
+    {
+      "name": "shared-approval",
+      "stimulus": "Two authorized clients answer one prompt",
+      "required_observation": "One resolution/effect; other answer settled/stale."
+    },
+    {
+      "name": "unauthorized-control",
+      "stimulus": "Read-only/wrong-profile/forged internal/wrong-generation response",
+      "required_observation": "Rejected with no state change."
+    },
+    {
+      "name": "approval-client-loss",
+      "stimulus": "Originating viewer disconnects",
+      "required_observation": "Other authorized client can answer; no automatic denial."
+    },
+    {
+      "name": "native-card-decline",
+      "stimulus": "Connector refuses approval card",
+      "required_observation": "Existing decline behavior; no plaintext leak/fallback."
+    },
+    {
+      "name": "secret-response",
+      "stimulus": "Secret/sudo answer",
+      "required_observation": "Only assigned execution receives it; replay/transcript/logs contain no answer."
+    },
+    {
+      "name": "backpressure",
+      "stimulus": "Fill one real OS send buffer",
+      "required_observation": "Healthy viewer and emitter finish; bounded writer resources."
+    },
+    {
+      "name": "reconnect-snapshot",
+      "stimulus": "Evict replay buffer/restart owner during stream",
+      "required_observation": "Atomic snapshot/watermark merge; no lost/duplicated completed message."
+    },
+    {
+      "name": "delayed-refresh",
+      "stimulus": "Deliver old REST snapshot after new completion",
+      "required_observation": "New state not rolled back; row IDs/admission identity win."
+    },
+    {
+      "name": "native-final-stream",
+      "stimulus": "Messaging native stream with interim/media/final",
+      "required_observation": "One correct final artifact, prefix-stable draft, edit reconciliation."
+    },
+    {
+      "name": "view-is-not-delivery",
+      "stimulus": "Open chat on another UI/route",
+      "required_observation": "Viewing does not duplicate/redirect external messages."
+    },
+    {
+      "name": "cron-desktop-open",
+      "stimulus": "Cron delivers while bot chat open in Desktop",
+      "required_observation": "Delivery succeeds; both surfaces remain usable; no target transcript pollution."
+    },
+    {
+      "name": "cron-worker-restart",
+      "stimulus": "Gateway restart during external cron execution",
+      "required_observation": "Existing worker survives, adopts, persists once, result delivered according to policy."
+    },
+    {
+      "name": "worker-lost-ack",
+      "stimulus": "Drop committed persistence ACK",
+      "required_observation": "Sequenced retry returns same mutation result, no duplicate row/usage."
+    },
+    {
+      "name": "worker-revoked",
+      "stimulus": "Old/mismatched execution capability",
+      "required_observation": "Cannot write another session/profile or manufacture approval."
+    },
+    {
+      "name": "worker-outbox-full",
+      "stimulus": "Authority unavailable until spool bound",
+      "required_observation": "Visible safe pause/failure; no direct SQLite fallback or silent discard."
+    },
+    {
+      "name": "child-attach",
+      "stimulus": "Open a live delegated child on Desktop/CLI",
+      "required_observation": "Same child owner; no new agent; completion reaches parent once per configured delivery semantics."
+    },
+    {
+      "name": "completion-busy",
+      "stimulus": "Child/terminal/heartbeat result while parent busy",
+      "required_observation": "Existing noninterrupting queue and suppression policy preserved."
+    },
+    {
+      "name": "api-delivery-only",
+      "stimulus": "API session receives async completion",
+      "required_observation": "No newly autonomous model turn by accident."
+    },
+    {
+      "name": "kanban-session",
+      "stimulus": "Dispatcher starts scoped worktree worker",
+      "required_observation": "Board/profile/cwd/claim preserved, shared session observable."
+    },
+    {
+      "name": "profile-secrets",
+      "stimulus": "Concurrent default and secondary with distinct harmless secrets",
+      "required_observation": "Each execution reads its own secret; transport auth uses transport-owning profile."
+    },
+    {
+      "name": "cache-policy",
+      "stimulus": "Attach/submit from different surfaces",
+      "required_observation": "Existing prompt/tools bytes stable; no new toolset because a viewer arrived."
+    },
+    {
+      "name": "launch-options",
+      "stimulus": "Opposing model/cwd/YOLO/safe-mode/toolset settings",
+      "required_observation": "No cross-session process-environment leak."
+    },
+    {
+      "name": "cron-policy-parity",
+      "stimulus": "Memory, scripts, no-agent, context_from, delivery retries",
+      "required_observation": "Matches observed baseline, not stale documentation."
+    }
+  ]
+}

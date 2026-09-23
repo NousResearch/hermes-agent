@@ -1,14 +1,17 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isQueueParked,
+  MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { $connection, setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
 import type { ChatBarProps } from '../types'
@@ -57,6 +60,7 @@ describe('useComposerQueue park integration', () => {
     window.localStorage.clear()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(false)
   })
 
   afterEach(() => {
@@ -64,6 +68,116 @@ describe('useComposerQueue park integration', () => {
     vi.restoreAllMocks()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(true)
+  })
+
+  it('admits native Queue through submit and retains an uncertain draft without a local replay', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    const draftRef = { current: 'durable queue' }
+    const clearDraft = vi.fn(() => { draftRef.current = '' })
+    const onSubmit = vi.fn<ChatBarProps['onSubmit']>().mockResolvedValue(false)
+
+    const hook = renderHook(({ busy }) => useComposerQueue({
+      activeQueueSessionKey: SESSION_KEY, attachments: [], busy, clearDraft, draftRef,
+      focusInput: () => undefined, loadIntoComposer: () => undefined, onCancel: vi.fn(), onSteer: undefined,
+      onSubmit, queueEditRef: { current: null }, queueSessionKey: SESSION_KEY, sessionId: 'rt-session-queue-hook'
+    }), { initialProps: { busy: true } })
+
+    try {
+      await act(async () => { await hook.result.current.queueCurrentDraft() })
+      expect(onSubmit).toHaveBeenCalledWith('durable queue', expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY }))
+      expect(draftRef.current).toBe('durable queue')
+      expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+      onSubmit.mockResolvedValue(true)
+      await act(async () => { await hook.result.current.queueCurrentDraft() })
+      expect(clearDraft).toHaveBeenCalledTimes(1)
+      hook.rerender({ busy: false })
+      await act(async () => { await Promise.resolve() })
+      expect(onSubmit).toHaveBeenCalledTimes(2)
+    } finally { $connection.set(null) }
+  })
+
+  it('does not clear the next session draft when a queue ACK arrives after navigation', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    let accept!: (value: boolean) => void
+    const clearDraft = vi.fn()
+    const draftRef = { current: 'same text' }
+
+    const hook = renderHook(({ key }) => useComposerQueue({
+      activeQueueSessionKey: key, attachments: [], busy: true, clearDraft, draftRef,
+      focusInput: () => undefined, loadIntoComposer: () => undefined, onCancel: vi.fn(), onSteer: undefined,
+      onSubmit: () => new Promise<boolean>(resolve => { accept = resolve }), queueEditRef: { current: null }, queueSessionKey: key, sessionId: key
+    }), { initialProps: { key: 'outgoing' } })
+
+    try {
+      let pending: boolean | Promise<boolean> = false
+      act(() => { pending = hook.result.current.queueCurrentDraft() })
+      hook.rerender({ key: 'incoming' })
+      await act(async () => { accept(true); await pending })
+      expect(clearDraft).not.toHaveBeenCalled()
+    } finally { $connection.set(null) }
+  })
+
+  it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'recoverable' })!
+      const { hook, onSubmit } = renderQueueHook({ busy: true })
+      onSubmit.mockResolvedValue(false)
+      hook.rerender({ busy: false })
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      for (let attempt = 1; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(30_000)
+        })
+      }
+
+      expect(onSubmit).toHaveBeenCalledTimes(MAX_AUTO_DRAIN_ATTEMPTS)
+
+      for (const [, options] of onSubmit.mock.calls) {
+        expect(options).toMatchObject({ submission_id: entry.id })
+      }
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300_000)
+      })
+      expect(onSubmit).toHaveBeenCalledTimes(MAX_AUTO_DRAIN_ATTEMPTS)
+      expect(getQueuedPrompts(SESSION_KEY).map(item => item.text)).toEqual(['recoverable'])
+      onSubmit.mockResolvedValue(true)
+      await act(async () => {
+        await hook.result.current.sendQueuedNow(entry.id)
+      })
+      expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels a pending retry on unmount without losing the queued entry', async () => {
+    vi.useFakeTimers()
+
+    try {
+      enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'keep on disconnect' })
+      const { hook, onSubmit } = renderQueueHook({ busy: true })
+      onSubmit.mockRejectedValue(new Error('unavailable'))
+      hook.rerender({ busy: false })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+      hook.unmount()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300_000)
+      })
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('auto-drains an unparked queue once idle', async () => {
@@ -194,5 +308,37 @@ describe('useComposerQueue park integration', () => {
 
     expect(isQueueParked(SESSION_KEY)).toBe(false)
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('does not auto-drain restored queues while the session list is still loading', async () => {
+    setSessionsLoading(true)
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'wait for session list' })
+
+    const { onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('auto-drains a restored queue once the session list finishes loading', async () => {
+    setSessionsLoading(true)
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send after load' })
+
+    const { hook, onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    setSessionsLoading(false)
+    hook.rerender({ busy: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
   })
 })

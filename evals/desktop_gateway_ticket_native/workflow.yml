@@ -1,0 +1,48 @@
+# DISPOSABLE: copy to .github/workflows/native-ticket-temp.yml on a probe-only
+# branch. Do not merge this workflow; delete the temporary branch after evidence.
+name: Temporary native Electron gateway tickets
+on:
+  push:
+    branches: ['e2e/native-ticket-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        timeout-minutes: 3
+        with:
+          node-version: '26'
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        timeout-minutes: 3
+        with:
+          version: '0.9.28'
+      - name: Locked Python environment
+        timeout-minutes: 10
+        run: uv sync --locked --python 3.11 --extra dev
+      - name: Locked native JavaScript environment
+        timeout-minutes: 10
+        run: npm ci
+      - name: Run actual Electron main and ordinary daemons
+        timeout-minutes: 6
+        run: uv run --no-sync python evals/desktop_gateway_ticket_native/run.py --output native-ticket-results
+      - name: Preserve native receipts and owned daemon logs
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-ticket-${{ matrix.os }}
+          path: native-ticket-results/
+          if-no-files-found: error

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -146,16 +146,26 @@ def start_loop_liveness_watchdog(
 
 
 def _mark_exited_quietly(exit_code: int, reason: str) -> None:
-    """Best-effort lifecycle-ledger stamp so the next boot names the watchdog, not SIGKILL/OOM."""
+    """Best-effort terminal stamp on BOTH lifecycle records before ``os._exit`` skips teardown:
+    the lifecycle ledger (so the next boot names the watchdog, not SIGKILL/OOM) and
+    ``gateway_state.json`` (so ``hermes gateway status`` and every other reader of that file stop
+    seeing ``running`` for a process the watchdog killed — #113372). The runtime-status write goes
+    LAST: it is the record housekeeping refreshes, so nothing may overwrite it after we stamp it."""
     with contextlib.suppress(Exception):
         from gateway.lifecycle_ledger import mark_exited
         mark_exited(exit_code, reason=reason)
+    with contextlib.suppress(Exception):
+        from gateway.status import write_runtime_status
+        # Only the supervisor-restart code asserts a restart; other codes leave the recorded
+        # operator intent (a restart-drain that wedged is still a requested restart) untouched.
+        restart = {"restart_requested": True} if exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE else {}
+        write_runtime_status(
+            gateway_state="degraded", exit_reason=reason, wait_timeout=0.25, **restart)
 
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore profile overrides)."""
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else get_hermes_home()
+    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
 
 
 def _home(home: Optional[Path]) -> Path:
@@ -333,14 +343,15 @@ async def loop_heartbeat_forever(
     loop-scheduling witness (``_tick_socket_handler``, flagged as ``loop_tick_socket``); probes must
     require the witness to agree before classifying WEDGED."""
     interval = _coerce_float(interval_s, DEFAULT_HEARTBEAT_INTERVAL_S, floor=1.0)
-    # Arm the witness, best-effort: a failed bind only disables it and the payload flag makes
-    # probes classify UNKNOWN, never WEDGED (drain backstop stays). asyncio AF_UNIX is POSIX-only
-    # (ungated it raised AttributeError on native Windows), so non-POSIX binds TCP loopback and
-    # publishes ``loop_tick_tcp_port``.
+    # The witness exposes only a scheduling ping, not control/auth operations. Reuse its
+    # loopback transport when AF_UNIX is unavailable or the encoded address will not fit;
+    # consumers already discover this port in the heartbeat, independent of their TMPDIR.
+    from gateway.control_socket import _fits_sun_path
     tick_server = tick_socket_path = tick_tcp_port = None
     try:
-        if os.name == "posix":
-            tick_socket_path = get_loop_tick_socket_path(home)
+        unix_path = get_loop_tick_socket_path(home) if os.name == "posix" else None
+        if unix_path is not None and _fits_sun_path(unix_path):
+            tick_socket_path = unix_path
             tick_socket_path.parent.mkdir(parents=True, exist_ok=True)
             _sweep_stale_tick_sockets(tick_socket_path)
             tick_server = await asyncio.start_unix_server(_tick_socket_handler,

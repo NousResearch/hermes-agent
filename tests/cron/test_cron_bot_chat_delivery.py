@@ -2,16 +2,14 @@
 into a local profile's canonical Bot Chat session as a real inbound turn.
 
 Covers token parsing, target resolution (own profile / named / missing),
-preflight exemption, create-time validation, the subprocess delivery lane,
+preflight exemption, create-time validation, the canonical admission lane,
 and the delivery-targets listing used by UI pickers.
 """
 
-import subprocess
 from unittest import mock
 
 import pytest
 
-from cron import scheduler as sched
 from cron import scheduler_delivery as sched_delivery
 from cron.scheduler import _resolve_delivery_targets
 from cron.scheduler_delivery import (
@@ -46,17 +44,8 @@ def test_non_bot_chat_tokens_pass_through():
 
 # ── target resolution ────────────────────────────────────────────────────────
 
-def test_own_profile_resolves_without_name():
-    target = _resolve_bot_chat_target({"id": "j1"}, "")
-    assert target == {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
 
 
-def test_named_profile_resolves_when_exists():
-    with mock.patch("hermes_cli.profiles.profile_exists", return_value=True):
-        target = _resolve_bot_chat_target({"id": "j1"}, "research")
-    assert target is not None
-    assert target["platform"] == BOT_CHAT_PLATFORM
-    assert target["chat_id"] == "research"
 
 
 def test_unknown_profile_resolves_to_none():
@@ -99,7 +88,6 @@ def test_create_validation_rejects_unknown_profile():
     with mock.patch("hermes_cli.profiles.profile_exists", return_value=False):
         err = _validate_bot_chat_deliver("bot-chat:ghost")
     assert err is not None
-    assert "machine-local" in err
 
 
 def test_create_validation_accepts_bare_and_existing():
@@ -114,93 +102,66 @@ def test_create_validation_accepts_bare_and_existing():
 
 # ── delivery lane ────────────────────────────────────────────────────────────
 
-def _completed(returncode=0, stderr=""):
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
+def test_deliver_message_carries_cron_attribution(tmp_path, monkeypatch):
+    """The admitted turn self-identifies as scheduled output, not the user."""
+    from tools import bot_live_delivery as mailbox
 
-
-def test_deliver_runs_canonical_bot_chat_lane():
-    """The subprocess must use the Bot Mode agent-to-agent chat lane:
-    chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>."""
-    calls = {}
-
-    def fake_run(argv, **kwargs):
-        calls["argv"] = argv
-        calls["kwargs"] = kwargs
-        return _completed()
-
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
-
-    assert err is None
-    argv = calls["argv"]
-    assert argv[0] == "/usr/bin/hermes"
-    assert "-p" not in argv  # own profile: subprocess inherits HERMES_HOME
-    assert "chat" in argv
-    assert "Bot Chat" in argv
-    assert "--create-if-missing" in argv
-    assert "-Q" in argv
-    assert "--query-file" in argv
-    # Message rides a temp file, never inline argv (quote/expansion safety).
-    assert not any("the output" in str(a) for a in argv)
-
-
-def test_deliver_named_profile_uses_p_flag_and_clears_home():
-    calls = {}
-
-    def fake_run(argv, **kwargs):
-        calls["argv"] = argv
-        calls["kwargs"] = kwargs
-        return _completed()
-
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-         mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
-
-    assert err is None
-    argv = calls["argv"]
-    assert argv[1:3] == ["-p", "research"]
-    # -p owns resolution; the scheduler's own HERMES_HOME must not leak in.
-    assert "HERMES_HOME" not in calls["kwargs"]["env"]
-
-
-def test_deliver_failure_returns_error_string():
-    with mock.patch.object(
-        sched.subprocess, "run", return_value=_completed(returncode=1, stderr="boom")
-    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
-    assert err is not None
-    assert "boom" in err
-
-
-def test_deliver_timeout_returns_error_string():
-    with mock.patch.object(
-        sched.subprocess, "run",
-        side_effect=subprocess.TimeoutExpired(cmd="hermes", timeout=600),
-    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
-    assert err is not None
-    assert "timed out" in err
-
-
-def test_deliver_message_carries_cron_attribution(tmp_path):
-    """The injected turn must self-identify as scheduled output, not the user."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     captured = {}
 
-    def fake_run(argv, **kwargs):
-        qf = argv[argv.index("--query-file") + 1]
-        with open(qf, encoding="utf-8") as fh:
-            captured["message"] = fh.read()
-        return _completed()
+    def fake_deliver(home, owner, message, *, delivery_id):
+        captured["message"] = message
+        return {"status": "settled", "message": message, "delivery_id": delivery_id}
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
-        _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the payload", "")
-
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "local-bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
+    assert _deliver_to_bot_chat({"id": "j1", "name": "Daily digest", "execution_id": "r1"}, "the payload", "") is None
     assert 'Cronjob "Daily digest" output' in captured["message"]
     assert "not the user" in captured["message"]
     assert "the payload" in captured["message"]
+
+
+def test_deliver_without_authority_is_unverified_not_a_second_writer(tmp_path, monkeypatch):
+    """No running authority → explicit unverified status; never a local CLI turn."""
+    import subprocess
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", mock.Mock(side_effect=AssertionError("no local inference fallback")))
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner",
+                        mock.Mock(side_effect=ValueError("profile authority is not ready")))
+    err = _deliver_to_bot_chat({"id": "j1", "name": "n", "execution_id": "r1"}, "out", "")
+    assert err is not None and "unverified" in err and "not ready" in err
+
+
+def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_path, monkeypatch):
+    """A ``for_failure`` notice whose TARGET profile hides warning notifications is booked as a
+    durable ``suppressed`` disposition (flagged on the job), never admitted to the owner; a
+    requested (non-failure) result is never gated."""
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n")
+    admitted = []
+
+    def fake_deliver(home, owner, message, *, delivery_id):
+        admitted.append(message)
+        return {"status": "queued", "message": message, "delivery_id": delivery_id}
+
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
+
+    failure = {"id": "j1", "name": "n", "execution_id": "r1"}
+    assert _deliver_to_bot_chat(failure, "diagnostic", "", for_failure=True) is None
+    assert failure["_notification_all_targets_suppressed"] is True
+    assert failure["_bot_chat_delivery_receipts"]["bot-chat:(own)"]["status"] == "suppressed"
+    assert admitted == []
+
+    result = {"id": "j1", "name": "n", "execution_id": "r2"}
+    outcome = _deliver_to_bot_chat(result, "the report", "")
+    assert outcome and "queued" in outcome
+    assert not result.get("_notification_all_targets_suppressed")
+    assert len(admitted) == 1
 
 
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────

@@ -99,12 +99,13 @@ def _clean_str(raw: Any) -> str:
     return str(raw or "").strip()
 
 
-def _runtime_main(key: str) -> str:
-    """Stripped context-local main-runtime value, or "" when unavailable."""
+def _runtime_main(key: str) -> Any:
+    """Context-local credential source or stripped runtime text; "" when unavailable."""
     try:
         from agent.auxiliary_client import _runtime_main_value
 
-        return _clean_str(_runtime_main_value(key))
+        value = _runtime_main_value(key)
+        return value if key == "api_key" else _clean_str(value)
     except Exception:
         return ""
 
@@ -176,6 +177,12 @@ def _resolve_inference_value(
     → ``custom_providers[].<key>``, ``<name>`` covering the provider and
     ``model.provider`` in both bare and ``custom:``-prefixed forms."""
     runtime = _runtime_main(key)
+    # A declared source owns authentication even when its mint fails.
+    if key == "api_key":
+        from agent.command_token_source import materialize_probe_api_key
+        if callable(runtime):
+            return materialize_probe_api_key(runtime)
+        runtime = materialize_probe_api_key(runtime)
     if runtime and runtime_ok(runtime):
         return runtime
     if not isinstance(cfg, dict):
@@ -279,8 +286,15 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[Dict[str, Any]]) 
     # "unknown" would fall back to attempting the call and reintroduce the bug. This preserves the
     # historical network-on-cold-cache behavior for this one path; the fetch is cached (4h TTL) and
     # backoff-limited after failures.
+    if (provider or "").strip().lower() == "openai-codex":
+        # A VALID Codex ``-900k`` picker variant is a Hermes-side alias of its base slug; the catalog
+        # only knows the base, so look that up. The runtime model id stays untouched (the transport
+        # owns wire normalization) and ineligible ``-900k`` strings pass through unchanged (#102189).
+        from agent.model_metadata import strip_codex_context_variant_suffix
+
+        model = strip_codex_context_variant_suffix(model)
     caps = get_model_capabilities(provider, model, allow_network=True)
-    return None if caps is None else bool(caps.supports_vision)
+    return None if caps is None else caps.supports_vision
 
 
 def _probe_ollama(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
@@ -315,7 +329,8 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe).
+    (managed local runtime → models.dev catalog → Ollama probe → registered
+    ``ProviderProfile.supports_vision`` declaration).
     """
     # Named custom providers are canonicalized to ``provider="custom"``; the
     # original name lives in the context-local main runtime. Borrow it only on an

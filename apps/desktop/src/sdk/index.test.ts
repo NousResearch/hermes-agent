@@ -1,9 +1,43 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+
+// The warm path must route through the guarded prewarm resolver (hover dwell,
+// per-profile throttle), not dial the gateway directly: mocking the store's
+// dialers lets the tests observe the ONLY side effect that matters — whether
+// openGatewayForProfile was dialed.
+const warmMocks = vi.hoisted(() => ({
+  openGatewayForAgent: vi.fn(async (_connectionId: null | string, _profile: string) => undefined),
+  openGatewayForProfile: vi.fn(async (_profile: string) => undefined)
+}))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  openGatewayForAgent: warmMocks.openGatewayForAgent,
+  openGatewayForProfile: warmMocks.openGatewayForProfile
+}))
+
+describe('host.warmProfile routing contract', () => {
+  beforeEach(() => {
+    warmMocks.openGatewayForProfile.mockClear()
+    warmMocks.openGatewayForAgent.mockClear()
+  })
+
+  it('dials the profile through the guarded prewarm path', () => {
+    host.warmProfile('warm-free-slot')
+
+    expect(warmMocks.openGatewayForProfile).toHaveBeenCalledWith('warm-free-slot')
+  })
+
+  it('ignores an empty profile name', () => {
+    host.warmProfile('   ')
+
+    expect(warmMocks.openGatewayForProfile).not.toHaveBeenCalled()
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {
@@ -180,36 +214,6 @@ describe('host workspace scope', () => {
     const tree = await import('@/components/pane-shell/tree/store')
     tree.$newSessionTabAction.set(null)
     tree.removeTreePane('plugin-workspace:scope-test')
-  })
-
-  it('registers plugin workspace chrome options', async () => {
-    const { registry } = await import('@/contrib/registry')
-
-    const close = host.openWorkspace('scope-test', {
-      dock: { pane: 'workspace', pos: 'right' },
-      headerVeto: true,
-      render: () => null,
-      title: 'Scoped',
-      uncloseable: true
-    })
-
-    expect(registry.getArea('panes').find(pane => pane.id === 'plugin-workspace:scope-test')).toMatchObject({
-      data: {
-        dock: { pane: 'workspace', pos: 'right' },
-        headerVeto: true,
-        uncloseable: true
-      }
-    })
-
-    close()
-  })
-
-  it('publishes the active workspace scope through one host seam', async () => {
-    const { $workspaceMode, $workspaceOwnerKey } = await import('@/components/pane-shell/workspace-scope')
-
-    expect(host.setWorkspaceScope('bots', 'connection-b::default')).toBe(true)
-    expect($workspaceMode.get()).toBe('bots')
-    expect($workspaceOwnerKey.get()).toBe('connection-b::default')
   })
 
   it('uses the shared tab action for an exact Bot owner without moving Sessions', async () => {

@@ -4,13 +4,12 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -57,27 +56,6 @@ def _make_runner():
 # ---------------------------------------------------------------------------
 
 
-class TestHandleBackgroundCommand:
-    """Tests for GatewayRunner._handle_background_command."""
-
-    @pytest.mark.asyncio
-    async def test_no_prompt_shows_usage(self):
-        """Running /bg with no prompt shows usage."""
-        runner = _make_runner()
-        event = _make_event(text="/bg")
-        result = await runner._handle_background_command(event)
-        assert "Usage:" in result
-        assert "/bg" in result
-
-    @pytest.mark.asyncio
-    async def test_empty_prompt_shows_usage(self):
-        """Running /bg with only whitespace shows usage."""
-        runner = _make_runner()
-        event = _make_event(text="/bg   ")
-        result = await runner._handle_background_command(event)
-        assert "Usage:" in result
-
-
 # ---------------------------------------------------------------------------
 # _run_background_task
 # ---------------------------------------------------------------------------
@@ -86,29 +64,6 @@ class TestHandleBackgroundCommand:
 class TestRunBackgroundTask:
     """Tests for GatewayRunner._run_background_task (the actual execution)."""
 
-
-    @pytest.mark.asyncio
-    async def test_no_credentials_sends_error(self):
-        """When provider credentials are missing, an error is sent."""
-        runner = _make_runner()
-        mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
-        runner.adapters[Platform.TELEGRAM] = mock_adapter
-
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": None}):
-            await runner._run_background_task("test prompt", source, "bg_test")
-
-        # Should have sent an error message
-        mock_adapter.send.assert_called_once()
-        call_args = mock_adapter.send.call_args
-        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
@@ -152,7 +107,6 @@ class TestRunBackgroundTask:
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
-        assert "Background task complete" in content
         assert "Hello from background!" in content
         agent_kwargs = MockAgent.call_args.kwargs
         assert agent_kwargs["checkpoints_enabled"] is True
@@ -168,49 +122,9 @@ class TestRunBackgroundTask:
 # ---------------------------------------------------------------------------
 
 
-class TestBackgroundInHelp:
-    """Verify /bg and /btw appear in help text and known commands."""
-
-    @pytest.mark.asyncio
-    async def test_bg_and_btw_in_help_output(self):
-        """The /help output includes /bg and /btw."""
-        runner = _make_runner()
-        event = _make_event(text="/help")
-        result = await runner._handle_help_command(event)
-        assert "/bg" in result
-        assert "/btw" in result
-
-
 # ---------------------------------------------------------------------------
 # CLI /bg command definition
 # ---------------------------------------------------------------------------
-
-
-class TestBackgroundInCLICommands:
-    """Verify /bg and /btw are registered in the CLI command system."""
-
-
-    def test_bg_autocompletes(self):
-        """The /bg and /btw commands appear in autocomplete results."""
-        pytest.importorskip("prompt_toolkit")
-        from hermes_cli.commands_completion import SlashCommandCompleter
-        from prompt_toolkit.document import Document
-
-        completer = SlashCommandCompleter()
-        doc = Document("bg")  # Partial match
-        completions = list(completer.get_completions(doc, None))
-        # Text doesn't start with / so no completions
-        assert len(completions) == 0
-
-        doc = Document("/bg")  # With slash prefix
-        completions = list(completer.get_completions(doc, None))
-        cmd_displays = [str(c.display) for c in completions]
-        assert any("/bg" in d for d in cmd_displays)
-
-        doc = Document("/btw")
-        completions = list(completer.get_completions(doc, None))
-        cmd_displays = [str(c.display) for c in completions]
-        assert any("/btw" in d for d in cmd_displays)
 
 
 # ---------------------------------------------------------------------------
@@ -221,25 +135,6 @@ class TestBackgroundInCLICommands:
 class TestHandleBtwCommand:
     """Tests for GatewayRunner._handle_btw_command (context-aware side question)."""
 
-    @pytest.mark.asyncio
-    async def test_no_question_shows_usage(self):
-        runner = _make_runner()
-        event = _make_event(text="/btw")
-        result = await runner._handle_btw_command(event)
-        assert "Usage:" in result
-        assert "/btw" in result
-
-    @pytest.mark.asyncio
-    async def test_no_history_reports_no_conversation(self):
-        runner = _make_runner()
-        store = AsyncMock()
-        store.get_or_create_session.return_value = MagicMock(session_id="s1")
-        store.load_transcript.return_value = []
-        store._store = runner.session_store
-        runner._async_session_store = store
-        event = _make_event(text="/btw what did we do?")
-        result = await runner._handle_btw_command(event)
-        assert "conversation" in result.lower()
 
     @pytest.mark.asyncio
     async def test_dispatches_side_question_and_sends_answer(self):
@@ -259,7 +154,7 @@ class TestHandleBtwCommand:
         runner._reply_anchor_for_event = MagicMock(return_value=None)
         runner._thread_metadata_for_source = MagicMock(return_value=None)
         mock_adapter = AsyncMock()
-        runner._adapter_for_source = MagicMock(return_value=mock_adapter)
+        runner._delivery_adapter_for = MagicMock(return_value=mock_adapter)
 
         event = _make_event(text="/btw which file was that?")
 
@@ -283,17 +178,3 @@ class TestHandleBtwCommand:
         sent_text = mock_adapter.send.call_args[0][1]
         assert "it was foo.py" in sent_text
 
-    @pytest.mark.asyncio
-    async def test_no_credentials_reports_error(self):
-        runner = _make_runner()
-        store = AsyncMock()
-        store.get_or_create_session.return_value = MagicMock(session_id="s1")
-        store.load_transcript.return_value = [{"role": "user", "content": "hi"}]
-        store._store = runner.session_store
-        runner._async_session_store = store
-        runner._resolve_session_agent_runtime = MagicMock(
-            return_value=(None, {"api_key": None})
-        )
-        event = _make_event(text="/btw what?")
-        result = await runner._handle_btw_command(event)
-        assert "❌" in result

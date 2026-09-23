@@ -1,5 +1,6 @@
 import { memo, useCallback, useState } from 'react'
 
+import { StatusControlRow } from '@/components/chat/status-control-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -18,7 +19,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import {
   runSessionControlAction,
@@ -156,36 +156,34 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
             <StatusSection
               accessory={
                 <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <Tip label={ctrl.loopActions}>
-                    <span className="inline-flex">
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          aria-haspopup="menu"
-                          aria-label={ctrl.loopActions}
-                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                          disabled={isBusy}
-                          onClick={event => {
-                            // Radix opens pointer interactions from pointerdown. Keyboard,
-                            // assistive-tech, and programmatic clicks have no pointer sequence.
-                            if (event.detail === 0) {
-                              setMenuOpen(true)
-                            }
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'F10' && e.shiftKey) {
-                              e.preventDefault()
-                              setMenuOpen(true)
-                            }
-                          }}
-                          size="icon-xs"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Codicon name="ellipsis" size="0.8rem" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </span>
-                  </Tip>
+                  <span className="inline-flex">
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        aria-haspopup="menu"
+                        aria-label={ctrl.loopActions}
+                        className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                        disabled={isBusy}
+                        onClick={event => {
+                          // Radix opens pointer interactions from pointerdown. Keyboard,
+                          // assistive-tech, and programmatic clicks have no pointer sequence.
+                          if (event.detail === 0) {
+                            setMenuOpen(true)
+                          }
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === 'F10' && e.shiftKey) {
+                            e.preventDefault()
+                            setMenuOpen(true)
+                          }
+                        }}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="ellipsis" size="0.8rem" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </span>
                   <DropdownMenuContent align="end" className="w-40">
                     {renderMenuItems(false)}
                   </DropdownMenuContent>
@@ -195,33 +193,27 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
               icon={<Codicon className={iconClass} name="sync" size="0.8rem" />}
               label={headerLabel}
             >
-              <div className="space-y-1 px-1 py-1 text-xs">
-                <div className="text-foreground/92 leading-relaxed break-words">{loop.prompt}</div>
-                <div className="text-[0.7rem] text-muted-foreground/80">
+              <div>
+                <StatusControlRow className="text-[0.73rem] leading-4 text-foreground/92 break-words" icon="comment">
+                  {loop.prompt}
+                </StatusControlRow>
+                <StatusControlRow icon="clock">
                   <span>
                     {ctrl.loopCadenceLabel}:{' '}
                     {loop.mode === 'self_paced' ? ctrl.loopSelfPaced : formatInterval(loop.interval_seconds, t)}
                   </span>
-                </div>
+                </StatusControlRow>
                 {loop.until && (
-                  <div className="text-[0.7rem] text-muted-foreground/80">
+                  <StatusControlRow icon="flag">
                     <span>
                       {ctrl.loopUntilLabel}: {loop.until}
                     </span>
-                  </div>
+                  </StatusControlRow>
                 )}
-                {loop.deferred_by_goal && (
-                  <div className="text-[0.7rem] italic text-muted-foreground/80">{ctrl.loopDeferredNotice}</div>
-                )}
-                {loop.awaiting_response && (
-                  <div className="text-[0.7rem] italic text-muted-foreground/80">{ctrl.loopAwaitingResponse}</div>
-                )}
-                {loop.paused_reason && (
-                  <div className="text-[0.7rem] italic text-muted-foreground/80">{loop.paused_reason}</div>
-                )}
-                {loop.last_stop_reason && (
-                  <div className="text-[0.7rem] italic text-muted-foreground/80">{loop.last_stop_reason}</div>
-                )}
+                {loop.deferred_by_goal && <StatusControlRow>{ctrl.loopDeferredNotice}</StatusControlRow>}
+                {loop.awaiting_response && <StatusControlRow>{ctrl.loopAwaitingResponse}</StatusControlRow>}
+                {loop.paused_reason && <StatusControlRow>{loop.paused_reason}</StatusControlRow>}
+                {loop.last_stop_reason && <StatusControlRow>{loop.last_stop_reason}</StatusControlRow>}
               </div>
             </StatusSection>
           </div>

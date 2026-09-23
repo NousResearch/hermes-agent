@@ -12,9 +12,55 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
+
+
+def _run_owned_job(job, tmp_path):
+    """Exercise the production owner bridge with an isolated canonical store."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from hermes_state_registry import acquire, release
+
+    ref = SessionRef("test-profile", "cron-owner-session")
+    admission_id = "cron-owner-admission"
+    request_id = "cron-owner-request"
+    db = acquire(tmp_path / "state.db")
+    db.create_session(ref.session_id, source="cron")
+    authority = SimpleNamespace(
+        db=db,
+        sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
+        pending_results={},
+    )
+    row = {
+        "admission_id": admission_id, "request_id": request_id,
+        "principal_id": "cron-owner", "payload": {"text": ""},
+    }
+    policy = SimpleNamespace(request_json=json.dumps({
+        "cron_job": job, "extra_prompt": None, "request_id": request_id,
+    }))
+
+    async def run():
+        previous = current_execution()
+        try:
+            await execute(authority, ref, row, policy)
+        except RuntimeError as exc:
+            # Failed scheduler tuples are published before execute raises.
+            saved = authority.pending_results.get(admission_id)
+            if saved is None:
+                raise
+            assert str(exc) == saved["result"]["cron_result"][3]
+        assert current_execution() is previous
+        assert authority._cron_cancellations == {}
+        return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
+
+    try:
+        return asyncio.run(run())
+    finally:
+        release(db)
 
 
 @pytest.fixture()
@@ -31,9 +77,6 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestNormalizeWorkdir:
-    def test_none_returns_none(self):
-        from cron.jobs import _normalize_workdir
-        assert _normalize_workdir(None) is None
 
     def test_empty_string_returns_none(self):
         from cron.jobs import _normalize_workdir
@@ -123,14 +166,6 @@ class TestUpdateJobWorkdir:
 # tools.cronjob_tools: end-to-end JSON round-trip
 # ---------------------------------------------------------------------------
 
-class TestCronjobToolWorkdir:
-
-
-    def test_schema_advertises_workdir(self):
-        from tools.cronjob_tools import CRONJOB_SCHEMA
-        assert "workdir" in CRONJOB_SCHEMA["parameters"]["properties"]
-        desc = CRONJOB_SCHEMA["parameters"]["properties"]["workdir"]["description"]
-        assert "absolute" in desc.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +177,6 @@ class TestTickWorkdirPartition:
 
     def test_workdir_jobs_overlap_on_parallel_pool(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
         import threading
 
         workdir_a = tmp_path / "a"
@@ -248,7 +282,7 @@ class TestRunJobTerminalCwd:
         monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
 
 
-    def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
+    def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch, tmp_path):
         """When workdir is absent, run_job must not touch TERMINAL_CWD at all —
         whatever value was present before the call should be present after.
 
@@ -258,7 +292,6 @@ class TestRunJobTerminalCwd:
         """
         import os
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
 
         # Pin TERMINAL_CWD to a sentinel via monkeypatch so we control both
         # the before-value and the after-value regardless of cross-test state.
@@ -275,7 +308,7 @@ class TestRunJobTerminalCwd:
             "schedule_display": "manual",
         }
 
-        success, *_ = sched.run_job(job)
+        success, *_ = _run_owned_job(job, tmp_path)
         assert success is True
 
         # Feature is OFF — skip_context_files stays True.
@@ -293,7 +326,6 @@ class TestRunJobTerminalCwd:
     ):
         import os
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
         from tools.terminal_tool import get_session_cwd
 
         baseline = str(tmp_path / "baseline")
@@ -304,13 +336,14 @@ class TestRunJobTerminalCwd:
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
-        success, *_ = sched.run_job(
+        success, *_ = _run_owned_job(
             {
                 "id": "cwd-bound",
                 "name": "cwd-bound",
                 "workdir": str(workdir),
                 "schedule_display": "manual",
-            }
+            },
+            tmp_path,
         )
 
         assert success is True
@@ -320,3 +353,57 @@ class TestRunJobTerminalCwd:
         assert observed["terminal_cwd_during_run"] == baseline
         assert os.environ["TERMINAL_CWD"] == baseline
         assert get_session_cwd(observed["task_id"]) is None
+
+    def test_agent_prerun_script_receives_configured_workdir(
+        self, monkeypatch, tmp_path
+    ):
+        import cron.scheduler as sched
+
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        def run_script(job, script_path, workdir=None, cancel_event=None):
+            observed["script_workdir"] = workdir
+            return True, '{"wakeAgent": false}'
+
+        monkeypatch.setattr(
+            sched, "_run_job_script_with_claim_heartbeat", run_script
+        )
+        success, *_ = _run_owned_job(
+            {
+                "id": "agent-script-workdir",
+                "name": "agent-script-workdir",
+                "prompt": "Review the project.",
+                "script": "collect.py",
+                "workdir": str(workdir),
+                "schedule_display": "manual",
+            },
+            tmp_path,
+        )
+
+        assert success is True
+        assert observed["script_workdir"] == str(workdir)
+
+
+def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch, tmp_path):
+    """Callers that skip the wake-gate (no cached ``prerun_script``) run the script inline from
+    ``_build_job_prompt``; that path must honour the job's workdir too."""
+    from cron import scheduler_prompt, scheduler_script
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    observed: dict = {}
+
+    def run_script(script_path, workdir=None, cancel_event=None):
+        observed["script_workdir"] = workdir
+        return True, "collected data"
+
+    monkeypatch.setattr(scheduler_script, "_run_job_script", run_script)
+    prompt = scheduler_prompt._build_job_prompt(
+        {"id": "inline", "name": "inline", "prompt": "Review.", "script": "collect.py",
+         "workdir": str(workdir)})
+
+    assert observed["script_workdir"] == str(workdir)
+    assert "collected data" in prompt

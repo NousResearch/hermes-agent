@@ -7,12 +7,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import json
-import os
-import tempfile
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
-from utils import atomic_replace
+from utils import atomic_json_write
 
 if TYPE_CHECKING:
     from gateway.session import SessionEntry
@@ -41,6 +39,16 @@ def _is_live_system_guard(exc: BaseException) -> bool:
 
 class SessionPersistenceMixin:
     """SessionStore storage plumbing: SessionDB handle resolution and routing-index load/save."""
+
+    def retire_runtime_sessions(self, session_ids):
+        """Publish committed retirement; durable fences reject delayed saves."""
+        with self._lock:
+            targets = set(session_ids)
+            for key, entry in list(self._entries.items()):
+                if entry.session_id in targets:
+                    del self._entries[key]
+            for sid in targets:
+                self._session_owner_hints.pop(sid, None)
 
     def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
         """SessionDB for the active profile scope. ``db_path`` pins the store; otherwise
@@ -146,7 +154,7 @@ class SessionPersistenceMixin:
         into the ROOT store until the stale-route self-heal drops a live conversation.
 
         Background work runs unscoped while operating on every profile's keys out of the single process-wide
-        ``_entries`` dict — ``_session_expiry_watcher`` is the clearest case — so it reads and writes the
+        ``_entries`` dict — ``_session_housekeeping_watcher`` is the clearest case — so it reads and writes the
         ROOT store for rows that actually live under ``profiles/<name>/state.db``. The two writers then
         drift apart on the same logical session until the routing index disagrees with the row and the
         #54878 self-heal drops a live conversation (#66887).
@@ -156,7 +164,16 @@ class SessionPersistenceMixin:
             return pinned
         profile = self._named_profile_for_key(session_key)
         if profile is None:
-            return self._db
+            # Default-profile (``agent:main``) rows belong to the launch home, not to whichever
+            # profile's scope happens to be active: a scoped drain tick or cron mirror touching a
+            # default chat used to write its rows into the secondary's store (#102157's picture).
+            routing_home = getattr(self, "_routing_home", None)
+            if routing_home is None or not getattr(self.config, "multiplex_profiles", False):
+                return self._db
+            try:
+                return self._open_session_db_for_active_scope(db_path=routing_home / "state.db")
+            except Exception:
+                return None
         home = self._profile_home_for_key(session_key)
         if home is None:
             # Falling back to the ambient store would split ONE session identity across two
@@ -296,6 +313,10 @@ class SessionPersistenceMixin:
                         type(entry_data).__name__)
                     continue
                 try:
+                    from hermes_state_mutation_retirement import retired_session
+                    db = self._routing_db
+                    if db is not None and retired_session(db, entry_data['session_id']):
+                        continue
                     self._entries[key] = SessionEntry.from_dict(entry_data)
                     imported += 1
                 except (ValueError, KeyError, TypeError) as e:
@@ -466,22 +487,7 @@ class SessionPersistenceMixin:
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index (atomic + fsync)."""
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        sessions_file = self.sessions_dir / "sessions.json"
-        data = {"_README": _SESSIONS_JSON_README, **data}
-        fd, tmp_path = tempfile.mkstemp(dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, sessions_file)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError as e:
-                logger.debug("Could not remove temp file %s: %s", tmp_path, e)
-            raise
+        atomic_json_write(self.sessions_dir / "sessions.json", {"_README": _SESSIONS_JSON_README, **data}, mode=0o600)
 
     def _save_entries(self) -> None:
         """Snapshot latest state under ``_lock`` and persist after releasing it."""

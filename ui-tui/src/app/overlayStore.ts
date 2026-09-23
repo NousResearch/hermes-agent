@@ -1,7 +1,21 @@
 import { atom, computed } from 'nanostores'
 
 import type { OverlayState } from './interfaces.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { $uiState } from './uiStore.js'
+
+export function capturePromptResponseGuard<K extends 'approval' | 'clarify' | 'sudo' | 'secret'>(
+  key: K,
+  prompt: OverlayState[K]
+): () => boolean {
+  const destination = captureDestination()
+  const info = $uiState.get().info
+
+  return () => Boolean(prompt) && isCurrentDestination(destination) &&
+    $uiState.get().info?.execution_epoch === info?.execution_epoch &&
+    $uiState.get().info?.execution_generation === info?.execution_generation &&
+    $overlayState.get()[key] === prompt
+}
 
 const buildOverlayState = (): OverlayState => ({
   agents: false,
@@ -10,6 +24,7 @@ const buildOverlayState = (): OverlayState => ({
   billing: null,
   clarify: null,
   confirm: null,
+  connection: null,
   ambient: [],
   widget: null,
   journey: false,
@@ -18,6 +33,7 @@ const buildOverlayState = (): OverlayState => ({
   petPicker: false,
   pluginsHub: false,
   secret: null,
+  vaultUnlock: null,
   sessions: false,
   skillsHub: false,
   subscription: null,
@@ -34,6 +50,7 @@ export const $isBlocked = computed(
     billing,
     clarify,
     confirm,
+    connection,
     journey,
     modelPicker,
     pager,
@@ -44,6 +61,7 @@ export const $isBlocked = computed(
     skillsHub,
     subscription,
     sudo,
+    vaultUnlock,
     widget
   }) =>
     Boolean(
@@ -52,6 +70,7 @@ export const $isBlocked = computed(
       billing ||
       clarify ||
       confirm ||
+      connection ||
       journey ||
       modelPicker ||
       pager ||
@@ -62,6 +81,7 @@ export const $isBlocked = computed(
       skillsHub ||
       subscription ||
       sudo ||
+      vaultUnlock ||
       widget
     )
 )
@@ -146,6 +166,9 @@ export const resetOverlayState = () => $overlayState.set(buildOverlayState())
  * shouldn't vanish when a turn ends.  Called from turnController.idle() on
  * every turn completion / interrupt; the old "reset everything" behaviour
  * silently closed /agents the moment delegation finished.
+ *
+ * `connection` is preserved too: the card belongs to a backend operation that outlives the turn's
+ * idle edge, and only the operation's own settlement may close it.
  */
 export const resetFlowOverlays = () =>
   $overlayState.set({
@@ -153,6 +176,7 @@ export const resetFlowOverlays = () =>
     agents: $overlayState.get().agents,
     agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
     ambient: $overlayState.get().ambient,
+    connection: $overlayState.get().connection,
     widget: $overlayState.get().widget,
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,

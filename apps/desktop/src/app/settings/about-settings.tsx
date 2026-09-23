@@ -46,7 +46,23 @@ function relativeTime(ms: number | undefined, a: Translations['settings']['about
   return a.daysAgo(Math.round(diff / 86_400_000))
 }
 
-export function AboutSettings() {
+interface AboutSettingsProps {
+  subpage?: string
+}
+
+export function AboutSettings({ subpage }: AboutSettingsProps = {}) {
+  if (subpage === 'uninstall') {
+    return (
+      <SettingsContent>
+        <UninstallSection />
+      </SettingsContent>
+    )
+  }
+
+  return <AppUpdatesSettings includeUninstall={subpage === undefined} />
+}
+
+function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean }) {
   const { t } = useI18n()
   const a = t.settings.about
   const version = useStore($desktopVersion)
@@ -72,7 +88,7 @@ export function AboutSettings() {
 
   const handleCheck = async () => {
     setJustChecked(false)
-    const next = await checkUpdates()
+    const next = await checkUpdates({ force: true })
     setJustChecked(Boolean(next))
   }
 
@@ -83,7 +99,9 @@ export function AboutSettings() {
     statusLine = status?.message ?? a.cantUpdate
     statusTone = 'error'
   } else if (status?.error) {
-    statusLine = a.cantReach
+    // A git that never ran is a local problem; leading with "couldn't reach
+    // the update server" would misdiagnose it as a network failure.
+    statusLine = [status.error === 'git-unusable' ? '' : a.cantReach, status.message].filter(Boolean).join(' ')
     statusTone = 'error'
   } else if (applying) {
     statusLine = a.installing
@@ -228,7 +246,7 @@ export function AboutSettings() {
           title={a.automaticUpdates}
         />
 
-        <UninstallSection />
+        {includeUninstall && <UninstallSection />}
       </div>
     </SettingsContent>
   )

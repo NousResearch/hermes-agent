@@ -14,12 +14,6 @@ _BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "stage
 _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
     ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
-_SLASH_EXTRAS = [
-    ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
-    ("/logs", "Show recent gateway log lines"),
-    ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
-
-
 def _item(text: str, meta: str, display: str | None = None) -> dict:
     return {"text": text, "display": display if display is not None else text, "meta": meta}
 
@@ -63,7 +57,8 @@ def _profile_mention_items(prefix: str) -> list[dict]:
     try:
         from hermes_cli.profiles import list_profiles
         seen: set[str] = set()
-        for p in list_profiles():
+        # Per keystroke: only name/description are read, so never walk skill trees in-request (#114041).
+        for p in list_profiles(lazy_skill_count=True):
             if not (name := (p.name or "").strip()):
                 continue
             seen.add(name.lower())
@@ -91,8 +86,9 @@ def _plugin_reference_items(pfx: str, qval: str) -> list[dict] | None:
             ac = asyncio.run(coro)
         else:  # already inside a running loop: run the coroutine on a side thread
             import concurrent.futures
+            import contextvars
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                ac = pool.submit(asyncio.run, coro).result()
+                ac = pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
         return [{"text": f"@{pfx}:{it.text}", "display": it.display, "meta": it.meta} for it in ac]
     except Exception:
         return None
@@ -147,32 +143,77 @@ def _at_root_items() -> list[dict]:
     return items
 
 
-def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool) -> list[dict]:
+def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple[str, bool]]:
+    """``(name, is_dir)`` entries of one directory inside the active non-local terminal backend.
+
+    Runs in the session's own backend (``task_id`` = session key), so relative paths and ``~`` resolve
+    where the agent's commands do. Completion is advisory: an unreachable backend yields nothing —
+    falling back to the gateway host would show a plausible but wrong tree (#112963).
+    """
+    import json
+    import shlex
+
+    script = (
+        'd=$1; case $d in "~") d=$HOME;; "~/"*) d=$HOME${d#?};; esac; [ -d "$d" ] || exit 0; '
+        'for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
+        'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
+    )
+    try:
+        from tools.terminal_tool import terminal_tool
+        # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
+        # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
+        # completion would fire an auxiliary-LLM call (the main model when no auxiliary is
+        # configured), and Desktop's ws reconnect loop turns that into model traffic from an
+        # idle machine (#115478). The script is a constant and the search dir is quoted, so
+        # nothing here needs an approval verdict.
+        result = json.loads(terminal_tool(
+            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
+            force=True))
+    except Exception:
+        return []
+    if result.get("error") or result.get("exit_code") not in (0, None):
+        return []
+    entries = [(line.rstrip("/"), line.endswith("/")) for line in str(result.get("output") or "").splitlines()]
+    return sorted((name, is_dir) for name, is_dir in entries if name and "/" not in name)
+
+
+def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
+                       session_key: str | None = None) -> list[dict]:
     """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
-    expanded = _normalize_completion_path(path_part) if path_part else "."
+    import posixpath
+    local = _effective_terminal_backend() == "local"
+    # A non-local backend expands ``~`` itself (the gateway host's home is the wrong one) and its listing
+    # script speaks POSIX: from a Windows gateway host, os.path would hand it ``~\\src`` and list nothing.
+    pth = os.path if local else posixpath
+    expanded = (_normalize_completion_path(path_part) if local else path_part) if path_part else "."
     if expanded == "." or not expanded or expanded.endswith("/"):
         search_dir, match = (expanded or "."), ""
     else:
-        search_dir, match = os.path.dirname(expanded) or ".", os.path.basename(expanded)
-    search_dir = search_dir if os.path.isabs(search_dir) else os.path.join(root, search_dir)
+        search_dir, match = pth.dirname(expanded) or ".", pth.basename(expanded)
+    if not (pth.isabs(search_dir) or search_dir.startswith("~")):
+        search_dir = pth.join(root, search_dir)
+    search_dir = pth.normpath(search_dir)
     items: list[dict] = []
-    if not os.path.isdir(search_dir):
-        return items
-    for entry in sorted(os.listdir(search_dir)):
+    if local:
+        if not os.path.isdir(search_dir):
+            return items
+        entries = [(entry, os.path.isdir(os.path.join(search_dir, entry))) for entry in sorted(os.listdir(search_dir))]
+    else:
+        entries = _backend_dir_entries(search_dir, session_key)
+    for entry, is_dir in entries:
         if match and not entry.lower().startswith(match.lower()):
             continue
         if is_context and (entry in _FUZZY_FALLBACK_EXCLUDES or (not prefix_tag and entry.startswith("."))):
             continue
-        full = os.path.join(search_dir, entry)
-        is_dir = os.path.isdir(full)
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
-        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        full = pth.join(search_dir, entry)
+        rel = pth.relpath(full, root).replace(os.sep, "/")
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
         elif word.startswith("~"):
-            text = "~/" + os.path.relpath(full, os.path.expanduser("~")) + suffix
+            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))
@@ -187,7 +228,12 @@ def _(rid, params: dict) -> dict:
     word = params.get("word", "")
     if not word:
         return _ok(rid, {"items": []})
-    root = _completion_cwd(params)
+    session = _sessions.get(params.get("session_id", ""))
+    local = _effective_terminal_backend() == "local"
+    # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
+    # session cwd (Desktop sends it) or the session's terminal cwd as-is.
+    root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
+    session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:
@@ -204,15 +250,16 @@ def _(rid, params: dict) -> dict:
         prefix_tag, path_part = "", query
     # `@/foo` usually means "foo, from here": absolute only when that prefix exists,
     # else resolve relative to cwd (`@/Desktop` must not dead-end; `@/usr/local` still resolves).
+    # Host probes (this one and the fuzzy repo walk) say nothing about a non-local backend's tree.
     if (
         is_context and path_part.startswith("/") and not path_part.startswith("//")
-        and not _abs_completion_prefix_exists(path_part)):
+        and local and not _abs_completion_prefix_exists(path_part)):
         path_part = path_part.lstrip("/")
     bare_word = is_context and path_part and "/" not in path_part
-    if bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
+    if local and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
         items = _fuzzy_basename_items(root, path_part, prefix_tag)
     else:
-        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context)
+        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key)
     # Bare-word `@name` may be an agent mention: profiles rank ABOVE file hits.
     if bare_word and not prefix_tag:
         with contextlib.suppress(Exception):
@@ -223,51 +270,11 @@ def _(rid, params: dict) -> dict:
 @method("complete.slash")
 @_catch(5020)
 def _(rid, params: dict) -> dict:
-    text = params.get("text", "")
-    if not text.startswith("/"):
-        return _ok(rid, {"items": []})
-    from hermes_cli.commands_completion import SlashCommandCompleter
-    from prompt_toolkit.document import Document
-    from prompt_toolkit.formatted_text import to_plain_text
-    from agent.skill_commands import get_skill_commands
-    from agent.skill_bundles import get_skill_bundles
-    completer = SlashCommandCompleter(
-        skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
-    # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
-    # skills/bundles are the only completions for an inline `/skill` typed mid-message.
-    skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}
-
-    def to_items(doc: Document) -> list[dict]:
-        # display/display_meta are FormattedText; the TUI contract is a plain string
-        # (the raw list trips Ink's row layout into 1-char truncation).
-        return [
-            {
-                "text": c.text, "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
-                "kind": "skill" if c.text.strip().lstrip("/").lower() in skill_names else "command"}
-            for c in completer.get_completions(doc, None)]
-    items = to_items(Document(text, len(text)))
-    # Rank + bound while a `/token` is under the cursor (the one stage skills are
-    # offered at); an argument stage (`/personality `) keeps its command's order.
-    if text.rsplit(" ", 1)[-1].startswith("/"):
-        score_of = None
-        # Command-token stage: the completer only emits name-prefix matches, so merge in
-        # catalog entries whose name SUBSTRING or DESCRIPTION words match (name outranks description).
-        if " " not in text and len(text) > 1:
-            from tui_gateway.slash_fuzzy import fuzzy_rank_slash_items, normalize_slash_search_query
-            items, score_of = fuzzy_rank_slash_items(
-                items, to_items(Document("/", 1)), normalize_slash_search_query(text))
-        usage, origin_of = _skill_usage_lookup()
-        items = _rank_slash_completions(items, usage, origin_of, browsing=text == "/", score_of=score_of)
-    else:
-        items = items[:_SLASH_COMPLETION_LIMIT]
-    text_lower = text.lower()
-    for extra_text, extra_meta in _SLASH_EXTRAS:
-        if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
-            items.append({**_item(extra_text, extra_meta), "kind": "command"})
-    if (details_items := _details_completions(text)) is not None:
-        return _ok(rid, {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
-    return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})
+    from tui_gateway.command_discovery import slash_completions
+    # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
+    # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
+    scope = _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params))
+    return _ok(rid, slash_completions(params.get("text", ""), scope=scope))
 
 
 def _session_agent(params: dict):
@@ -310,6 +317,11 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
     save_provider_env_credential(env_var, api_key)
     os.environ[env_var] = api_key  # so the refreshed inventory sees it
+    # The launch profile's boot record may still say "nothing configured"; the gated picker's
+    # own chat waits on setup.status, so the fresh key must move the record (+ setup.ready).
+    if not params.get("profile"):
+        from hermes_cli.free_tier_bootstrap import reconcile_record
+        reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from hermes_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)

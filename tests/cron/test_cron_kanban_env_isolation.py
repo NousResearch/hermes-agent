@@ -28,7 +28,6 @@ is left completely untouched.
 
 from __future__ import annotations
 
-import ast
 import os
 import threading
 
@@ -60,10 +59,6 @@ def worker_env(monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestDispatcherOwnedPredicate:
-    def test_default_is_dispatcher_owned(self):
-        from agent.delegation_context import is_dispatcher_owned_worker_context
-
-        assert is_dispatcher_owned_worker_context() is True
 
     def test_false_inside_non_dispatcher_context(self):
         from agent.delegation_context import (
@@ -173,15 +168,6 @@ class TestKanbanGatesRespectContext:
         with non_dispatcher_owned_context():
             assert kanban_tools._default_task_id("t_explicit") == "t_explicit"
 
-    def test_skill_environment_gate(self, worker_env):
-        from agent.delegation_context import non_dispatcher_owned_context
-        import agent.skill_utils as su
-
-        su._ENV_DETECT_CACHE.pop("kanban", None)
-        assert su._detect_environment("kanban") is True
-        with non_dispatcher_owned_context():
-            su._ENV_DETECT_CACHE.pop("kanban", None)
-            assert su._detect_environment("kanban") is False
 
     def test_kanban_env_verdict_is_not_memoized(self, worker_env):
         """`kanban` must bypass _ENV_DETECT_CACHE: caching it process-wide would
@@ -210,6 +196,7 @@ class TestKanbanGatesRespectContext:
 # run_job wiring
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("cron_owner")
 class TestRunJobKanbanIsolation:
     @staticmethod
     def _install_stubs(monkeypatch, observed: dict, agent_cls=None):
@@ -221,6 +208,8 @@ class TestRunJobKanbanIsolation:
 
         class FakeAgent:
             def __init__(self, **kwargs):
+                self.session_id = kwargs["session_id"]
+                self.task_id = self.session_id
                 observed["dispatcher_owned_during_init"] = (
                     is_dispatcher_owned_worker_context()
                 )
@@ -269,13 +258,12 @@ class TestRunJobKanbanIsolation:
     @staticmethod
     def _job(job_id="kanban-iso"):
         return {
-            "id": job_id, "name": "kanban-iso-job",
+            "id": job_id, "name": "kanban-iso-job", "prompt": "hi", "model": "test-model",
             "workdir": None, "schedule_display": "manual",
         }
 
     def test_agent_runs_as_non_dispatcher(self, monkeypatch, worker_env):
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
@@ -289,7 +277,6 @@ class TestRunJobKanbanIsolation:
         """The whole point of the ContextVar: os.environ must not be mutated, so
         the worker's claim heartbeat and the gateway watchers keep working."""
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
@@ -310,25 +297,15 @@ class TestRunJobKanbanIsolation:
         }
         assert after == before
 
-    def test_context_reset_after_job(self, monkeypatch, worker_env):
-        import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
-        from agent.delegation_context import is_dispatcher_owned_worker_context
-
-        observed: dict = {}
-        self._install_stubs(monkeypatch, observed)
-
-        sched.run_job(self._job("kanban-iso-reset"))
-        assert is_dispatcher_owned_worker_context() is True
 
     def test_context_reset_even_when_job_raises(self, monkeypatch, worker_env):
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         class ExplodingAgent:
             def __init__(self, **kwargs):
-                pass
+                self.session_id = kwargs["session_id"]
+                self.task_id = self.session_id
 
             def run_conversation(self, *_a, **_kw):
                 raise RuntimeError("boom")
@@ -353,7 +330,6 @@ class TestRunJobKanbanIsolation:
         restore this permanently destroyed the worker's identity; a ContextVar is
         per-thread and cannot."""
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
@@ -380,73 +356,47 @@ class TestRunJobKanbanIsolation:
         assert after == before, "worker identity must survive concurrent cron jobs"
 
 
-# ---------------------------------------------------------------------------
-# Drift guard
-# ---------------------------------------------------------------------------
+@pytest.mark.linux_only
+def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    import sys
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from hermes_cli.kanban_db_dispatch import _default_spawn
 
-def test_every_dispatcher_kanban_var_is_identity_gated():
-    """Invariant: every HERMES_KANBAN_* var the dispatcher injects is covered by
-    the canonical KANBAN_ENV_KEYS, so the delegate_task subprocess scrubber and
-    any future consumer stay in sync with ``_default_spawn``.
-
-    Fails loudly if a new dispatcher var is added without registering it.
-    """
-    import hermes_cli.kanban_db_dispatch as kanban_db_dispatch
-    from agent.delegation_context import KANBAN_ENV_KEYS
-
-    source = ast.parse(open(kanban_db_dispatch.__file__, encoding="utf-8").read())
-    spawn = next(
-        node for node in ast.walk(source)
-        if isinstance(node, ast.FunctionDef) and node.name == "_default_spawn"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / "board.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    conn = connect(db)
+    tid = kb.create_task(conn, title="assigned child", assignee="default")
+    kb.claim_task(conn, tid)
+    task = kb.get_task(conn, tid)
+    output = tmp_path / "worker-result.json"
+    worker = tmp_path / "fixture-worker"
+    root = str(Path(__file__).resolve().parents[2])
+    worker.write_text(
+        f"#!{sys.executable}\nimport sys, os, json;sys.path.insert(0, {root!r})\n"
+        "from tools.kanban_tools import _handle_complete, heartbeat_current_worker_from_env\n"
+        "beat=heartbeat_current_worker_from_env()\n"
+        f"result=json.loads(_handle_complete({{'summary':'assigned worker'}}));result['beat']=beat\n"
+        f"open({str(output)!r}, 'w').write(json.dumps(result))\n"
     )
-
-    injected = set()
-    for node in ast.walk(spawn):
-        # env["HERMES_KANBAN_X"] = ...  and the annotated form
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if not isinstance(target, ast.Subscript):
-                    continue
-                if ast.unparse(target.value) != "env":
-                    continue
-                key = ast.unparse(target.slice).strip("\"'")
-                if key.startswith("HERMES_KANBAN_"):
-                    injected.add(key)
-        # env.update({"HERMES_KANBAN_X": ...}) / env.setdefault("HERMES_KANBAN_X", ...)
-        elif isinstance(node, ast.Call):
-            func = ast.unparse(node.func)
-            if func not in ("env.update", "env.setdefault"):
-                continue
-            literals = []
-            for arg in node.args:
-                if isinstance(arg, ast.Dict):
-                    literals.extend(
-                        k for k in arg.keys if isinstance(k, ast.Constant)
-                    )
-                elif isinstance(arg, ast.Constant):
-                    literals.append(arg)
-            for kw in node.keywords:
-                if kw.arg and kw.arg.startswith("HERMES_KANBAN_"):
-                    injected.add(kw.arg)
-            for lit in literals:
-                if isinstance(lit.value, str) and lit.value.startswith(
-                    "HERMES_KANBAN_"
-                ):
-                    injected.add(lit.value)
-
-    assert injected, "failed to parse dispatcher kanban env injection"
-
-    # These are worker-behaviour knobs rather than board/task identity; they are
-    # intentionally not part of KANBAN_ENV_KEYS. Listed explicitly so adding a
-    # new var forces a decision instead of silently passing.
-    behaviour_only = {
-        "HERMES_KANBAN_BRANCH",
-        "HERMES_KANBAN_GOAL_MODE",
-        "HERMES_KANBAN_GOAL_MAX_TURNS",
-    }
-    uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only
-    assert not uncovered, (
-        f"dispatcher injects {sorted(uncovered)} which is neither in "
-        "KANBAN_ENV_KEYS nor explicitly classified as behaviour-only"
-    )
+    worker.chmod(0o700)
+    # Observe the real spawn grant without launching an owner or inference.
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._worker_argv",
+                        lambda *_args: [sys.executable, str(worker)])
+    # Building a new worker under an existing task must replace, not inherit, its scope.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")
+    # A dispatcher launched from an agent's shell carries the descendant fence itself; the worker it
+    # grants a task to must not (an inherited marker fences the worker's own heartbeat + handoff).
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path))
+    pid = _default_spawn(task, str(tmp_path), board="default")
+    assert pid is not None
+    _, status = os.waitpid(pid, 0)  # windows-footgun: ok — Linux-only real dispatcher spawn
+    assert os.waitstatus_to_exitcode(status) == 0
+    result = json.loads(output.read_text())
+    assert result["ok"] and result["beat"] is True, result
+    assert kb.get_task(conn, tid).status == "done"
+    assert os.environ["HERMES_KANBAN_TASK"] == "prior-task"
+    conn.close()

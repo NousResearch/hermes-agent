@@ -78,12 +78,19 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     helper caches from the real platform at import. ``windows_hide_flags`` is
     still stubbed so the expected value is a fixed constant rather than
     whatever bundle the helper currently returns.
+
+    The seam is the Job-Object container (``local_runtime.processes.spawn_server``),
+    which is what the probe hands its spawn contract to on Windows; the container
+    itself adds CREATE_SUSPENDED and assigns the real process handle, which a fake
+    Popen cannot provide.
     """
     from hermes_cli import _subprocess_compat
+    from hermes_cli.local_runtime import processes
 
     spawns = []
+    fake_popen = _make_fake_popen(spawns, stdout="main\n")
     monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
+    monkeypatch.setattr(processes, "spawn_server", lambda cmd, **kw: (fake_popen(cmd, **kw), None))
 
     out = _subprocess_compat.bounded_git_probe(
         ["git", "-C", "C:/repo", "branch", "--show-current"], timeout=1.5
@@ -360,8 +367,9 @@ def test_env_probe_run_hides_console_window(monkeypatch):
     rc, out, err = env_probe._run(["python3", "--version"], timeout=1.0)
 
     assert rc == 0
-    assert len(captured) == 1, captured
-    cmd, kwargs = captured[0]
+    spawns = _spawns(captured, "python3", "--version")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
     assert cmd == ["python3", "--version"]
     assert kwargs["creationflags"] == _CREATE_NO_WINDOW
     # The temp-file capture contract (#67964) must survive: stdout/stderr are

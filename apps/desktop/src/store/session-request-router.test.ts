@@ -76,7 +76,8 @@ const {
   ensureGatewayForProfile,
   pruneSecondaryGateways,
   retireLocalProfileGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 const { requestForSessionProfile, sessionRpcNeedsProfileRoute } = await import('./session-request-router')
@@ -91,8 +92,7 @@ function installDesktop(): void {
       port: connectionId === 'source-a' ? 6161 : 6262,
       profile,
       token: `${connectionId}-token`
-    })),
-    touchBackend: vi.fn(async () => undefined)
+    }))
   }
 }
 
@@ -507,7 +507,11 @@ describe('requestForSessionProfile', () => {
     })
     expect(secondaryGateways[0].close).not.toHaveBeenCalled()
 
+    // Age the socket past the min-lifetime grace (#94769) so this prune
+    // asserts the turn-lease release, not the freshly-opened spare.
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(new Set())
+    vi.useRealTimers()
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
 
     await requestForSessionProfile(route, ambient as never, 'session.resume', { session_id: 'rt-pruned' })

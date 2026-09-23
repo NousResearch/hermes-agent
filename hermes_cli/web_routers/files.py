@@ -169,6 +169,8 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, st
 
 
@@ -238,6 +240,11 @@ def _media_serve_roots() -> list[Path]:
     return out
 
 
+def _read_base64_file(path: Path) -> str:
+    """Read and encode a bounded file from a worker thread."""
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
 @router.get("/api/media")
 async def get_media(path: str):
     """Return a gateway-local image as a base64 data URL for remote clients
@@ -258,7 +265,7 @@ async def get_media(path: str):
     if target.stat().st_size > _MEDIA_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
 
-    encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    encoded = await asyncio.to_thread(_read_base64_file, target)
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
 
 
@@ -329,7 +336,8 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
         with _profile_scope(profile) as scoped_home:
-            img_dir = Path(scoped_home or get_hermes_home()) / "images"
+            from gateway.platforms.base import get_image_cache_dir
+            img_dir = get_image_cache_dir()
             with _io_errors("Image directory is not writable", "Could not create image directory"):
                 img_dir.mkdir(parents=True, exist_ok=True)
 
@@ -408,7 +416,7 @@ async def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     size = _managed_file_size(target, max_bytes)
     with _io_errors("File is not readable", "Could not read file"):
-        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+        encoded = await asyncio.to_thread(_read_base64_file, target)
     return {
         "name": target.name,
         "path": display_path,
@@ -611,7 +619,7 @@ async def fs_list(path: str):
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN:
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -632,7 +640,9 @@ async def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    data = _fs_read_bytes(target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES))
+    data = await asyncio.to_thread(
+        _fs_read_bytes, target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES),
+    )
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
@@ -688,21 +698,41 @@ async def fs_write_text(payload: FsWriteText):
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
+async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:
+    if session_id is not None:
+        from hermes_cli.web_routers.sessions import get_session_detail
+
+        if not session_id.strip():
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = await get_session_detail(session_id, profile)
+        # Validate ownership even for absolute paths; never trust a client cwd.
+        return _fs_path(path, cwd=session.get("cwd") or "")
+    if profile is not None:
+        from hermes_cli.web_server_cron import _cron_profile_home
+
+        _cron_profile_home(profile)
+    return _fs_path(path)
+
+
 @router.get("/api/fs/read-data-url")
-async def fs_read_data_url(path: str):
+async def fs_read_data_url(
+    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
-    target, st = _fs_regular_file(_fs_path(path))
+    target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
+    encoded = await asyncio.to_thread(
+        lambda: base64.b64encode(_fs_read_bytes(target)).decode("ascii"),
+    )
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
 @router.get("/api/fs/download")
-async def fs_download(path: str):
-    target, _st = _fs_regular_file(_fs_path(path))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+async def fs_download(
+    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+):
+    target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),

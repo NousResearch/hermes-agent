@@ -8,8 +8,7 @@ afterEach(cleanup)
 
 // jsdom doesn't implement ResizeObserver; Radix's PopoverContent/Arrow use it
 // (via @radix-ui/react-use-size) to measure the arrow once the popover is
-// actually mounted. The kebab-only test above never opens a Popover, so it
-// doesn't need this — only the appearance-popover test below does.
+// actually mounted.
 beforeAll(() => {
   vi.stubGlobal(
     'ResizeObserver',
@@ -76,8 +75,6 @@ const project = {
   path: '/repo'
 } as unknown as SidebarProjectTree
 
-const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
-
 const openTriggerMenu = (trigger: HTMLElement) => {
   // Radix's dropdown trigger opens on pointerdown (a synthetic 'click' fireEvent
   // alone won't do it), so fire the full mouse sequence a real click produces —
@@ -88,13 +85,6 @@ const openTriggerMenu = (trigger: HTMLElement) => {
 }
 
 describe('ProjectMenu', () => {
-  it('does not wrap the kebab trigger in a Tip', () => {
-    render(<ProjectMenu isActive={false} project={project} />)
-
-    const button = screen.getByRole('button', { name: 'Actions' })
-    expect(tipTrigger(button)).toBeNull()
-  })
-
   // When anchorRef is absent, PopoverAnchor wraps the dropdown trigger so the
   // appearance popover positions against the kebab. asChild must still reach
   // the real button (no non-forwarding wrappers inside the chain — #67500).

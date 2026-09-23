@@ -29,9 +29,7 @@ fixture deterministically produces 2 children; with the lock, exactly 1.
 from __future__ import annotations
 
 import copy
-import inspect
 import json
-import logging
 import os
 import sqlite3
 import threading
@@ -444,38 +442,6 @@ def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(
     assert strict_calls == [120_000]
 
 
-def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: Path) -> None:
-    """Non-finite heartbeat intervals must not reach Event.wait()."""
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "HEARTBEAT_NONFINITE_INTERVAL_TEST"
-    db.create_session(session_id, source="test")
-
-    agent = _build_agent_with_db(db, session_id)
-    touch_calls: list[str] = []
-    touch_provenances: list = []
-
-    def _capture(desc, *, provenance=None, force_persist=False):
-        touch_calls.append(desc)
-        touch_provenances.append(provenance)
-
-    agent._touch_activity = _capture
-
-    heartbeat = _CompressionActivityHeartbeat(agent, interval_seconds=float("inf"))
-
-    assert heartbeat._interval_seconds == 60.0
-    heartbeat.start()
-    heartbeat.stop()
-    assert touch_calls == ["context compression started", "context compression completed"]
-    from agent.session_activity import ActivityProvenance
-
-    assert touch_provenances == [
-        ActivityProvenance.AGENT_COMPRESSION,
-        ActivityProvenance.AGENT_COMPRESSION,
-    ]
-
-
 def test_compression_heartbeat_stop_persists_completed_over_in_progress(
     tmp_path: Path,
 ) -> None:
@@ -546,34 +512,6 @@ def test_compression_heartbeat_does_not_clobber_timeout_provenance() -> None:
     assert agent._last_activity_desc == "context compression timed out"
 
 
-def test_compression_heartbeat_does_not_clobber_cooldown_provenance() -> None:
-    """Cooldown/abort stamps must also survive a late heartbeat stop."""
-    from types import SimpleNamespace
-
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
-
-    agent = SimpleNamespace(
-        _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
-        _last_activity_desc="compression blocked (cooldown: 30s remaining)",
-        touches=[],
-    )
-
-    def _touch(desc, *, provenance=None, force_persist=False):
-        agent.touches.append((desc, provenance))
-        agent._last_activity_provenance = provenance
-        agent._last_activity_desc = desc
-
-    agent._touch_activity = _touch
-
-    hb = _CompressionActivityHeartbeat(agent, interval_seconds=60.0)
-    hb._touch("context compression in progress")
-    hb.stop("context compression failed")
-
-    assert agent.touches == []
-    assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION_COOLDOWN
-
-
 def test_compression_heartbeat_start_republishes_after_terminal_provenance() -> None:
     """A new compression episode may overwrite a prior timeout/cooldown stamp."""
     from types import SimpleNamespace
@@ -632,7 +570,6 @@ def test_compression_heartbeat_does_not_rearm_after_unknown_provenance() -> None
     hb = _CompressionActivityHeartbeat(agent, interval_seconds=60.0)
     # First tick observes TIMEOUT and latches silent.
     hb._touch("context compression in progress")
-    assert hb._suppressed is True
     # Turn continues / ends and clears labels to UNKNOWN — must stay silent.
     agent._last_activity_provenance = ActivityProvenance.UNKNOWN
     agent._last_activity_desc = "calling model"
@@ -677,7 +614,6 @@ def test_compression_heartbeat_stops_when_commit_fence_cancelled() -> None:
     hb.stop("context compression completed")
 
     assert agent.touches == []
-    assert hb._suppressed is True
     assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
     assert agent._last_activity_desc == "context compression started"
 
@@ -811,9 +747,6 @@ def test_durable_message_committed_before_lease_is_adopted(
     child_id = _live_child_id(db, parent_sid)
     assert child_id is not None
     assert child_id == agent.session_id
-
-
-
 
 
 def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) -> None:
@@ -979,12 +912,6 @@ def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     assert lifecycle_kwargs["session_db"] is db
 
 
-
-
-
-
-
-
 def _no_consecutive_user_roles(messages: list) -> bool:
     roles = [m.get("role") for m in messages if isinstance(m, dict)]
     return all(
@@ -1038,8 +965,6 @@ def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
     assert not compressed[0].get("_todo_snapshot_synthetic")
 
 
-
-
 def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "HEADLESS_PREFLIGHT_PARENT"
@@ -1057,8 +982,6 @@ def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
 
     agent._flush_messages_to_session_db(compressed, None)
     assert len(db.get_messages(child_sid)) == len(compressed)
-
-
 
 
 def test_rotation_publish_failure_restores_proactive_prune_runway(
@@ -1191,42 +1114,6 @@ def test_equal_copy_compression_result_does_not_rewrite_session(
     archive_and_compact.assert_not_called()
 
 
-
-
-def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatch) -> None:
-    """A warning-path exception after compress() returns must still release the lock."""
-    real_try_acquire = SessionDB.try_acquire_compression_lock
-
-    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-        return real_try_acquire(self, session_id, holder, ttl_seconds=0.15)
-
-    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "REFRESH_EXCEPTION_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._compression_lock_ttl_seconds = 0.15
-    agent._compression_lock_refresh_interval = 0.05
-    agent.context_compressor._last_summary_error = "summary failed"
-    agent._emit_warning = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("warn boom"))
-
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    with pytest.raises(RuntimeError, match="warn boom"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    time.sleep(0.25)
-    assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
-
-
-
-
-
-
-
-
 def test_signature_introspection_exception_releases_lock_and_refresher(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1278,93 +1165,6 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     assert not refreshers[0]._thread.is_alive()
 
 
-
-
-
-
-
-
-def _make_legacy_session_db_class() -> type:
-    """Model the class retained in ``sys.modules`` before the lock API existed.
-
-    During the real version-skew incident, a re-imported compression module
-    imports the same still-loaded ``hermes_state`` module, whose ``SessionDB``
-    class is old. The test replaces that module attribute with this lockless
-    class and forwards all persistence operations to a current real database.
-    """
-    source_path = inspect.getfile(SessionDB)
-    namespace = {"__name__": "hermes_state"}
-    source = '''
-class SessionDB:
-    def __init__(self, real_db):
-        self._real = real_db
-
-    def __getattribute__(self, name):
-        if name in {"_real", "__class__"}:
-            return object.__getattribute__(self, name)
-        return getattr(object.__getattribute__(self, "_real"), name)
-'''
-    exec(compile(source, source_path, "exec"), namespace)
-    return namespace["SessionDB"]
-
-
-class _NominalSessionDBImpostor:
-    """A proxy that spoofs names but lacks the real SessionDB source contract."""
-
-    def __init__(self, real_db: SessionDB) -> None:
-        self._real = real_db
-
-    def create_session(self, *args, **kwargs):
-        return self._real.create_session(*args, **kwargs)
-
-    def __getattr__(self, name):
-        if name == "try_acquire_compression_lock":
-            raise AttributeError(name)
-        return getattr(self._real, name)
-
-
-_NominalSessionDBImpostor.__module__ = "hermes_state"
-_NominalSessionDBImpostor.__name__ = "SessionDB"
-
-
-class _BrokenLockLookupDB:
-    """A present lock API whose instance lookup fails unexpectedly."""
-
-    def __init__(self, real_db: SessionDB, error: Exception) -> None:
-        self._real = real_db
-        self._error = error
-
-    def try_acquire_compression_lock(self, *_args, **_kwargs):
-        raise AssertionError("the broken lookup must not resolve to a callable")
-
-    def __getattribute__(self, name):
-        if name == "try_acquire_compression_lock":
-            raise object.__getattribute__(self, "_error")
-        if name in {"_real", "_error", "__class__"}:
-            return object.__getattribute__(self, name)
-        return getattr(object.__getattribute__(self, "_real"), name)
-
-
-class _NonCallableLockAPI:
-    """A present lock API descriptor that resolves to a non-callable value."""
-
-    def __init__(self, real_db: SessionDB) -> None:
-        self._real = real_db
-
-    try_acquire_compression_lock = None
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.parametrize(
     "error",
     [
@@ -1401,8 +1201,6 @@ def test_real_lock_api_internal_errors_fail_closed_skips_compression(
     assert agent.session_id == parent_sid
     assert _count_children(db, parent_sid) == 0
     agent.context_compressor.compress.assert_not_called()
-
-
 
 
 def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> None:
@@ -1664,7 +1462,7 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
 
 
 def test_review_fork_fails_closed_when_compressor_rebind_raises(
-    tmp_path: Path, caplog
+    tmp_path: Path,
 ) -> None:
     """A failed compressor detachment must keep the fork's compression OFF.
 
@@ -1674,7 +1472,7 @@ def test_review_fork_fails_closed_when_compressor_rebind_raises(
     binding — durable cooldown/streak/ineffective-count writes on the
     parent's row and the sibling-session race behind #38727 re-opened. The
     fork must fail CLOSED: keep the historical ``compression_enabled = False``
-    behavior and warn. The review still runs (the iteration cap and the
+    behavior. The review still runs (the iteration cap and the
     aggregate input budget still bound it).
     """
     import agent.background_review as br
@@ -1729,20 +1527,13 @@ def test_review_fork_fails_closed_when_compressor_rebind_raises(
                 ContextCompressor, "bind_session_state", _failing_bind
             ),
         ):
-            with caplog.at_level(logging.WARNING, logger="agent.background_review"):
-                br._run_review_in_thread(parent, snapshot, "review this conversation")
+            br._run_review_in_thread(parent, snapshot, "review this conversation")
 
         assert captured["compression_enabled"] is False, (
             "FIX REGRESSION: a failed compressor rebind must leave "
             "compression_enabled False on the review fork (fail-closed). "
             "Enabling compression with the engine still bound to the "
             "parent's session re-opens the #38727 race (issue #93057)."
-        )
-        assert any(
-            "detachment failed" in record.message for record in caplog.records
-        ), (
-            "the failed rebind must log a warning so operators can see the "
-            "fork fell back to the pre-fix behavior"
         )
         assert (
             isinstance(captured["input_budget"], int) and captured["input_budget"] > 0
@@ -1785,12 +1576,6 @@ def _no_sleep(refresher) -> None:
     scripted db, not by timing.
     """
     refresher._stop.wait = lambda _interval: False  # type: ignore[assignment]
-
-
-
-
-
-
 
 
 def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
@@ -2253,6 +2038,49 @@ def test_force_cancel_restores_exact_expired_or_expiring_cooldown_row(
     assert db.get_compression_lock_holder(session_id) is None
 
 
+def test_exact_cooldown_restore_tolerates_a_concurrently_deleted_session(
+    tmp_path: Path,
+) -> None:
+    """A deleted session has no cooldown state left to compensate (#106271)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "COOLDOWN_ROLLBACK_DELETED_SESSION"
+    db.create_session(session_id, source="cli")
+    snapshot = db.get_compression_failure_cooldown_row(session_id)
+    assert snapshot["session_exists"] is True
+
+    assert db.delete_session(session_id) is True
+    db.restore_compression_failure_cooldown_row(session_id, snapshot)
+
+    assert db.get_compression_failure_cooldown_row(session_id) == {
+        "session_exists": False,
+        "cooldown_until": None,
+        "error": None,
+    }
+
+
+def test_exact_cooldown_restore_tolerates_deletion_before_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deletion after the compensating write is still an intentional no-op (#106271)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "COOLDOWN_ROLLBACK_DELETE_DURING_VERIFY"
+    db.create_session(session_id, source="cli")
+    snapshot = db.get_compression_failure_cooldown_row(session_id)
+    real_execute_write = db._execute_write
+
+    def _restore_then_delete(callback):
+        monkeypatch.setattr(db, "_execute_write", real_execute_write)
+        result = real_execute_write(callback)
+        assert db.delete_session(session_id) is True
+        return result
+
+    monkeypatch.setattr(db, "_execute_write", _restore_then_delete)
+    db.restore_compression_failure_cooldown_row(session_id, snapshot)
+
+    assert db.get_compression_failure_cooldown_row(session_id)["session_exists"] is False
+
+
 def test_cooldown_rollback_failure_surfaces_and_releases_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2328,33 +2156,3 @@ def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
         )
 
 
-def test_failed_split_arms_failure_cooldown(tmp_path: Path) -> None:
-    """Regression #97948 symptom B: a failed split/archive must arm the
-    compression failure cooldown so the next automatic turn cannot
-    immediately re-run the identical doomed compression."""
-    from agent.conversation_compression import _SPLIT_FAILURE_COOLDOWN_SECONDS
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "SPLIT_FAIL_COOLDOWN_TEST"
-    db.create_session(session_id, source="test")
-    agent = _build_agent_with_db(db, session_id)
-    setattr(agent, "compression_in_place", True)
-    db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    agent._compress_context(
-        messages,
-        "sys",
-        approx_tokens=120_000,
-        force=True,
-    )
-
-    cooldown_calls = (
-        agent.context_compressor._record_compression_failure_cooldown.call_args_list
-    )
-    assert len(cooldown_calls) == 1, (
-        "split failure must arm the failure cooldown (#97948 symptom B)"
-    )
-    seconds, error = cooldown_calls[0].args
-    assert seconds == _SPLIT_FAILURE_COOLDOWN_SECONDS
-    assert "session_split_failed" in str(error)

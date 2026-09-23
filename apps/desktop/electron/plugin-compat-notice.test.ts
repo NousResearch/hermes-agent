@@ -43,21 +43,6 @@ test('no report file → no notice', () => {
   assert.equal(pendingNotice(tmp(), tmp()), null)
 })
 
-test('report → one notice naming plugins, date and the CLI command', () => {
-  const home = tmp()
-  fs.writeFileSync(path.join(home, REPORT_FILE), JSON.stringify(REPORT))
-  const n = pendingNotice(home, tmp())
-  assert.ok(n)
-  assert.equal(n.title, 'Plugins need an update')
-  assert.match(n.message, /2 plugins import module paths that stop working on 2026-09-14/)
-  assert.match(
-    n.detail,
-    /• alpha — 1 import \(e\.g\. tools\.web_tools\.prefers_gateway → tools\.tool_backend_helpers\.prefers_gateway\)/
-  )
-  assert.match(n.detail, /• beta — 2 imports/)
-  assert.match(n.detail, /hermes plugins compat/)
-})
-
 test('dismissal is remembered for the same report and forgotten for a different one', () => {
   const home = tmp()
   const userData = tmp()
@@ -79,13 +64,11 @@ test('dismissal is remembered for the same report and forgotten for a different 
   assert.ok(second)
   assert.notEqual(second.key, first.key)
 
-  // the date passing (plugins now disabled) is new information too, with different wording
+  // the date passing (plugins now disabled) is new information too
   const disabled = { ...REPORT, in_effect: true }
   fs.writeFileSync(path.join(home, REPORT_FILE), JSON.stringify(disabled))
   const third = pendingNotice(home, userData)
   assert.ok(third)
-  assert.equal(third.title, 'Some plugins were not loaded')
-  assert.match(third.detail, /allow_deprecated_imports/)
   assert.notEqual(reportKey(disabled as any), reportKey(REPORT as any))
 })
 

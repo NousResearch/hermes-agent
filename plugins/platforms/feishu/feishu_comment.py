@@ -6,6 +6,7 @@ add_whole_comment; local -> reply_to_comment, falling back to add_whole_comment 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
@@ -453,6 +454,10 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
             model = get_default_model_for_provider(runtime_kwargs["provider"])
     except Exception:
         pass
+    # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches the
+    # comment agent and the transport applies its default effort (a 400 on non-reasoning models).
+    from hermes_constants import resolve_reasoning_config
+    runtime_kwargs["reasoning_config"] = resolve_reasoning_config(_load_gateway_config(), model)
     return model, runtime_kwargs
 
 
@@ -495,7 +500,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         history = _load_session_history(session_key) if session_key else []
         if history:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s", len(history), session_key)
-        agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool")},
+        agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool", "reasoning_config")},
                         quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
         logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
         result = agent.run_conversation(prompt, conversation_history=history or None)
@@ -607,7 +612,12 @@ async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: st
     logger.info("[Feishu-Comment] [Step 4/5] Prompt built (%d chars), running agent...", len(prompt))
     logger.debug("[Feishu-Comment] Full prompt:\n%s", prompt)
     # run_conversation is synchronous -> thread. Session key groups all comment cards on one doc.
-    response = await asyncio.get_running_loop().run_in_executor(None, _run_comment_agent, prompt, client, _session_key(file_type, file_token))
+    # This turn bypasses the gateway's per-profile message handler, so the only scope it has is the
+    # one on this coroutine (the adapter's profile under multiplex). A bare executor thread starts
+    # with an EMPTY context: model/credential resolution and the AIAgent would then run under the
+    # LAUNCH profile (UnscopedSecretError, or the default profile's config/model/state). Carry it.
+    response = await asyncio.get_running_loop().run_in_executor(
+        None, contextvars.copy_context().run, _run_comment_agent, prompt, client, _session_key(file_type, file_token))
     if not response or _NO_REPLY_SENTINEL in response:
         logger.info("[Feishu-Comment] Agent returned NO_REPLY, skipping delivery")
     else:

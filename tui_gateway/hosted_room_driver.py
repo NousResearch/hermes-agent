@@ -593,6 +593,7 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
+                    **({"attachments": task["payload"]["attachments"]} if task["payload"].get("attachments") else {}),
                     on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
                 self._unavailable_route_retries.pop(
                     (task["identity"].room_id, _member_id(task)), None)
@@ -961,7 +962,10 @@ def _find_terminal_receipt(
 
 
 def _info_active(info: Mapping[str, Any]) -> bool:
-    return bool(info.get("active", info.get("running", False)))
+    # A runtime-owned request can be absent while a key-only approval wait remains.
+    # That unknown wait cannot be used as idle proof for Retry or Stop.
+    return (bool(info.get("active", info.get("running", False)))
+            or info.get("status") in {"waiting_for_approval", "unknown"})
 
 
 def _info_is_active_for(

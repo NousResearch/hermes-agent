@@ -174,7 +174,8 @@ def session_from_claims(
         raise ProviderError(f"{label} missing 'sub' (user_id) claim")
     return Session(
         user_id=user_id, email=email, display_name=display_name, org_id=org_id, provider=provider,
-        expires_at=int(claims["exp"]), access_token=access_token, refresh_token=refresh_token)
+        expires_at=int(claims["exp"]), access_token=access_token, refresh_token=refresh_token,
+        issuer=str(claims.get("iss") or ""))
 
 
 # ---- JWT verification ----
@@ -215,6 +216,10 @@ def verify_jwt(
             options={"require": ["exp", "iat", "aud", "iss", "sub"]})
     except jwt.ExpiredSignatureError as exc:
         raise InvalidCodeError(f"{label} expired: {exc}") from exc
+    except jwt.InvalidSignatureError as exc:
+        # A forged/tampered bearer is "not my token", never an IDP outage: a 503 here would let a
+        # remote caller with garbage credentials look like a provider incident (and keep cookies).
+        raise InvalidCodeError(f"{label} signature invalid: {exc}") from exc
     except jwt.InvalidTokenError as exc:
         # Decoding without verification is safe here: verification already failed and
         # these values are surfaced for diagnostics only, never trusted.

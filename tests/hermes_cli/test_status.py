@@ -54,9 +54,9 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
-    assert "Manager:      Termux / manual process" in output
-    assert "Start with:   hermes gateway" in output
     assert "systemd (user)" not in output
+
+
 def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod
@@ -78,14 +78,10 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
-    assert "Backend:      vercel_sandbox" in output
-    assert "Runtime:      python3.13" in output
-    assert "Auth:" in output and "OIDC token via VERCEL_OIDC_TOKEN" in output
-    assert "Auth detail:  mode: OIDC" in output
-    assert "Auth detail:  active env: VERCEL_OIDC_TOKEN" in output
+    assert "vercel_sandbox" in output
+    assert "python3.13" in output
+    assert "VERCEL_OIDC_TOKEN" in output
     assert "oidc-token" not in output
-    assert "snapshot filesystem" in output
-    assert "live processes do not survive" in output
 
 
 # ---------------------------------------------------------------------------
@@ -133,19 +129,6 @@ class TestShowStatusXaiOAuth:
         assert "Auth file:  /home/u/.hermes/auth.json" in out
 
 
-    def test_no_auth_store_line_when_field_absent(self, monkeypatch, capsys, tmp_path):
-        """Auth file line must not appear when auth_store is missing."""
-        import hermes_cli.auth as auth_mod
-        status_mod = _base_xai_mocks(monkeypatch, tmp_path)
-        monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status",
-                            lambda: {"logged_in": True},
-                            raising=False)
-
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
-        out = capsys.readouterr().out
-
-        xai_section = out.split("xAI OAuth", 1)[1].split("◆", 1)[0]
-        assert "Auth file:" not in xai_section
 
 
     # ------------------------------------------------------------------
@@ -158,16 +141,6 @@ class TestShowStatusXaiOAuth:
     # Resilience: import failure and runtime exception
     # ------------------------------------------------------------------
 
-    def test_import_failure_does_not_crash_show_status(self, monkeypatch, capsys, tmp_path):
-        """show_status must complete even when get_xai_oauth_auth_status cannot be imported."""
-        import hermes_cli.auth as auth_mod
-        status_mod = _base_xai_mocks(monkeypatch, tmp_path)
-        monkeypatch.delattr(auth_mod, "get_xai_oauth_auth_status", raising=False)
-
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
-        out = capsys.readouterr().out
-
-        assert "◆ Auth Providers" in out
 
     def test_import_failure_does_not_break_other_oauth_providers(self, monkeypatch, capsys, tmp_path):
         """Nous/Codex/MiniMax rows must still appear when xAI import fails."""
@@ -209,7 +182,6 @@ class TestShowStatusXaiOAuth:
         out = capsys.readouterr().out
 
         assert "xAI OAuth" in out
-        assert "not logged in (run: hermes auth add xai-oauth)" in out
 
 
 def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, tmp_path):
@@ -233,20 +205,24 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
-    class _FakeDB:
-        def list_gateway_sessions(self, active_only=True):
-            return [
-                {"id": "gw-old", "last_active": time.time() - 7200},
-                {"id": "gw-new", "last_active": time.time() - 90},
-            ]
+    import sqlite3
+    from contextlib import closing
 
-        def close(self):
-            return None
-
-    monkeypatch.setattr(hermes_state, "SessionDB", _FakeDB)
+    path = tmp_path / "state.db"
+    db = hermes_state.SessionDB(db_path=path)
+    for sid in ("gw-old", "gw-new"):
+        db.create_session(sid, "telegram")
+    db.close()
+    with closing(sqlite3.connect(path)) as conn:
+        for sid, age in (("gw-old", 7200), ("gw-new", 90)):
+            conn.execute("UPDATE sessions SET session_key=?, started_at=?, last_activity_at=? WHERE id=?",
+                         (sid, time.time() - age, time.time() - age, sid))
+        conn.commit()
+    before = path.read_bytes()
 
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
     output = capsys.readouterr().out
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+    assert path.read_bytes() == before

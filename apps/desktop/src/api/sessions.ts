@@ -10,7 +10,18 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, getApiRequestConnection, hermesApi, type ProfileScope, profileScoped } from './client'
+import { createSessionMutationClient, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+
+import {
+  ambientOwnerConnectionId,
+  capabilityScoped,
+  connectionScoped,
+  getApiRequestConnection,
+  getApiRequestProfile,
+  hermesApi,
+  type ProfileScope,
+  profileScoped
+} from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
@@ -19,13 +30,30 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
     return {}
   }
 
-  const scoped = capabilityScoped(scope)
+  // Session reads keep the ambient dial default (main's background): the
+  // cross-profile probe that resolves a remembered/404'd session id walks every
+  // other profile (resolveStoredSession) and must not cold-start each one on the
+  // pool's reserved foreground slot. The tag belongs to the scope selectors
+  // (Settings, Capabilities, Messaging), not to session lookups.
+  const { priority: _priority, ...scoped } = capabilityScoped(scope)
 
   if (typeof scope === 'object' && scope.connectionId?.trim() === 'local') {
     return { ...scoped, connectionId: 'local' }
   }
 
   return scoped
+}
+
+/**
+ * The profile a session WRITE must name in its body. The PATCH handler reads
+ * its target DB from `body.profile` alone (`_with_db(body.profile, ...)`), and
+ * under multiplex-only there is no per-profile backend whose HERMES_HOME could
+ * stand in for it: an unnamed owner lands the rename/pin/archive/mark-read on
+ * the shared backend's own state.db. "Unnamed" therefore means "the profile I
+ * am looking at", not "whatever home the backend was launched in".
+ */
+function sessionWriteProfile(profile?: null | string): string | undefined {
+  return String(profile ?? '').trim() || getApiRequestProfile() || undefined
 }
 
 function sessionScopeQuery(scope?: ProfileScope): string {
@@ -157,16 +185,17 @@ export interface SidebarSessionSlice {
 
 /** Which profiles filled their per-profile window in a returned page. The
  *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. Pinned rows are
- *  discounted — they're back-filled past the LIMIT, so counting them fakes a
- *  full page and leaves a "Load more" that can never resolve. */
+ *  a profile at (or over) the cap still has more on disk. Pinned rows count
+ *  like any other: they occupy LIMIT slots, and a short list has nothing past
+ *  the page for the pin back-fill to add, so pins cannot fake a full page
+ *  (#81484). */
 function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
     const key = session.profile || 'default'
 
-    counts.set(key, (counts.get(key) ?? 0) + (session.pinned ? 0 : 1))
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
   return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
@@ -177,6 +206,9 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
+   *  structurally damaged. Absent from older backends. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SidebarSessionsRequest {
@@ -225,7 +257,10 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
 
+  const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
+
   return {
+    ...(Object.keys(storage).length ? { storage } : {}),
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -316,58 +351,46 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
-    errors: result.errors
+    errors: result.errors,
+    storage: result.storage
   }
 }
 
-// Mutations take the owning `profile` so Electron can route them to the correct
-// remote backend or local profile scope. Omit for the current/default profile.
+const runSessionMutation = createSessionMutationClient()
+
+function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
+  const scope = { connectionId: getApiRequestConnection() || 'local', ...sessionScoped(profile) }
+  const path = `/api/sessions/${encodeURIComponent(id)}`
+  const query = new URLSearchParams(scope.profile ? { profile: scope.profile } : {})
+  const suffix = query.size ? `?${query}` : ''
+  const key = JSON.stringify([scope, id, method, payload])
+
+  return runSessionMutation(key,
+    () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }),
+    identity => {
+      if (method === 'DELETE') {
+        const params = new URLSearchParams(query)
+
+        for (const [name, value] of Object.entries(identity)) { params.set(name, String(value)) }
+
+        return hermesApi<T>({ ...scope, path: `${path}?${params}`, method })
+      }
+
+      return hermesApi<T>({ ...scope, path, method,
+        body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
+    })
+}
+
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  // Carry the owning profile IN THE PATCH BODY, mirroring renameSession — the
-  // backend reads its target DB from body.profile (_open_session_db_for_profile).
-  // Passing it only as request.profile (Electron routing) is not enough on a
-  // remote gateway with no remoteProfile alias: the archive lands on the wrong
-  // (default) state.db, no-ops on a missing row, and the archived/unarchived
-  // state silently fails to stick — the same class as the unscoped DELETE.
-  return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { archived, ...(profile ? { profile } : {}) }
-  })
+  return mutateSessionHttp(id, 'PATCH', { archived }, sessionWriteProfile(profile))
 }
 
-// Mirror a sidebar pin to the backend "keep" flag so the sessions.auto_archive
-// sweep (which runs backend-side, blind to Desktop localStorage) never hides a
-// pinned chat. Best-effort: the sidebar stays localStorage-driven for its own
-// display; this only feeds the backend policy.
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  // Owning profile in the PATCH body (see setSessionArchived / renameSession):
-  // the handler reads its target DB from body.profile, so a remote/foreign
-  // profile's pin must travel in the body or it no-ops on the wrong state.db.
-  return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { pinned, ...(profile ? { profile } : {}) }
-  })
+  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteProfile(profile))
 }
 
-// Mirror a sidebar unread toggle to the backend read-state watermark
-// (sessions.last_read_at via SessionDB.set_session_read). Same profile
-// routing as the other session mutations: a remote session's row lives only
-// on its remote host, so the owning profile must travel with the request.
 export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  // Owning profile in the PATCH body (see setSessionArchived / renameSession):
-  // the handler reads its target DB from body.profile, so a remote/foreign
-  // profile's unread toggle must travel in the body or it no-ops on the wrong
-  // state.db.
-  return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { unread, ...(profile ? { profile } : {}) }
-  })
+  return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteProfile(profile))
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
@@ -396,7 +419,8 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
+  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {},
+  options: { passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -426,7 +450,8 @@ export function getSessionMessages(
 
   return hermesApi<SessionMessagesResponse>({
     ...sessionScope,
-    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
+    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
+    ...(options.passive ? { passive: true } : {})
   })
 }
 
@@ -439,23 +464,49 @@ export function getSessionMessages(
  */
 export const LATEST_SESSION_MESSAGES_LIMIT = 120
 
-export function getLatestSessionMessages(id: string, profile?: ProfileScope): Promise<SessionMessagesResponse> {
+export function getLatestSessionMessages(
+  id: string,
+  profile?: ProfileScope,
+  options: { passive?: boolean } = {}
+): Promise<SessionMessagesResponse> {
+  // Key pagination by the effective request owner, not the caller's spelling
+  // (ambient, profile string, or explicit pin). Otherwise refreshes create
+  // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
+  // Capture before awaiting: the active gateway may change during the read.
+  const route = { ...connectionScoped(), ...sessionScoped(profile) }
+  // Only the lookup key is normalized — backfill replays `route` verbatim.
+  const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
+  const ambientProfile = getApiRequestProfile() || 'default'
+
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
-  return getSessionMessages(id, profile, {
-    limit: LATEST_SESSION_MESSAGES_LIMIT,
-    order: 'latest',
-    includeCompacted: true
-  }).then(page => {
+  return getSessionMessages(
+    id,
+    profile,
+    {
+      limit: LATEST_SESSION_MESSAGES_LIMIT,
+      order: 'latest',
+      includeCompacted: true
+    },
+    options
+  ).then(page => {
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
     // the resolved id — callers hold either.
-    recordTranscriptTail(id, page, profile)
+    // A backend that predates the `profile` field cannot name itself; its
+    // untagged read landed on the ambient profile.
+    const owner = {
+      ...route,
+      connectionId: ambientConnectionId,
+      profile: route.profile || page.profile || ambientProfile
+    }
+
+    recordTranscriptTail(id, page, route, owner)
 
     if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, profile)
+      recordTranscriptTail(page.session_id, page, route, owner)
     }
 
     return page
@@ -564,36 +615,9 @@ export async function getAllSessionMessages(
 }
 
 export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  // Scope the DELETE to the owning profile IN THE URL, mirroring getSession /
-  // getSessionMessages. Passing the profile only via request.profile (which the
-  // Electron main process consumes for backend routing) is NOT enough: on a
-  // remote gateway whose connection has no remoteProfile alias, the main-process
-  // path rewrite leaves the URL unscoped, so the backend opens its OWN (default)
-  // state.db, fails to find another profile's session, and returns
-  // {ok:true, already_absent:true}. The row then vanishes optimistically but was
-  // never deleted and reappears on the next sidebar refresh — the "All Profiles
-  // delete doesn't stick" report. The endpoint already honours ?profile=
-  // (get/rename/messages all send it); DELETE was the one mutation that dropped
-  // it after the api/ split. request.profile stays on for per-profile remote
-  // override + global-remote routing (both re-read/re-append the param).
-  const suffix = sessionScopeQuery(profile)
-
-  return hermesApi<{ ok: boolean }>({
-    ...sessionScoped(profile),
-    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`,
-    method: 'DELETE'
-  })
+  return mutateSessionHttp(id, 'DELETE', {}, profile)
 }
 
-export function renameSession(
-  id: string,
-  title: string,
-  profile?: string | null
-): Promise<{ ok: boolean; title: string }> {
-  return hermesApi<{ ok: boolean; title: string }>({
-    ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { title, ...(profile ? { profile } : {}) }
-  })
+export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
+  return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
 }

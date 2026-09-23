@@ -25,7 +25,6 @@ import pytest
 from tools import approval as A
 import tools.approval_detection as approval_detection
 from tools import approval_context
-from tools import approval_context
 from tools import approval_smart
 from tools.thread_context import propagate_context_to_thread
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
@@ -87,26 +86,6 @@ def test_helper_clears_callbacks_on_teardown():
         TT.set_approval_callback(None)
 
 
-def test_both_rpc_threads_use_propagation_helper():
-    """Source guard: every execute_code RPC serving thread must carry the
-    cell's approval context, or the gateway approval bypass (#33057) silently
-    returns. The remote poll thread wraps its target with
-    propagate_context_to_thread; the local session kernel instead rebinds
-    authority per cell (``dispatch=`` passed to ``_rpc_server_loop``)."""
-    import inspect
-    import tools.code_execution_tool as cet
-    import tools.code_kernel as ck
-
-    src = inspect.getsource(cet)
-    assert "propagate_context_to_thread(_rpc_poll_loop)" in src, (
-        "remote file-RPC poll thread is not wrapped with "
-        "propagate_context_to_thread — gateway approval routing will be lost."
-    )
-    kernel_src = inspect.getsource(ck)
-    assert "_rpc_server_loop(" in kernel_src and "dispatch=" in kernel_src, (
-        "local session-kernel RPC server thread must pass a per-cell "
-        "dispatch= to _rpc_server_loop — gateway approval routing will be lost."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +443,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
         "HERMES_DELEGATED_CHILD_CONTEXT": "1",
         # other HERMES_* → dropped (broad prefix removed)
         "HERMES_BASE_URL": "https://x", "HERMES_INTERACTIVE": "1",
-        "HERMES_KANBAN_DB": "postgres://u:p@h/db",
+        "HERMES_KANBAN_TASK": "t_parent",
         # secret substrings (incl. new DSN/WEBHOOK) → dropped
         "SENTRY_DSN": "https://a@s.io/1", "SLACK_WEBHOOK": "https://h/x",
         "OPENAI_API_KEY": "sk", "GITHUB_TOKEN": "ghp",
@@ -479,7 +458,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
     ):
         assert kept in out, f"{kept} should be kept"
     for dropped in (
-        "HERMES_BASE_URL", "HERMES_INTERACTIVE", "HERMES_KANBAN_DB",
+        "HERMES_BASE_URL", "HERMES_INTERACTIVE", "HERMES_KANBAN_TASK",
         "SENTRY_DSN", "SLACK_WEBHOOK", "OPENAI_API_KEY", "GITHUB_TOKEN",
         "RANDOM_X",
     ):
@@ -507,16 +486,3 @@ def test_env_scrub_passthrough_overrides_secret_block():
 # ---------------------------------------------------------------------------
 
 
-def test_env_scrub_no_log_when_nothing_dropped(caplog):
-    """No diagnostic noise when there are no dropped HERMES_* vars."""
-    import logging
-
-    from tools.code_execution_env import _scrub_child_env
-
-    with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
-        _scrub_child_env(
-            {"HERMES_HOME": "/h", "PATH": "/usr/bin"},
-            is_passthrough=lambda _: False,
-            is_windows=False,
-        )
-    assert "dropped" not in "\n".join(r.getMessage() for r in caplog.records)

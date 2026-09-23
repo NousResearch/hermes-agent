@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.platforms.api_server_runs import _RunStream
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
@@ -249,6 +250,58 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @staticmethod
+    async def _wait_completed(cli, run_id: str) -> None:
+        for _ in range(40):
+            status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+            if status["status"] == "completed":
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"run {run_id} did not complete")
+
+    @staticmethod
+    def _capturing_agent(captured):
+        agent = MagicMock()
+        agent.run_conversation.side_effect = lambda **kwargs: captured.update(kwargs) or {"final_response": "done"}
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+        return agent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body, expected", [
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": " dixie ", "is_bot": True, "role": "admin"}},
+         {"id": "bot:dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": "dixie", "is_bot": True, "origin": "cloud-1"}},
+         {"id": "bot:cloud-1/dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello"}, "absent"),
+    ], ids=["author", "author with origin", "no author"])
+    async def test_start_passes_normalized_author_to_run_conversation(self, adapter, body, expected):
+        """A body ``author`` reaches ``run_conversation`` normalized; it labels memory only. Without one the
+        call keeps today's shape."""
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=self._capturing_agent(captured)):
+                resp = await cli.post("/v1/runs", json=body)
+                assert resp.status == 202
+                await self._wait_completed(cli, (await resp.json())["run_id"])
+
+        assert captured["user_message"] == "hello"
+        assert captured.get("turn_author", "absent") == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("author", ["dixie", ["dixie"], 7])
+    async def test_start_rejects_non_object_author(self, adapter, author):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post("/v1/runs", json={"input": "hello", "author": author})
+                assert resp.status == 400
+                body = await resp.json()
+        assert body["error"]["code"] == "invalid_author"
+        mock_create.assert_not_called()
+        assert adapter._run_statuses == {}
+
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):
@@ -283,6 +336,39 @@ class TestStartRun:
         assert adapter._run_streams == {}
         assert adapter._run_statuses == {}
         mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_events_stream_forwards_interim_commentary(self, adapter):
+        """Mid-turn assistant commentary (Codex ``phase="commentary"``) reaches /v1/runs clients
+        as ``message.interim`` {text, already_streamed}; the final answer is unchanged (#67580)."""
+        import json
+
+        app = _create_runs_app(adapter)
+
+        def create_agent(**kwargs):
+            interim = kwargs["interim_assistant_callback"]
+            agent = MagicMock()
+
+            def run_conversation(**_kw):
+                interim("Checking the docs first.", already_streamed=False)
+                interim("Applying the fix.", already_streamed=True)
+                return {"final_response": "Done."}
+
+            agent.run_conversation.side_effect = run_conversation
+            agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+            return agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+        interim = [(e["text"], e["already_streamed"]) for e in events if e["event"] == "message.interim"]
+        assert interim == [("Checking the docs first.", False), ("Applying the fix.", True)]
+        completed = next(e for e in events if e["event"] == "run.completed")
+        assert completed["output"] == "Done."
 
     @pytest.mark.asyncio
     async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
@@ -326,6 +412,42 @@ class TestStartRun:
 class TestRunStatus:
 
     @pytest.mark.asyncio
+    async def test_drain_boundary_is_visible_to_pollers_on_live_runs_only(self, adapter):
+        """GET /v1/runs/{id} shows ``shutdown_requested_at`` as soon as the drain starts (#115133).
+
+        A live run keeps ``status: running`` (it is still being served) but gains the marker,
+        durably (the idempotency record carries it across a restart); a run whose status is set
+        after the boundary inherits it; a terminal run is never touched.
+        """
+        status = adapter._set_run_status("run_live", "running")
+        _claim_run(adapter, "run_live")
+        scope = adapter._run_owners["run_live"]
+        adapter._run_idempotency_store.reserve(
+            scope, "shutdown-test-key", "shutdown-test-fingerprint", "run_live", status)
+        adapter._run_idempotency_ids.add("run_live")
+        adapter._run_statuses["run_done"] = {
+            "object": "hermes.run", "run_id": "run_done", "status": "completed"}
+        _claim_run(adapter, "run_done")
+
+        async with TestClient(TestServer(_create_runs_app(adapter))) as client:
+            before = await (await client.get("/v1/runs/run_live")).json()
+            assert "shutdown_requested_at" not in before
+
+            assert adapter.mark_shutdown_requested() == 1
+
+            live = await (await client.get("/v1/runs/run_live")).json()
+            assert live["status"] == "running"
+            marker = live["shutdown_requested_at"]
+            assert isinstance(marker, float)
+            done = await (await client.get("/v1/runs/run_done")).json()
+            assert "shutdown_requested_at" not in done
+
+        durable = adapter._run_idempotency_store.status_for_run(scope, "run_live")
+        assert durable["status"].get("shutdown_requested_at") == marker
+        adapter._set_run_status("run_late", "queued")
+        assert adapter._run_statuses["run_late"]["shutdown_requested_at"] == marker
+
+    @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -355,6 +477,51 @@ class TestRunStatus:
                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
                 assert status["session_id"] == "space-session"
 
+    @pytest.mark.asyncio
+    async def test_status_completed_run_reports_served_runtime_and_cache_tokens(self, adapter):
+        """After a fallback_providers switch the run record carries the runtime that actually
+        served the turn plus cache-read tokens, next to the requested ``model`` (#102101).
+
+        ``agent.provider`` / ``agent.model`` still hold the fallback pair when
+        ``run_conversation()`` returns: the primary is only restored at the start of the NEXT
+        turn, so they are the served pair, while the top-level ``model`` echoes the request.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.provider = "openai-codex"
+                mock_agent.model = "gpt-5.6-luna"
+                mock_agent.session_prompt_tokens = 100
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 105
+                mock_agent.session_cache_read_tokens = 84
+                mock_agent.session_cache_write_tokens = 11
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "model": "deepseek-v4-pro"})
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(40):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "completed"
+                # Top-level model still echoes the request; the served pair is disclosed alongside.
+                assert status["model"] == "deepseek-v4-pro"
+                # Canonical api_server runtime shape (same as /v1/chat/completions), not a thinner twin.
+                assert status["runtime"] == {
+                    "provider": "openai-codex", "model": "gpt-5.6-luna", "route_source": "raw_request",
+                    "requested": {"provider": "", "model": "deepseek-v4-pro"},
+                }
+                assert status["usage"] == {
+                    "input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
+                    "cache_read_tokens": 84, "cache_write_tokens": 11,
+                }
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id}/events — SSE event stream
@@ -362,6 +529,29 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    @pytest.mark.asyncio
+    async def test_tool_completed_event_includes_redacted_bounded_result_preview(self, adapter):
+        loop = asyncio.get_running_loop()
+        adapter._run_streams["run_tool"] = asyncio.Queue()
+        callback = adapter._make_run_event_callback("run_tool", loop)
+
+        callback(
+            "tool.completed", "terminal", duration=0.077, is_error=True,
+            result={
+                "exit_code": 2,
+                "error": "BLOCKED: approval required",
+                "token": "sk-abcdefghijklmnopqrstuvwxyz",
+                "output": "x" * 600,
+            },
+        )
+        event = await adapter._run_streams["run_tool"].get()
+
+        assert event["error"] is True
+        assert "BLOCKED: approval required" in event["preview"]
+        assert "abcdefghijklmnopqrstuvwxyz" not in event["preview"]
+        assert len(event["preview"]) <= 500
+        assert event["preview"].endswith("...")
+
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
@@ -389,6 +579,87 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_two_subscribers_each_receive_every_event_and_survive_one_disconnect(self, adapter):
+        """/events is fanout, not a work queue: every subscriber sees the whole ordered stream,
+        and one client's disconnect never tears down the stream another client still reads."""
+
+        from gateway.platforms.api_server_runs import _mark_run_event
+
+        async def frame(resp):
+            return (await asyncio.wait_for(resp.content.readuntil(b"\n\n"), timeout=2.0)).decode()
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hello"})).json())["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                second = await cli.get(f"/v1/runs/{run_id}/events")
+                assert first.status == second.status == 200
+
+                _mark_run_event(adapter, run_id, "run.steered", accepted=True)
+                assert "run.steered" in await frame(first)
+                assert "run.steered" in await frame(second)
+
+                first.close()
+                # The server only notices the dropped socket on its next write.
+                _mark_run_event(adapter, run_id, "run.steered", accepted=False)
+                assert "run.steered" in await frame(second)
+                await asyncio.sleep(0.05)
+                _mark_run_event(adapter, run_id, "approval.responded", choice="once")
+                assert "approval.responded" in await frame(second)
+
+                assert (await cli.post(f"/v1/runs/{run_id}/stop")).status == 200
+                tail = await asyncio.wait_for(second.content.read(), timeout=5.0)
+                assert b"stream closed" in tail
+
+    @pytest.mark.asyncio
+    async def test_completed_event_carries_served_runtime_and_cache_tokens(self, adapter):
+        """The run.completed SSE event discloses the same served runtime and cache tokens as the
+        pollable status, so streaming clients get identical cost-attribution data (#102101)."""
+        import json as _json
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "served"}
+                mock_agent.provider = "openai-codex"
+                mock_agent.model = "gpt-5.6-luna"
+                mock_agent.session_prompt_tokens = 774050
+                mock_agent.session_completion_tokens = 6286
+                mock_agent.session_total_tokens = 780336
+                mock_agent.session_cache_read_tokens = 650000
+                mock_agent.session_cache_write_tokens = 42
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "model": "deepseek-v4-pro"})
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                completed = None
+                for frame in body.split("\n"):
+                    if frame.startswith("data: "):
+                        try:
+                            payload = _json.loads(frame[len("data: "):])
+                        except ValueError:
+                            continue
+                        if payload.get("event") == "run.completed":
+                            completed = payload
+                            break
+                assert completed is not None, "run.completed event missing from stream"
+                assert completed["runtime"]["provider"] == "openai-codex"
+                assert completed["runtime"]["model"] == "gpt-5.6-luna"
+                assert completed["runtime"]["requested"]["model"] == "deepseek-v4-pro"
+                assert completed["usage"]["cache_read_tokens"] == 650000
+                assert completed["usage"]["cache_write_tokens"] == 42
 
 
     @pytest.mark.asyncio
@@ -616,6 +887,45 @@ class TestSteerRun:
 
         assert adapter._run_statuses[run_id]["status"] == "completed"
         assert adapter._run_statuses[run_id]["pending_steer"] == "tighten the ending"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result", "expected_status"),
+        [
+            ({"final_response": "Operation interrupted.", "interrupted": True, "completed": False}, "cancelled"),
+            ({"final_response": "Budget exhausted summary.", "completed": False,
+              "turn_exit_reason": "max_iterations_reached(2/2)"}, "failed"),
+            ({"final_response": "done", "completed": True}, "completed"),
+        ],
+    )
+    async def test_run_terminal_status_follows_result_flags(self, adapter, result, expected_status):
+        """A turn that ended interrupted or unfinished must not be booked as ``completed``
+        (#111770): the persisted status, the ``completed`` flag and the terminal event name
+        agree, and a late steer survives on every terminal status."""
+        result["pending_steer"] = "tighten the ending"
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_agent.run_conversation.return_value = result
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+                for _ in range(40):
+                    if adapter._run_statuses.get(run_id, {}).get("status") == expected_status:
+                        break
+                    await asyncio.sleep(0.05)
+                events = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        status = adapter._run_statuses[run_id]
+        assert status["status"] == expected_status
+        assert status["completed"] is (expected_status == "completed")
+        assert status["pending_steer"] == "tighten the ending"
+        assert f"run.{expected_status}" in events
 
     @pytest.mark.asyncio
     async def test_steer_requires_auth(self, auth_adapter):
@@ -1404,21 +1714,9 @@ class TestRunIdempotency:
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
 
-    def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
-        adapter._run_statuses["run_progress"] = {
-            "run_id": "run_progress",
-            "status": "running",
-        }
-        adapter._run_idempotency_ids.add("run_progress")
-        adapter._run_idempotency_store.update_status = MagicMock()
 
-        adapter._set_run_status(
-            "run_progress", "running", last_event="tool.completed"
-        )
-
-        adapter._run_idempotency_store.update_status.assert_not_called()
-
-    def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
+    @pytest.mark.asyncio
+    async def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
         adapter._run_statuses["run_old"] = {
             "status": "completed",
             "updated_at": 1,
@@ -1426,36 +1724,738 @@ class TestRunIdempotency:
         adapter._run_idempotency_ids.add("run_old")
         adapter._run_owners["run_old"] = "scope"
 
-        adapter._sweep_orphaned_runs_once(adapter._RUN_STATUS_TTL + 2)
+        await adapter._sweep_orphaned_runs_once(adapter._RUN_STATUS_TTL + 2)
 
         assert "run_old" not in adapter._run_statuses
         assert "run_old" not in adapter._run_idempotency_ids
         assert "run_old" not in adapter._run_owners
 
+
+
+class TestHostedRoomRuns:
     @pytest.mark.asyncio
-    async def test_no_session_id_does_not_load_session_history(
-        self, adapter, tmp_path
+    async def test_room_approval_requires_and_resolves_exact_request_id(
+        self, auth_adapter
     ):
+        run_id = "run-room-approval"
+        current = approval_gateway_wait._ApprovalEntry({
+            "request_id": "approval-B",
+            "command": "rm -rf build-B",
+        })
+        auth_adapter._run_approval_sessions[run_id] = run_id
+        auth_adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "waiting_for_approval",
+            "approval": dict(current.data),
+        }
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [current]
+        app = _create_runs_app(auth_adapter)
+        try:
+            with (
+                patch.object(auth_adapter, "_check_run_auth", return_value=None),
+                patch.object(auth_adapter, "_request_owns_run", return_value=True),
+                patch.object(
+                    auth_adapter, "_room_grant_token", return_value="scoped-grant"
+                ),
+                # This isolated approval fixture uses a sentinel grant rather than
+                # signing a room claim; pin its store scope without decoding it.
+                patch.object(auth_adapter, "_run_idempotency_scope", return_value="0" * 64),
+            ):
+                async with TestClient(TestServer(app)) as cli:
+                    missing = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "once"},
+                    )
+                    stale = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "once", "request_id": "approval-A"},
+                    )
+                    exact = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "once", "request_id": "approval-B"},
+                    )
+                    missing_body = await missing.json()
+                    stale_body = await stale.json()
+                    exact_body = await exact.json()
+        finally:
+            approval_mod.unregister_gateway_notify(run_id)
+
+        assert missing.status == 400
+        assert missing_body["error"]["code"] == "approval_request_required"
+        assert stale.status == 409
+        assert stale_body["error"]["code"] == "approval_not_pending"
+        assert exact.status == 200
+        assert exact_body["request_id"] == "approval-B"
+        assert current.result == "once"
+        assert "approval" not in auth_adapter._run_statuses[run_id]
+
+    @pytest.mark.asyncio
+    async def test_room_grant_cannot_create_session_or_permanent_approval_policy(
+        self, auth_adapter
+    ):
+        app = _create_runs_app(auth_adapter)
+        with (
+            patch.object(auth_adapter, "_check_run_auth", return_value=None),
+            patch.object(auth_adapter, "_request_owns_run", return_value=True),
+            patch.object(
+                auth_adapter,
+                "_durable_run_status",
+                return_value={"status": "waiting_for_approval"},
+            ),
+            patch.object(
+                auth_adapter, "_room_grant_token", return_value="scoped-grant"
+            ),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                permanent = await cli.post(
+                    "/v1/runs/run-room/approval",
+                    json={"choice": "always"},
+                )
+                resolve_all = await cli.post(
+                    "/v1/runs/run-room/approval",
+                    json={"choice": "once", "resolve_all": True},
+                )
+                permanent_body = await permanent.json()
+                resolve_all_body = await resolve_all.json()
+
+        assert permanent.status == 400
+        assert permanent_body["error"]["code"] == "invalid_approval_choice"
+        assert resolve_all.status == 400
+        assert resolve_all_body["error"]["code"] == "invalid_approval_scope"
+
+    @pytest.mark.asyncio
+    async def test_invitation_uses_validated_app_managed_local_catalog(
+        self, auth_adapter, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv(
+            "HERMES_ROOM_LINK_URL", "https://peer.example.test/hermes"
+        )
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "room_id": "room-1",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            body = await invitation.json()
+        assert invitation.status == 201
+        assert body["catalog"]["persistent_process"] is False
+        assert body["catalog"]["link_modes"] == ["direct"]
+        assert body["catalog"]["endpoint"] == {
+            "available": True,
+            "url": "https://peer.example.test/hermes",
+            "transport_security": "tls",
+        }
+        assert body["expires_at"] == body["status_expires_at"]
+
+    @pytest.mark.asyncio
+    async def test_invitation_returns_operator_selected_status_horizon(
+        self, auth_adapter
+    ):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "room_id": "room-horizon",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                    "ttl_seconds": 600,
+                    "status_ttl_seconds": 3600,
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            body = await invitation.json()
+
+        assert invitation.status == 201
+        assert body["status_expires_at"] - body["expires_at"] == 3000
+
+    @pytest.mark.asyncio
+    async def test_scoped_grant_refresh_requires_live_dispatch_authority(
+        self, auth_adapter, monkeypatch
+    ):
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_rooms import local_authority_gateway_id
+
+        old_grant = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-old",
+            room_id="room-1",
+            home_install_id="install-home",
+            authority_gateway_id="install-home",
+            authority_epoch=1,
+            member_id="member-peer",
+            target_install_id=local_authority_gateway_id(),
+            target_profile="default",
+            issued_at=100,
+            ttl_seconds=300,
+            status_expires_at=1000,
+        )
+        old_claims = decode_room_grant(
+            auth_adapter._room_grant_secret(),
+            old_grant,
+            permission="status",
+            now=100,
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=old_claims,
+            expires_at=1000,
+            now=100,
+        )
+        monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            refreshed = await cli.post(
+                "/v1/room-members/grants/refresh",
+                json={"ttl_seconds": 300},
+                headers={"Authorization": f"HermesRoom {old_grant}"},
+            )
+            body = await refreshed.json()
+        assert refreshed.status == 200
+        assert body["grant"] != old_grant
+        claims = decode_room_grant(
+            auth_adapter._room_grant_secret(),
+            body["grant"],
+            permission="dispatch",
+            now=200,
+        )
+        assert claims["room_id"] == "room-1"
+        assert claims["home_install_id"] == "install-home"
+        assert claims["status_expires_at"] == 1000
+
+        status_only = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-status-only",
+            room_id="room-1",
+            home_install_id="install-home",
+            authority_gateway_id="install-home",
+            authority_epoch=1,
+            member_id="member-peer",
+            target_install_id=local_authority_gateway_id(),
+            target_profile="default",
+            permissions=("status",),
+            issued_at=100,
+            ttl_seconds=300,
+            status_expires_at=1000,
+        )
+        status_claims = decode_room_grant(
+            auth_adapter._room_grant_secret(),
+            status_only,
+            permission="status",
+            now=100,
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=status_claims,
+            expires_at=1000,
+            now=100,
+        )
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            status_refresh = await cli.post(
+                "/v1/room-members/grants/refresh",
+                json={"ttl_seconds": 300},
+                headers={"Authorization": f"HermesRoom {status_only}"},
+            )
+            status_refresh_body = await status_refresh.json()
+        assert status_refresh.status == 401
+        assert status_refresh_body["error"]["code"] == "invalid_room_grant"
+
+        fully_expired = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-expired",
+            room_id="room-1",
+            home_install_id="install-home",
+            authority_gateway_id="install-home",
+            authority_epoch=1,
+            member_id="member-peer",
+            target_install_id=local_authority_gateway_id(),
+            target_profile="default",
+            issued_at=100,
+            ttl_seconds=10,
+            status_expires_at=150,
+        )
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            denied = await cli.post(
+                "/v1/room-members/grants/refresh",
+                json={},
+                headers={"Authorization": f"HermesRoom {fully_expired}"},
+            )
+            denied_body = await denied.json()
+        assert denied.status == 401
+        assert denied_body["error"]["code"] == "invalid_room_grant"
+
+    @pytest.mark.asyncio
+    async def test_scoped_grant_refresh_refuses_execution_policy_drift(
+        self, auth_adapter, monkeypatch
+    ):
+        """Renewal must pause for reauthorization when the target's execution
+        policy changed since the grant was issued — never silently mint a
+        grant against the drifted policy (blocker 2, #97681 review)."""
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import issue_room_grant, decode_room_grant
+        from gateway.hosted_rooms import local_authority_gateway_id
+
+        stale_digest = "c" * 64
+        drifted = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-drifted",
+            room_id="room-1",
+            home_install_id="install-home",
+            authority_gateway_id="install-home",
+            authority_epoch=1,
+            member_id="member-peer",
+            target_install_id=local_authority_gateway_id(),
+            target_profile="default",
+            execution_policy_digest=stale_digest,
+            issued_at=100,
+            ttl_seconds=300,
+            status_expires_at=1000,
+        )
+        drifted_claims = decode_room_grant(
+            auth_adapter._room_grant_secret(),
+            drifted,
+            permission="status",
+            now=100,
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=drifted_claims,
+            expires_at=1000,
+            now=100,
+        )
+        monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            refused = await cli.post(
+                "/v1/room-members/grants/refresh",
+                json={"ttl_seconds": 300},
+                headers={"Authorization": f"HermesRoom {drifted}"},
+            )
+            refused_body = await refused.json()
+        assert refused.status == 403
+        assert refused_body["error"]["code"] == "room_reauthorization_required"
+
+    @pytest.mark.asyncio
+    async def test_scoped_grant_refresh_fails_after_secret_rotation(
+        self, auth_adapter, monkeypatch
+    ):
+        from gateway.hosted_room_peer import issue_room_grant
+        from gateway.hosted_rooms import local_authority_gateway_id
+
+        monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
+        revoked = issue_room_grant(
+            b"x" * 32,
+            grant_id="grant-revoked",
+            room_id="room-1",
+            home_install_id="install-home",
+            authority_gateway_id="install-home",
+            authority_epoch=1,
+            member_id="member-peer",
+            target_install_id=local_authority_gateway_id(),
+            target_profile="default",
+            issued_at=100,
+            ttl_seconds=300,
+            status_expires_at=1000,
+        )
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            denied = await cli.post(
+                "/v1/room-members/grants/refresh",
+                json={},
+                headers={"Authorization": f"HermesRoom {revoked}"},
+            )
+            denied_body = await denied.json()
+        assert denied.status == 401
+        assert denied_body["error"]["code"] == "invalid_room_grant"
+
+    def test_grant_refresh_keeps_idempotency_scope_but_member_change_does_not(
+        self, auth_adapter
+    ):
+        from types import SimpleNamespace
+
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_rooms import local_authority_gateway_id
+
+        common = {
+            "room_id": "room-1",
+            "home_install_id": "install-home",
+            "authority_gateway_id": "gateway-home",
+            "authority_epoch": 1,
+            "member_id": "member-reviewer",
+            "target_install_id": local_authority_gateway_id(),
+            "target_profile": "default",
+        }
+        first = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-first",
+            **common,
+        )
+        refreshed = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-refreshed",
+            **common,
+        )
+        other_member = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-other-member",
+            **{**common, "member_id": "member-other"},
+        )
+        for grant in (first, other_member):
+            claims = decode_room_grant(
+                auth_adapter._room_grant_secret(),
+                grant,
+                permission="status",
+            )
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(),
+                claims=claims,
+                expires_at=float(claims["status_expires_at"]),
+            )
+
+        def request(token):
+            return SimpleNamespace(
+                headers={"Authorization": f"HermesRoom {token}"},
+                method="POST",
+                path="/v1/runs",
+            )
+
+        first_scope = auth_adapter._run_idempotency_scope(request(first))
+        assert auth_adapter._run_idempotency_scope(request(refreshed)) == first_scope
+        assert auth_adapter._run_idempotency_scope(request(other_member)) != first_scope
+
+    @pytest.mark.asyncio
+    async def test_scoped_grant_revoke_is_idempotent_and_fences_prior_lineage(
+        self, auth_adapter, monkeypatch
+    ):
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_rooms import local_authority_gateway_id
+
+        for target in (
+            "gateway.platforms.api_server.time.time",
+            "gateway.hosted_rooms_common.time.time",
+        ):
+            monkeypatch.setattr(target, lambda: 200)
+        claims = {
+            "room_id": "room-1",
+            "home_install_id": "install-home",
+            "authority_gateway_id": "install-home",
+            "authority_epoch": 1,
+            "member_id": "member-peer",
+            "target_install_id": local_authority_gateway_id(),
+            "target_profile": "default",
+        }
+        old_grant = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-old",
+            **claims,
+            issued_at=100,
+            ttl_seconds=300,
+            status_expires_at=1000,
+        )
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/v1/room-members/grants/revoke",
+                json={},
+                headers={"Authorization": f"HermesRoom {old_grant}"},
+            )
+            repeated = await cli.post(
+                "/v1/room-members/grants/revoke",
+                json={},
+                headers={"Authorization": f"HermesRoom {old_grant}"},
+            )
+            denied = await cli.get(
+                "/v1/room-members/capabilities",
+                headers={"Authorization": f"HermesRoom {old_grant}"},
+            )
+            denied_run = await cli.post(
+                "/v1/runs",
+                data="{never parsed",
+                headers={
+                    "Authorization": f"HermesRoom {old_grant}",
+                    "Content-Type": "application/json",
+                },
+            )
+            denied_body = await denied.json()
+            denied_run_body = await denied_run.json()
+            future_grant = issue_room_grant(
+                auth_adapter._room_grant_secret(),
+                grant_id="grant-repaired",
+                **claims,
+                issued_at=201,
+                ttl_seconds=300,
+                status_expires_at=1000,
+            )
+            future_claims = decode_room_grant(
+                auth_adapter._room_grant_secret(),
+                future_grant,
+                permission="status",
+                now=201,
+            )
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(),
+                claims=future_claims,
+                expires_at=1000,
+                now=201,
+            )
+            repaired = await cli.get(
+                "/v1/room-members/capabilities",
+                headers={"Authorization": f"HermesRoom {future_grant}"},
+            )
+        assert first.status == repeated.status == 200
+        assert denied.status == 403
+        assert denied_body["error"]["code"] == "room_reauthorization_required"
+        assert denied_run.status == 403
+        assert (
+            denied_run_body["error"]["code"]
+            == "room_reauthorization_required"
+        )
+        assert auth_adapter._pending_agent_requests == 0
+        assert repaired.status == 200
+
+    @pytest.mark.asyncio
+    async def test_status_room_grant_opens_the_run_event_stream(self, auth_adapter, tmp_path):
+        """A grant that may poll a room-scoped run may also read its /events stream, with no
+        gateway API key; revoking the grant closes that door again."""
+        adapter = auth_adapter
         _use_idempotency_db(adapter, tmp_path / "idem.db")
-        history = AsyncMock(return_value=[])
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with (
-                patch.object(
-                    adapter,
-                    "_conversation_history_for_session",
-                    new=history,
-                ),
-                patch.object(adapter, "_create_agent") as create,
-            ):
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "room_id": "room-1",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            grant = (await invitation.json())["grant"]
+            room_headers = {"Authorization": f"HermesRoom {grant}"}
+            run_id = "run_room_stream"
+            scope_request = MagicMock()
+            scope_request.headers = room_headers
+            scope_request.path = f"/v1/runs/{run_id}/events"
+            scope_request.method = "GET"
+            adapter._run_owners[run_id] = adapter._run_idempotency_scope(scope_request)
+            adapter._run_streams[run_id] = _RunStream()
+            adapter._run_streams_created[run_id] = time.time()
+            adapter._set_run_status(run_id, "running")
+
+            polled = await cli.get(f"/v1/runs/{run_id}", headers=room_headers)
+            assert polled.status == 200
+            stream = await cli.get(f"/v1/runs/{run_id}/events", headers=room_headers)
+            assert stream.status == 200
+            adapter._run_streams[run_id].put_nowait(None)
+            assert b"stream closed" in await asyncio.wait_for(stream.content.read(), timeout=5.0)
+
+            revoked = await cli.post("/v1/room-members/grants/revoke", json={}, headers=room_headers)
+            assert revoked.status == 200
+            adapter._run_streams[run_id] = _RunStream()
+            denied = await cli.get(f"/v1/runs/{run_id}/events", headers=room_headers)
+            assert denied.status == 403
+            assert (await denied.json())["error"]["code"] == "room_reauthorization_required"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "suffix"),
+        [("GET", ""), ("POST", "/stop"), ("POST", "/resolve-unknown")],
+    )
+    async def test_room_grant_cannot_access_ownerless_compat_run(
+        self, auth_adapter, tmp_path, method, suffix
+    ):
+        adapter = auth_adapter
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "room_id": "room-1",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            grant = (await invitation.json())["grant"]
+            adapter._run_statuses["run_ownerless"] = {
+                "run_id": "run_ownerless",
+                "status": "running",
+            }
+            response = await cli.request(
+                method,
+                f"/v1/runs/run_ownerless{suffix}",
+                json={} if method == "POST" else None,
+                headers={"Authorization": f"HermesRoom {grant}"},
+            )
+        assert response.status == 404
+
+    @pytest.mark.asyncio
+    async def test_scoped_grant_admits_group_session_run_without_peer_api_key(
+        self, auth_adapter, tmp_path
+    ):
+        from gateway import hosted_rooms
+
+        adapter = auth_adapter
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "grant_id": "grant-room-1",
+                    "room_id": "room-1",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                    "ttl_seconds": 3600,
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            invitation_body = await invitation.json()
+            assert invitation.status == 201
+            grant = invitation_body["grant"]
+            catalog = invitation_body["catalog"]
+            probe = await cli.get(
+                "/v1/room-members/capabilities",
+                headers={"Authorization": f"HermesRoom {grant}"},
+            )
+            probe_body = await probe.json()
+            assert probe.status == 200
+            assert probe_body["catalog"] == catalog
+            prompt = "Review this room message."
+            dispatch = {
+                "protocol_version": 2,
+                "room_id": "room-1",
+                "home_install_id": "install-home",
+                "authority_gateway_id": "gateway-home",
+                "authority_epoch": 1,
+                "member_id": "member-reviewer",
+                "target_install_id": catalog["installation_id"],
+                "target_profile": "default",
+                "task_id": "task-room-1",
+                "execution_generation": 1,
+                "source_event_seq": 1,
+                "cancellation_scope_id": "cancel-room-1",
+                "prompt": prompt,
+                "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
+                "capability_digest": catalog["catalog_digest"],
+                "execution_policy_digest": catalog["execution_policy"][
+                    "policy_digest"
+                ],
+                "trace_id": "trace-room-1",
+            }
+            with patch.object(adapter, "_create_agent") as create:
                 agent = MagicMock()
-                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.run_conversation.return_value = {
+                    "final_response": "Scoped room reply."
+                }
                 agent.session_prompt_tokens = agent.session_completion_tokens = (
                     agent.session_total_tokens
                 ) = 0
                 create.return_value = agent
-                response = await cli.post(
-                    "/v1/runs", json={"input": "no stored session"}
+                started = await cli.post(
+                    "/v1/runs",
+                    json={"input": prompt, "hosted_room_dispatch": dispatch},
+                    headers={
+                        "Authorization": f"HermesRoom {grant}",
+                        "Idempotency-Key": "room:task-room-1:1",
+                    },
                 )
-        assert response.status == 202
-        history.assert_not_awaited()
+                started_body = await started.json()
+                assert started.status == 202
+                run_id = started_body["run_id"]
+                for _ in range(40):
+                    status = await cli.get(
+                        f"/v1/runs/{run_id}",
+                        headers={"Authorization": f"HermesRoom {grant}"},
+                    )
+                    status_body = await status.json()
+                    if status_body.get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+            assert status.status == 200
+            assert status_body["output"] == "Scoped room reply."
+            session_id = status_body["session_id"]
+            db = await adapter._ensure_session_db_async()
+            row = db.get_session(session_id)
+            assert row["source"] == "bot_room"
+            assert row["title"] == "Group: room-1"
+            assert catalog["installation_id"] == (
+                hosted_rooms.local_authority_gateway_id()
+            )
+
+    @pytest.mark.asyncio
+    async def test_scoped_grant_rejects_capability_and_target_tampering(
+        self, auth_adapter, tmp_path
+    ):
+        adapter = auth_adapter
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "room_id": "room-1",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            invitation_body = await invitation.json()
+            prompt = "Review."
+            dispatch = {
+                "protocol_version": 2,
+                "room_id": "room-1",
+                "home_install_id": "install-home",
+                "authority_gateway_id": "gateway-home",
+                "authority_epoch": 1,
+                "member_id": "member-reviewer",
+                "target_install_id": invitation_body["catalog"]["installation_id"],
+                "target_profile": "default",
+                "task_id": "task-room-1",
+                "execution_generation": 1,
+                "source_event_seq": 1,
+                "cancellation_scope_id": "cancel-room-1",
+                "prompt": prompt,
+                "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
+                "capability_digest": "f" * 64,
+                "execution_policy_digest": invitation_body["catalog"][
+                    "execution_policy"
+                ]["policy_digest"],
+                "trace_id": "trace-room-1",
+            }
+            with patch.object(adapter, "_create_agent") as create:
+                rejected = await cli.post(
+                    "/v1/runs",
+                    json={"input": prompt, "hosted_room_dispatch": dispatch},
+                    headers={
+                        "Authorization": f"HermesRoom {invitation_body['grant']}",
+                        "Idempotency-Key": "room:task-room-1:1",
+                    },
+                )
+            assert rejected.status == 403
+            create.assert_not_called()

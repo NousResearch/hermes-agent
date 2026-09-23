@@ -14,6 +14,7 @@ except ImportError:
 from gateway import hosted_rooms as rooms
 from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError, GroupStopScopeNotFound
 from gateway.platforms.api_server_run_scope import validate_room_run_scope
+from hermes_state_runtime import RuntimeStoreError
 
 MAX_REQUEST_BYTES = 8 * 1024
 
@@ -53,10 +54,13 @@ def _authorize_owner(adapter, request):
     return None
 
 
-def _stop_local_records(adapter, snapshot):
+async def _stop_local_records(adapter, snapshot):
     from gateway.platforms import api_server, api_server_runs
+    from gateway.platforms.api_server_authority_runs import run_admission, stop_run
+    from gateway.session_api_turn import owns_api_run
 
     scope = snapshot["scope"]
+    failed = False
     for record in snapshot["runs"]:
         run_id = record["run_id"]
         if adapter._run_owners.get(run_id) != scope:
@@ -65,9 +69,26 @@ def _stop_local_records(adapter, snapshot):
         task = adapter._active_run_tasks.get(run_id)
         if agent is None and task is None:
             continue
+        # The canonical turn has no adapter agent. Require its persisted owner
+        # scope as well as the local receipt before interrupting its generation.
+        if getattr(adapter.gateway_runner, 'session_authority', None) is not None:
+            with adapter._profile_scope(None):
+                admitted = run_admission(adapter, run_id)
+                if admitted is not None:
+                    if not owns_api_run(adapter, run_id, scope):
+                        continue
+                    try:
+                        await stop_run(adapter, run_id)
+                    except RuntimeStoreError:
+                        # The committed intent remains retryable; continue
+                        # stopping the other local runs in this snapshot.
+                        failed = True
+                    continue
         status = adapter._run_statuses.get(run_id, {"status": record["status"]})
         api_server_runs._stop_loaded_run(adapter, run_id, status, agent, task, _api_server=api_server)
         api_server_runs._unregister_approval_notify(adapter._run_approval_sessions.get(run_id))
+    if failed:
+        raise RuntimeStoreError('owner_stop_unconfirmed')
 
 
 def _check_participant_owner(identity):
@@ -122,7 +143,7 @@ def http_routes(adapter):
                     return denied
                 snapshot = await asyncio.to_thread(store.freeze_room_scope, identity, body["command_id"])
                 # The admission barrier is committed before interrupt/reap work.
-                _stop_local_records(adapter, snapshot)
+                await _stop_local_records(adapter, snapshot)
                 snapshot = await asyncio.to_thread(store.room_stop_snapshot, snapshot["command_id"])
             else:
                 snapshot = await asyncio.to_thread(store.room_stop_snapshot, request.match_info["command_id"])
@@ -132,6 +153,8 @@ def http_routes(adapter):
             return web.json_response(_public_snapshot(adapter, snapshot))
         except GroupRunFreezeError as exc:
             return _error(str(exc), exc.code, exc.status)
+        except RuntimeStoreError:
+            return _error("Owner control could not be confirmed. Check this operation again.", "group_stop_unconfirmed", 503)
         except (TypeError, ValueError, KeyError):
             return _error("Invalid participant or command identity.", "invalid_group_stop_request", 400)
         except (OSError, RuntimeError, sqlite3.Error):

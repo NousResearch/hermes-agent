@@ -14,7 +14,9 @@ from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
 from agent.trajectory import has_incomplete_scratchpad
-from agent.turn_truncation import continue_codex_incomplete, normalize_response_for_agent, partial_result
+from agent.turn_truncation import (
+    CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
+)
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -25,12 +27,14 @@ _REASONING_TAG_RE = re.compile(r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>')
 class ResponseIntakeVerdict:
     """``action``: ``"fallthrough"`` (process ``assistant_message``), ``"continue"`` (retry the
     iteration: incomplete scratchpad / Codex continuation) or ``"return"`` (``result`` is the
-    turn's result dict). ``assistant_message``/``finish_reason`` are the normalized outputs."""
+    turn's result dict). ``assistant_message``/``finish_reason`` are the normalized outputs;
+    ``active_system_prompt`` is rebound after a Codex reasoning-only fallover (#67321)."""
 
     action: str
     assistant_message: Any
     finish_reason: Any
     result: Optional[Dict[str, Any]] = None
+    active_system_prompt: Any = None
 
 
 def _coerce_content_text(raw: Any) -> str:
@@ -115,7 +119,7 @@ def _relay_thinking(agent: Any, content: str) -> None:
 def normalize_model_response(
     agent: Any, *, response: Any, messages: Any, api_messages: Any, conversation_history: Any,
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
-    effective_task_id: Any, turn_id: Any,
+    effective_task_id: Any, turn_id: Any, active_system_prompt: Any = None,
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
@@ -125,7 +129,7 @@ def normalize_model_response(
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseIntakeVerdict:
         return ResponseIntakeVerdict(
             action=action, assistant_message=assistant_message, finish_reason=finish_reason,
-            result=result,
+            result=result, active_system_prompt=active_system_prompt,
         )
 
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
@@ -159,7 +163,7 @@ def normalize_model_response(
             agent._buffer_vprint(f"🔄 Retrying API call ({agent._incomplete_scratchpad_retries}/2)...")
             return _verdict("continue")  # don't add the broken message
         agent._flush_status_buffer()
-        agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True)
+        agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True, diagnostic=True)
         agent._incomplete_scratchpad_retries = 0
         rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
         agent._cleanup_task_resources(effective_task_id)
@@ -173,10 +177,18 @@ def normalize_model_response(
         _codex_result = continue_codex_incomplete(
             agent, assistant_message, finish_reason, messages=messages,
             conversation_history=conversation_history, api_call_count=api_call_count,
+            response=response,
         )
+        if _codex_result is CODEX_FALLBACK_ACTIVATED:
+            # The failover rewrote the Model:/Provider: identity on the cached system prompt;
+            # rebind it so the next iteration's request is rebuilt with the new identity.
+            from agent.conversation_loop import _sync_failover_system_message
+            active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
+            return _verdict("continue")
         if _codex_result is not None:
             return _verdict("return", _codex_result)
         return _verdict("continue")
     if hasattr(agent, "_codex_incomplete_retries"):
         agent._codex_incomplete_retries = 0
+        agent._codex_reasoning_only_streak = 0
     return _verdict("fallthrough")

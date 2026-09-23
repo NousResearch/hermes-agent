@@ -37,6 +37,20 @@ describe('session tile optimistic owner metadata', () => {
     $sessionTiles.set([])
   })
 
+  it('never lists a bots-workspace tile — hidden relationship chats stay off the Sessions list (#113273)', () => {
+    expect(
+      listTileSessionRow({
+        preview: 'hello from the bot chat',
+        runtimeId: 'rt-bot-chat',
+        sessions: [],
+        storedSessionId: 'stored-bot-chat',
+        workspaceMode: 'bots'
+      })
+    ).toBe(false)
+
+    expect($sessions.get()).toEqual([])
+  })
+
   it('keeps the tile source on its first optimistic sidebar row', () => {
     const storedSessionId = 'stored-tile-owner-metadata'
     const ownerRoute = { connectionId: 'source-a', profile: 'default' }
@@ -140,6 +154,15 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
+  it.each(['interrupt', 'steer'] as const)('rejects tile %s RPC failure without converting it to a queue signal', async mode => {
+    requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
+    const { result } = renderTileActions()
+    await act(async () => {
+      await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
+    })
+    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
+  })
+
   it('resumes the stored session and retries once when session.redirect (steer) reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let redirectAttempts = 0
@@ -188,7 +211,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
           throw new Error('session not found')
         }
 
-        return {}
+        return { admission_id: params?.submission_id, status: 'started' }
       }
 
       if (method === 'session.resume') {

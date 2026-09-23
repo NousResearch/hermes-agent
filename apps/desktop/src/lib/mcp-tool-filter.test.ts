@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { countEnabledTools, isToolEnabled, readToolsFilter, toggleToolInServer } from './mcp-tool-filter'
+import {
+  countEnabledTools,
+  isToolEnabled,
+  readToolsFilter,
+  setDisabledTools,
+  toggleToolInServer
+} from './mcp-tool-filter'
 
 describe('readToolsFilter', () => {
   it('returns empty when no tools object', () => {
@@ -31,6 +37,13 @@ describe('isToolEnabled', () => {
     expect(isToolEnabled(server, 'a')).toBe(true)
     expect(isToolEnabled(server, 'b')).toBe(false)
   })
+
+  it('empty include blocks every tool (block-all, not all-on)', () => {
+    const server = { tools: { include: [] as string[] } }
+    expect(isToolEnabled(server, 'a')).toBe(false)
+    expect(isToolEnabled(server, 'b')).toBe(false)
+    expect(countEnabledTools(server, ['a', 'b', 'c'])).toBe(0)
+  })
 })
 
 describe('toggleToolInServer', () => {
@@ -49,6 +62,12 @@ describe('toggleToolInServer', () => {
     expect(next.tools).toEqual({ include: ['b'] })
   })
 
+  it('retains empty include when last include tool is toggled off', () => {
+    const next = toggleToolInServer({ tools: { include: ['a'] } }, 'a')
+    expect(next.tools).toEqual({ include: [] })
+    expect(isToolEnabled(next, 'a')).toBe(false)
+  })
+
   it('respects include mode: re-enabling adds back to include', () => {
     const next = toggleToolInServer({ tools: { include: ['b'] } }, 'a')
     expect(next.tools).toEqual({ include: ['b', 'a'] })
@@ -63,6 +82,24 @@ describe('toggleToolInServer', () => {
     const server = { tools: { exclude: ['a'] } }
     toggleToolInServer(server, 'b')
     expect(server.tools.exclude).toEqual(['a'])
+  })
+})
+
+describe('setDisabledTools', () => {
+  it('keeps a stored rule for a tool the current probe did not return', () => {
+    expect(setDisabledTools({ tools: { exclude: ['dangerous_tool'] } }, ['b'], ['a', 'b']).tools).toEqual({
+      exclude: ['b', 'dangerous_tool']
+    })
+
+    expect(setDisabledTools({ tools: { exclude: ['dangerous_tool'] } }, [], ['a', 'b']).tools).toEqual({
+      exclude: ['dangerous_tool']
+    })
+
+    expect(setDisabledTools({ tools: { include: ['a', 'rare_tool'] } }, ['b'], ['a', 'b']).tools).toEqual({
+      include: ['a', 'rare_tool']
+    })
+
+    expect(setDisabledTools({ tools: { exclude: ['b'] } }, [], ['a', 'b']).tools).toBeUndefined()
   })
 })
 

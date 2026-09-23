@@ -8,23 +8,27 @@ import {
   useStdout,
   useTerminalTitle
 } from '@hermes/ink'
+import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
+import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
-import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
+import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
-  ClarifyRespondResponse,
+  AnyGatewayEvent,
+  ClarifyLockResponse,
   ConfigSetResponse,
-  GatewayEvent,
   SessionActiveListResponse,
   SessionCloseResponse,
+  SharedControlRespondResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
@@ -46,14 +50,21 @@ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
+import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
+import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
+import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow } from './interfaces.js'
+import { $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
+import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
+import { respondToServerRequest } from './serverRequestStore.js'
+import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
+import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -62,6 +73,15 @@ import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
+import {
+  BACKEND_GAVE_UP_ACTIVITY,
+  BACKEND_RESTARTING,
+  BACKEND_RESTARTING_ACTIVITY,
+  backendGaveUp,
+  CONNECTION_LOST,
+  CONNECTION_LOST_ACTIVITY,
+  lastStderrLine
+} from './userMessages.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
 
@@ -86,7 +106,7 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
 }
 
 export interface PromptLiveSessionOptions {
-  dispatchSubmission: (full: string) => void
+  dispatchSubmission: (full: string, destination: SubmissionDestination) => void
   maybeWarn: (value: unknown) => void
   modelArg?: string
   newLiveSession: (msg?: string, title?: string) => Promise<null | string> | null | string | void
@@ -124,10 +144,12 @@ export async function startPromptLiveSession({
     return null
   }
 
-  const requestedModel = modelArg ? sessionScopedModelArg(modelArg) : ''
+  const destination = Object.freeze({ ...captureDestination(), sid })
+  const requestedModel = modelArg?.trim() ?? ''
 
   if (requestedModel) {
-    const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
+    const mutation = await mutateCanonicalSession({ request: rpc }, sid, 'model', requestedModel)
+    const result = mutation ? { ...mutation.result, value: mutation.result.model } : null
 
     if (!result?.value) {
       sys('error: invalid response: model switch')
@@ -135,12 +157,14 @@ export async function startPromptLiveSession({
       return sid
     }
 
-    sys(`model → ${result.value}`)
-    maybeWarn(result)
-    onModelSwitched?.(result.value, result)
+    if (isCurrentDestination(destination)) {
+      sys(`model → ${result.value}`)
+      maybeWarn(result)
+      onModelSwitched?.(result.value, result)
+    }
   }
 
-  dispatchSubmission(trimmed)
+  dispatchSubmission(trimmed, destination)
 
   return sid
 }
@@ -226,18 +250,21 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const slashFlightRef = useRef(0)
-  const slashRef = useRef<(cmd: string) => boolean>(() => false)
+  const slashRef = useRef<SlashHandler>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
-  const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
+  const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
+  const onServerRequestRef = useRef<(request: ServerRequest) => boolean>(() => false)
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
-  const submitLiteralRef = useRef<(value: string) => void>(() => {})
+  const submitLiteralRef = useRef<(value: string, attachments?: Array<{ path: string; mime: string }>) => void>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
   const recoverSidRef = useRef<null | string>(null)
   const recoveryAtRef = useRef<number[]>([])
+  // "Hermes stopped and could not be restarted" is said once per outage; reset on gateway.ready.
+  const gaveUpRef = useRef(false)
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
   const msgIdSeqRef = useRef(0)
   const heightCachesRef = useRef(new Map<string, Map<string, number>>())
@@ -590,8 +617,42 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     let stopped = false
+    applyAgentSnapshot(ui.sid)
+    applyProcessSnapshot(ui.sid)
+    applyGoalSnapshot(ui.sid)
+    // Goal state changes only on /goal and after a judged turn, both of which push
+    // `session.control.update`; read it once per session instead of polling state.db.
+    gw.request<{ control: SessionControlSnapshot }>('session.control.read', { session_id: ui.sid })
+      .then(raw => {
+        const result = asRpcResult<{ control: SessionControlSnapshot }>(raw)
+
+        if (!stopped && result && getUiState().sid === ui.sid) {
+          applyGoalSnapshot(ui.sid, result.control?.goal ?? null)
+        }
+      })
+      .catch(() => {})
 
     const refresh = () => {
+      const sid = ui.sid
+      gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<SubagentListResponse>(raw)
+
+          if (!stopped && result && getUiState().sid === sid) {
+            applyAgentSnapshot(sid, result)
+          }
+        })
+        .catch(() => {})
+      // Background processes share the dock with the subagents (Processes block).
+      gw.request<{ processes: ProcessEntry[] }>('process.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<{ processes: ProcessEntry[] }>(raw)
+
+          if (!stopped && result && getUiState().sid === sid) {
+            applyProcessSnapshot(sid, result.processes ?? [])
+          }
+        })
+        .catch(() => {})
       gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)
@@ -633,7 +694,12 @@ export function useMainApp(gw: GatewayClient) {
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
-  const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
+  const marker =
+    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
+      ? '⚠'
+      : ui.busy
+        ? '⏳'
+        : '✓'
 
   const tabCwd = ui.info?.cwd
 
@@ -687,13 +753,30 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const fresh = capturePromptResponseGuard('clarify', clarify)
+
+      if (!fresh()) {
+        return
+      }
+
       const label = toolTrailLabel('clarify')
 
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
-        if (!r) {
+      // Canonical shared controls answer through the generation-bound RPC; a
+      // legacy server→client request resolves its response frame locally.
+      const answered = clarify.sharedControl
+        ? rpc<SharedControlRespondResponse>('clarify.respond', { answer, ...sharedControlParams(clarify) }).then(r => Boolean(r) && fresh())
+        : Promise.resolve(respondToServerRequest(clarify.requestId, { answer }))
+
+      void answered.then(ok => {
+        if (!ok) {
+          // The request already expired (request.cancel raced the keystroke): nothing to answer.
+          if (!clarify.sharedControl) {
+            patchOverlayState({ clarify: null })
+          }
+
           return
         }
 
@@ -725,9 +808,9 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify, rpc]
   )
 
-  // Lock one answer of a batch clarify (clarify.respond + question_id). The
-  // overlay stays up until the server reports no remaining questions — the
-  // final lock resolves the tool and the turn continues.
+  // Lock one answer of a batch clarify (`clarify.lock` RPC). The overlay stays
+  // up until the server reports no remaining questions — the final lock
+  // resolves the server request and the turn continues.
   const answerClarifyQuestion = useCallback(
     (qid: string, answer: string) => {
       const clarify = overlay.clarify
@@ -736,16 +819,28 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
+      const fresh = capturePromptResponseGuard('clarify', clarify)
+
+      if (!fresh()) {
+        return
+      }
+
+      rpc<ClarifyLockResponse>('clarify.lock', {
         answer,
         question_id: qid,
         request_id: clarify.requestId
       }).then(r => {
-        if (!r) {
+        if (!r || !fresh()) {
           return
         }
 
         const answers = { ...(clarify.answers ?? {}), [qid]: answer }
+
+        if (r.status === 'expired') {
+          patchOverlayState({ clarify: null })
+
+          return
+        }
 
         if ((r.remaining ?? []).length > 0) {
           patchOverlayState({ clarify: { ...clarify, answers } })
@@ -803,6 +898,7 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     if (
       !ui.sid ||
+      ui.gatewayConnected === false ||
       ui.busy ||
       composerRefs.queueEditRef.current !== null ||
       composerRefs.queueRef.current.length === 0
@@ -816,7 +912,7 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+  }, [ui.sid, ui.busy, ui.gatewayConnected, composerActions, composerRefs, sendQueued])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {
@@ -846,7 +942,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { setInput: composerActions.setInput },
+        composer: { setInput: composerActions.setInput, enqueue: composerActions.enqueue },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -871,6 +967,7 @@ export function useMainApp(gw: GatewayClient) {
       appendMessage,
       bellOnComplete,
       bellOnPrompt,
+      composerActions.enqueue,
       composerActions.setInput,
       gateway,
       panel,
@@ -890,50 +987,102 @@ export function useMainApp(gw: GatewayClient) {
 
   onEventRef.current = onEvent
 
+  const onServerRequest = useMemo(
+    () =>
+      createServerRequestHandler({
+        ringPromptBell: () => {
+          if (bellOnPrompt && stdout?.isTTY) {
+            stdout.write('\x07')
+          }
+        },
+        setStatus: status => patchUiState({ status })
+      }),
+    [bellOnPrompt, stdout]
+  )
+
+  onServerRequestRef.current = onServerRequest
+
   useEffect(() => {
-    const handler = (ev: GatewayEvent) => onEventRef.current(ev)
+    const handler = (ev: AnyGatewayEvent) => {
+      if (ev.type === 'gateway.ready') {
+        gaveUpRef.current = false
+      }
 
-    const exitHandler = () => {
+      onEventRef.current(ev)
+    }
+
+    const requestHandler = (request: ServerRequest) => {
+      if (!onServerRequestRef.current(request)) {
+        request.fail(JSON_RPC_METHOD_NOT_FOUND, `the terminal UI cannot answer ${request.method}`)
+      }
+    }
+
+    const exitHandler = (code: null | number) => {
       turnController.reset()
+      const state = getUiState()
+      // session.resume takes the durable stored id, not the process-local
+      // runtime sid (they coincide on canonical gateways).
+      const storedSid = state.storedSid ?? state.sid
 
-      // A still-owned child dying while the TUI is alive is an *unexpected*
-      // death — a user /quit exits Node before this fires, and a replaced child
-      // is identity-skipped in GatewayClient. Rather than stranding a long
-      // session (the user's complaint), respawn the gateway and resume the
-      // persisted session via the next gateway.ready, so a single crash / OOM /
-      // signal doesn't lose their work. planGatewayRecovery bounds the attempts
-      // so a gateway that crash-loops on startup can't spawn-storm, and falls
-      // back to recoverSidRef when sid was already cleared by a prior exit.
-      const plan = planGatewayRecovery(getUiState().sid, recoverSidRef.current, recoveryAtRef.current, Date.now())
+      // Socket closed: the backend (and any live turn) is still there —
+      // GatewayClient owns the backoff reconnect, and the next gateway.ready
+      // resumes the durable session id. Calling start() here would race that
+      // reconnect and reset its backoff. Keep sid: durable offline input stays
+      // fenced to its destination and drains once `gatewayConnected` returns.
+      if (gw.attached) {
+        recoverSidRef.current = storedSid ?? recoverSidRef.current
+        patchUiState({ busy: false, compacting: false, gatewayConnected: false, status: 'reconnecting…' })
 
-      // Clear sid immediately: while the gateway is down, sid-guarded effects
-      // (session.active_list poll, queue drain) would otherwise fire RPCs at a
-      // dead/respawning gateway. recoverSidRef carries the session forward, and
-      // resumeById restores sid once the fresh gateway is ready.
-      recoveryAtRef.current = plan.attempts
-      patchUiState({ busy: false, compacting: false, sid: null, status: 'gateway exited' })
-
-      if (plan.recover && plan.sid) {
-        recoverSidRef.current = plan.sid
-        turnController.pushActivity('gateway exited · recovering session…', 'warn')
-        sys('gateway exited — recovering your session (any in-flight reply was lost)')
-        gw.start()
+        if (state.sid) {
+          turnController.pushActivity(CONNECTION_LOST_ACTIVITY, 'warn')
+          sys(CONNECTION_LOST)
+        }
 
         return
       }
 
-      recoverSidRef.current = null
-      turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      // No socket was ever granted (bootstrap failed): GatewayClient retries
+      // discovery on its backoff without starting a stopped owner; discovery
+      // retries must never silently create a replacement for an ended session.
+      // planGatewayRecovery bounds the resume attempts so a crash-looping
+      // gateway can't storm.
+      const plan = planGatewayRecovery(storedSid, recoverSidRef.current, recoveryAtRef.current, Date.now())
+
+      recoveryAtRef.current = plan.attempts
+      patchUiState({ busy: false, compacting: false, gatewayConnected: false, status: 'gateway exited' })
+
+      if (plan.recover && plan.sid) {
+        recoverSidRef.current = plan.sid
+        turnController.pushActivity(BACKEND_RESTARTING_ACTIVITY, 'warn')
+        sys(BACKEND_RESTARTING)
+
+        return
+      }
+
+      // Budget spent (crash loop) or nothing to recover: GatewayClient keeps
+      // retrying on its backoff — say so ONCE, with the exit code and the last
+      // stderr line, rather than repeating "gateway exited" every tick. Keep the
+      // recovery target: when that background reconnect eventually succeeds,
+      // gateway.ready must reopen the SAME chat instead of forging a new one.
+      recoverSidRef.current = plan.sid
+      patchUiState({ status: 'stopped' })
+
+      if (!gaveUpRef.current) {
+        gaveUpRef.current = true
+        turnController.pushActivity(BACKEND_GAVE_UP_ACTIVITY, 'error')
+        sys(`error: ${backendGaveUp(code, lastStderrLine(gw.getLogTail(20)))}`)
+      }
     }
 
     gw.on('event', handler)
+    gw.on('request', requestHandler)
     gw.on('exit', exitHandler)
     gw.drain()
 
     // entry.tsx's setupGracefulExit handles process cleanup on real exit.
     return () => {
       gw.off('event', handler)
+      gw.off('request', requestHandler)
       gw.off('exit', exitHandler)
     }
   }, [gw, sys])
@@ -997,24 +1146,51 @@ export function useMainApp(gw: GatewayClient) {
 
   slashRef.current = slash
 
-  const respondWith = useCallback(
-    (method: string, params: Record<string, unknown>, done: () => void) => rpc(method, params).then(r => r && done()),
-    [rpc]
-  )
+  // Answer a server→client request by id; the card closes either way (an
+  // expired request has nothing left to answer).
+  const respondWith = useCallback((requestId: string, result: Record<string, unknown>, done: () => void) => {
+    respondToServerRequest(requestId, result)
+    done()
+  }, [])
 
   const answerApproval = useCallback(
-    (choice: string) =>
-      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
+    (choice: string) => {
+      const fresh = capturePromptResponseGuard('approval', overlay.approval)
+
+      if (!fresh() || !overlay.approval) {
+        return
+      }
+
+      const settle = () => {
+        if (!fresh()) {
+          return
+        }
+
         patchOverlayState({ approval: null })
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
-      }),
-    [respondWith, ui.sid]
+      }
+
+      // Canonical shared controls answer through the generation-bound RPC; a
+      // legacy server→client request resolves its response frame locally.
+      if (overlay.approval.sharedControl) {
+        return rpc<SharedControlRespondResponse>('approval.respond', { choice, ...sharedControlParams(overlay.approval) }).then(r => r && settle())
+      }
+
+      respondWith(overlay.approval.requestId, { choice }, settle)
+    },
+    [overlay.approval, respondWith, rpc]
   )
 
   const answerSudo = useCallback(
     (pw: string) => {
       if (!overlay.sudo) {
+        return
+      }
+
+      const fresh = capturePromptResponseGuard('sudo', overlay.sudo)
+
+      if (!fresh()) {
         return
       }
 
@@ -1024,7 +1200,11 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ sudo: null })
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
+      respondWith(requestId, { value: pw }, () => {
+        if (!fresh()) {
+          return
+        }
+
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -1038,18 +1218,48 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const fresh = capturePromptResponseGuard('secret', overlay.secret)
+
+      if (!fresh()) {
+        return
+      }
+
       const requestId = overlay.secret.requestId
 
       if (!value) {
         patchOverlayState({ secret: null })
       }
 
-      return respondWith('secret.respond', { request_id: requestId, value }, () => {
+      respondWith(requestId, { value }, () => {
+        if (!fresh()) {
+          return
+        }
+
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })
     },
     [overlay.secret, respondWith]
+  )
+
+  const answerVaultUnlock = useCallback(
+    (password: string) => {
+      if (!overlay.vaultUnlock) {
+        return
+      }
+
+      const requestId = overlay.vaultUnlock.requestId
+
+      if (!password) {
+        patchOverlayState({ vaultUnlock: null })
+      }
+
+      respondWith(requestId, { value: password }, () => {
+        patchOverlayState({ vaultUnlock: null })
+        patchUiState({ status: 'running…' })
+      })
+    },
+    [overlay.vaultUnlock, respondWith]
   )
 
   const onModelSelect = useCallback((value: string) => {
@@ -1080,7 +1290,7 @@ export function useMainApp(gw: GatewayClient) {
   const newPromptSession = useCallback(
     (prompt: string, modelArg?: string) => {
       void startPromptLiveSession({
-        dispatchSubmission,
+        dispatchSubmission: (text, destination) => send(text, true, text, value => value, { destination }),
         maybeWarn,
         modelArg,
         newLiveSession: session.newLiveSession,
@@ -1094,7 +1304,7 @@ export function useMainApp(gw: GatewayClient) {
         sys
       })
     },
-    [dispatchSubmission, maybeWarn, rpc, session.newLiveSession, sys]
+    [send, maybeWarn, rpc, session.newLiveSession, sys]
   )
 
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))
@@ -1162,6 +1372,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
@@ -1185,6 +1396,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultUnlock,
       clearSelection,
       closeLiveSession,
       newPromptSession,

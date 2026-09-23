@@ -110,6 +110,22 @@ def pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: An
     return pop(handle, **kwargs)
 
 
+def pop_relay_scope_if_top(relay: Any, handle: Any, *, output: Any = None, metadata: Any = None) -> bool:
+    """Pop ``handle`` only while it is the top of the scope stack; return whether it was popped.
+
+    Two concurrent Hermes turns in one session share a physical stack, so the first turn to
+    finish may find the sibling's live scope above its own. Popping through it would close the
+    sibling's scope and letting the binding raise ("scope handle is not at the top of the
+    stack") logs a traceback per overlap (#115471). The skipped scope is reclaimed by the
+    session-close drain in ``_close_scope_handle``.
+    """
+    top = _current_top(relay)
+    if top is not None and not _same_handle(top, handle):
+        return False
+    pop_relay_scope(relay, handle, output=output, metadata=metadata)
+    return True
+
+
 def _current_top(relay: Any) -> Any:
     """Return the current top-of-stack scope handle, or None."""
     # Prefer scope.get_handle(): get_scope_stack() may return a native ScopeStack that scope.pop rejects.
@@ -161,8 +177,12 @@ def _load_segments_config() -> dict[str, Any]:
     on_compaction = False
     max_turns = 0
     try:
-        from gateway.run import _load_gateway_config  # late import
-        telemetry = (_load_gateway_config().get("gateway") or {}).get("telemetry") or {}
+        # Never import gateway.run here: its import-time env setup (_HERMES_GATEWAY, HERMES_QUIET,
+        # TERMINAL_CWD := home) rebinds a CLI/TUI/cron host — hung approvals (#87183), `hermes -z`
+        # running in $HOME without the launch dir's AGENTS.md (#95577). Same reader it delegates to.
+        from hermes_cli.config_effective import load_user_config_effective
+
+        telemetry = (load_user_config_effective().get("gateway") or {}).get("telemetry") or {}
         segments = telemetry.get("session_segments") or {}
         on_compaction = bool(segments.get("on_compaction", False))
         try:
@@ -390,11 +410,14 @@ class RelayRuntime:
         push_kwargs.update(handle=parent_handle, metadata=scope_metadata, input={})
         try:
             future = _scope_op_executor().submit(context.run, *args, **push_kwargs)
-            session.handle = future.result(timeout=_SCOPE_OP_TIMEOUT)
         except RuntimeError:
             if not exit_fallback:
                 raise
             session.handle = context.run(*args, **push_kwargs)
+        else:
+            # future.result() re-raises push's own RuntimeError; keeping it outside the
+            # except prevents a real push failure from retrying via the exit fallback.
+            session.handle = future.result(timeout=_SCOPE_OP_TIMEOUT)
         session.context = context
 
     def ensure_session(
@@ -922,7 +945,14 @@ class RelaySessionCoordinator:
             return host.register_subagent(event, metadata=metadata)
         return host.ensure_session({"session_id": session_id}, metadata=metadata)
 
-    def begin_turn(self, lease: ConversationLease, *, turn_id: str, task_id: str) -> RelayTurnContext:
+    def begin_turn(
+        self,
+        lease: ConversationLease,
+        *,
+        turn_id: str,
+        task_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> RelayTurnContext:
         if lease.released:
             raise RuntimeError("Hermes Relay conversation lease is released")
         turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
@@ -942,10 +972,17 @@ class RelaySessionCoordinator:
         if host is not None:
             # Rotation happens HERE: no live turn scope on the stack, so the session scope can close/reopen LIFO.
             _warn_on_error("segment rotation", self._maybe_rotate_segment, host, lease.session)
+            turn_metadata = dict(metadata or {})
+            turn_metadata.update(
+                runtime_metadata(
+                    host.runtime_id,
+                    **{"hermes.execution_surface": lease.platform or "unknown"},
+                )
+            )
             turn.handle = _warn_on_error(
                 "turn initialization", host.run_in_session, lease.session, host.relay.scope.push,
                 TURN_SCOPE, host.relay.ScopeType.Function, handle=lease.session.handle, input={},
-                metadata=runtime_metadata(host.runtime_id, **{"hermes.execution_surface": lease.platform or "unknown"}),
+                metadata=turn_metadata,
                 timeout=_SCOPE_OP_TIMEOUT,
             )
         turn._previous_turn = _CURRENT_TURN.get()
@@ -1205,9 +1242,11 @@ def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]] | 
     if not configured:
         if legacy_vars := configured_legacy_relay_env_vars(os.environ):
             logger.warning(
-                "Legacy NeMo Relay exporter variables are set but no %s was provided. %s no longer activate "
-                "Relay exporters; migrate the exporter configuration to a Relay plugins.toml file.",
+                "Legacy NeMo Relay exporter variables are set but no %s was provided — NO traces are being "
+                "exported. %s no longer activate Relay exporters. Run `hermes migrate relay` (or `hermes update`, "
+                "which runs it for every profile) to generate %s from them and select it in .env.",
                 RELAY_PLUGINS_CONFIG_ENV, ", ".join(legacy_vars),
+                get_hermes_home() / "relay-plugins.toml",
             )
         return None
     config_path = Path(configured).expanduser()

@@ -203,24 +203,43 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
             duration = await asyncio.to_thread(_probe_voice_duration_seconds, media_path)
             if duration is not None:
                 media_kwargs["duration"] = duration
-    with open(media_path, "rb") as f:
-        try:
-            return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
-        except Exception as media_err:
-            err_text = str(media_err).lower()
-            if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
-                logger.warning("Thread %s not found for media send, retrying without message_thread_id",
-                               media_kwargs.pop("message_thread_id"))
-            elif media_kwargs.get("parse_mode") and ("parse" in err_text or "caption" in err_text):
-                logger.warning("Caption parse failed for media send, retrying plain: %s",
-                               _sanitize_error_text(media_err))
-                media_kwargs.pop("parse_mode", None)
-                if not has_html and media_kwargs.get("caption"):
-                    media_kwargs["caption"] = _strip_mdv2_safe(media_kwargs["caption"])
-            else:
-                raise
-            f.seek(0)
-            return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
+    thumb_path = None
+    if ext in _VIDEO_EXTS:
+        # Telegram processes only small video uploads itself; past that the message carries no
+        # geometry and no thumbnail, so clients draw a square tile (see the adapter helpers).
+        # Keyed on the extension because ``_telegram_send_media`` routes every video extension to
+        # ``sendVideo`` regardless of ``force_document`` (which only forces images to documents).
+        with contextlib.suppress(Exception):
+            from plugins.platforms.telegram.adapter import _probe_video_geometry, _video_thumbnail_jpeg
+            geometry = await asyncio.to_thread(_probe_video_geometry, media_path)
+            if geometry:
+                media_kwargs.update(geometry)
+                thumb_path = await asyncio.to_thread(_video_thumbnail_jpeg, media_path, geometry.get("duration"))
+                if thumb_path:
+                    media_kwargs["thumbnail"] = thumb_path
+    try:
+        with open(media_path, "rb") as f:
+            try:
+                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
+            except Exception as media_err:
+                err_text = str(media_err).lower()
+                if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
+                    logger.warning("Thread %s not found for media send, retrying without message_thread_id",
+                                   media_kwargs.pop("message_thread_id"))
+                elif media_kwargs.get("parse_mode") and ("parse" in err_text or "caption" in err_text):
+                    logger.warning("Caption parse failed for media send, retrying plain: %s",
+                                   _sanitize_error_text(media_err))
+                    media_kwargs.pop("parse_mode", None)
+                    if not has_html and media_kwargs.get("caption"):
+                        media_kwargs["caption"] = _strip_mdv2_safe(media_kwargs["caption"])
+                else:
+                    raise
+                f.seek(0)
+                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
+    finally:
+        if thumb_path:
+            with contextlib.suppress(OSError):
+                os.remove(thumb_path)
 
 
 def _telegram_format(message):
@@ -292,7 +311,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 def _live_adapter(platform, *, lookup_failed_warning=None):
     """``(runner, adapter)`` for the in-process gateway; ``(None, None)`` standalone (cron);
     ``(runner, None)`` when the lookup fails — logged when a warning is given, never silently
-    swallowed (a silent fall-through could recreate a reconnect storm)."""
+    swallowed (a silent fall-through could recreate a reconnect storm).
+
+    Multiplex: the adapter is the ACTIVE PROFILE's (``_profile_adapters[profile]``), never a bare
+    ``runner.adapters`` hit — that map holds the default profile's bots, so a secondary profile's turn
+    would post/react with the default bot's identity. A profile with no adapter for the platform
+    yields ``None`` (fail closed → the caller's scoped standalone sender or an error), never the
+    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``."""
     try:
         from gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
@@ -301,7 +326,11 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     if runner is None:
         return None, None
     try:
-        return runner, runner.adapters.get(platform)
+        resolve = getattr(runner, "_authorization_adapter", None)
+        if not callable(resolve):  # bare runner stubs without the authz mixin
+            return runner, runner.adapters.get(platform)
+        from hermes_cli.profiles import get_active_profile_name
+        return runner, resolve(platform, get_active_profile_name())
     except Exception:
         if lookup_failed_warning:
             logger.warning(lookup_failed_warning, exc_info=True)

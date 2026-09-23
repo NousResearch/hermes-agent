@@ -182,6 +182,13 @@ It applies the same pinned security floors used by the runtime checks:
 python -m plugins.platforms.google_chat.oauth --install-deps
 ```
 
+On Docker / hosted images `/opt/hermes/.venv` is read-only. That installer
+routes through `tools.lazy_deps` into `HERMES_LAZY_INSTALL_TARGET`
+(`/opt/data/lazy-packages` in the official image) instead of writing
+site-packages. Restart the gateway after it finishes. The published image
+also bakes the `[google-chat]` extra so a fresh container does not need a
+first-boot install.
+
 Start the gateway:
 
 ```bash

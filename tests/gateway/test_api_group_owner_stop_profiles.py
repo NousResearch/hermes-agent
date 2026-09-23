@@ -1,7 +1,7 @@
 """A default-profile API key must not gain control of named-profile group work."""
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -17,6 +17,12 @@ from tests.gateway.test_multiplex_toolsets_profile_isolation import (
 @pytest.mark.asyncio
 async def test_real_named_profile_admission_does_not_grant_default_connection_owner_control(hermes_root, monkeypatch):
     value = _make_adapter(multiplex=True)
+    # The adapter-only routing fixture has no bootstrapped runtime authority. Supply
+    # its named profile's real temporary store for the legacy API admission path;
+    # the runtime's selected_session_db correctly refuses unreserved fake runners.
+    from hermes_state_registry import acquire, release_or_close
+    named_db = acquire(hermes_root / "profiles" / "lokaj" / "state.db")
+    monkeypatch.setattr(value, "_ensure_session_db_async", AsyncMock(return_value=named_db))
     agent, ready, interrupted = _make_slow_agent()
     monkeypatch.setattr(value, "_create_agent", MagicMock(return_value=agent))
     root_headers = {"Authorization": f"Bearer {OWNER_KEY}"}
@@ -55,3 +61,4 @@ async def test_real_named_profile_admission_does_not_grant_default_connection_ow
         if tasks:
             await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 3)
         value._run_idempotency_store.close()
+        release_or_close(named_db)

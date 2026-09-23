@@ -10,7 +10,7 @@
 import { expect, test, type Page } from './test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { MOCK_REPLY } from './mock-server'
+import { MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 const ACTIVE_PROMPT = 'E2E_QUEUE_TURN_BOUNDARY_ACTIVE'
 const QUEUED_PROMPT = 'E2E_QUEUE_TURN_BOUNDARY_QUEUED'

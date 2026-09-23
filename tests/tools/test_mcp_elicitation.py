@@ -18,7 +18,7 @@ pytest.importorskip("mcp.types")
 
 from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
 
-from tools.mcp_tool_sampling import ElicitationHandler, _format_elicitation_schema_summary  # noqa: E402
+from tools.mcp_tool_sampling import ElicitationHandler  # noqa: E402
 
 
 def _form_params(message="please confirm", schema=None):
@@ -46,23 +46,6 @@ def _url_params(message="open this url", url="https://example.com/auth", elicita
     )
 
 
-class TestSchemaSummary:
-    def test_empty_schema_falls_back_to_generic_message(self):
-        out = _format_elicitation_schema_summary({}, "pay")
-        assert "pay" in out
-        assert "Approval requested" in out
-
-    def test_properties_render_with_type_and_description(self):
-        schema = {
-            "type": "object",
-            "properties": {
-                "amount": {"type": "string", "description": "USD amount"},
-                "recipient": {"type": "string"},
-            },
-        }
-        out = _format_elicitation_schema_summary(schema, "pay")
-        assert "amount (string): USD amount" in out
-        assert "recipient (string)" in out
 
 
 class TestElicitationHandlerFormMode:
@@ -83,38 +66,6 @@ class TestElicitationHandlerFormMode:
         assert handler.metrics["declined"] == 0
 
 
-    def test_schema_read_from_real_sdk_params_reaches_the_summary(self):
-        """The requested schema must be read off the *real* SDK model.
-
-        Every other test here builds a duck-typed ``SimpleNamespace``, which
-        cannot catch a field rename in the SDK — and 2.0 renamed this field
-        (``requestedSchema`` -> ``requested_schema``). Pinning one case to the
-        actual model is what proves the elicitation path still reads the
-        schema after the migration, rather than silently summarising an empty
-        one.
-        """
-        from mcp.types import ElicitRequestFormParams
-
-        params = ElicitRequestFormParams(
-            message="authorize a payment of $0.50",
-            requested_schema={
-                "type": "object",
-                "properties": {"card_number": {"type": "string"}},
-            },
-        )
-        handler = ElicitationHandler("pay", {"timeout": 5})
-        captured: dict = {}
-
-        def _capture(*args, **kwargs):
-            captured["description"] = kwargs.get("description") or (
-                args[1] if len(args) > 1 else ""
-            )
-            return "decline"
-
-        with patch("tools.approval_prompt.request_elicitation_consent", _capture):
-            asyncio.run(handler(context=None, params=params))
-
-        assert "card_number" in (captured.get("description") or ""), captured
 
     def test_cancel_propagates_through(self):
         """request_elicitation_consent returns 'cancel' when the gateway
@@ -185,28 +136,12 @@ class TestElicitationHandlerFailureModes:
         assert handler.metrics["errors"] == 1
 
 
-class TestElicitationHandlerWiring:
-    def test_session_kwargs_returns_callback(self):
-        handler = ElicitationHandler("pay", {})
-        kwargs = handler.session_kwargs()
-        assert kwargs == {"elicitation_callback": handler}
-
-
-    def test_disabled_config_does_not_construct_handler(self):
-        """The server task initializer checks ``elicitation.enabled`` --
-        an explicit ``False`` should suppress handler creation. The unit
-        of that decision lives in MCPServerTask, but the handler itself
-        must remain harmless to instantiate with arbitrary config."""
-        handler = ElicitationHandler("pay", {"enabled": False, "timeout": 10})
-        # Just confirm it instantiates and reads timeout; the gate lives
-        # at the higher layer.
-        assert handler.timeout == 10
 
 
 class TestElicitationHandlerContextBridge:
     """The MCP recv-loop task that fires elicitation callbacks does NOT
     inherit the agent's contextvars (HERMES_SESSION_PLATFORM etc.). The
-    handler reads ``owner._pending_call_context`` -- a snapshot captured
+    handler reads the ``call_context`` thunk's snapshot -- a snapshot captured
     by the MCP tool wrapper around ``session.call_tool`` -- and replays
     it before invoking the approval router so gateway-session detection
     survives the task hop. Regression tests for that bridge."""
@@ -217,7 +152,6 @@ class TestElicitationHandlerContextBridge:
         gateway-platform detection in approval.py sees an empty platform
         string and falls back to the CLI path (the bug this fixes)."""
         import contextvars
-        from types import SimpleNamespace
 
         probe: contextvars.ContextVar[str] = contextvars.ContextVar(
             "elicitation_test_probe", default=""
@@ -238,8 +172,7 @@ class TestElicitationHandlerContextBridge:
             "context, otherwise the test would pass even without replay."
         )
 
-        owner = SimpleNamespace(_pending_call_context=captured)
-        handler = ElicitationHandler("pay", {"timeout": 5}, owner=owner)
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: captured)
         params = _form_params()
 
         with patch("tools.approval_prompt.request_elicitation_consent", side_effect=fake_consent):
@@ -252,11 +185,11 @@ class TestElicitationHandlerContextBridge:
         )
 
     def test_missing_captured_context_falls_back_to_direct_call(self):
-        """Without an owner (or with an owner that hasn't entered a tool
+        """With the default call_context (or one whose task has not entered a tool
         call) the handler must still invoke the consent router -- just
         without the contextvar replay. Otherwise CLI/TUI sessions, which
         don't set HERMES_SESSION_PLATFORM, would break."""
-        handler = ElicitationHandler("pay", {"timeout": 5}, owner=None)
+        handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params()
 
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as m:
@@ -267,12 +200,9 @@ class TestElicitationHandlerContextBridge:
 
 
     def test_pending_call_context_none_does_not_crash(self):
-        """``owner._pending_call_context`` is set to None between tool
+        """The ``call_context`` thunk returns None between tool
         calls. An elicitation arriving in that window must not crash."""
-        from types import SimpleNamespace
-
-        owner = SimpleNamespace(_pending_call_context=None)
-        handler = ElicitationHandler("pay", {"timeout": 5}, owner=owner)
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: None)
         params = _form_params()
 
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):

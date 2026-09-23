@@ -261,6 +261,24 @@ describe('detectBundleSkew against a real git repo', () => {
     expect(result).toEqual({ desktopCommitsBehind: 1, outOfSync: true })
   })
 
+  // apps/shared/src is compiled into both bundles, so a fix confined to it (a shared gateway client, the
+  // JSON-RPC layer) leaves the installed app just as stale as a renderer change does.
+  it.each([
+    ['apps/shared/src/json-rpc-gateway.ts', { desktopCommitsBehind: 1, outOfSync: true }],
+    ['apps/shared/README.md', { desktopCommitsBehind: 0, outOfSync: false }]
+  ])('counts a commit that only touched %s as it reaches the bundle', async (file, expected) => {
+    const { base, repoRoot } = makeScratchRepo()
+    const git = scratchGit(repoRoot)
+
+    writeFiles(repoRoot, [file])
+    git('add', '.')
+    git('commit', '-q', '-m', 'shared-only change')
+
+    const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(repoRoot), repoRoot)
+
+    expect(result).toEqual(expected)
+  })
+
   // The #92233 install, reproduced: the update rewrote the tree onto a fresh
   // orphan root, so the stamp resolves but is unreachable. Real git answers
   // `rev-list` with a positive count here — ancestry is the only thing that

@@ -835,7 +835,8 @@ def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: b
         _print_success(f"  Browser engine set to: {provider['browser_engine']}")
     if provider.get("web_backend"):
         tier = f" ({provider['web_tier']} tier)" if reconfigure and provider.get("web_tier") else ""
-        _print_success(f"  Web backend set to: {provider['web_backend']}{tier}")
+        # Report what was written ("nous" for the managed row), not the row's vendor marker.
+        _print_success(f"  Web backend set to: {config['web']['backend']}{tier}")
     if reconfigure and provider.get("computer_use_backend"):
         _print_success(f"  Computer Use backend set to: {provider['computer_use_backend']}")
 

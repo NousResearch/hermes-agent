@@ -311,6 +311,16 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_REAL_HOME",
     "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
+    # ``_is_single_query_approval_context()`` reads this straight off the
+    # session env (tools/approval_context.py). A `-q` shell (this Hermes
+    # session included) inherits it into every subprocess it launches,
+    # including a `pytest` run kicked off from that shell — so a test that
+    # spawns a real dangerous-looking command (e.g. `python -c ...`, see
+    # test_owned_process_cleanup.py) intermittently hits the "single-query
+    # mode runs without a user present" block depending on whether the
+    # invoking shell happens to be single-query. Blank it like the other
+    # approval-context markers below.
+    "HERMES_SINGLE_QUERY_SESSION",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
     "HERMES_TOOL_PROGRESS_MODE",

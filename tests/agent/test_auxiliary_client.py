@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -3750,28 +3751,47 @@ class TestCodexAuxiliaryAdapterTimeout:
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class _SlowAliveCreateStream:
+            """Keeps yielding in-progress events for far longer than the timeout.
+
+            The stream is still emitting when the adapter gives up — that is the
+            property under test, so it is asserted directly (``finished`` unset)
+            instead of via a wall-clock ceiling: the old ``< 0.14`` budget sat
+            just under the five-event stream's own 0.15s runtime, so a loaded
+            runner turned "enforced the total timeout" into a timing coin flip.
+            """
+
+            events = 200  # 200 * 0.03s ≈ 6s, ~120x the 0.05s timeout
+
+            def __init__(self):
+                self.finished = threading.Event()
+
             def __iter__(self):
-                for _ in range(5):
+                for _ in range(self.events):
                     time.sleep(0.03)
                     yield SimpleNamespace(type="response.in_progress")
+                self.finished.set()
 
             def close(self): pass
 
+        stream = _SlowAliveCreateStream()
+
         class FakeResponses:
             def create(self, **kwargs):
-                return _SlowAliveCreateStream()
+                return stream
 
         fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
-        started = time.monotonic()
         with pytest.raises(TimeoutError):
             adapter.create(
                 messages=[{"role": "user", "content": "summarize this"}],
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert not stream.finished.is_set(), (
+            "the total timeout only fired once the stream ended — steady progress "
+            "must not extend the deadline"
+        )
 
     def test_no_progress_timeout_kwarg_overrides_default_window(self):
         """#108104: an explicit ``no_progress_timeout`` kwarg (the task-scoped

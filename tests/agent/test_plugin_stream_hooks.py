@@ -1,6 +1,8 @@
 import threading
 import time
 
+from tests.agent._liveness import PEER_THREAD_LIVENESS_S
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -19,7 +21,7 @@ def _agent():
     )
 
 
-def _wait_for(predicate, timeout=1.0):
+def _wait_for(predicate, timeout=PEER_THREAD_LIVENESS_S):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -54,20 +56,30 @@ def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
+    hook_may_finish = threading.Event()
 
     def on_stream_delta(**kwargs):
-        time.sleep(0.2)
+        # Held until the assertions below have run, so an empty ``calls`` list is
+        # proof the token path returned with this callback still unfinished —
+        # not a race against how fast the host happens to schedule the
+        # dispatcher thread (which is all the old ``elapsed < 0.05`` budget
+        # measured; a hook sleeping 0.2s before recording only widened that race
+        # by 4x, it did not remove it). A hook that runs INLINE takes this
+        # fail-safe wait instead of hanging the file.
+        hook_may_finish.wait(timeout=PEER_THREAD_LIVENESS_S)
         calls.append(("on_stream_delta", kwargs))
 
     monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
 
     agent = _agent()
 
-    started = time.monotonic()
     agent._fire_stream_delta("hello")
-    elapsed = time.monotonic() - started
 
-    assert elapsed < 0.05
+    assert not calls, (
+        "on_stream_delta ran inline on the token path — it completed before "
+        "_fire_stream_delta returned"
+    )
+    hook_may_finish.set()
     _wait_for(lambda: calls)
     shutdown_plugin_stream_hook_dispatcher()
 

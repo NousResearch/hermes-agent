@@ -24,6 +24,7 @@ from agent.conversation_compression import (
     resolve_context_compression_timeouts,
     run_compress_context_with_progress_timeout,
 )
+from tests.agent._liveness import PEER_THREAD_LIVENESS_S
 
 
 class TestContextCompressionTimeoutState:
@@ -570,7 +571,19 @@ class TestCompressContextForwarderOwnsTimeout:
         )
         monkeypatch.setattr(
             "agent.conversation_compression.resolve_context_compression_timeouts",
-            lambda compression_cfg=None: (0.05, 0.2),
+            # The STALL deadline is the contract pinned below: this worker never
+            # reports progress, so the idle budget must be what ends the wait
+            # and the cooldown reason must be the stall one. The host's poll
+            # slice IS the idle window, so a starved host overshoots idle by
+            # hundreds of ms — against a ceiling only 4x idle (0.2s) that
+            # overshoot trips the CEILING path first and reports
+            # "ceiling_exhausted" instead (measured: 3/12 runs at host load
+            # ~130). Keep the ceiling out of the host's scheduling reach, the
+            # same hang-detector-not-a-budget bound the rest of tests/agent
+            # uses (see _liveness), so the stall reason is the only reachable
+            # outcome. The ceiling path itself is pinned by
+            # test_owned_total_ceiling_reports_progress_accurately.
+            lambda compression_cfg=None: (0.05, PEER_THREAD_LIVENESS_S),
         )
         monkeypatch.setattr(
             "agent.portal_tags.get_conversation_context",

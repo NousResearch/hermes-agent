@@ -182,7 +182,17 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             env=env,
             text=True,
             capture_output=True,
-            timeout=90,
+            # This is a hang detector, not a performance budget (see
+            # tests/agent/_liveness.py): a fresh Python interpreter has to
+            # import run_agent/agent.conversation_loop/hermes_state cold
+            # under whatever CPU contention the sweep host is carrying, on
+            # top of PEER_THREAD_LIVENESS_S-class thread scheduling delay
+            # inside that process. 90s left no headroom over that and
+            # tripped TimeoutExpired at host load ~152 on 16 cores. This
+            # subprocess runs twice per test, so keep enough margin under
+            # the runner's 300s per-file cap for both calls to widen without
+            # the file itself getting SIGKILLed.
+            timeout=130,
             check=True,
         )
         outputs.append(json.loads(proc.stdout.strip().splitlines()[-1]))

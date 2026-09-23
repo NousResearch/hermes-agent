@@ -120,6 +120,47 @@ class TestCredentialFingerprint:
         assert a != b
 
 
+@pytest.mark.asyncio
+async def test_named_profile_launcher_starts_its_secondary_adapter(monkeypatch, tmp_path):
+    """The named launcher is secondary when default owns the primary map."""
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.adapters = {}
+    runner._profile_adapters = {}
+    runner._profile_configs = {}
+    runner._profile_failed_platforms = {}
+    runner._served_profile_signatures = {}
+    runner.session_store = None
+    runner._busy_text_mode = "queue"
+    runner.pairing_stores = {}
+    runner.pairing_store = object()
+    runner._record_served_profiles = lambda *_args: None
+    runner._restore_secondary_completion_ledgers = lambda *_args: None
+
+    default_home = tmp_path / "default"
+    worker_home = default_home / "profiles" / "worker"
+    worker_home.mkdir(parents=True)
+    started = []
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: [("default", default_home), ("worker", worker_home)],
+    )
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "worker")
+
+    async def fake_start(profile_name, profile_home, claimed):
+        started.append((profile_name, profile_home, claimed))
+        return 1
+
+    monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start)
+    monkeypatch.setattr(
+        "gateway.run_profile_reconcile.profile_serve_signature", lambda _home: "signature"
+    )
+
+    assert await runner._start_secondary_profile_adapters() == 1
+    assert started == [("worker", worker_home, {})]
+
+
 class TestProfileMessageHandler:
     @pytest.mark.asyncio
     async def test_stamps_profile_on_unstamped_source(self):

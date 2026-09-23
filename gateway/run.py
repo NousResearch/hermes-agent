@@ -1862,7 +1862,12 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     if not cfg.multiplex_profiles:
         return cfg
     try:
-        home = get_hermes_home()
+        # A host multiplexer can be launched by ``hermes -p <name>`` (desktop
+        # and fleet-restart paths do this). Its primary adapters nevertheless
+        # belong to the default profile, so the launch home's inherited dotenv
+        # must never supply their credentials.
+        from hermes_constants import get_default_hermes_root
+        home = get_default_hermes_root()
     except Exception:
         return cfg
     try:
@@ -4069,7 +4074,11 @@ class GatewayRunner(
         "moa": "Agent is running — wait or /stop first, then run /moa."}
 
     def _active_profile_name(self) -> str:
-        """Return the profile name this gateway represents."""
+        """Return the profile owning this gateway's primary adapters."""
+        # A multiplex host always wires its primary adapter map from the
+        # default profile, even when a named profile launched the process.
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return "default"
         try:
             from hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"

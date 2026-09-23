@@ -223,6 +223,36 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
 
+    def test_resolves_plugin_skill_by_bare_name(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path)
+        result = json.loads(skill_view("writing-plans"))
+
+        assert result["success"] is True
+        assert result["name"] == "superpowers:writing-plans"
+        assert "writing-plans body." in result["content"]
+
+    def test_bare_plugin_skill_name_collision_requires_qualification(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path, plugin="first", name="shared")
+        self._register_skill(tmp_path, plugin="second", name="shared")
+        result = json.loads(skill_view("shared"))
+
+        assert result["success"] is False
+        assert "ambiguous" in result["error"].lower()
+        assert result["available_skills"] == ["first:shared", "second:shared"]
+
+    def test_missing_bare_name_lists_installed_plugin_skills(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path)
+        result = json.loads(skill_view("missing"))
+
+        assert result["success"] is False
+        assert "superpowers:writing-plans" in result["available_skills"]
+
     def test_reads_supporting_file_with_containment(self, tmp_path):
         from tools.skills_tool import skill_view
 

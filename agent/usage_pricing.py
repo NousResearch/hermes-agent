@@ -657,7 +657,7 @@ def format_token_count_compact(value: int) -> str:
         return str(int(value))
 
     sign = "-" if value < 0 else ""
-    threshold, suffix = next((t, sfx) for t, sfx in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")) if abs_value >= t)
+    threshold, suffix = next((t, sfx) for t, sfx in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")) if abs_value >= t)
     scaled = abs_value / threshold
     text = f"{scaled:.2f}" if scaled < 10 else f"{scaled:.1f}" if scaled < 100 else f"{scaled:.0f}"
     if "." in text:

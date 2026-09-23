@@ -2313,7 +2313,7 @@ class GatewayTurnMixin:
         }.get(resolved.context_source, "detected")
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
-            else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)
+            else f"{context_length // 1_000}k" if context_length >= 1_000 else str(context_length)
         )
         lines = [
             f"◆ Model: `{resolved.model}`",

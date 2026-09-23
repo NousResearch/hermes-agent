@@ -628,8 +628,8 @@ def _plural(n: int, word: str) -> str:
 
 
 def _format_context_length(tokens: int) -> str:
-    """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
-    for unit, div in (("M", 1_000_000), ("K", 1_000)):
+    """Format a token count for display (e.g. 128000 → '128k', 1000000 → '1M')."""
+    for unit, div in (("M", 1_000_000), ("k", 1_000)):
         if tokens >= div:
             val = tokens / div
             rounded = round(val)

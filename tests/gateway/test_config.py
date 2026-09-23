@@ -267,6 +267,7 @@ class TestLoadGatewayConfig:
             "    enabled: true\n"
             "    port: 8089\n"
             "    secret: ${WEBHOOK_SECRET}\n"
+            "    path_prefix: ${HOOK_PREFIX_FOR_TEST}\n"
             "  api_server:\n"
             "    enabled: true\n"
             "    key: ${env:API_SERVER_KEY}\n",
@@ -276,10 +277,14 @@ class TestLoadGatewayConfig:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("WEBHOOK_SECRET", "whsec-expanded")
         monkeypatch.setenv("API_SERVER_KEY", "server-key-expanded")
+        # A key NO env bridge reads: only the YAML-layer expansion can satisfy it, so this
+        # assertion goes red when the loader hunk is reverted while the bridges stay.
+        monkeypatch.setenv("HOOK_PREFIX_FOR_TEST", "/hooks/expanded")
 
         config = load_gateway_config()
 
         assert config.platforms[Platform.WEBHOOK].extra["secret"] == "whsec-expanded"
+        assert config.platforms[Platform.WEBHOOK].extra["path_prefix"] == "/hooks/expanded"
         assert (
             config.platforms[Platform.API_SERVER].extra["key"] == "server-key-expanded"
         )

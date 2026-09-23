@@ -685,13 +685,14 @@ Each topic gets its own conversation session, history, and context — completel
 ### Configuration
 
 :::caution Prerequisites
-Before adding topics to your config, the user must **enable Topics mode** in the DM chat with the bot:
+Before adding topics to your config, the bot owner must enable **Threaded Mode** for the bot:
 
-1. Open your private chat with the Hermes bot in Telegram
-2. Tap the bot's name at the top to open chat info
-3. Enable **Topics** (the toggle to turn the chat into a forum)
+1. In Telegram, search for `botfather`
+2. Tap **Open** on the @BotFather search result to launch the BotFather Mini App
+3. Open **My bots** → your Hermes bot → **Bot Settings** → **Threads Settings**
+4. Enable **Threaded Mode**
 
-Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
+The classic `/mybots` text menu in the BotFather chat does not expose Threads Settings, and there is no Topics toggle inside a bot DM. Without Threaded Mode, Hermes will log `The chat is not a forum` on startup and skip topic creation. The bot cannot enable it programmatically.
 :::
 
 Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
@@ -793,10 +794,12 @@ Both features can coexist on the same bot — you'd run `/topic` from a user's D
 
 ### Prerequisites
 
-In **@BotFather**, open your bot → **Bot Settings → Threads Settings**:
+In the **BotFather Mini App**, open **My bots** → your bot → **Bot Settings → Threads Settings**:
 
 1. Turn on **Threaded Mode** (enables `has_topics_enabled`)
 2. Do **not** disable users creating topics (keeps `allows_users_to_create_topics` on)
+
+The classic `/mybots` text menu in the BotFather chat does not expose Threads Settings; launch the Mini App from the @BotFather search result instead.
 
 When the user first runs `/topic`, Hermes calls `getMe` to verify both flags. If either is off, Hermes sends a screenshot of the BotFather Threads Settings page and explains what to toggle — no activation happens until prerequisites are met.
 

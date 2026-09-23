@@ -142,6 +142,25 @@ async def test_create_dm_topic_handles_generic_error():
 
 
 @pytest.mark.asyncio
+async def test_create_dm_topic_not_forum_warning_points_to_botfather_mini_app(caplog):
+    """The not-a-forum warning should name the actual BotFather Threaded Mode path."""
+    adapter = _make_adapter()
+    bot = AsyncMock()
+    bot.create_forum_topic.side_effect = Exception("Bad Request: the chat is not a forum")
+    adapter._bot = bot
+
+    result = await adapter._create_dm_topic(chat_id=111, name="General")
+
+    assert result is None
+    warning = caplog.text
+    assert "BotFather Mini App" in warning
+    assert "Threads Settings" in warning
+    assert "Threaded Mode" in warning
+    assert "Topics mode" not in warning
+    assert "DM chat" in warning
+
+
+@pytest.mark.asyncio
 async def test_ensure_dm_topic_creates_on_demand_and_persists():
     """Named delivery targets should create missing private DM topics on demand."""
     adapter = _make_adapter()

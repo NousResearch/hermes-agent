@@ -24,7 +24,7 @@ afterEach(() => {
 })
 
 describe('ExpandableBlock', () => {
-  it('lets horizontal scroll through and keeps the last line selectable', () => {
+  it('clips horizontal overflow and keeps the last line selectable', () => {
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
 
     const { container } = render(
@@ -37,14 +37,14 @@ describe('ExpandableBlock', () => {
     const toggle = screen.getByRole('button', { name: /expand|collapse/i })
     const fade = toggle.parentElement!
 
-    // Inner container allows horizontal scroll so wide code gets a scrollbar:
-    // platform overlay (`scrollbar-overlay`), not the always-on classic gutter.
-    expect(inner.className).toContain('overflow-x-auto')
+    // Vertical scroll only. Wide code wraps inside the card; no nested X bar.
+    expect(inner.className).toContain('overflow-x-hidden')
+    expect(inner.className).toContain('overflow-y-auto')
     expect(inner.className).toContain('scrollbar-overlay')
+    expect(inner.className).not.toContain('overflow-x-auto')
 
     // The full-width fade is a pure cue: it spans the bottom edge but must not
-    // intercept pointer events, so the scrollbar drag and text selection on the
-    // last line pass through to the content underneath.
+    // intercept pointer events, so text selection on the last line passes through.
     expect(fade.className).toContain('pointer-events-none')
     expect(fade.className).toContain('inset-x-0')
 

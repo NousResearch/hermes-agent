@@ -71,6 +71,7 @@ REVIEWED_MUTATIONS: Mapping[str, MutationSpec] = {
     "mcp_obsidian_create_note": _spec("note", "Obsidian", "create_note", one_shot=True),
     "mcp_apple_notes_create_note": _spec("note", "Apple Notes", "create_note", one_shot=True),
     "mcp_google_docs_create_document": _spec("note", "Google Docs", "create_note", one_shot=True),
+    "ha_call_service": _spec("home_automation", "Home Assistant", "call_service"),
     "mcp_homeassistant_call_service": _spec("home_automation", "Home Assistant", "call_service"),
     "mcp_home_assistant_call_service": _spec("home_automation", "Home Assistant", "call_service"),
     "mcp_opnsense_apply_firewall_rule": _spec("network", "Firewall", "apply_rule"),

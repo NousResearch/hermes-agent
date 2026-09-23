@@ -461,7 +461,7 @@ def pricing_cache_scope(provider: str, *, current_provider: str = "", current_ba
     only, never fetches: picker prewarm single-flight uses it so an endpoint rotation can start a new
     worker while the previous endpoint is still slow or unreachable."""
     from hermes_cli.models import _deepinfra_catalog_url, _pricing_profile_key, normalize_provider
-    normalized = normalize_provider(provider)
+    normalized = normalize_provider(provider).removeprefix("custom:")
     static = _STATIC_PRICING_SCOPES.get(normalized)
     if static:
         return static()
@@ -505,7 +505,10 @@ def get_pricing_for_provider(
     normal picker opens use it so cold endpoints cannot hold the response path, while a background
     prewarm fills the same caches for later opens."""
     from hermes_cli.models import normalize_provider
-    normalized = normalize_provider(provider)
+    # Config-defined providers use ``custom:<key>`` inventory slugs.  When a
+    # key names a provider with a canonical pricing source, share that source
+    # (and its cache) rather than treating the configured row as unsupported.
+    normalized = normalize_provider(provider).removeprefix("custom:")
     if cached_only:
         return _cached_only_pricing(normalized)
     fetcher = _PRICING_FETCHERS.get(normalized)

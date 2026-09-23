@@ -436,6 +436,33 @@ def test_cached_only_pricing_returns_a_warm_value_without_fetching(monkeypatch):
     ) == expected
 
 
+def test_custom_provider_slug_reuses_canonical_pricing_source(monkeypatch):
+    """A configured OpenRouter row keeps both its live and warmed prices."""
+    expected = {"vendor/model": {"prompt": "0.000001", "completion": "0.000002"}}
+    fetch_calls = []
+
+    def fetcher(*, force_refresh=False):
+        fetch_calls.append(force_refresh)
+        return expected
+
+    cached_calls = []
+    monkeypatch.setitem(models_pricing._PRICING_FETCHERS, "openrouter", fetcher)
+    monkeypatch.setattr(
+        models_pricing,
+        "_cached_only_pricing",
+        lambda provider: cached_calls.append(provider) or expected,
+    )
+
+    assert models_pricing.get_pricing_for_provider("custom:openrouter") == expected
+    assert fetch_calls == [False]
+    assert models_pricing.get_pricing_for_provider("custom:openrouter", cached_only=True) == expected
+    assert cached_calls == ["openrouter"]
+    assert (
+        models_pricing.pricing_cache_scope("custom:openrouter")
+        == models_pricing.pricing_cache_scope("openrouter")
+    )
+
+
 def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     """Alternating profiles read the endpoint each profile warmed."""
     from hermes_constants import (
@@ -474,5 +501,3 @@ def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     assert in_profile(tmp_path / "b", endpoint_b, cached_only=False) == expected_b
     assert in_profile(tmp_path / "a", endpoint_b, cached_only=True) == expected_a
     assert in_profile(tmp_path / "b", endpoint_a, cached_only=True) == expected_b
-
-

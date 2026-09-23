@@ -3080,8 +3080,17 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Track the sent message ts so we can auto-respond to thread
             # replies without requiring @mention.
+            #
+            # Fork: not for cron deliveries (DeliveryRouter stamps
+            # ``job_id``). An unsolicited cron post is a bot-authored thread
+            # root, so it follows the same opt-in as wake check 4 — otherwise
+            # every item a feed job posts wakes the agent on every
+            # un-mentioned reply beneath it until the next restart.
             sent_ts = last_result.get("ts") if last_result else None
-            if sent_ts:
+            opens_wake_zone = not (metadata or {}).get("job_id") or (
+                self._slack_wake_in_bot_authored_threads()
+            )
+            if sent_ts and opens_wake_zone:
                 self._bot_message_ts.add(
                     self._workspace_message_marker(team_id, sent_ts)
                 )

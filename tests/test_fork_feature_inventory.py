@@ -139,6 +139,7 @@ WIRING = [
     ("Bot-thread wake opt-in", "plugins/platforms/slack/adapter.py", "and self._slack_wake_in_bot_authored_threads()", "gates check 4"),
     ("Bot-thread wake opt-in", "plugins/platforms/slack/adapter.py", "SLACK_WAKE_IN_BOT_AUTHORED_THREADS", "yaml -> env bridge"),
     ("Bot-thread wake opt-in", "hermes_cli/config_defaults.py", '"wake_in_bot_authored_threads": False', "defaults to pre-sync behaviour"),
+    ("Bot-thread wake opt-in", "plugins/platforms/slack/adapter.py", 'opens_wake_zone = not (metadata or {}).get("job_id")', "cron sends don't arm check 1"),
 ]
 
 

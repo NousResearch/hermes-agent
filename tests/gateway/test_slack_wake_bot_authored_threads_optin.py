@@ -257,7 +257,10 @@ def test_config_bridges_wake_in_bot_authored_threads(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("SLACK_WAKE_IN_BOT_AUTHORED_THREADS", raising=False)
+    # setenv-then-delenv so teardown restores the pre-test state: the loader
+    # writes os.environ directly, which would otherwise leak into later tests.
+    monkeypatch.setenv("SLACK_WAKE_IN_BOT_AUTHORED_THREADS", "")
+    monkeypatch.delenv("SLACK_WAKE_IN_BOT_AUTHORED_THREADS")
 
     load_gateway_config()
 
@@ -278,3 +281,70 @@ def test_env_var_enables_the_check(monkeypatch):
     adapter = object.__new__(SlackAdapter)
     adapter.config = PlatformConfig(enabled=True, extra={})
     assert adapter._slack_wake_in_bot_authored_threads() is True
+
+
+# ---------------------------------------------------------------------------
+# Cron deliveries through send() — the same leak via check 1
+# ---------------------------------------------------------------------------
+# A cron job delivering to a live Slack adapter goes through the gateway's own
+# ``send()`` (DeliveryRouter stamps ``metadata["job_id"]``), which used to
+# record the posted ts in ``_bot_message_ts``. Check 1 then woke the agent on
+# every un-mentioned reply under each delivered item — the automation-feed
+# failure mode the opt-in above exists to prevent, reached by another path.
+# An unsolicited cron post is a bot-authored thread root, so it follows the
+# same flag.
+
+CRON_TS = "1790000000.000100"
+
+
+@pytest.fixture
+def _no_wake_env(monkeypatch):
+    monkeypatch.delenv("SLACK_WAKE_IN_BOT_AUTHORED_THREADS", raising=False)
+
+
+def _make_send_adapter(extra=None):
+    config = PlatformConfig(enabled=True, token="***", extra=dict(extra or {}))
+    adapter = SlackAdapter(config)
+    adapter._app = MagicMock()
+    adapter._app.client = AsyncMock()
+    adapter._app.client.chat_postMessage = AsyncMock(
+        return_value={"ok": True, "ts": CRON_TS}
+    )
+    adapter._bot_user_id = BOT_USER_ID
+    adapter._running = True
+    return adapter
+
+
+def _recorded(adapter, ts):
+    return any(m == ts or m.endswith(f":{ts}") for m in adapter._bot_message_ts)
+
+
+@pytest.mark.asyncio
+async def test_cron_delivery_does_not_open_a_wake_zone_by_default(_no_wake_env):
+    adapter = _make_send_adapter()
+    result = await adapter.send(CHANNEL_ID, "**Radar**\n\nitem", metadata={"job_id": "c287"})
+    assert result.success
+    assert not _recorded(adapter, CRON_TS)
+
+
+@pytest.mark.asyncio
+async def test_cron_delivery_registers_when_opted_in(_no_wake_env):
+    adapter = _make_send_adapter({"wake_in_bot_authored_threads": True})
+    await adapter.send(CHANNEL_ID, "item", metadata={"job_id": "c287"})
+    assert _recorded(adapter, CRON_TS)
+
+
+@pytest.mark.asyncio
+async def test_conversational_send_still_registers(_no_wake_env):
+    """A reply the agent sends in a conversation keeps check 1 working."""
+    adapter = _make_send_adapter()
+    await adapter.send(CHANNEL_ID, "reply", metadata={"thread_id": THREAD_TS})
+    assert _recorded(adapter, CRON_TS)
+    assert _recorded(adapter, THREAD_TS)
+
+
+@pytest.mark.asyncio
+async def test_cron_delivery_still_returns_message_id(_no_wake_env):
+    adapter = _make_send_adapter()
+    result = await adapter.send(CHANNEL_ID, "item", metadata={"job_id": "c287"})
+    assert result.message_id == CRON_TS

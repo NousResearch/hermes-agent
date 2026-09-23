@@ -64,7 +64,15 @@ Structural changes from that sync that affect where fork work goes:
   `_fetch_thread_parent_text(strip_bot_mention=False)` returned text with the
   mention already stripped, because `_render_message_text` removes it
   unconditionally — so check 5 only ever worked when check 4 had warmed the
-  thread-context cache. Both are covered by
+  thread-context cache. The same flag also gates **cron deliveries arming
+  check 1**: a live-adapter cron send (`metadata["job_id"]`, stamped by
+  `DeliveryRouter`) used to record its ts in `_bot_message_ts`, so every item
+  a feed job posted woke the bot on every un-mentioned reply until restart
+  (seen 2026-09-23 under the customer news radar: the bot called `turn_end` —
+  a no-op outside quiet channels — then explained its silence). With the flag
+  off, `send()` skips that registration for cron posts; conversational sends
+  are unchanged, and continuable cron threads still wake via their seeded
+  session (check 3). All of these are covered by
   [tests/gateway/test_slack_wake_bot_authored_threads_optin.py](tests/gateway/test_slack_wake_bot_authored_threads_optin.py)
   and guarded in `tests/test_fork_feature_inventory.py`.
 

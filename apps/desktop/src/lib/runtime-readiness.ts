@@ -35,6 +35,10 @@ export interface RuntimeReadinessSignals {
 
 export interface RuntimeReadinessOptions {
   defaultReason?: string
+  /** Profile whose home and credentials the probe must answer for: the owner of
+   *  the session the client is about to open. Absent (or a launch-scope alias)
+   *  probes the backend's own home, which is what a single-profile pod serves. */
+  profile?: string
   requestedProvider?: string
   unknownReady?: boolean
 }
@@ -93,14 +97,52 @@ async function requestWithFallback<T>(
   }
 }
 
+/** Launch-scope aliases that must never ride as a *named* profile. `default` is the
+ *  backend's alias for its own home and `current` is the sentinel the OAuth routes
+ *  accept for "whoever is asking"; the readiness routes resolve a name instead, so
+ *  either would be answered against a strict named scope (skipping the boot
+ *  free-tier record and host-wide credential fallbacks) or refused when no such
+ *  profile directory exists. Exact match only: a profile directory that happens
+ *  to be named `Default` is a real named scope and must be probed as one. */
+const LAUNCH_PROFILE_ALIASES = new Set(['current', 'default'])
+
+/** The profile to probe, or undefined for the backend's own (launch) home. */
+function probeProfile(profile: string | undefined): string | undefined {
+  const next = profile?.trim()
+
+  return next && !LAUNCH_PROFILE_ALIASES.has(next) ? next : undefined
+}
+
+/** Params for one readiness RPC, or undefined when the call carries no dimensions:
+ *  an ownerless probe stays byte-identical to the historical unscoped call. */
+function readinessParams(requestedProvider?: string, profile?: string): Record<string, unknown> | undefined {
+  const params: Record<string, unknown> = {}
+  const provider = requestedProvider?.trim()
+  const owner = probeProfile(profile)
+
+  if (provider) {
+    params.provider = provider
+  }
+
+  if (owner) {
+    params.profile = owner
+  }
+
+  return Object.keys(params).length > 0 ? params : undefined
+}
+
 export async function fetchRuntimeReadinessSignals(
   requestGateway: RuntimeReadinessRequester,
-  requestedProvider?: string
+  requestedProvider?: string,
+  profile?: string
 ): Promise<RuntimeReadinessSignals> {
-  const runtimeParams = requestedProvider?.trim() ? { provider: requestedProvider.trim() } : undefined
+  // One object per RPC: setup.status takes only the owner while setup.runtime_check
+  // also takes the provider, so the two calls must not share a payload.
+  const setupParams = readinessParams(undefined, profile)
+  const runtimeParams = readinessParams(requestedProvider, profile)
 
   const [setup, runtime] = await Promise.all([
-    requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status'),
+    requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status', setupParams),
     requestWithFallback<RuntimeCheckSnapshot>(requestGateway, 'setup.runtime_check', runtimeParams)
   ])
 
@@ -201,7 +243,7 @@ export async function evaluateRuntimeReadiness(
   requestGateway: RuntimeReadinessRequester,
   options: RuntimeReadinessOptions = {}
 ): Promise<RuntimeReadinessResult> {
-  const signals = await fetchRuntimeReadinessSignals(requestGateway, options.requestedProvider)
+  const signals = await fetchRuntimeReadinessSignals(requestGateway, options.requestedProvider, options.profile)
 
   return interpretRuntimeReadiness(signals, options)
 }

@@ -16,7 +16,8 @@ type GatewayRequester = <T = unknown>(method: string, params?: Record<string, un
 export function useStatusSnapshot(
   gatewayState: string | undefined,
   requestGateway: GatewayRequester,
-  gatewayScope = ''
+  gatewayScope = '',
+  profile = ''
 ) {
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
@@ -63,7 +64,7 @@ export function useStatusSnapshot(
       // straight to its own store and swallows its failures — nothing here
       // waits on it or reads the result.
       const [inferenceResult] = await Promise.allSettled([
-        evaluateRuntimeReadiness(requestGateway),
+        evaluateRuntimeReadiness(requestGateway, { profile }),
         refreshFreeTierStatus(requestGateway)
       ])
 
@@ -147,7 +148,7 @@ export function useStatusSnapshot(
         window.clearTimeout(timer)
       }
     }
-  }, [gatewayScope, gatewayState, requestGateway])
+  }, [gatewayScope, gatewayState, profile, requestGateway])
 
   return { inferenceStatus, statusSnapshot }
 }

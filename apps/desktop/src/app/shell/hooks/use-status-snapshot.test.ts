@@ -36,6 +36,34 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
+  it('probes readiness for the profile owner it was given', async () => {
+    const requestGatewayMock = vi.fn(
+      (method: string) => (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
+    )
+
+    const requestGateway = requestGatewayMock as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway, 'work\0research', 'research'))
+    await flushAsync()
+
+    expect(requestGatewayMock).toHaveBeenCalledWith('setup.status', { profile: 'research' })
+    expect(requestGatewayMock).toHaveBeenCalledWith('setup.runtime_check', { profile: 'research' })
+  })
+
+  it('keeps the launch scope unscoped when the owner is the launch alias', async () => {
+    const requestGatewayMock = vi.fn(
+      (method: string) => (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
+    )
+
+    const requestGateway = requestGatewayMock as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway, 'work\0default', 'default'))
+    await flushAsync()
+
+    expect(requestGatewayMock).toHaveBeenCalledWith('setup.status', undefined)
+    expect(requestGatewayMock).toHaveBeenCalledWith('setup.runtime_check', undefined)
+  })
+
   it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false)
     const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester

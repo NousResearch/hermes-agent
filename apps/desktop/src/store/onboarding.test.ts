@@ -163,6 +163,72 @@ describe('refreshOnboarding', () => {
     }
   })
 
+  it('probes readiness for the profile that signed in, not the launch home', async () => {
+    const { startManualOnboarding, startProviderOAuth, closeManualOnboarding } = await import('./onboarding')
+
+    installApiMock(async request => {
+      if (request.path === '/api/providers/oauth') {
+        return { providers: [] }
+      }
+
+      if (request.path.endsWith('/start')) {
+        return {
+          flow: 'device_code',
+          session_id: 'local-fixture',
+          user_code: 'FAKE',
+          verification_url: 'http://localhost/fixture',
+          expires_in: 600
+        }
+      }
+
+      if (request.path.includes('/poll/')) {
+        return { status: 'approved' }
+      }
+
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'openai-codex', name: 'Codex', models: ['gpt-6-astra'] }] }
+      }
+
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { model: 'gpt-6-astra' }
+      }
+
+      return { ok: true }
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+
+    const probes: Array<Record<string, unknown> | undefined> = []
+
+    const ctx: OnboardingContext = {
+      profile: 'research',
+      requestGateway: async (method, params) => {
+        if (method === 'setup.status') {
+          return { provider_configured: true } as never
+        }
+
+        if (method === 'setup.runtime_check') {
+          probes.push(params)
+
+          return { ok: true, provider: 'openai-codex' } as never
+        }
+
+        return {} as never
+      }
+    }
+
+    try {
+      startManualOnboarding(null, 'research')
+      await startProviderOAuth(makeOAuthProvider('openai-codex'), ctx)
+      await vi.waitFor(() => expect(probes.length).toBeGreaterThan(0), { timeout: 5000 })
+
+      // The launch home holds no Codex credential, so an unscoped probe answers for it
+      // and reports a completed sign-in as an unusable provider.
+      expect(probes.at(-1)).toEqual({ provider: 'openai-codex', profile: 'research' })
+    } finally {
+      closeManualOnboarding()
+    }
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())

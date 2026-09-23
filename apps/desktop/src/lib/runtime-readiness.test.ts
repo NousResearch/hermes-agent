@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { fetchRuntimeReadinessSignals, interpretRuntimeReadiness, runtimeReadinessDisplay } from './runtime-readiness'
+import {
+  evaluateRuntimeReadiness,
+  fetchRuntimeReadinessSignals,
+  interpretRuntimeReadiness,
+  runtimeReadinessDisplay
+} from './runtime-readiness'
 
 describe('interpretRuntimeReadiness', () => {
   it('prefers runtime_check when both signals exist', () => {
@@ -85,6 +90,108 @@ describe('fetchRuntimeReadinessSignals', () => {
     await fetchRuntimeReadinessSignals(requestGateway, 'nous')
 
     expect(calls).toEqual([{ method: 'setup.status' }, { method: 'setup.runtime_check', params: { provider: 'nous' } }])
+  })
+
+  it('owns both readiness RPCs for a named profile', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as T
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { error: 'No Codex credentials stored.', ok: false } as T
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    }
+
+    await fetchRuntimeReadinessSignals(requestGateway, 'openai-codex', 'research')
+
+    expect(calls).toEqual([
+      { method: 'setup.status', params: { profile: 'research' } },
+      { method: 'setup.runtime_check', params: { provider: 'openai-codex', profile: 'research' } }
+    ])
+  })
+
+  it('trims a padded profile name instead of probing a literal one', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as T
+    }
+
+    await fetchRuntimeReadinessSignals(requestGateway, undefined, '  research  ')
+
+    expect(calls).toEqual([
+      { method: 'setup.status', params: { profile: 'research' } },
+      { method: 'setup.runtime_check', params: { profile: 'research' } }
+    ])
+  })
+
+  it('probes a case-variant alias name as a real named profile', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as T
+    }
+
+    await fetchRuntimeReadinessSignals(requestGateway, undefined, 'Default')
+
+    expect(calls).toEqual([
+      { method: 'setup.status', params: { profile: 'Default' } },
+      { method: 'setup.runtime_check', params: { profile: 'Default' } }
+    ])
+  })
+
+  // The backend resolves a name as a strict named scope and refuses one with no profile
+  // directory, so the launch aliases must stay unscoped calls.
+  it.each(['default', 'current', '', '   ', undefined])('keeps the launch scope unscoped for %s', async profile => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as T
+    }
+
+    await fetchRuntimeReadinessSignals(requestGateway, undefined, profile)
+
+    expect(calls).toEqual([{ method: 'setup.status' }, { method: 'setup.runtime_check' }])
+  })
+})
+
+describe('evaluateRuntimeReadiness', () => {
+  it('forwards the profile owner to both RPCs', async () => {
+    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
+      if (method === 'setup.status') {
+        expect(params).toEqual({ profile: 'research' })
+
+        return { provider_configured: true } as T
+      }
+
+      if (method === 'setup.runtime_check') {
+        expect(params).toEqual({ provider: 'openai-codex', profile: 'research' })
+
+        return { ok: true } as T
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    }
+
+    const result = await evaluateRuntimeReadiness(requestGateway, {
+      profile: 'research',
+      requestedProvider: 'openai-codex'
+    })
+
+    expect(result.ready).toBe(true)
   })
 })
 

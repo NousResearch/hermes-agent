@@ -34,6 +34,7 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
@@ -250,15 +251,24 @@ async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
 
 
 @router.get("/api/cron/delivery-targets")
-async def get_cron_delivery_targets():
+async def get_cron_delivery_targets(profile: Optional[str] = None):
     """Delivery targets for the cron dropdown: implicit ``local`` plus the
     configured gateway platforms (a platform without a cron home channel is
-    still listed with ``home_target_set: false`` so the UI can say so)."""
+    still listed with ``home_target_set: false`` so the UI can say so).
+
+    ``cron_delivery_targets()`` reads each platform's home channel through
+    ``get_secret``, which fails closed once this process hosts more than one
+    profile home (the dashboard/desktop ``serve`` backend flips multi-profile
+    hosting on the first ``?profile=`` request). The read must therefore run
+    inside the profile scope, exactly like the sibling cron routes — otherwise
+    the poll raises ``UnscopedSecretError`` on every tick and the dropdown
+    silently loses every configured platform."""
     targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
     try:
         from cron.scheduler_delivery import cron_delivery_targets
 
-        targets.extend(cron_delivery_targets())
+        with _config_profile_scope(profile):
+            targets.extend(cron_delivery_targets())
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
     return {"targets": targets}
@@ -381,7 +391,7 @@ async def cron_fire_webhook(request: Request):
 
 
 @router.get("/api/cron/blueprints")
-async def list_cron_blueprints():
+async def list_cron_blueprints(profile: Optional[str] = None):
     """Blueprint catalog as form schemas; the ``deliver`` slot's options are
     rewritten from the actually configured gateway platforms."""
     try:
@@ -391,7 +401,8 @@ async def list_cron_blueprints():
         try:
             from cron.scheduler_delivery import cron_delivery_targets
 
-            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            with _config_profile_scope(profile):
+                platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
         except Exception:
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)

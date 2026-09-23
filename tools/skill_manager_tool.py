@@ -30,7 +30,7 @@ from agent.skill_utils import (
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
-    _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
+    _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _maybe_auto_propose_org_edit,
     _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
@@ -428,37 +428,30 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    occupied_error = (f"Cannot create skill '{name}': {skill_dir} already exists and is not an empty "
-                      "directory. Choose another name, or move/remove that path and retry.")
-    # Only a directory create made (or an EMPTY leftover, e.g. from an earlier create whose
-    # SKILL.md write failed) may be used; anything with an entry is someone else's and is refused.
-    try:
-        occupied = skill_dir.is_symlink() or (
-            skill_dir.exists() and (not skill_dir.is_dir() or any(skill_dir.iterdir())))
-    except OSError:  # unreadable / unstat-able (permissions, ACL): never adopt, never delete
-        occupied = True
-    if occupied:
-        return _err(occupied_error)
     from hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(skill_dir)
-    created_dir = False
-    if not skill_dir.exists():
-        try:
-            skill_dir.mkdir(parents=True, exist_ok=False)
-        except FileExistsError:
-            return _err(occupied_error)
+    try:
+        skill_dir.mkdir(parents=True, exist_ok=False)
         created_dir = True
+    except FileExistsError:
+        # mkdir raised EEXIST for a file, symlink (live or dangling) or dir alike; only an EMPTY
+        # real directory (leftover of an earlier create whose SKILL.md write failed) may be used.
+        # Anything else — or anything unstat-able/unlistable — is someone else's: never adopt.
+        try:
+            usable = (not _is_path_redirect(skill_dir) and skill_dir.is_dir()
+                      and not any(skill_dir.iterdir()))
+        except OSError:  # permissions / ACL
+            usable = False
+        if not usable:
+            return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
+                        "directory, or unreadable). Choose another name, or move/remove that path and retry.")
+        created_dir = False
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-    if scan_error := _security_scan_skill(skill_dir):
-        # Undo only what this call wrote: the SKILL.md, plus the directory if create made it.
-        # An adopted (empty) directory stays in place. rmdir (not rmtree) so a file some other
-        # process dropped in meanwhile is never deleted — create wrote nothing but SKILL.md.
-        skill_md.unlink(missing_ok=True)
-        if created_dir:
+    if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
+        if created_dir:  # rmdir, not rmtree: an adopted leftover dir and anything foreign stay
             with suppress(OSError):
                 skill_dir.rmdir()
-        return _err(scan_error)
+        return guard
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir
     result = {

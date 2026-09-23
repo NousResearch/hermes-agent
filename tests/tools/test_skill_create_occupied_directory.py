@@ -73,7 +73,7 @@ def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
         assert not (unreadable / "SKILL.md").exists()
 
 
-def test_category_directory_collision_is_refused(tmp_path):
+def test_occupied_directory_is_refused_and_empty_leftover_is_reused(tmp_path):
     with _skill_dir(tmp_path), patch("tools.skill_manager_tool._security_scan_skill", return_value=None):
         category = tmp_path / "category"
         category.mkdir()

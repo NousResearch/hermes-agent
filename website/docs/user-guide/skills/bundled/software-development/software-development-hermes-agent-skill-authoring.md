@@ -21,7 +21,7 @@ Author in-repo SKILL.md files: frontmatter and structure.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `skills`, `authoring`, `hermes-agent`, `conventions`, `skill-md` |
-| Related skills | [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) |
+| Related skills | [`requesting-code-review`](../../bundled/software-development/software-development-requesting-code-review.md) |
 
 ## Reference: full SKILL.md
 
@@ -119,6 +119,7 @@ Bad: `Use when a user asks to monitor named competitors or companies for product
 | `osascript`, `defaults`, `pmset` | `[macos]` |
 | `apt`/`systemctl`/`/proc` | `[linux]` |
 
+<!-- no-tmp: ok — names the anti-pattern skill authors must avoid -->
 POSIX-only signals to search for in `scripts/`: `fcntl`, `termios`, `pty`, `os.fork`, `os.killpg`, `signal.SIGKILL`, `os.kill(pid, 0)` liveness checks, hardcoded `/tmp` `/proc` `/etc`. Default posture: fix cross-platform first (`tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists`); gate narrower only when the dependency is genuinely platform-bound, and say why in `## Pitfalls`.
 
 ## Size Limits
@@ -166,7 +167,7 @@ A skill exists to make the agent's process more predictable — the agent reliab
 ## Tests and Docs (required for repo skills)
 
 1. **Tests** live at `tests/skills/test_<skill>_skill.py` — stdlib + pytest + `unittest.mock` only, no live network. Run via `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`. (The generic `tests/tools/test_skill_manager_tool.py` passing proves nothing about YOUR skill.)
-2. **Docs regen:** run `python3 website/scripts/generate-skill-docs.py`, then apply scope discipline — the generator rewrites EVERY auto-gen page. `git checkout --` everything that isn't yours; the final diff must show only your SKILL.md, your one per-skill docs page, a one-line catalog row, and a one-line `website/sidebars.ts` insertion (verify with `search_files(pattern='<your-slug>', path='website/sidebars.ts')` — exactly one hit, or the page is an orphan).
+2. **Docs regen:** run `python website/scripts/generate-skill-docs.py`, then apply scope discipline — the generator rewrites EVERY auto-gen page. `git checkout --` everything that isn't yours; the final diff must show only your SKILL.md, your one per-skill docs page, a one-line catalog row, and a one-line `website/sidebars.ts` insertion (verify with `search_files(pattern='<your-slug>', path='website/sidebars.ts')` — exactly one hit, or the page is an orphan).
 3. **`.env.example`** (only if the skill needs new env vars): one clearly delimited commented block; touch nothing else in the file.
 
 ## Workflow

@@ -9,12 +9,31 @@ vi.mock('@/lib/desktop-fs', () => ({
 }))
 
 import {
+  isLoopbackPreviewUrl,
   localPreviewTarget,
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
   remoteHtmlPreviewDocument,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
+
+describe('isLoopbackPreviewUrl', () => {
+  it.each(['http://localhost:5173', 'https://127.0.0.2:8443/app', 'http://0.0.0.0:3000', 'http://[::1]:4173'])(
+    'accepts loopback origin %s',
+    url => {
+      expect(isLoopbackPreviewUrl(url)).toBe(true)
+    }
+  )
+
+  // mDNS and LAN names are other devices (homeassistant.local), not the dev
+  // server the agent is building.
+  it.each(['https://x.com', 'https://localhost.example.com', 'http://homeassistant.local:8123', 'not a URL'])(
+    'rejects non-loopback or malformed origin %s',
+    url => {
+      expect(isLoopbackPreviewUrl(url)).toBe(false)
+    }
+  )
+})
 
 const remoteTarget = {
   kind: 'file' as const,

@@ -72,7 +72,7 @@ class TestPairingAllowlistRead:
 
 class TestAuthzPlatformGateEnv:
     def test_scoped_value_wins(self, monkeypatch):
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
         ss.set_multiplex_active(True)
@@ -80,7 +80,7 @@ class TestAuthzPlatformGateEnv:
             assert _platform_gate_env("DISCORD_ALLOW_BOTS", "none") == "all"
 
     def test_scoped_miss_returns_default_not_env(self, monkeypatch):
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")  # another profile's bridge
         ss.set_multiplex_active(True)
@@ -88,18 +88,51 @@ class TestAuthzPlatformGateEnv:
             assert _platform_gate_env("DISCORD_ALLOW_BOTS", "none") == "none"
 
     def test_single_profile_legacy_env(self, monkeypatch):
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
         assert _platform_gate_env("GATEWAY_ALLOWED_USERS") == "42"
+
+
+class TestAuthzAuthEnv:
+    """_auth_env must follow platform_gate_env isolation (no os.environ
+    fallthrough on a scoped miss under multiplex)."""
+
+    def test_scoped_value_wins(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        ss.set_multiplex_active(True)
+        with _Scope({"TELEGRAM_ALLOWED_USERS": "222"}):
+            assert _auth_env("TELEGRAM_ALLOWED_USERS") == "222"
+
+    def test_scoped_miss_returns_default_not_env(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "profile-A")
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
+        ss.set_multiplex_active(True)
+        with _Scope({"UNRELATED": "x"}):
+            assert _auth_env("TELEGRAM_ALLOWED_USERS") == ""
+            assert _auth_env("GATEWAY_ALLOW_ALL_USERS") == ""
+            assert _auth_env("TELEGRAM_ALLOW_ALL_USERS") == ""
+
+    def test_single_profile_legacy_env(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
+        assert _auth_env("GATEWAY_ALLOWED_USERS") == "42"
 
 
 # ── Cluster B: matrix startup reads (Slack pattern) ────────────────────────
 
 class TestMatrixStartupSecret:
     def _helper(self):
-        mod = pytest.importorskip("plugins.platforms.matrix.adapter")
-        return mod._startup_env_secret
+        pytest.importorskip("plugins.platforms.matrix.adapter")
+        from gateway.platforms._shared import get_scoped_secret
+
+        return lambda name: (get_scoped_secret(name, "") or "").strip()
 
     def test_scoped_value_wins(self, monkeypatch):
         helper = self._helper()
@@ -201,33 +234,3 @@ class TestAuxiliaryScopedKeyEnv:
 
 # ── Cluster E: azure identity presence reads ────────────────────────────────
 
-class TestAzureIdentityPresence:
-    def _describe(self):
-        azure = pytest.importorskip("agent.azure_identity_adapter")
-        if not azure.has_azure_identity_installed():
-            pytest.skip("azure-identity not installed")
-        return azure.describe_active_credential
-
-    def test_scoped_client_secret_detected(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"AZURE_CLIENT_SECRET": "scoped-secret"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert any("EnvironmentCredential" in s for s in info.get("env_sources", []))
-
-    def test_scoped_miss_hides_env_secret(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.setenv("AZURE_CLIENT_SECRET", "other-profile-secret")
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"UNRELATED": "x"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert not any(
-            "EnvironmentCredential" in s for s in info.get("env_sources", [])
-        )

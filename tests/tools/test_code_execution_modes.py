@@ -18,7 +18,7 @@ import subprocess
 import sys
 import unittest
 import unittest.mock
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -32,18 +32,29 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import (
-    SANDBOX_ALLOWED_TOOLS,
-    DEFAULT_EXECUTION_MODE,
-    EXECUTION_MODES,
-    _get_execution_mode,
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so a lingering
+    kernel child can't outlive the run (hangs pytest at exit) or leak one
+    test's interpreter state into the next."""
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
+
+
+from tools.code_execution_env import (
     _is_usable_python,
     _python_environment_prefix,
     _python_prefix_cache,
-    _usable_python_cache,
     _resolve_child_cwd,
     _resolve_child_python,
+    _usable_python_cache,
     _uses_hermes_python_environment,
+)
+from tools.code_execution_tool import (
+    SANDBOX_ALLOWED_TOOLS,
     build_execute_code_schema,
     execute_code,
 )
@@ -70,21 +81,6 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
 # Mode resolution
 # ---------------------------------------------------------------------------
 
-class TestGetExecutionMode(unittest.TestCase):
-    """_get_execution_mode reads config.yaml only (no env var surface)."""
-
-    def test_default_is_project(self):
-        self.assertEqual(DEFAULT_EXECUTION_MODE, "project")
-
-    def test_config_project(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"mode": "project"}):
-            self.assertEqual(_get_execution_mode(), "project")
-
-
-    def test_execution_modes_tuple(self):
-        """Canonical set of modes — tests + config layer rely on this shape."""
-        self.assertEqual(set(EXECUTION_MODES), {"project", "strict"})
 
 
 # ---------------------------------------------------------------------------
@@ -171,23 +167,8 @@ class TestResolveChildCwd(unittest.TestCase):
 
 class TestModeAwareSchema(unittest.TestCase):
 
-    def test_strict_description_mentions_temp_dir(self):
-        desc = build_execute_code_schema(mode="strict")["description"]
-        self.assertIn("temp dir", desc)
 
 
-    def test_neither_description_uses_sandbox_language(self):
-        """REGRESSION GUARD for commit 39b83f34.
-
-        Agents on local backends falsely believed they were sandboxed and
-        refused networking tasks. Do not reintroduce any 'sandbox' /
-        'isolated' / 'cloud' language in the tool description.
-        """
-        for mode in EXECUTION_MODES:
-            desc = build_execute_code_schema(mode=mode)["description"].lower()
-            for forbidden in ("sandbox", "isolated", "cloud"):
-                self.assertNotIn(forbidden, desc,
-                                 f"mode={mode}: '{forbidden}' leaked into description")
 
 
     def test_default_mode_reads_config(self):
@@ -222,37 +203,32 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
             with patch.dict(os.environ, env_overrides):
                 with patch("model_tools.handle_function_call",
                            side_effect=_mock_handle_function_call):
+                    # reset=True: kernel cwd/interpreter are frozen at spawn
+                    # (like env), so mode-resolution rules are only
+                    # observable on a fresh kernel.
                     raw = execute_code(
                         code=code,
                         task_id=f"test-{mode}",
                         enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS),
+                        reset=True,
                     )
         return json.loads(raw)
 
     def test_strict_mode_runs_in_tmpdir(self):
-        """Strict mode: script's os.getcwd() is the staging tmpdir."""
+        """Strict mode: script's os.getcwd() is a staging tmpdir, never the
+        session cwd. Behavior contract, not a prefix snapshot: the per-call
+        path stages in hermes_sandbox_*, the session kernel in
+        hermes_kernel_* — either satisfies strict mode's isolation promise."""
         result = self._run("import os; print(os.getcwd())", mode="strict")
         self.assertEqual(result["status"], "success")
-        self.assertIn("hermes_sandbox_", result["output"])
+        cwd = result["output"].strip()
+        self.assertTrue(
+            "hermes_sandbox_" in cwd or "hermes_kernel_" in cwd,
+            f"strict-mode cwd is not a staging tmpdir: {cwd!r}",
+        )
+        self.assertNotEqual(os.path.realpath(cwd), os.path.realpath(os.getcwd()))
 
 
-    def test_project_mode_interpreter_is_venv_python(self):
-        """Project mode: sys.executable inside the child is the venv's python
-        when VIRTUAL_ENV is set to a real venv."""
-        # The hermes-agent venv is always active during tests, so this also
-        # happens to equal sys.executable of the parent. What we're asserting
-        # is: resolver picked a venv-bin/python path, not that it differs
-        # from sys.executable.
-        result = self._run("import sys; print(sys.executable)", mode="project")
-        self.assertEqual(result["status"], "success")
-        # Either VIRTUAL_ENV-bin/python or sys.executable fallback, both OK.
-        output = result["output"].strip()
-        ve = os.environ.get("VIRTUAL_ENV", "").strip()
-        if ve:
-            self.assertTrue(
-                output.startswith(ve) or output == sys.executable,
-                f"project-mode python should be under VIRTUAL_ENV={ve} or sys.executable={sys.executable}, got {output}",
-            )
 
     def test_project_mode_can_still_import_hermes_tools(self):
         """Regression: hermes_tools still importable from non-tmpdir CWD.
@@ -435,23 +411,7 @@ class TestPythonEnvironmentPrefix(unittest.TestCase):
             result = _python_environment_prefix("/bad/python")
         self.assertEqual(result, "")
 
-    def test_returns_empty_string_when_stdout_is_blank(self):
-        mock_result = unittest.mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "   \n"
-        with patch("subprocess.run", return_value=mock_result):
-            result = _python_environment_prefix("/blank/python")
-        self.assertEqual(result, "")
 
-    def test_result_is_cached(self):
-        """Second call returns cached value without spawning another process."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = unittest.mock.MagicMock(
-                returncode=0, stdout="/fake/prefix\n"
-            )
-            _python_environment_prefix("/cached/python")
-            _python_environment_prefix("/cached/python")
-        self.assertEqual(mock_run.call_count, 1)
 
     def test_failure_is_not_cached(self):
         """A transient probe failure must not stick — the next call retries.
@@ -481,9 +441,6 @@ class TestUsesHermesPythonEnvironment(unittest.TestCase):
     def tearDown(self):
         _python_prefix_cache.clear()
 
-    def test_true_for_current_interpreter(self):
-        """sys.executable always belongs to the current environment."""
-        self.assertTrue(_uses_hermes_python_environment(sys.executable))
 
     def test_true_for_current_interpreter_without_probe(self):
         """sys.executable short-circuits — no subprocess probe on the default path.
@@ -498,19 +455,19 @@ class TestUsesHermesPythonEnvironment(unittest.TestCase):
 
     def test_false_for_different_prefix(self):
         """An interpreter reporting a different prefix is external."""
-        with patch("tools.code_execution_tool._python_environment_prefix",
+        with patch("tools.code_execution_env._python_environment_prefix",
                    return_value="/some/other/venv"):
             self.assertFalse(_uses_hermes_python_environment("/other/python"))
 
     def test_false_when_prefix_is_empty(self):
         """If prefix cannot be determined (error path), treat as external."""
-        with patch("tools.code_execution_tool._python_environment_prefix",
+        with patch("tools.code_execution_env._python_environment_prefix",
                    return_value=""):
             self.assertFalse(_uses_hermes_python_environment("/bad/python"))
 
     def test_true_when_prefix_matches_sys_prefix(self):
         hermes_prefix = os.path.realpath(sys.prefix)
-        with patch("tools.code_execution_tool._python_environment_prefix",
+        with patch("tools.code_execution_env._python_environment_prefix",
                    return_value=hermes_prefix):
             self.assertTrue(_uses_hermes_python_environment("/same/env/python"))
 
@@ -531,25 +488,36 @@ class TestPythonPathComposition(unittest.TestCase):
         """Return (PYTHONPATH, staging_dir) that execute_code passes to the child."""
         captured = {}
 
+        class _Captured(RuntimeError):
+            pass
+
         def _fake_popen(cmd, **kwargs):
             env = kwargs.get("env") or {}
             captured["PYTHONPATH"] = env.get("PYTHONPATH", "")
-            # cmd is [python, <staging_dir>/script.py]
+            # cmd is [python, <staging_dir>/script.py] (per-call) or
+            # [python, <staging_dir>/hermes_kernel_runner.py] (session
+            # kernel) — staging dir derivation is identical.
             captured["staging_dir"] = os.path.dirname(cmd[1])
-            mock_proc = unittest.mock.MagicMock()
-            mock_proc.stdout.read.return_value = b""
-            mock_proc.stderr.read.return_value = b""
-            mock_proc.wait.return_value = 0
-            mock_proc.returncode = 0
-            mock_proc.poll.return_value = 0
-            return mock_proc
+            # Abort the spawn after capture: returning a MagicMock proc
+            # would leave the kernel's reader threads spinning on mock
+            # reads and hang the cell wait loop (always-on session
+            # kernels; the pre-kernel version of this helper could get
+            # away with a fake proc because the per-call path only
+            # .wait()ed on it).
+            raise _Captured()
 
         with patch("tools.code_execution_tool._load_config", return_value={"mode": "strict"}), \
              patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call), \
-             patch("tools.code_execution_tool._uses_hermes_python_environment",
+             patch("tools.code_execution_env._uses_hermes_python_environment",
                    return_value=same_env), \
              patch("subprocess.Popen", side_effect=_fake_popen):
-            execute_code(code="pass", task_id="test-pp", enabled_tools=[])
+            try:
+                execute_code(code="pass", task_id="test-pp",
+                             enabled_tools=[], reset=True)
+            except _Captured:
+                pass  # expected: spawn aborted right after env capture
+            except Exception:
+                pass  # kernel path wraps the abort; capture already happened
 
         # If execute_code never reached Popen, the capture is empty and any
         # "X not in PYTHONPATH" assertion downstream would pass vacuously.

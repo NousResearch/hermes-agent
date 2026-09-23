@@ -1,10 +1,18 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection } from '@/store/session'
+import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
 import { PreviewPane } from './preview-pane'
+
+// The consent dialog has its own test file and needs a QueryClientProvider;
+// these tests exercise the pane's console/watch/webview wiring, not the
+// prompt, so isolate it the way the pane's other collaborators are.
+vi.mock('./real-profile-consent-dialog', () => ({
+  RealProfileConsentDialog: () => null
+}))
 
 function stubPdfObjectUrls() {
   const NativeUrl = URL
@@ -34,6 +42,7 @@ describe('PreviewPane console state', () => {
   afterEach(() => {
     cleanup()
     $connection.set(null)
+    $selectedStoredSessionId.set(null)
     vi.unstubAllGlobals()
   })
 
@@ -142,6 +151,36 @@ describe('PreviewPane console state', () => {
     expect(rendered.queryByRole('textbox', { name: 'Address' })).toBeNull()
   })
 
+  it('does not offer the URL-only pop-out action for a local HTML file', async () => {
+    vi.stubGlobal('window', {
+      ...window,
+      hermesDesktop: {
+        ...window.hermesDesktop,
+        openBrowserWindow: vi.fn(async () => ({ ok: true }))
+      }
+    })
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          tabId="file:/tmp/report.html"
+          target={{
+            kind: 'file',
+            label: 'report.html',
+            path: '/tmp/report.html',
+            previewKind: 'html',
+            source: '/tmp/report.html',
+            url: 'file:///tmp/report.html'
+          }}
+        />
+      )
+    })
+
+    expect(rendered.getByRole('textbox', { name: 'Address' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+  })
+
   it('drives the webview from the bar and tracks its history', async () => {
     let rendered!: ReturnType<typeof render>
     await act(async () => {
@@ -189,6 +228,80 @@ describe('PreviewPane console state', () => {
     // forward, so the load lands a microtask later.
     await waitFor(() => expect(loadURL).toHaveBeenCalledWith('http://localhost:4000/app'))
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
+  })
+
+  it('continues comment numbering in one conversation and resets it when the conversation changes', async () => {
+    $selectedStoredSessionId.set('session-one')
+    const selectedCrop = 'data:image/png;base64,c2VsZWN0ZWQ='
+    const scrolledCrop = 'data:image/png;base64,ZGlmZmVyZW50LXZpc2libGU='
+    const savedRect = { height: 20, width: 40, x: 10, y: 20 }
+
+    const attached = new Promise<Blob>(resolve => {
+      const unsubscribe = onComposerAttachImagesRequest(({ blobs }) => {
+        unsubscribe()
+        resolve(blobs[0]!)
+      })
+    })
+
+    const previousDesktop = window.hermesDesktop
+    let captureCount = 0
+
+    window.hermesDesktop = {
+      ...previousDesktop,
+      capturePreview: vi.fn(async () => {
+        captureCount += 1
+
+        return captureCount === 1 ? selectedCrop : scrolledCrop
+      })
+    }
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    let waitCount = 0
+    let releaseNextPick: ((event: unknown) => void) | undefined
+    Object.assign(webview, {
+      executeJavaScript: vi.fn(async (code: string) => {
+        if (code.includes('.wait()')) {
+          waitCount += 1
+
+          if (waitCount === 1) {
+            return { rect: savedRect, type: 'pick-area' }
+          }
+
+          return new Promise(resolve => {
+            releaseNextPick = resolve
+          })
+        }
+
+        return undefined
+      }),
+      getWebContentsId: () => 7
+    })
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Annotate' }))
+    fireEvent.click(await rendered.findByRole('button', { name: 'Save' }))
+    fireEvent.click(await rendered.findByRole('button', { name: 'Add 1 comment' }))
+
+    expect(await (await attached).text()).toBe('selected')
+    await act(async () => {
+      releaseNextPick?.({ rect: { ...savedRect, y: 80 }, type: 'pick-area' })
+    })
+    expect(await rendered.findByRole('form', { name: 'Comment 2' })).toBeTruthy()
+
+    act(() => {
+      $selectedStoredSessionId.set('session-two')
+    })
+    await waitFor(() => expect(rendered.queryByRole('form', { name: 'Comment 2' })).toBeNull())
+    expect(rendered.queryByRole('button', { name: 'Add 1 comment' })).toBeNull()
+    window.hermesDesktop = previousDesktop
   })
 
   // The webview always runs on THIS machine, so a remote agent's localhost is
@@ -330,6 +443,31 @@ describe('PreviewPane console state', () => {
 
     expect(rendered.container.textContent).not.toContain('Type an address above')
     expect(rendered.queryByRole('textbox', { name: 'Address' })).not.toBeNull()
+  })
+
+  it('workspace edits reload a loopback dev page, never a site the tab browsed to', async () => {
+    const target = {
+      kind: 'url',
+      label: 'Preview',
+      source: 'http://localhost:5174',
+      url: 'http://localhost:5174'
+    } as const
+    const rendered = render(<PreviewPane reloadRequest={0} tabId="browser" target={target} />)
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+    const reloadIgnoringCache = vi.fn()
+
+    Object.assign(webview, { reloadIgnoringCache })
+
+    await act(async () => rendered.rerender(<PreviewPane reloadRequest={1} tabId="browser" target={target} />))
+    expect(reloadIgnoringCache).toHaveBeenCalledOnce()
+
+    // The live page decides, not the tab's original address: once the user
+    // browses elsewhere an agent's file edit can't change what they're reading.
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: 'https://x.com/home' }))
+    })
+    await act(async () => rendered.rerender(<PreviewPane reloadRequest={2} tabId="browser" target={target} />))
+    expect(reloadIgnoringCache).toHaveBeenCalledOnce()
   })
 
   it('renders authenticated remote HTML safely and honors source mode', async () => {
@@ -556,5 +694,67 @@ describe('PreviewPane console state', () => {
       path: `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
       profile: 'macmini'
     })
+  })
+})
+
+describe('PreviewPane guest external handoff', () => {
+  // #112941: a guest page's `_blank` anchor (Streamlit's "Ask Google" button)
+  // reaches the OS browser only through the audited `hermes:openExternal` IPC.
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+  const initialHermesDesktop = desktopWindow.hermesDesktop
+
+  afterEach(() => {
+    if (initialHermesDesktop) {
+      desktopWindow.hermesDesktop = initialHermesDesktop
+    } else {
+      delete desktopWindow.hermesDesktop
+    }
+  })
+
+  async function renderWebview() {
+    const openExternal = vi.fn(async () => undefined)
+    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:8501',
+            url: 'http://localhost:8501'
+          }}
+        />
+      )
+    })
+
+    return { openExternal, webview: rendered.container.querySelector('webview') as HTMLElement }
+  }
+
+  function guestMessage(webview: HTMLElement, url: string, channel = 'preview-open-external') {
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('ipc-message'), { args: [url], channel }))
+    })
+  }
+
+  it('opens an admitted guest anchor URL through the audited OS-browser channel', async () => {
+    const { openExternal, webview } = await renderWebview()
+
+    guestMessage(webview, 'https://www.google.com/search?q=traceback')
+
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://www.google.com/search?q=traceback')
+  })
+
+  it('never opens non-web schemes or messages from a channel the preload does not own', async () => {
+    const { openExternal, webview } = await renderWebview()
+
+    guestMessage(webview, 'file:///etc/passwd')
+    guestMessage(webview, 'javascript:alert(1)')
+    guestMessage(webview, 'mailto:someone@example.com')
+    guestMessage(webview, 'https://example.com', 'something-else')
+
+    expect(openExternal).not.toHaveBeenCalled()
   })
 })

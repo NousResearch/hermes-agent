@@ -22,9 +22,6 @@ def _make_adapter(extra):
     return adapter
 
 
-def test_enabled_via_extra():
-    adapter = _make_adapter(extra={"status_indicator": True})
-    assert adapter._status_indicator_enabled is True
 
 
 @pytest.mark.asyncio

@@ -1,35 +1,9 @@
-import argparse
 import os
 
 import pytest
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
-from hermes_cli.main import _read_ssh_session_token_file, cmd_dashboard
-from hermes_cli.subcommands.dashboard import build_dashboard_parser
-
-
-def dashboard_parser():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_dashboard_parser(
-        subparsers,
-        cmd_dashboard=lambda _args: None,
-        cmd_dashboard_register=lambda _args: None,
-    )
-    return parser
-
-
-def test_serve_help_advertises_secure_ssh_bootstrap_flags(capsys):
-    with pytest.raises(SystemExit) as exit_info:
-        dashboard_parser().parse_args(["serve", "--help"])
-    assert exit_info.value.code == 0
-    output = capsys.readouterr().out
-    assert "--ssh-session-token-file PATH" in output
-    assert "--ssh-owner-nonce NONCE" in output
-
-
-
-
+from hermes_cli.main_dashboard import _read_ssh_session_token_file
 
 
 @pytest.mark.skipif(

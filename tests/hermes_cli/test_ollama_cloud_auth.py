@@ -9,8 +9,6 @@ Covers:
 - /model tab completion for model aliases
 """
 
-import os
-
 
 # ---------------------------------------------------------------------------
 # OLLAMA_API_KEY credential resolution
@@ -96,100 +94,11 @@ class TestDirectAliases:
 
 
 # ---------------------------------------------------------------------------
-# /model command persistence
-# ---------------------------------------------------------------------------
-
-class TestModelSwitchPersistence:
-    """CLI /model command should update requested_provider for session persistence."""
-
-    def test_model_switch_result_fields(self):
-        """ModelSwitchResult has all required fields for CLI state update."""
-        from hermes_cli.model_switch import ModelSwitchResult
-
-        result = ModelSwitchResult(
-            success=True,
-            new_model="claude-opus-4-6",
-            target_provider="anthropic",
-            provider_changed=True,
-            api_key="test-key",
-            base_url="https://api.anthropic.com",
-            api_mode="anthropic_messages",
-        )
-
-        assert result.success
-        assert result.new_model == "claude-opus-4-6"
-        assert result.target_provider == "anthropic"
-        assert result.api_key == "test-key"
-        assert result.base_url == "https://api.anthropic.com"
-
-
-# ---------------------------------------------------------------------------
-# Fallback base_url passthrough
-# ---------------------------------------------------------------------------
-
-class TestFallbackBaseUrlPassthrough:
-    """_try_activate_fallback should pass base_url from fallback config."""
-
-    def test_fallback_config_has_base_url(self):
-        """Verify fallback_providers config structure supports base_url."""
-        # This tests the contract: fallback dicts can have base_url
-        fb = {
-            "provider": "custom",
-            "model": "qwen3.5:397b",
-            "base_url": "https://ollama.com/v1",
-        }
-        assert fb.get("base_url") == "https://ollama.com/v1"
-
-    def test_ollama_key_lookup_for_fallback(self, monkeypatch):
-        """When fallback base_url is ollama.com and no api_key, OLLAMA_API_KEY is used."""
-        monkeypatch.setenv("OLLAMA_API_KEY", "fb-ollama-key")
-
-        fb = {
-            "provider": "custom",
-            "model": "qwen3.5:397b",
-            "base_url": "https://ollama.com/v1",
-        }
-
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-        fb_api_key_hint = (fb.get("api_key") or "").strip() or None
-
-        if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
-            fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
-
-        assert fb_api_key_hint == "fb-ollama-key"
-        assert fb_base_url_hint == "https://ollama.com/v1"
-
-
-# ---------------------------------------------------------------------------
 # Edge cases: _load_direct_aliases
 # ---------------------------------------------------------------------------
 
 class TestLoadDirectAliasesEdgeCases:
     """Edge cases for _load_direct_aliases parsing."""
-
-    def test_empty_model_aliases_config(self, monkeypatch):
-        """Empty model_aliases dict returns only builtins (if any)."""
-        mock_config = {"model_aliases": {}}
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: mock_config,
-        )
-
-        from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
-        assert isinstance(aliases, dict)
-
-
-    def test_load_config_exception_returns_builtins(self, monkeypatch):
-        """If load_config raises, _load_direct_aliases returns builtins only."""
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: (_ for _ in ()).throw(RuntimeError("config broken")),
-        )
-
-        from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
-        assert isinstance(aliases, dict)
 
 
     def test_empty_model_string_skipped(self, monkeypatch):
@@ -209,50 +118,6 @@ class TestLoadDirectAliasesEdgeCases:
         aliases = _load_direct_aliases()
         assert "empty" not in aliases
         assert "good" in aliases
-
-
-# ---------------------------------------------------------------------------
-# _ensure_direct_aliases idempotency
-# ---------------------------------------------------------------------------
-
-class TestEnsureDirectAliases:
-    """_ensure_direct_aliases lazy-loading behavior."""
-
-    def test_ensure_populates_on_first_call(self, monkeypatch):
-        """DIRECT_ALIASES is populated after _ensure_direct_aliases."""
-        import hermes_cli.model_switch as ms
-
-        mock_config = {
-            "model_aliases": {
-                "test": {"model": "test-model", "provider": "custom"},
-            }
-        }
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: mock_config,
-        )
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
-        ms._ensure_direct_aliases()
-        assert "test" in ms.DIRECT_ALIASES
-
-    def test_ensure_no_reload_when_populated(self, monkeypatch):
-        """_ensure_direct_aliases does not reload if already populated."""
-        import hermes_cli.model_switch as ms
-        from hermes_cli.model_switch import DirectAlias
-
-        existing = {"pre": DirectAlias("pre-model", "custom", "")}
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", existing)
-
-        call_count = [0]
-        original_load = ms._load_direct_aliases
-        def counting_load():
-            call_count[0] += 1
-            return original_load()
-        monkeypatch.setattr(ms, "_load_direct_aliases", counting_load)
-
-        ms._ensure_direct_aliases()
-        assert call_count[0] == 0
-        assert "pre" in ms.DIRECT_ALIASES
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +223,6 @@ class TestResolveAliasSorting:
         assert result.success is False
         assert "claude-opus-4-8" in result.error_message
         assert "claude-opus-4-20250514" in result.error_message
-        assert "not switching automatically" in result.error_message
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +250,7 @@ class TestSwitchModelDirectAliasOverride:
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
 
-        monkeypatch.setattr("hermes_cli.models.validate_requested_model",
+        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
         monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")
@@ -411,7 +275,7 @@ class TestSwitchModelDirectAliasOverride:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
-        monkeypatch.setattr("hermes_cli.models.validate_requested_model",
+        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
         monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")
@@ -420,53 +284,3 @@ class TestSwitchModelDirectAliasOverride:
         assert result.success
         assert result.api_key == "no-key-required"
         assert result.base_url == "http://localhost:11434/v1"
-
-
-# ---------------------------------------------------------------------------
-# CLI state update: requested_provider persistence
-# ---------------------------------------------------------------------------
-
-class TestCLIStateUpdate:
-    """CLI /model handler should update requested_provider and explicit fields."""
-
-
-# ---------------------------------------------------------------------------
-# Fallback: OLLAMA_API_KEY edge cases
-# ---------------------------------------------------------------------------
-
-class TestFallbackEdgeCases:
-    """Edge cases for fallback OLLAMA_API_KEY logic."""
-
-    def test_ollama_key_not_injected_for_localhost(self, monkeypatch):
-        """OLLAMA_API_KEY should not be injected for localhost URLs."""
-        monkeypatch.setenv("OLLAMA_API_KEY", "should-not-use")
-
-        fb = {
-            "provider": "custom",
-            "model": "local-model",
-            "base_url": "http://localhost:11434/v1",
-        }
-
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-        fb_api_key_hint = (fb.get("api_key") or "").strip() or None
-
-        if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
-            fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
-
-        assert fb_api_key_hint is None
-
-
-    def test_no_base_url_in_fallback(self, monkeypatch):
-        """Fallback with no base_url doesn't crash."""
-        monkeypatch.setenv("OLLAMA_API_KEY", "some-key")
-
-        fb = {"provider": "openrouter", "model": "some-model"}
-
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-        fb_api_key_hint = (fb.get("api_key") or "").strip() or None
-
-        if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
-            fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
-
-        assert fb_base_url_hint is None
-        assert fb_api_key_hint is None

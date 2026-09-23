@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
 import {
@@ -17,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import { migrateTilesForProfile } from '@/store/session-states'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -30,7 +32,8 @@ export function RenameProfileDialog({
   isDefault = false,
   onClose,
   onRenamed,
-  open
+  open,
+  scope
 }: {
   currentName: string
   /** Default profile: sets a presentation-only display name (Unicode ok);
@@ -39,6 +42,9 @@ export function RenameProfileDialog({
   onClose: () => void
   onRenamed?: (name: string) => Promise<void> | void
   open: boolean
+  /** Explicit (connection, profile) owner for a remote-gateway profile: the
+   *  rename executes there and no local backend is retired. */
+  scope?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.profiles
@@ -85,11 +91,19 @@ export function RenameProfileDialog({
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault) {
+      if (!isDefault && scope == null) {
         retireLocalProfileGateways(currentName)
       }
 
-      await renameProfile(currentName, trimmed)
+      await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+
+      // The sessions moved with the directory; the tabs, cached tails and
+      // remembered ids keyed by the old name must follow, or every open
+      // dials a backend that no longer exists (#111868).
+      if (!isDefault && scope == null) {
+        migrateTilesForProfile(currentName, trimmed)
+      }
+
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)

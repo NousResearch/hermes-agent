@@ -283,7 +283,7 @@ function notifyGatewayTools(tools: string[] | undefined) {
 async function fetchProviderDefaultModel(
   preferredSlugs: string[],
   profile?: string
-): Promise<null | { providerSlug: string; defaultModel: string }> {
+): Promise<null | { defaultModel: string; label: string; providerSlug: string }> {
   let options
 
   try {
@@ -322,7 +322,7 @@ async function fetchProviderDefaultModel(
     String(options?.provider ?? '').toLowerCase() === String(matched.slug).toLowerCase() &&
     models.map(String).includes(currentModel)
   ) {
-    return { providerSlug: String(matched.slug), defaultModel: currentModel }
+    return { providerSlug: String(matched.slug), defaultModel: currentModel, label: String(matched.name) }
   }
 
   // Prefer the backend's recommended default — it mirrors the curation
@@ -348,8 +348,35 @@ async function fetchProviderDefaultModel(
 
   return {
     providerSlug: String(matched.slug),
-    defaultModel
+    defaultModel,
+    label: String(matched.name)
   }
+}
+
+/** Show the existing provider/model confirmation before recording a ready
+ * runtime as onboarded for the first time. A configured provider can predate
+ * the desktop renderer (for example after CLI setup), so readiness alone is
+ * not proof that this person has seen the Desktop welcome. */
+async function showFirstRunReadyConfirmation(ctx: OnboardingContext): Promise<boolean> {
+  const defaults = await fetchProviderDefaultModel([], ctx.profile)
+
+  if (!defaults) {
+    return false
+  }
+
+  patch({
+    configured: false,
+    flow: {
+      status: 'confirming_model',
+      providerSlug: defaults.providerSlug,
+      currentModel: defaults.defaultModel,
+      label: defaults.label,
+      saving: false
+    },
+    reason: null
+  })
+
+  return true
 }
 
 // After OAuth/API-key success: reload the backend env, verify runtime,
@@ -695,6 +722,15 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   }
 
   if (runtime.ready) {
+    const state = $desktopOnboarding.get()
+
+    // `null` is the only state that means this renderer has never written its
+    // completion marker. `false` is an existing setup flow that the user has
+    // already seen, and `true` is a returning Desktop user.
+    if (runtime.freeTier !== true && state.configured === null && !state.requested && (await showFirstRunReadyConfirmation(ctx))) {
+      return false
+    }
+
     completeDesktopOnboarding()
     await applyFreeTierIntro(ctx, runtime)
     ctx.onCompleted?.()

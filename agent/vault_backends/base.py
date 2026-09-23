@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -34,9 +35,13 @@ class LoginBackend(ABC):
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
 
-    def is_available(self) -> bool:
-        """Whether this backend can service calls; cheap and network-free."""
-        return True
+    @classmethod
+    def is_available(cls, config: dict[str, object]) -> bool:
+        """Check local prerequisites without constructing, authenticating or prompting.
+
+        Third-party backends override this; builtin detection remains unchanged.
+        """
+        return False
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)
@@ -127,24 +132,25 @@ def is_installed(name: str) -> bool:
     if cls is None:
         return False
     try:
-        backend = cls(section if isinstance(section, dict) else {})
-        return bool(backend.is_available())
+        return cls.is_available(deepcopy(section) if isinstance(section, dict) else {}) is True
     except Exception:  # noqa: BLE001 — a broken plugin must not break vault discovery
-        logger.warning("Login backend '%s' availability check failed; skipping", name, exc_info=True)
+        logger.warning("Login backend '%s' availability check failed; skipping", name)
         return False
 
 
 def is_enabled(name: str) -> bool:
-    """An installed manager is a login source unless the user opted out (``vault.<name>.enabled: false``).
-    Zero-config on purpose: a user with ``bw``/``op`` on PATH should never have to discover a toggle."""
-    section = _cfg().get(name) or {}
-    if isinstance(section, dict) and section.get("enabled") is False:
+    """Builtins are opt-out; plugin backends require an explicit boolean opt-in."""
+    section = _cfg().get(name)
+    if name in {"onepassword", "bitwarden"}:
+        if isinstance(section, dict) and section.get("enabled") is False:
+            return False
+    elif not isinstance(section, dict) or section.get("enabled") is not True:
         return False
     return is_installed(name)
 
 
 def enabled_backends() -> List[LoginBackend]:
-    """Local first (always on), then every detected external manager the user has not turned off."""
+    """Local first, then available external managers enabled for this profile."""
     from agent.vault_backends.local import LocalLoginBackend
 
     cfg = _cfg()
@@ -152,7 +158,11 @@ def enabled_backends() -> List[LoginBackend]:
     for cls in external_backend_classes():
         if is_enabled(cls.name):
             section = cfg.get(cls.name) or {}
-            out.append(cls(section if isinstance(section, dict) else {}))
+            try:
+                out.append(cls(deepcopy(section) if isinstance(section, dict) else {}))
+            except Exception:
+                # Provider exceptions may carry credentials, even during initialization.
+                logger.warning("Login backend '%s' initialization failed; skipping", cls.name)
     return out
 
 

@@ -1079,7 +1079,7 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
     ("register_login_backend", "login_backend", "agent.vault_backends.registry",
      "agent.vault_backends.base:LoginBackend", "login backend",
      "Register a :class:`agent.vault_backends.base.LoginBackend` class. Hermes passes "
-     "``vault.<name>`` to its constructor, checks ``is_available()``, and routes opaque handles by its "
+     "``vault.<name>`` to its constructor, checks ``is_available(config)``, and routes opaque handles by its "
      "unique ``prefix``. Built-in names and overlapping prefixes are rejected.",
      {"normalize": None, "register": "register_backend", "param": "backend_cls",
       "class_registration": True}),

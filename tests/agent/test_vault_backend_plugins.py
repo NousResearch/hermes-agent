@@ -1,5 +1,7 @@
 """Behavior contract for third-party browser-login backends."""
 
+import pytest
+
 from agent.vault_backends.base import (
     LoginBackend,
     backend_for_handle,
@@ -17,8 +19,9 @@ class PluginBackend(LoginBackend):
     def __init__(self, cfg=None):
         self.cfg = cfg or {}
 
-    def is_available(self):
-        return self.cfg.get("token") == "ready"
+    @classmethod
+    def is_available(cls, config):
+        return config.get("token") == "ready"
 
     def list_items(self):
         return []
@@ -35,7 +38,7 @@ def test_plugin_backend_receives_config_routes_handles_and_unloads(monkeypatch):
     context = PluginContext(PluginManifest(name="fixture-pass", key="fixture-pass"), manager)
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
-        lambda: {"vault": {"fixturepass": {"token": "ready", "password": "secret"}}},
+        lambda: {"vault": {"fixturepass": {"enabled": True, "token": "ready", "password": "secret"}}},
     )
 
     assert context.register_login_backend(PluginBackend) is not None
@@ -104,7 +107,8 @@ def test_plugin_backend_availability_wins_over_existing_binary_path(monkeypatch,
         name = "unavailable"
         prefix = "unavailable:"
 
-        def is_available(self):
+        @classmethod
+        def is_available(cls, config):
             return False
 
     binary = tmp_path / "manager-cli"
@@ -123,3 +127,29 @@ def test_plugin_backend_availability_wins_over_existing_binary_path(monkeypatch,
         assert "unavailable" not in {backend.name for backend in enabled_backends()}
     finally:
         manager.unload("unavailable")
+
+
+@pytest.mark.parametrize(("first_prefix", "second_name", "second_prefix"), [
+    ("fixture:", "second", "fixture:child:"),
+    ("fixture:child:", "second", "fixture:"),
+    ("fixture:", "second", "fixture:"),
+    ("fixture:", "fixturepass", "other:"),
+    ("fixture:", "second", "op:"),
+    ("fixture:", "second", "op:child:"),
+    ("fixture:", "second", "op"),
+    ("fixture:", "second", "vault_"),
+    ("fixture:", "second", "vault_child:"),
+])
+def test_collision_never_creates_ambiguous_routing(first_prefix, second_name, second_prefix):
+    from agent.vault_backends.registry import list_backend_classes
+
+    first = type("First", (PluginBackend,), {"prefix": first_prefix})
+    second = type("Second", (PluginBackend,), {"name": second_name, "prefix": second_prefix})
+    manager = PluginManager()
+    context = PluginContext(PluginManifest(name="collision", key="collision"), manager)
+    try:
+        assert context.register_login_backend(first) is not None
+        assert context.register_login_backend(second) is None
+        assert list_backend_classes() == (first,)
+    finally:
+        manager.unload("collision")

@@ -17,7 +17,8 @@ class ColdVaultBackend(LoginBackend):
     display_name = "Cold Vault"
     prefix = "cold:"
     def __init__(self, config=None): self.config = config or {}
-    def is_available(self): return True
+    @classmethod
+    def is_available(cls, config): return True
     def list_items(self): return []
     def get_meta(self, handle): return None
     def resolve_password(self, handle): return "secret"
@@ -28,7 +29,7 @@ def register(ctx):
         encoding="utf-8",
     )
     (home / "config.yaml").write_text(
-        "plugins:\n  enabled:\n    - cold-vault\n",
+        "plugins:\n  enabled:\n    - cold-vault\nvault:\n  coldvault:\n    enabled: true\n",
         encoding="utf-8",
     )
 
@@ -58,3 +59,9 @@ def test_cold_sources_discovers_login_backend(cold_login_backend_plugin, monkeyp
     vault._cmd_sources(SimpleNamespace(enable=None, disable=None))
 
     assert any("Cold Vault" in line and "detected" in line for line in lines)
+    assert not any("asks you to unlock" in line for line in lines if "Cold Vault" in line)
+    from agent.vault_backends.base import backend_for_handle
+    vault._cmd_sources(SimpleNamespace(enable=None, disable="coldvault"))
+    assert backend_for_handle("cold:item") is None
+    vault._cmd_sources(SimpleNamespace(enable="coldvault", disable=None))
+    assert backend_for_handle("cold:item") is not None

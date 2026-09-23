@@ -141,7 +141,7 @@ def _cmd_list(args) -> None:
 
 
 def _cmd_sources(args) -> None:
-    """Show the detected password managers; `--disable`/`--enable` flip the opt-out (`vault.<name>.enabled`)."""
+    """Show password managers and set their profile's explicit activation choice."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed
     from hermes_cli.config import _ensure_dict, load_config, save_config
@@ -158,7 +158,7 @@ def _cmd_sources(args) -> None:
         cfg = load_config()
         section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
         if args.enable:
-            section.pop("enabled", None)  # detected managers are on by default; drop the opt-out
+            section["enabled"] = True
         else:
             section["enabled"] = False
         save_config(cfg)
@@ -174,7 +174,8 @@ def _cmd_sources(args) -> None:
         else:
             status = "[dim]not installed[/]"
         c.print(f"  {cls.display_name:<10} {status}")
-    c.print("[dim]Managers are picked up automatically when their CLI is installed and signed in.[/]")
+    c.print("[dim]Built-in managers are detected automatically. Third-party plugins also require "
+            "`hermes vault sources --enable NAME`.[/]")
 
 
 def _cmd_rm(args) -> None:
@@ -208,10 +209,10 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers; they are on automatically")
+    p_src = subs.add_parser("sources", help="Show password managers; third-party sources require explicit enablement")
     group = p_src.add_mutually_exclusive_group()
     group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager")
-    group.add_argument("--enable", metavar="NAME", help="Undo --disable")
+    group.add_argument("--enable", metavar="NAME", help="Enable a password manager for this profile")
     p_src.set_defaults(_vault_handler=_cmd_sources)
 
 

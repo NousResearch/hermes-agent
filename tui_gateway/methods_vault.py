@@ -92,11 +92,13 @@ def _(rid, params: dict) -> dict:
     name = str(params.get("name") or "")
     if name not in {cls.name for cls in external_backend_classes()}:
         return _err(rid, 5095, f"unknown vault source: {name}")
-    enabled = bool(params.get("enabled"))
+    enabled = params.get("enabled")
+    if not isinstance(enabled, bool):
+        return _err(rid, 5095, "enabled must be a boolean")
     cfg = load_config()
     section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
     if enabled:
-        section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
+        section["enabled"] = True
     else:
         section["enabled"] = False
     if not enabled:

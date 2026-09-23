@@ -86,13 +86,18 @@ cannot spend. Address fills need no confirmation.
 
 ### Adding another password manager
 
-Third-party managers ship as standalone plugins. Implement
-`agent.vault_backends.base.LoginBackend`, give it a unique lowercase `name` and
-opaque-handle `prefix`, and register the class with
-`ctx.register_login_backend(MyLoginBackend)`. Hermes passes the
-`vault.<name>` config mapping to the constructor and includes the backend when
-its cheap, network-free `is_available()` check returns true. Names and prefixes
-that overlap a built-in or another plugin are rejected.
+Third-party managers ship as standalone plugins. Install and enable the plugin,
+then enable its credential source with `hermes vault sources --enable <backend-name>`
+or the switch in **Settings → Passwords & Logins**. This sets
+`vault.<backend-name>.enabled: true`; third-party sources are off by default,
+unlike the built-in managers above.
+
+Plugin authors implement `agent.vault_backends.base.LoginBackend` and register the
+class with `ctx.register_login_backend(MyLoginBackend)`. Hermes checks local
+prerequisites through the class method `is_available(config)` without constructing
+or authenticating the backend. Names and overlapping handle prefixes are reserved
+per profile. See the [login-backend plugin guide](/developer-guide/login-backend-plugin/)
+for the full contract.
 
 Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 `0600`), scoped to the profile. Labels, site origins and login identifiers are

@@ -47,7 +47,8 @@ class ColdVaultBackend(LoginBackend):
     display_name = "Cold Vault"
     prefix = "cold:"
     def __init__(self, config=None): self.config = config or {}
-    def is_available(self): return True
+    @classmethod
+    def is_available(cls, config): return True
     def list_items(self): return []
     def get_meta(self, handle): return None
     def resolve_password(self, handle): return "secret"
@@ -58,7 +59,7 @@ def register(ctx):
         encoding="utf-8",
     )
     (home / "config.yaml").write_text(
-        "plugins:\n  enabled:\n    - cold-vault\n",
+        "plugins:\n  enabled:\n    - cold-vault\nvault:\n  coldvault:\n    enabled: true\n",
         encoding="utf-8",
     )
 
@@ -79,7 +80,19 @@ def cold_login_backend_plugin(home):
 def test_cold_tui_sources_discovers_login_backend(cold_login_backend_plugin):
     sources = _result(srv._methods["vault.sources"](1, {}))["sources"]
 
-    assert any(source["name"] == "coldvault" and source["enabled"] for source in sources)
+    source = next(source for source in sources if source["name"] == "coldvault")
+    assert source["enabled"] and not source["needs_unlock"]
+    from agent.vault_backends.base import backend_for_handle
+    _result(srv._methods["vault.source.set"](2, {"name": "coldvault", "enabled": False}))
+    assert backend_for_handle("cold:item") is None
+    _result(srv._methods["vault.source.set"](3, {"name": "coldvault", "enabled": True}))
+    assert backend_for_handle("cold:item") is not None
+
+
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, None])
+def test_source_toggle_requires_boolean(cold_login_backend_plugin, value):
+    response = srv._methods["vault.source.set"](1, {"name": "coldvault", "enabled": value})
+    assert _error(response)["message"] == "enabled must be a boolean"
 
 
 _LOGIN_PARAMS = {

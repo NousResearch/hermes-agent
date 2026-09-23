@@ -25,6 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
+from tools.environments.base_session_env import NONINTERACTIVE_GIT_ENV
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -1214,6 +1215,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
         spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
         spawn_env = self._spawn_env(env_vars)
+        # Pipe mode has no tty at all (stdin=DEVNULL, own session), so an editor or credential
+        # prompt would sit until killed and notify_on_complete would never fire; the PTY path
+        # above is interactive by design and keeps the inherited editor.
+        spawn_env.update(NONINTERACTIVE_GIT_ENV)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
         # start_new_session is REQUIRED with systemd-run --scope too: the scope does not

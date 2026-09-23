@@ -124,6 +124,17 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
     return save, restore
 
 
+# Forced (not defaulted) in every agent shell without a tty: an inherited ``EDITOR=vim`` is exactly
+# the hang these prevent, and GIT_EDITOR outranks core.editor/VISUAL/EDITOR so one variable covers
+# every inherited editor. Shared by the session-env wrap script and pipe-mode background spawns.
+NONINTERACTIVE_GIT_ENV = {
+    "GIT_EDITOR": "true",
+    "GIT_SEQUENCE_EDITOR": "true",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "Never",
+}
+
+
 def _wrap_command_script(
     command: str, *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str,
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str) -> str:
@@ -131,7 +142,9 @@ def _wrap_command_script(
     ``source`` stdout goes to /dev/null because macOS bash 3.2 / some Homebrew builds echo
     ``declare -x`` lines when sourcing. AI_AGENT/HERMES_AGENT advertise the harness to remote
     backends (whose env is not inherited); ``${VAR:-default}`` never clobbers an outer harness.
-    GIT_PAGER/PAGER=cat stop pager-happy tools hanging a PTY-backed command. The env re-dump
+    GIT_PAGER/PAGER=cat stop pager-happy tools hanging a PTY-backed command. NONINTERACTIVE_GIT_ENV
+    is exported after the snapshot ``source`` so a persisted ``export GIT_EDITOR=vim`` cannot re-arm
+    the editor hang; an inline ``GIT_EDITOR=nano git commit`` inside the command still wins. The env re-dump
     uses the same mktemp+mv atomic publish as the bootstrap and chains ``mv`` on the dump
     succeeding so a failed dump never replaces a good snapshot. ``umask 077`` is applied after
     the user's command so snapshot files (which may carry secrets) are private without
@@ -146,6 +159,8 @@ def _wrap_command_script(
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
+        "export " + " ".join(f"{k}={v}" for k, v in NONINTERACTIVE_GIT_ENV.items())
+        + ' DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         f"builtin cd -- {quoted_cwd} || exit 126",
         f"eval '{escaped}'",

@@ -4,8 +4,8 @@ Class C6 (bricked installs, stale code, lost state after `hermes update`). Each 
 
 1. stages a local bare ``origin`` (``--shared`` onto this repository, so no network and no
    object copy) with ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``);
-2. clones it as a git-mode install with its own venv (``uv venv`` + ``uv pip install -e .[all]``
-   from the warm uv cache, exactly the editable layout the installer produces; the installer
+2. clones it as a git-mode install with its own venv (``uv sync --locked --extra all`` from N-1's
+   own uv.lock and the warm uv cache: the installer's tier 0 and its editable layout; the installer
    script itself is covered by ``.github/workflows/install-e2e*.yml``);
 3. gives it user state created BY THE N-1 CLI ITSELF: sessions in state.db from real one-shot
    turns against the scripted fake provider, a named profile with its own state.db, a cron
@@ -41,6 +41,7 @@ live gateway on the host.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -50,6 +51,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 import yaml
@@ -84,21 +86,38 @@ def _real_uv() -> str | None:
     return cand if cand and Path(cand).exists() else None
 
 
-HEAD_SHA = _git("rev-parse", "HEAD", cwd=H.WORKTREE)
 OFFICIAL_URL = "https://github.com/NousResearch/hermes-agent.git"
-# Release N-1 by default; HERMES_E2E_UPGRADE_BASE=<ref> starts from any older ref instead (e.g. the
-# pre-handoff v2026.9.14, or a patched base when proving a leg red against the N-1 side).
-try:
-    BASE_TAG = os.environ.get("HERMES_E2E_UPGRADE_BASE") or _git("describe", "--tags", "--abbrev=0", "HEAD~1",
-                                                                  cwd=H.WORKTREE)
-    BASE_SHA = _git("rev-parse", f"{BASE_TAG}^{{commit}}", cwd=H.WORKTREE)
-except AssertionError:  # shallow CI checkout without tags
-    BASE_TAG = BASE_SHA = ""
 
-if not BASE_TAG:
-    pytestmark.append(pytest.mark.skip(reason="no release tag reachable before HEAD (fetch tags)"))
-if _real_uv() is None:
-    pytestmark.append(pytest.mark.skip(reason="uv required to build the N-1 venv"))
+
+class _Refs(NamedTuple):
+    head: str
+    base_tag: str
+    base: str
+
+
+@functools.cache
+def _refs() -> _Refs:
+    """HEAD and release N-1, resolved on first use: collection (every CI shard) runs no git.
+
+    N-1 is ``git describe --tags --abbrev=0 HEAD~1``; HERMES_E2E_UPGRADE_BASE=<ref> starts from any
+    older ref instead (e.g. the pre-handoff v2026.9.14, or a patched base when proving a leg red
+    against the N-1 side).
+    """
+    head = _git("rev-parse", "HEAD", cwd=H.WORKTREE)
+    try:
+        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or _git("describe", "--tags", "--abbrev=0", "HEAD~1",
+                                                                  cwd=H.WORKTREE)
+        return _Refs(head, tag, _git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE))
+    except AssertionError:  # shallow CI checkout without tags
+        return _Refs(head, "", "")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _upgrade_prerequisites() -> None:
+    if not _refs().base_tag:
+        pytest.skip("no release tag reachable before HEAD (fetch tags)")
+    if _real_uv() is None:
+        pytest.skip("uv required to build the N-1 venv")
 
 
 IMPORT_PROBE = r"""
@@ -206,7 +225,7 @@ def user_config(base_url: str, version: int) -> str:
 
 
 def _base_config_version() -> int:
-    src = _git("show", f"{BASE_SHA}:hermes_cli/config_defaults.py", cwd=H.WORKTREE)
+    src = _git("show", f"{_refs().base}:hermes_cli/config_defaults.py", cwd=H.WORKTREE)
     for line in src.splitlines():
         if '"_config_version"' in line:
             return int(line.split(":", 1)[1].split(",", 1)[0].strip())
@@ -263,9 +282,9 @@ _RETRY_PREFIX = ["/bin/sh", "-c", '/bin/true; exec "$0" "$@"']
 def _make_origin(root: Path) -> Path:
     origin = root / "origin.git"
     _git("clone", "-q", "--bare", "--shared", "--no-tags", str(H.WORKTREE), str(origin), cwd=root)
-    _git("update-ref", "refs/heads/main", BASE_SHA, cwd=origin)
+    _git("update-ref", "refs/heads/main", _refs().base, cwd=origin)
     _git("symbolic-ref", "HEAD", "refs/heads/main", cwd=origin)
-    _git("tag", "-f", "e2e-upgrade-base", BASE_SHA, cwd=origin)
+    _git("tag", "-f", "e2e-upgrade-base", _refs().base, cwd=origin)
     return origin
 
 
@@ -312,7 +331,7 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
     origin = _make_origin(root)
     install = root / "install"
     _git("clone", "-q", "--shared", "-b", "main", str(origin), str(install), cwd=root)
-    assert _git("rev-parse", "HEAD", cwd=install) == BASE_SHA
+    assert _git("rev-parse", "HEAD", cwd=install) == _refs().base
     # Look like a normal (non-fork) install: origin is the official URL, rewritten in this repo's
     # own config to the local store, so the updater takes the common path and never hits the network.
     _git("remote", "set-url", "origin", OFFICIAL_URL, cwd=install)
@@ -320,12 +339,15 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
     uv = _real_uv()
     py = H.WORKTREE / ".venv" / "bin" / "python"
     base_python = str(Path(os.path.realpath(py))) if py.exists() else "python3"
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(install / "venv")}
-    subprocess.run([uv, "venv", "-q", "--python", base_python, str(install / "venv")], check=True, env=uv_env,
-                   capture_output=True, timeout=600)
-    cp = subprocess.run([uv, "pip", "install", "-q", "-e", f"{install}[all]"], env=uv_env,
-                        capture_output=True, text=True, timeout=1800)
-    assert cp.returncode == 0, f"N-1 venv install failed:\n{cp.stderr[-4000:]}"
+    # The installer's tier 0: N-1's own uv.lock (hash-pinned, `--extra all`) into install/venv, with the
+    # user's uv config hidden, so the N-1 venv is the one users of that release actually have.
+    no_cfg = root / "uv-config"
+    no_cfg.mkdir()
+    uv_env = {k: v for k, v in os.environ.items() if k not in ("VIRTUAL_ENV", "UV_NO_CONFIG", "UV_CONFIG_FILE")}
+    uv_env.update(UV_PROJECT_ENVIRONMENT=str(install / "venv"), XDG_CONFIG_HOME=str(no_cfg), XDG_CONFIG_DIRS=str(no_cfg))
+    cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--python", base_python], cwd=str(install),
+                        env=uv_env, capture_output=True, text=True, timeout=1800)
+    assert cp.returncode == 0, f"N-1 venv install from its uv.lock failed:\n{cp.stderr[-4000:]}"
     env_probe = H.isolated_env(root)
     hermes_home = Path(env_probe["HERMES_HOME"])
     if template_home is not None:
@@ -415,12 +437,12 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
     before = leg.snapshot
     # 1. exit code matches reality
     assert final.returncode == 0, "final `hermes update` failed:\n" + H.describe(final)
-    assert _git("rev-parse", "HEAD", cwd=leg.install) == HEAD_SHA, "update exited 0 but HEAD is not the target"
+    assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().head, "update exited 0 but HEAD is not the target"
     assert not (leg.install / ".git" / "index.lock").exists(), "update left .git/index.lock behind"
     # The editable install must serve the pulled tree (stale editable finder, #119466): every
     # top-level package HEAD ships plus a module that only exists at HEAD import from the venv's
     # own interpreter in a fresh process whose cwd is OUTSIDE the checkout (no implicit sys.path).
-    cp = leg.run("-c", IMPORT_PROBE, str(leg.install), BASE_SHA, argv0=leg.python, cwd=leg.root)
+    cp = leg.run("-c", IMPORT_PROBE, str(leg.install), _refs().base, argv0=leg.python, cwd=leg.root)
     assert cp.returncode == 0, "the updated venv does not serve HEAD's tree:\n" + H.describe(cp)
     # The venv satisfies HEAD's declared dependency set (not just "the old release still imports"):
     # every core requirement in the pulled pyproject is installed at a satisfying version, and the
@@ -534,7 +556,7 @@ def leg(tmp_path, template_home) -> Leg:
 
 
 def _publish_head(leg: Leg) -> None:
-    _git("update-ref", "refs/heads/main", HEAD_SHA, cwd=leg.origin)
+    _git("update-ref", "refs/heads/main", _refs().head, cwd=leg.origin)
 
 
 def _update(leg: Leg) -> subprocess.CompletedProcess:
@@ -593,7 +615,7 @@ def test_update_with_local_edits_and_orphan_autostash(leg, provider):
     # A file that does not change N-1 -> HEAD, so restoring the user's edit is conflict-free.
     unchanged = next(p for p in ("README.md", "LICENSE", "AGENTS.md")
                      if (leg.install / p).exists()
-                     and not _git("diff", "--name-only", BASE_SHA, HEAD_SHA, "--", p, cwd=H.WORKTREE))
+                     and not _git("diff", "--name-only", _refs().base, _refs().head, "--", p, cwd=H.WORKTREE))
     # An orphan autostash from an earlier update that never restored it (#63717).
     (leg.install / unchanged).write_text((leg.install / unchanged).read_text() + "\norphan edit\n")
     _git("stash", "push", "-m", "hermes-update-autostash-20260101-000000", cwd=leg.install)
@@ -626,7 +648,7 @@ def test_update_with_local_edits_and_orphan_autostash(leg, provider):
         "(cannot import name ... from 'utils'), so nothing can heal the install without manual git"))),
 ])
 def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
-    changed = sorted(_git("diff", "--name-only", "--no-renames", "--diff-filter=AM", BASE_SHA, HEAD_SHA,
+    changed = sorted(_git("diff", "--name-only", "--no-renames", "--diff-filter=AM", _refs().base, _refs().head,
                           cwd=H.WORKTREE).splitlines())
     assert changed, "N-1 and HEAD have no file differences"
     torn_paths = changed[: max(1, len(changed) // 2)] if torn else []
@@ -634,7 +656,7 @@ def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
     (leg.root / "arm-pull").touch()
     _publish_head(leg)
     _freeze_update_at(leg, "frozen-pull")
-    assert _git("rev-parse", "HEAD", cwd=leg.install) == BASE_SHA, "kill point was not mid-pull"
+    assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().base, "kill point was not mid-pull"
     assert (leg.install / ".git" / "index.lock").exists()
     _age_git_locks(leg.install)
     final = _update(leg)
@@ -645,7 +667,7 @@ def test_kill_before_deps_then_retry_heals(leg, provider):
     (leg.root / "arm-deps").touch()
     _publish_head(leg)
     _freeze_update_at(leg, "frozen-deps")
-    assert _git("rev-parse", "HEAD", cwd=leg.install) == HEAD_SHA, "kill point was not after the code swap"
+    assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().head, "kill point was not after the code swap"
     _age_git_locks(leg.install)
     final = _update(leg)
     assert_healthy_at_head(leg, provider, final)
@@ -661,7 +683,7 @@ def test_offline_update_fails_loudly_and_changes_nothing(leg, provider):
     cp = _update(leg)
     assert cp.returncode != 0, "update against an unreachable origin reported success:\n" + H.describe(cp)
     assert TRACEBACK not in cp.stdout + cp.stderr, H.describe(cp)
-    assert _git("rev-parse", "HEAD", cwd=leg.install) == BASE_SHA
+    assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().base
     assert _git("status", "--porcelain", "--untracked-files=no", cwd=leg.install) == ""
     after = snapshot_state(leg)
     for name in ("default", "work"):

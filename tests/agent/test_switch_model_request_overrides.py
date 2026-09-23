@@ -49,20 +49,30 @@ def _agent(*, model, base_url, request_overrides, custom_providers=CUSTOM_PROVID
 
 
 def test_switch_applies_matched_provider_extra_body():
-    """Switching to the matching provider+model applies its extra_body and
-    preserves non-provider overrides (service_tier/speed from /fast)."""
+    """Switching to the matching provider+model applies its extra_body.
+
+    A stale Fast pin is re-gated against the new route: this custom host does
+    not bill Priority Processing, so ``service_tier`` is dropped even if the
+    previous session had /fast on.
+    """
     a = _agent(
         model="think-model",
         base_url="http://10.0.0.1:8000/v1",
-        request_overrides={"service_tier": "priority"},
+        request_overrides={"service_tier": "priority", "temperature": 0.2},
     )
+    a.service_tier = "priority"
     arh._apply_switched_provider_request_overrides(a, "custom:main-think")
     assert a.request_overrides["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
-    assert a.request_overrides["service_tier"] == "priority"  # preserved
+    assert "service_tier" not in a.request_overrides
+    assert a.request_overrides["temperature"] == 0.2
 
 
 def test_switch_to_noncustom_clears_stale_extra_body():
-    """Switching to a built-in provider clears the previous provider's extra_body."""
+    """Switching to a built-in provider clears the previous provider's extra_body.
+
+    ``claude-x`` is not an Anthropic Fast model, so a leftover ``service_tier``
+    pin is stripped rather than sent to api.anthropic.com.
+    """
     a = _agent(
         model="claude-x",
         base_url="https://api.anthropic.com",
@@ -71,9 +81,52 @@ def test_switch_to_noncustom_clears_stale_extra_body():
             "service_tier": "priority",
         },
     )
+    a.provider = "anthropic"
+    a.service_tier = "priority"
     arh._apply_switched_provider_request_overrides(a, "anthropic")
     assert "extra_body" not in a.request_overrides  # stale extra_body cleared
-    assert a.request_overrides["service_tier"] == "priority"  # preserved
+    assert "service_tier" not in a.request_overrides
+
+
+def test_switch_keeps_fast_on_qualifying_first_party_route():
+    """Static Fast survives a /model switch only when the new route bills for it."""
+    a = _agent(
+        model="grok-4.6",
+        base_url="https://api.x.ai/v1",
+        request_overrides={"service_tier": "priority"},
+        custom_providers=[],
+    )
+    a.provider = "xai-oauth"
+    a.service_tier = "priority"
+    arh._apply_switched_provider_request_overrides(a, "xai-oauth")
+    assert a.request_overrides.get("service_tier") == "priority"
+
+
+def test_switch_strips_fast_when_service_tier_flag_is_unset():
+    """An orphan pin with no static Fast flag is dropped, not preserved."""
+    a = _agent(
+        model="grok-4.6",
+        base_url="https://api.x.ai/v1",
+        request_overrides={"service_tier": "priority"},
+        custom_providers=[],
+    )
+    a.provider = "xai-oauth"
+    arh._apply_switched_provider_request_overrides(a, "xai-oauth")
+    assert "service_tier" not in a.request_overrides
+
+
+def test_switch_strips_anthropic_speed_on_proxy_route():
+    a = _agent(
+        model="gpt-5.4",
+        base_url="https://openrouter.ai/api/v1",
+        request_overrides={"speed": "fast"},
+        custom_providers=[],
+    )
+    a.provider = "openrouter"
+    a.service_tier = "priority"
+    arh._apply_switched_provider_request_overrides(a, "openrouter")
+    assert "speed" not in a.request_overrides
+    assert "service_tier" not in a.request_overrides
 
 
 def test_switch_from_none_overrides():

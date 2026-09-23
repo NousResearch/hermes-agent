@@ -512,6 +512,96 @@ class TestFallbackExtraBodyReResolution:
         assert agent.request_overrides.get("temperature") == 0.2
 
 
+class TestFallbackFastModeRescope:
+    """Static Fast pins service_tier/speed into request_overrides at build time.
+
+    After fallback activation those keys must be re-gated against the NEW
+    model/provider/base_url — otherwise Priority Processing leaks onto
+    OpenRouter / older-model / proxy fallbacks (review of #109458).
+    """
+
+    FB_URL = "https://openrouter.ai/api/v1"
+
+    def _activate_to_openrouter(self, agent):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url=self.FB_URL), "gpt-5.4"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ):
+            assert agent._try_activate_fallback() is True
+
+    def test_oauth_grok_priority_does_not_leak_onto_openrouter_fallback(self):
+        agent = _make_agent(fallback_model={
+            "provider": "openrouter",
+            "model": "gpt-5.4",
+            "base_url": self.FB_URL,
+        })
+        agent.model = "grok-4.6"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent.service_tier = "priority"
+        agent.request_overrides = {"service_tier": "priority", "temperature": 0.2}
+
+        self._activate_to_openrouter(agent)
+
+        assert agent.provider == "openrouter"
+        assert "service_tier" not in (agent.request_overrides or {})
+        assert "speed" not in (agent.request_overrides or {})
+        assert agent.request_overrides.get("temperature") == 0.2
+
+    def test_oauth_grok_priority_survives_first_party_xai_fallback(self):
+        agent = _make_agent(fallback_model={
+            "provider": "xai",
+            "model": "grok-4.6",
+            "base_url": "https://api.x.ai/v1",
+        })
+        agent.model = "grok-4.6"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent.service_tier = "priority"
+        agent.request_overrides = {"service_tier": "priority"}
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.x.ai/v1"), "grok-4.6"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "xai"
+        assert (agent.request_overrides or {}).get("service_tier") == "priority"
+
+    def test_oauth_grok_priority_does_not_leak_onto_older_grok_fallback(self):
+        """grok-4.5 on api.x.ai is first-party but does not bill Priority Processing."""
+        agent = _make_agent(fallback_model={
+            "provider": "xai",
+            "model": "grok-4.5",
+            "base_url": "https://api.x.ai/v1",
+        })
+        agent.model = "grok-4.6"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent.service_tier = "priority"
+        agent.request_overrides = {"service_tier": "priority"}
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.x.ai/v1"), "grok-4.5"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "xai"
+        assert agent.model == "grok-4.5"
+        assert "service_tier" not in (agent.request_overrides or {})
+
+
 # ── MoA preset as a fallback entry (#112525, #112623) ─────────────────────
 
 

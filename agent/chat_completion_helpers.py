@@ -1989,6 +1989,8 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
         logger.info("Fallback %s: extra_body resolved: %s", agent.model, (getattr(agent, "request_overrides", {}) or {}).get("extra_body"))
     except Exception as _eb_err:
         logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
+    from agent.fast_mode import rescope_request_overrides
+    rescope_request_overrides(agent)
 
 
 def _buffer_fallback_notice(agent, notice: str) -> None:

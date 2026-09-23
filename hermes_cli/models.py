@@ -1173,7 +1173,10 @@ def _fast_mode_route_supported(
     if _is_anthropic_fast_model(model_id):
         allowed = {"anthropic": "api.anthropic.com"}
     elif is_grok_46_family(str(model_id or "")):
-        allowed = {"xai": "api.x.ai"}
+        # xai-oauth is a distinct provider id (SuperGrok / Premium+). normalize_provider
+        # never folds it into xai, so listing only xai withholds Priority Processing from
+        # every first-party OAuth session while the Fast toggle still paints as available.
+        allowed = {"xai": "api.x.ai", "xai-oauth": "api.x.ai"}
     else:
         allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:

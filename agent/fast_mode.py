@@ -35,16 +35,44 @@ def begin_turn(agent: Any, conversation_history: Any) -> None:
     agent._fast_until = time.monotonic() + max(window, 0.0)
 
 
+def _fast_mode_base_url(agent: Any) -> Any:
+    base_url = getattr(agent, "base_url", None)
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        return getattr(agent, "_anthropic_base_url", None) or base_url
+    return base_url
+
+
 def effective_request_overrides(agent: Any) -> dict[str, Any]:
     """``agent.request_overrides`` plus the fast override while the window is open."""
     overrides = dict(getattr(agent, "request_overrides", None) or {})
     if getattr(agent, "service_tier", None) not in BOUNDED_MODES or time.monotonic() >= getattr(agent, "_fast_until", 0.0):
         return overrides
     from hermes_cli.models import resolve_fast_mode_overrides
-    base_url = getattr(agent, "base_url", None)
-    if getattr(agent, "api_mode", None) == "anthropic_messages":
-        base_url = getattr(agent, "_anthropic_base_url", None) or base_url
     overrides.update(
-        resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url) or {}
+        resolve_fast_mode_overrides(
+            getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+            base_url=_fast_mode_base_url(agent),
+        ) or {}
     )
     return overrides
+
+
+def rescope_request_overrides(agent: Any) -> None:
+    """Drop pinned ``service_tier``/``speed`` and re-apply only if the CURRENT route qualifies.
+
+    Static Fast pins those keys into ``request_overrides`` at build time. After a
+    provider/model swap (fallback or ``/model``) they must not follow the agent onto a
+    route that does not bill for fast mode.
+    """
+    overrides = dict(getattr(agent, "request_overrides", None) or {})
+    overrides.pop("service_tier", None)
+    overrides.pop("speed", None)
+    if getattr(agent, "service_tier", None) == "priority":
+        from hermes_cli.models import resolve_fast_mode_overrides
+        overrides.update(
+            resolve_fast_mode_overrides(
+                getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+                base_url=_fast_mode_base_url(agent),
+            ) or {}
+        )
+    agent.request_overrides = overrides

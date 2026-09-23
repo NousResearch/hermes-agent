@@ -187,7 +187,7 @@ jobs:
         # HERMES_E2E_REQUIRE_TUI=1 below turns a missing build into a failure.
         uses: ./.github/actions/retry
         with:
-          command: npm ci --ignore-scripts --no-audit --no-fund && npm run build --prefix ui-tui
+          command: npm ci --workspace ui-tui --ignore-scripts --no-audit --no-fund && npm run build --workspace ui-tui
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -360,7 +360,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          bwrap --unshare-pid --dev-bind / / true && echo "bwrap ok"
+          # The suite's own probe (_bwrap_usable, same flags as every sandboxed
+          # run): without it the suite silently runs the updater unsandboxed.
+          source .venv/bin/activate
+          python -c "from tests.e2e.core.upgrade._helpers import BWRAP_OK; assert BWRAP_OK, 'bwrap unusable'" && echo "bwrap ok"
 
       - name: Require a WAL-capable SQLite
         # The state.db suites skip on a WAL-reset-vulnerable SQLite; fail

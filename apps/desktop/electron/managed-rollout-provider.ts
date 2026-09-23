@@ -65,9 +65,10 @@ import {
   type TargetResolution,
   validateTargetResolution
 } from './managed-rollout-preflight'
-import type {
-  ManagedConnectionUpdateResult,
-  ManagedSshUpdateIntent
+import {
+  type ManagedConnectionUpdateResult,
+  type ManagedSshUpdateIntent,
+  validateManagedSshUpdateIntent
 } from './managed-ssh-update'
 import type {
   ManagedSshCoordinatorSourceBinding,
@@ -1055,6 +1056,29 @@ export function createManagedRolloutProvider(
       runPromise: null
     } as Runtime
 
+    const pinnedIntentFor = (authorization: ManagedRolloutAuthorization): ManagedSshUpdateIntent => {
+      const row = runtime.plan.rows.find(item => item.installId === authorization.installId)
+
+      if (!row || row.connectionId !== authorization.connectionId ||
+          row.installationFingerprint !== authorization.installationFingerprint ||
+          row.sourceFingerprint !== authorization.sourceFingerprint ||
+          runtime.plan.target.sha !== authorization.targetSha ||
+          !row.reviewedSource || JSON.stringify(row.reviewedSource) !== JSON.stringify(authorization.reviewedSource)) {
+        throw new Error('rollout-plan-provenance-incomplete')
+      }
+
+      const intent = {
+        targetSha: authorization.targetSha,
+        expectedInstallId: authorization.installId,
+        expectedCurrentSha: row.admittedHead ?? '',
+        source: authorization.reviewedSource
+      }
+
+      validateManagedSshUpdateIntent(intent)
+
+      return intent
+    }
+
     const coordinatorDependencies: ManagedRolloutCoordinatorDependencies = {
       journal: {
         persistAuthorization: authorization => persistAuthorization(runtime, authorization),
@@ -1068,13 +1092,14 @@ export function createManagedRolloutProvider(
       },
       service: {
         issueCapability: authorization => {
+          const intent = pinnedIntentFor(authorization)
           runtime.authorizations.set(authorization.installId, authorization)
 
           try {
             const capability = deps.managedSshUpdateService.issueLaunchCapability(
               authorization.connectionId,
               authorization.correlationId,
-              { targetSha: authorization.targetSha, source: authorization.reviewedSource } satisfies ManagedSshUpdateIntent,
+              intent,
               coordinatorSourceBinding(authorization)
             )
 
@@ -1091,9 +1116,11 @@ export function createManagedRolloutProvider(
           let request: Promise<ManagedConnectionUpdateResult>
 
           try {
+            const intent = pinnedIntentFor(authorization)
+
             const admission = deps.managedSshUpdateService.requestCoordinator(authorization.connectionId, {
               correlationId: authorization.correlationId,
-              intent: { targetSha: authorization.targetSha, source: authorization.reviewedSource },
+              intent,
               launchCapability: capability as ManagedSshLaunchCapability,
               expectedSource: coordinatorSourceBinding(authorization)
             })

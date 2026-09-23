@@ -24,6 +24,7 @@ const DEFAULT_REMOTE_UPDATE_POLL_MS = 1_000
 const RECEIPT_GRACE_MS = 15_000
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const FULL_SHA_RE = /^[0-9a-f]{40}$/
+const INSTALL_ID_RE = /^[0-9a-f]{32}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 // eslint-disable-next-line no-control-regex -- reject controls in reviewed Git refs
 const REVIEWED_REF_RE = /^refs\/remotes\/origin\/[^\x00\r\n\s]+$/
@@ -85,6 +86,8 @@ interface ManagedSshReviewedSource {
 
 interface ManagedSshUpdateIntent {
   targetSha: string
+  expectedInstallId: string
+  expectedCurrentSha: string
   source: ManagedSshReviewedSource
 }
 
@@ -170,9 +173,19 @@ function validateManagedSshUpdateIntent(intent: ManagedSshUpdateIntent | null | 
 
   const value = intent as Partial<ManagedSshUpdateIntent>
   const targetSha = String(value.targetSha || '').trim()
+  const expectedInstallId = String(value.expectedInstallId || '').trim()
+  const expectedCurrentSha = String(value.expectedCurrentSha || '').trim()
 
   if (!FULL_SHA_RE.test(targetSha)) {
     throw new Error('Managed SSH update pinned target SHA is invalid.')
+  }
+
+  if (!INSTALL_ID_RE.test(expectedInstallId)) {
+    throw new Error('Managed SSH update expected install ID is invalid.')
+  }
+
+  if (!FULL_SHA_RE.test(expectedCurrentSha)) {
+    throw new Error('Managed SSH update expected current SHA is invalid.')
   }
 
   const source = value.source as Partial<ManagedSshReviewedSource> | null | undefined
@@ -219,6 +232,8 @@ function validateManagedSshUpdateIntent(intent: ManagedSshUpdateIntent | null | 
 
   return Object.freeze({
     targetSha,
+    expectedInstallId,
+    expectedCurrentSha,
     source: Object.freeze({
       repositoryRoot,
       originUrl,
@@ -250,7 +265,8 @@ function managedSshUpdateLaunchArguments(intent: ManagedSshUpdateIntent | undefi
     return ''
   }
 
-  return ` --target-sha ${quote(intent.targetSha)} --reviewed-source ${quote(managedSshReviewedSourceToken(intent.source))}`
+  return ` --revision ${quote(intent.targetSha)} --expected-install-id ${quote(intent.expectedInstallId)}` +
+    ` --expected-current-sha ${quote(intent.expectedCurrentSha)} --reviewed-source ${quote(managedSshReviewedSourceToken(intent.source))}`
 }
 
 function managedSshTokenPersistencePlan(

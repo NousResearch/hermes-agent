@@ -38,6 +38,8 @@ const exec = promisify(execCallback)
 
 const PINNED_INTENT = {
   targetSha: 'abcdef0123456789abcdef0123456789abcdef01',
+  expectedInstallId: '0123456789abcdef0123456789abcdef',
+  expectedCurrentSha: '1234567890abcdef1234567890abcdef12345678',
   source: {
     repositoryRoot: '/srv/hermes-agent',
     originUrl: 'https://github.com/NousResearch/hermes-agent.git',
@@ -116,8 +118,18 @@ test('pinned update launch forwards the exact canonical reviewed-source binding'
   ).toString('utf16le')
 
   assert.equal(posix.includes(PINNED_INTENT.targetSha), true)
+  assert.equal(posix.includes(PINNED_INTENT.expectedInstallId), true)
+  assert.equal(posix.includes(PINNED_INTENT.expectedCurrentSha), true)
+
+  const flagPositions = ['--revision', '--expected-install-id', '--expected-current-sha', '--reviewed-source']
+    .map(flag => posix.indexOf(flag))
+
+  assert.equal(flagPositions.every(position => position >= 0), true)
+  assert.deepEqual(flagPositions, [...flagPositions].sort((a, b) => a - b))
   assert.equal(posix.includes(token), true)
-  assert.match(windowsWrapper, new RegExp(`--target-sha '${PINNED_INTENT.targetSha}' --reviewed-source '${token}'`))
+  assert.match(windowsWrapper, new RegExp(`--revision '${PINNED_INTENT.targetSha}' --expected-install-id '${PINNED_INTENT.expectedInstallId}' --expected-current-sha '${PINNED_INTENT.expectedCurrentSha}' --reviewed-source '${token}'`))
+  assert.equal(posix.includes('--target-sha'), false)
+  assert.equal(windowsWrapper.includes('--target-sha'), false)
   assert.equal(posix.includes(PINNED_INTENT.source.originUrl), false)
   assert.equal(windowsWrapper.includes(PINNED_INTENT.source.originUrl), false)
   assert.equal(buildPosixManagedUpdateLaunch(target, CORRELATION), buildPosixManagedUpdateLaunch(target, CORRELATION, undefined))
@@ -129,13 +141,17 @@ test('pinned update launch forwards the exact canonical reviewed-source binding'
 
 test('pinned update rejects incomplete or mismatched reviewed source bindings', () => {
   assert.throws(
-    () => validateManagedSshUpdateIntent({ targetSha: PINNED_INTENT.targetSha, source: { ...PINNED_INTENT.source, targetSha: 'a'.repeat(40) } }),
+    () => validateManagedSshUpdateIntent({ ...PINNED_INTENT, source: { ...PINNED_INTENT.source, targetSha: 'a'.repeat(40) } }),
     /does not match/
   )
   assert.throws(
-    () => validateManagedSshUpdateIntent({ targetSha: PINNED_INTENT.targetSha, source: { ...PINNED_INTENT.source, assuranceGeneration: -1 } }),
+    () => validateManagedSshUpdateIntent({ ...PINNED_INTENT, source: { ...PINNED_INTENT.source, assuranceGeneration: -1 } }),
     /assurance generation/
   )
+  assert.throws(() => validateManagedSshUpdateIntent({ ...PINNED_INTENT, expectedInstallId: '' }), /install ID/)
+  assert.throws(() => validateManagedSshUpdateIntent({ ...PINNED_INTENT, expectedInstallId: 'A'.repeat(32) }), /install ID/)
+  assert.throws(() => validateManagedSshUpdateIntent({ ...PINNED_INTENT, expectedCurrentSha: '' }), /current SHA/)
+  assert.throws(() => validateManagedSshUpdateIntent({ ...PINNED_INTENT, expectedCurrentSha: 'A'.repeat(40) }), /current SHA/)
 })
 
 test('ManagedConnectionUpdateGate blocks new dials but admits the exact restoring transaction', () => {

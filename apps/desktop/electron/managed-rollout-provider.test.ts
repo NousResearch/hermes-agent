@@ -27,6 +27,7 @@ import {
   type ManagedRolloutObservation,
   type ManagedRolloutProviderDependencies
 } from './managed-rollout-provider'
+import type { ManagedSshUpdateIntent } from './managed-ssh-update'
 
 const NOW = 1_700_000_000_000
 const NOW_ISO = new Date(NOW).toISOString()
@@ -208,6 +209,8 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
   dependencies: ManagedRolloutProviderDependencies
   journalDirectory: string
   launchCalls: string[]
+  issuedIntents: ManagedSshUpdateIntent[]
+  launchIntents: ManagedSshUpdateIntent[]
 } {
   const journalDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-rollout-provider-'))
 
@@ -218,16 +221,20 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
   })
 
   const launchCalls: string[] = []
+  const issuedIntents: ManagedSshUpdateIntent[] = []
+  const launchIntents: ManagedSshUpdateIntent[] = []
 
   const fakeService = {
-    issueLaunchCapability: (connectionId: string) => {
+    issueLaunchCapability: (connectionId: string, _correlationId: string, intent: ManagedSshUpdateIntent) => {
       assert.equal(connectionId, CONNECTION_ID)
+      issuedIntents.push(intent)
 
       return { internal: 'not-for-ipc' }
     },
-    requestCoordinator: (connectionId: string, input: { correlationId: string }) => {
+    requestCoordinator: (connectionId: string, input: { correlationId: string; intent: ManagedSshUpdateIntent }) => {
       assert.equal(connectionId, CONNECTION_ID)
       launchCalls.push(`${connectionId}:${input.correlationId}`)
+      launchIntents.push(input.intent)
 
       return { admitted: true as const, operation: Promise.resolve({
         connectionId: String(connectionId),
@@ -304,7 +311,7 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
     measuredMaxInstallations: () => 1
   }
 
-  return { dependencies, journalDirectory, launchCalls }
+  return { dependencies, journalDirectory, launchCalls, issuedIntents, launchIntents }
 }
 
 test('fails closed without trusted local rollout dependencies', async () => {
@@ -357,7 +364,7 @@ test('reports missing real-SSH capacity even when a review manifest is not insta
 })
 
 test('runs an injected trusted rollout without exposing the launch capability', async () => {
-  const { dependencies, journalDirectory, launchCalls } = makeDependencies()
+  const { dependencies, journalDirectory, launchCalls, issuedIntents, launchIntents } = makeDependencies()
 
   try {
     const provider = createManagedRolloutProvider(dependencies)
@@ -405,6 +412,17 @@ test('runs an injected trusted rollout without exposing the launch capability', 
 
     await provider.waitForIdle()
     assert.equal(launchCalls.length, 1)
+
+    const expectedIntent = {
+      targetSha: TARGET_SHA,
+      expectedInstallId: INSTALL_ID,
+      expectedCurrentSha: ADMITTED_SHA,
+      source: REVIEWED_SOURCE
+    }
+
+    assert.deepEqual(issuedIntents, [expectedIntent])
+    assert.deepEqual(launchIntents, [expectedIntent])
+
     const facts = dependencies.journal.read(started.id as string).facts.map(fact => fact.kind)
     assert.ok(facts.includes('authorization-committed'))
     assert.ok(facts.includes('handoff-accepted'))

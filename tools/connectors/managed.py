@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 # inside it and still flips the card within a second of the user finishing at the vendor.
 WATCH_TICK_SECONDS = 1.0
 
-# A read never outlives the operation, never asks for less than one second, and never holds the
-# loop for more than ten: Continue must be able to return the tool while a gateway hangs.
-_MIN_READ_SECONDS = 1.0
+# A read never outlives the operation and never holds the loop for more than ten seconds:
+# Continue must be able to return the tool while a gateway hangs. The timeout is the operation's
+# own remaining deadline; flooring it to a minimum would hand every remaining live target a
+# fresh read past deadline_at.
 _MAX_READ_SECONDS = 10.0
 
 # The six-state account vocabulary -> the state that read ends the attempt in, and who caused it.
@@ -157,7 +158,12 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         # A settled op is frozen; a row that is not live waits for the user or is done.
         if operation.settled or not _live(target):
             continue
-        timeout = min(_MAX_READ_SECONDS, max(_MIN_READ_SECONDS, operation.remaining_seconds()))
+        remaining = operation.remaining_seconds()
+        if remaining <= 0:
+            # The clock settles the row on the next pass; a read started now cannot fit inside
+            # the deadline anyway.
+            return
+        timeout = min(_MAX_READ_SECONDS, remaining)
         try:
             row = _status_for(client, target, timeout=timeout)
         except RateLimited as exc:

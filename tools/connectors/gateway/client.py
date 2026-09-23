@@ -137,7 +137,10 @@ class ConnectorClient:
         """One account's row; ``None`` when the gateway no longer knows it. A 429 raises ``RateLimited``.
         ``timeout`` is the watcher's remaining deadline, so a stalled read cannot outlive its operation."""
         try:
-            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None, timeout=timeout)
+            # Never retry: a second attempt re-spends the full timeout, so the read could outlive
+            # the operation deadline it was bounded by. The next tick is the retry.
+            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None,
+                                  timeout=timeout, retries=0)
         except GatewayUnavailable as exc:
             if exc.code == "connection_not_found":
                 return None

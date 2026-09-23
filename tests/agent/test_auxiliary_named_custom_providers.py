@@ -607,3 +607,40 @@ class TestKeyedCustomProviderReasoningWire:
             reasoning_config={"enabled": True, "effort": "medium"},
         )
         assert kwargs["extra_body"] == nested and "reasoning_effort" not in kwargs
+
+
+class TestNamedCustomCodexRawClient:
+    """A ``transport: codex_responses`` entry with ``key_cmd`` must hand raw_codex callers the SDK
+    client itself: the aux wrapper copies ``real_client.api_key`` — empty for a rotating provider —
+    and hides ``_api_key_provider``, so the fallback swap installed an unauthenticated client."""
+
+    _CFG = {
+        "model": {"default": "test-model"},
+        "providers": {
+            "qlb-codex": {
+                "api": "http://127.0.0.1:47391/v1",
+                "transport": "codex_responses",
+                "key_cmd": "printf minted-token",
+                "default_model": "gpt-5.6-sol",
+            },
+        },
+    }
+
+    def test_raw_codex_returns_sdk_client_with_key_provider(self, tmp_path):
+        _write_config(tmp_path, self._CFG)
+        from agent import auxiliary_client as ac
+        from openai import OpenAI
+
+        client, model = ac.resolve_provider_client(
+            "custom:qlb-codex", model="gpt-5.6-sol", raw_codex=True, api_mode="codex_responses")
+        assert isinstance(client, OpenAI)
+        assert model == "gpt-5.6-sol"
+        assert callable(vars(client).get("_api_key_provider"))
+
+    def test_aux_callers_still_get_the_wrapper(self, tmp_path):
+        _write_config(tmp_path, self._CFG)
+        from agent import auxiliary_client as ac
+
+        client, _ = ac.resolve_provider_client(
+            "custom:qlb-codex", model="gpt-5.6-sol", api_mode="codex_responses")
+        assert isinstance(client, ac.CodexAuxiliaryClient)

@@ -5148,7 +5148,11 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
-        client = CodexAuxiliaryClient(client, final_model)
+        # raw_codex callers (main-agent fallback, ``responses.stream()``) need the SDK client itself:
+        # the aux wrapper hides ``_api_key_provider``, so a key_cmd entry swapped in as fallback
+        # carried the wrapper's empty ``api_key`` and every request went out unauthenticated.
+        if not req.raw_codex:
+            client = CodexAuxiliaryClient(client, final_model)
     else:
         client = _wrap_transport(req, client, final_model, custom_base, custom_key)
     return _route_client(req, client, final_model)

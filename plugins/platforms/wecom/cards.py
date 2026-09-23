@@ -176,67 +176,112 @@ class WeComCardMixin:
 
     # ── model picker (slash_commands_model.py probes for this method) ─────────────────
 
+    # WeCom caps one card at 6 buttons: model pages use 3 model buttons + Back + page nav,
+    # leaving room for the nav row on every page (first/last pages drop one nav button).
+    _MODEL_PAGE_SIZE = 3
+
+    @staticmethod
+    def _picker_model_label(model_id: str, is_current: bool = False) -> str:
+        """Short model label for a WeCom button (≈10 chars incl. the ✓ marker). The most
+        distinguishing part of a model id is usually its tail (flash/max/turbo): keep that,
+        drop the series prefix. Falls back to a head+tail ellipse when even the tail is long."""
+        raw = str(model_id or "").split("/")[-1]
+        tail = raw.rsplit("-", 1)[-1] if "-" in raw else raw
+        label = f"✓ {tail}" if is_current else tail
+        if len(label) <= 10:
+            return label
+        if len(tail) <= 8:
+            return (f"✓ {tail}" if is_current else tail)[:10]
+        return (f"✓ {tail[:6]}…" if is_current else f"{tail[:8]}…")[:10]
+
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str,
         session_key: str, on_model_selected, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """DM-only model picker card. Candidate models are flattened from ``providers`` with the
-        current provider's models first, then deduped and capped at 6 buttons; a tap calls
-        ``on_model_selected(chat_id, model_id, provider_slug)``. Groups get Not supported so the
-        gateway falls back to the text /model listing."""
+        """DM-only two-level model picker card: provider page → model page (updated in place,
+        same task_id), with Back and page nav. Taps call ``on_model_selected(chat_id, model_id,
+        provider_slug)``. Groups get Not supported so the gateway falls back to the text listing."""
         chat_id = str(chat_id or "").strip()
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
         if chat_id in self._group_chat_ids:
             return SendResult(success=False, error="Not supported")  # text /model listing fallback
-        candidates: List[Dict[str, str]] = []
-        seen: set = set()
         try:
             from hermes_cli.providers import get_label
         except Exception:
             get_label = None
-        for p in providers:  # type: ignore[union-attr]
-            slug = str(p.get("slug") or "")
+        seen: set = set()
+        normalized: List[Dict[str, Any]] = []
+        for p in providers or []:  # type: ignore[union-attr]
+            slug = str(p.get("slug") or "").strip()
             name = str(p.get("name") or slug)
             if get_label is not None:
                 try:
                     name = get_label(slug) or name
                 except Exception:
                     pass
-            for m in p.get("models", []) or []:
-                model_id = str(m)
-                if model_id in seen:
-                    continue
-                seen.add(model_id)
-                candidates.append({"model": model_id, "slug": slug, "provider": name})
-        if not candidates:
+            models = [str(m) for m in (p.get("models", []) or []) if str(m) not in seen and not seen.add(str(m))]
+            if slug and models:
+                normalized.append({"slug": slug, "name": name, "models": models, "is_current": slug == str(current_provider or "")})
+        if not normalized:
             return SendResult(success=False, error="No providers available")
-        # Current-provider models first, then the rest, then current model to the front.
-        def _rank(c: Dict[str, str]) -> int:
-            return 0 if c["slug"] == str(current_provider or "") else 1
-        candidates.sort(key=_rank)
-        if current_model and any(c["model"] == current_model for c in candidates):
-            idx = next(i for i, c in enumerate(candidates) if c["model"] == current_model)
-            candidates.insert(0, candidates.pop(idx))
-        top = candidates[:CARD_BUTTON_MAX]
         task_id = self._new_card_task_id("mp")
         self._remember_card_state(self._model_picker_state, task_id, {
-            "session_key": session_key, "chat_id": chat_id, "candidates": top,
-            "on_model_selected": on_model_selected,
+            "session_key": session_key, "chat_id": chat_id,
+            "current_model": str(current_model or ""), "current_provider": str(current_provider or ""),
+            "providers": normalized, "stage": "providers", "selected_provider": "",
+            "model_page": 0, "on_model_selected": on_model_selected,
         })
-        buttons = [
-            {"text": ("✓ " if c["model"] == current_model else "") + c["model"].split("/")[-1][:10],
-             "key": f"m:{i}"}
-            for i, c in enumerate(top)
-        ]
-        card = self._button_interaction_card(
-            title="⚙️ 模型选择", desc=f"当前：{current_model or 'unknown'}（{str(current_provider or '')}）",
-            sub_title="点选模型立即切换", buttons=buttons, task_id=task_id)
+        card = self._build_provider_card(task_id)
         reply_req_id = None if self._find_active_turn_for_chat(chat_id) else self._cached_reply_req_id(chat_id, None)
         result = await self._send_card(chat_id, card, reply_req_id=reply_req_id, is_control=True)
         if not result.success:
             self._model_picker_state.pop(task_id, None)
         return result
+
+    # ── picker card builders (pure, driven by the persistent picker state) ──────────────
+
+    def _build_provider_card(self, task_id: str) -> Dict[str, Any]:
+        """Provider page: one button per provider (current flagged), up to the 6-button cap."""
+        state = self._model_picker_state.get(task_id) or {}
+        providers = state.get("providers") or []
+        current = str(state.get("current_model") or "unknown")
+        cur_provider = str(state.get("current_provider") or "")
+        buttons = [{
+            "text": self._picker_model_label(p["name"] or p["slug"], p.get("is_current", False)),
+            "key": f"p:{p['slug']}",
+        } for p in providers[:CARD_BUTTON_MAX]]
+        extra = f"（仅列前 {CARD_BUTTON_MAX} 个，可用 /model 直接输名称）" if len(providers) > CARD_BUTTON_MAX else ""
+        return self._button_interaction_card(
+            title="⚙️ 模型选择", desc=f"当前：{current}（{cur_provider}）",
+            sub_title=f"选择提供商{extra}", buttons=buttons, task_id=task_id)
+
+    def _build_model_card(self, task_id: str) -> Dict[str, Any]:
+        """Model page for the selected provider: 3 models + Back + page nav (<6 buttons)."""
+        state = self._model_picker_state.get(task_id) or {}
+        provider = next((p for p in (state.get("providers") or []) if p["slug"] == state.get("selected_provider")), None)
+        models = provider.get("models", []) if provider else []
+        page = int(state.get("model_page") or 0)
+        total_pages = max(1, (len(models) + self._MODEL_PAGE_SIZE - 1) // self._MODEL_PAGE_SIZE)
+        page = min(page, total_pages - 1)
+        start = page * self._MODEL_PAGE_SIZE
+        page_models = models[start:start + self._MODEL_PAGE_SIZE]
+        current = str(state.get("current_model") or "")
+        buttons = [
+            {"text": self._picker_model_label(m, m == current), "key": f"m:{start + i}"}
+            for i, m in enumerate(page_models)
+        ]
+        nav: List[Dict[str, str]] = [{"text": "◀ 返回", "key": "back"}]
+        if page > 0:
+            nav.append({"text": "◀ 上一页", "key": f"pg:{page - 1}"})
+        if page < total_pages - 1:
+            nav.append({"text": "下一页 ▶", "key": f"pg:{page + 1}"})
+        buttons.extend(nav)
+        pname = provider.get("name", state.get("selected_provider") or "") if provider else ""
+        page_hint = f" · 第 {page + 1}/{total_pages} 页" if total_pages > 1 else ""
+        return self._button_interaction_card(
+            title="⚙️ 模型选择", desc=f"{pname} {page_hint}",
+            sub_title=f"当前：{current}", buttons=buttons, task_id=task_id)
 
     # ── inbound taps (aibot_event_callback → template_card_event) ─────────────────────
 
@@ -297,32 +342,61 @@ class WeComCardMixin:
         logger.info("[%s] Approval card %s resolved by %s: choice=%s count=%d", self.name, task_id, user, choice, count)
 
     async def _resolve_model_picker_tap(self, payload: Dict[str, Any], task_id: str, event_key: str, user: str) -> None:
-        """Apply a model-picker tap: pop the picker state, swap the card to 'switching…', then
-        run the stored ``on_model_selected`` callback and forward any result text."""
-        state = self._model_picker_state.pop(task_id, None)
+        """Route one model-picker tap within the two-level state machine. Provider/back/page
+        taps re-render the same card (5s window); only a model selection pops the state and
+        resolves. ``m:<idx>`` indexes into the selected provider's full model list."""
+        state = self._model_picker_state.get(task_id)
         if not state:
             logger.info("[%s] Model picker card %s already resolved", self.name, task_id)
             return
-        if not event_key.startswith("m:"):
+        req_id = self._payload_req_id(payload)
+        model: Optional[str] = None
+        if event_key.startswith("p:") and state.get("stage") == "providers":
+            slug = event_key[2:]
+            provider = next((p for p in (state.get("providers") or []) if p["slug"] == slug), None)
+            if provider:
+                state.update(stage="models", selected_provider=slug, model_page=0)
+                await self._update_card(req_id, self._build_model_card(task_id))
+                return
+        if event_key == "back":
+            state.update(stage="providers", selected_provider="")
+            await self._update_card(req_id, self._build_provider_card(task_id))
             return
-        try:
-            idx = int(event_key[2:])
-            candidate = state["candidates"][idx]
-        except (ValueError, IndexError, KeyError):
-            logger.info("[%s] Bad model-picker tap key=%r", self.name, event_key)
+        if event_key.startswith("pg:") and state.get("stage") == "models":
+            try:
+                state["model_page"] = max(0, int(event_key[3:]))
+            except ValueError:
+                return
+            await self._update_card(req_id, self._build_model_card(task_id))
             return
+        if event_key.startswith("m:") and state.get("stage") == "models":
+            try:
+                idx = int(event_key[2:])
+            except ValueError:
+                return
+            provider = next((p for p in (state.get("providers") or []) if p["slug"] == state.get("selected_provider")), None)
+            models = provider.get("models", []) if provider else []
+            if 0 <= idx < len(models):
+                model = models[idx]
+        if model is None:
+            logger.info("[%s] Model-picker tap not actionable: key=%r stage=%r", self.name, event_key,
+                        state.get("stage"))
+            return
+        # Model chosen — pop the picker (no repeat taps), flip card to switching, then apply.
+        self._model_picker_state.pop(task_id, None)
         chat_id = str(state.get("chat_id") or "")
         callback = state.get("on_model_selected")
-        await self._update_card(self._payload_req_id(payload), self._text_notice_card(
-            title="🔄 正在切换模型…", desc=f"{candidate['model']}（{candidate['provider']}）", task_id=task_id))
+        provider = next((p for p in (state.get("providers") or []) if p["slug"] == state.get("selected_provider")), None) or {}
+        await self._update_card(req_id, self._text_notice_card(
+            title="🔄 正在切换模型…", desc=f"{model}（{provider.get('name', '')}）", task_id=task_id))
         if callback is None:
             return
         try:
-            result_text = await callback(chat_id, candidate["model"], candidate["slug"])
+            result_text = await callback(chat_id, model, state.get("selected_provider") or "")
         except Exception as exc:
             logger.error("[%s] Model picker switch failed: %s", self.name, exc)
             result_text = f"⚠️ 切换失败：{exc}"
         if result_text and chat_id:
             await self.send(chat_id, str(result_text))
         logger.info("[%s] Model picker %s applied by %s: %s/%s", self.name, task_id, user,
-                    candidate["slug"], candidate["model"])
+                    state.get("selected_provider"), model)

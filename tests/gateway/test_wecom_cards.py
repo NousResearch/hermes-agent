@@ -90,6 +90,21 @@ class TestApprovalCard:
         adapter.send.assert_awaited_once_with("zhangsan", "⚠️ fallback text")
 
 
+def _tap_payload(task_id, event_key, *, userid="zhangsan", chattype="single", chatid=""):
+    return {
+        "cmd": "aibot_event_callback",
+        "headers": {"req_id": "req-1"},
+        "body": {
+            "msgid": f"EVT-{task_id}-{event_key}",
+            "aibotid": "BOT", "chattype": chattype, "chatid": chatid,
+            "from": {"userid": userid},
+            "msgtype": "event",
+            "event": {"eventtype": "template_card_event", "template_card_event": {
+                "card_type": "button_interaction", "event_key": event_key, "task_id": task_id}},
+        },
+    }
+
+
 class TestModelPicker:
     def _providers(self):
         return [
@@ -97,7 +112,7 @@ class TestModelPicker:
             {"slug": "deepseek", "name": "DeepSeek", "models": ["deepseek-flash", "deepseek-v3"]},
         ]
 
-    def test_sends_flat_picker_with_current_provider_first(self, monkeypatch):
+    def test_sends_provider_page_with_two_level_nav(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         captured = {}
         adapter._cached_reply_req_id = lambda *a: None
@@ -114,13 +129,100 @@ class TestModelPicker:
         assert result.success is True
         card = captured["body"]
         assert card["card_type"] == "button_interaction"
-        buttons = card["button_list"]
-        assert len(buttons) == 4  # all 4 models, current provider's first
-        assert buttons[0]["text"].startswith("✓")  # current model flagged
-        assert buttons[0]["key"] == "m:0"
+        # First page = providers, not models
+        keys = [b["key"] for b in card["button_list"]]
+        assert keys == ["p:alibaba-token-plan-cn", "p:deepseek"]
+        texts = [b["text"] for b in card["button_list"]]
+        assert texts[1].startswith("✓")  # deepseek is current provider
         assert len(adapter._model_picker_state) == 1
         state = next(iter(adapter._model_picker_state.values()))
-        assert state["candidates"][0]["model"] == "deepseek-flash"
+        assert state["stage"] == "providers"
+        # Names flow through the real get_label mapping (English labels under test env);
+        # pin slugs/models/flags, only require a non-empty display name.
+        assert [p["slug"] for p in state["providers"]] == ["alibaba-token-plan-cn", "deepseek"]
+        assert [p["models"] for p in state["providers"]] == [["qwen3.8-flash", "qwen3-max"], ["deepseek-flash", "deepseek-v3"]]
+        assert [p["is_current"] for p in state["providers"]] == [False, True]
+        assert all(p["name"] for p in state["providers"])
+
+    def test_provider_tap_drills_into_model_page(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._update_card = AsyncMock()
+        adapter._model_picker_state["mp-1"] = {
+            "session_key": "sess-m", "chat_id": "zhangsan",
+            "current_model": "deepseek-flash", "current_provider": "deepseek",
+            "providers": [
+                {"slug": "alibaba-token-plan-cn", "name": "千问 Token Plan",
+                 "models": ["qwen3.8-flash", "qwen3-max"], "is_current": False},
+                {"slug": "deepseek", "name": "DeepSeek", "models": ["deepseek-flash", "deepseek-v3"],
+                 "is_current": True},
+            ],
+            "stage": "providers", "selected_provider": "", "model_page": 0,
+            "on_model_selected": AsyncMock(),
+        }
+        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-1", "p:deepseek")))
+        state = adapter._model_picker_state["mp-1"]
+        assert state["stage"] == "models"
+        assert state["selected_provider"] == "deepseek"
+        adapter._update_card.assert_awaited_once()
+        # The card re-rendered for deepseek's models: 2 models + back (+next nav absent w/ 1 page)
+        card = adapter._update_card.call_args[0][1]
+        assert [b["key"] for b in card["button_list"]] == ["m:0", "m:1", "back"]
+        # state retained — drilling is not resolution
+        assert "mp-1" in adapter._model_picker_state
+
+    def test_back_returns_to_provider_page(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._update_card = AsyncMock()
+        adapter._model_picker_state["mp-2"] = {
+            "session_key": "s", "chat_id": "zhangsan", "current_model": "m", "current_provider": "p",
+            "providers": [{"slug": "a", "name": "A", "models": ["a1", "a2", "a3", "a4"], "is_current": True}],
+            "stage": "models", "selected_provider": "a", "model_page": 1,
+            "on_model_selected": AsyncMock(),
+        }
+        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-2", "back")))
+        state = adapter._model_picker_state["mp-2"]
+        assert state["stage"] == "providers"
+        assert state["selected_provider"] == ""
+
+    def test_model_page_paginates(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._model_picker_state["mp-3"] = {
+            "session_key": "s", "chat_id": "zhangsan", "current_model": "a1", "current_provider": "a",
+            "providers": [{"slug": "a", "name": "A", "models": [f"model-{i}" for i in range(7)], "is_current": True}],
+            "stage": "models", "selected_provider": "a", "model_page": 0,
+            "on_model_selected": AsyncMock(),
+        }
+        # Page 0: 3 models + back + next (no prev)
+        card = adapter._build_model_card("mp-3")
+        keys = [b["key"] for b in card["button_list"]]
+        assert keys == ["m:0", "m:1", "m:2", "back", "pg:1"]
+        # Page 1: 3 models + back + both navs
+        adapter._model_picker_state["mp-3"]["model_page"] = 1
+        card = adapter._build_model_card("mp-3")
+        keys = [b["key"] for b in card["button_list"]]
+        assert keys == ["m:3", "m:4", "m:5", "back", "pg:0", "pg:2"]
+        assert len(keys) <= 6
+        # Last page: leftover model + back + prev
+        adapter._model_picker_state["mp-3"]["model_page"] = 2
+        card = adapter._build_model_card("mp-3")
+        assert [b["key"] for b in card["button_list"]] == ["m:6", "back", "pg:1"]
+
+    def test_model_tap_calls_callback_and_forwards_result(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._update_card = AsyncMock()
+        callback = AsyncMock(return_value="✅ 已切换到 deepseek-flash")
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter._model_picker_state["mp-9"] = {
+            "session_key": "sess-m", "chat_id": "zhangsan", "current_model": "x", "current_provider": "p",
+            "providers": [{"slug": "deepseek", "name": "DeepSeek",
+                           "models": ["deepseek-flash", "deepseek-v3"], "is_current": True}],
+            "stage": "models", "selected_provider": "deepseek", "model_page": 0,
+            "on_model_selected": callback}
+        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-9", "m:0")))
+        callback.assert_awaited_once_with("zhangsan", "deepseek-flash", "deepseek")
+        adapter.send.assert_awaited_once_with("zhangsan", "✅ 已切换到 deepseek-flash")
+        assert "mp-9" not in adapter._model_picker_state  # popped on selection
+        adapter._update_card.assert_awaited_once()
 
     def test_group_chat_returns_not_supported(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -140,26 +242,12 @@ class TestModelPicker:
 
 
 class TestInboundTaps:
-    def _tap_payload(self, task_id, event_key, *, userid="zhangsan", chattype="single", chatid=""):
-        return {
-            "cmd": "aibot_event_callback",
-            "headers": {"req_id": "req-1"},
-            "body": {
-                "msgid": f"EVT-{task_id}-{event_key}",
-                "aibotid": "BOT", "chattype": chattype, "chatid": chatid,
-                "from": {"userid": userid},
-                "msgtype": "event",
-                "event": {"eventtype": "template_card_event", "template_card_event": {
-                    "card_type": "button_interaction", "event_key": event_key, "task_id": task_id}},
-            },
-        }
-
     def test_approval_tap_resolves(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         adapter._update_card = AsyncMock()
         adapter._approval_state["ea-abc"] = {"session_key": "sess-1", "chat_id": "zhangsan", "desc": "d"}
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
-            asyncio.run(adapter._handle_template_card_event(self._tap_payload("ea-abc", "deny")))
+            asyncio.run(adapter._handle_template_card_event(_tap_payload("ea-abc", "deny")))
         resolve.assert_called_once_with("sess-1", "deny")
         assert "ea-abc" not in adapter._approval_state  # popped
         adapter._update_card.assert_awaited_once()
@@ -168,8 +256,8 @@ class TestInboundTaps:
         adapter = _make_adapter(monkeypatch)
         adapter._approval_state["ea-abc"] = {"session_key": "sess-1", "chat_id": "zhangsan", "desc": "d"}
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
-            asyncio.run(adapter._handle_template_card_event(self._tap_payload("ea-abc", "deny")))
-            asyncio.run(adapter._handle_template_card_event(self._tap_payload("ea-abc", "deny")))
+            asyncio.run(adapter._handle_template_card_event(_tap_payload("ea-abc", "deny")))
+            asyncio.run(adapter._handle_template_card_event(_tap_payload("ea-abc", "deny")))
         resolve.assert_called_once()
 
     def test_model_tap_calls_callback_and_forwards_result(self, monkeypatch):
@@ -178,10 +266,12 @@ class TestInboundTaps:
         callback = AsyncMock(return_value="✅ 已切换到 deepseek-flash")
         adapter.send = AsyncMock(return_value=SendResult(success=True))
         adapter._model_picker_state["mp-9"] = {
-            "session_key": "sess-m", "chat_id": "zhangsan",
-            "candidates": [{"model": "deepseek-flash", "slug": "deepseek", "provider": "DeepSeek"}],
+            "session_key": "sess-m", "chat_id": "zhangsan", "current_model": "x", "current_provider": "p",
+            "providers": [{"slug": "deepseek", "name": "DeepSeek",
+                           "models": ["deepseek-flash", "deepseek-v3"], "is_current": True}],
+            "stage": "models", "selected_provider": "deepseek", "model_page": 0,
             "on_model_selected": callback}
-        asyncio.run(adapter._handle_template_card_event(self._tap_payload("mp-9", "m:0")))
+        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-9", "m:0")))
         callback.assert_awaited_once_with("zhangsan", "deepseek-flash", "deepseek")
         adapter.send.assert_awaited_once_with("zhangsan", "✅ 已切换到 deepseek-flash")
         assert "mp-9" not in adapter._model_picker_state
@@ -191,7 +281,7 @@ class TestInboundTaps:
         adapter = _make_adapter(monkeypatch, dm_allowed=False)
         adapter._approval_state["ea-abc"] = {"session_key": "sess-1", "chat_id": "zhangsan", "desc": "d"}
         with patch("tools.approval.resolve_gateway_approval") as resolve:
-            asyncio.run(adapter._handle_template_card_event(self._tap_payload("ea-abc", "deny", userid="mallory")))
+            asyncio.run(adapter._handle_template_card_event(_tap_payload("ea-abc", "deny", userid="mallory")))
         resolve.assert_not_called()
         assert "ea-abc" in adapter._approval_state  # untouched
 
@@ -200,13 +290,13 @@ class TestInboundTaps:
         adapter._approval_state["ea-abc"] = {"session_key": "sess-1", "chat_id": "g", "desc": "d"}
         with patch("tools.approval.resolve_gateway_approval") as resolve:
             asyncio.run(adapter._handle_template_card_event(
-                self._tap_payload("ea-abc", "deny", chattype="group", chatid="group_1")))
+                _tap_payload("ea-abc", "deny", chattype="group", chatid="group_1")))
         resolve.assert_not_called()
         assert "ea-abc" in adapter._approval_state  # not popped
 
     def test_unknown_task_id_logged_not_raised(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        asyncio.run(adapter._handle_template_card_event(self._tap_payload("nope", "m:0")))  # must not raise
+        asyncio.run(adapter._handle_template_card_event(_tap_payload("nope", "m:0")))  # must not raise
 
 
 class TestCardBodies:

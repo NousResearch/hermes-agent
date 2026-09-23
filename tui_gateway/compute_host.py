@@ -19,6 +19,9 @@ from pathlib import Path
 from typing import Any, Callable, Collection
 
 from tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
+from tui_gateway.transport import serialize_frame
+
+logger = logging.getLogger(__name__)
 
 
 def now_ns() -> int:
@@ -85,7 +88,7 @@ class ComputeHost:
 
     def emit(self, frame: dict[str, Any]) -> None:
         frame.setdefault("host_ns", now_ns())
-        data = json.dumps(frame, separators=(",", ":"), ensure_ascii=False)
+        data = serialize_frame(frame, "compute-host", logger, separators=(",", ":"))
         with self._write_lock:
             print(data, file=self._stdout, flush=True)
 

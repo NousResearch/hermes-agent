@@ -3,6 +3,10 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
+const CLIPBOARD_IMAGE_MAX_BUFFER = 36 * 1024 * 1024
+/** Bound stalled clipboard owners (xclip/wl-paste) so paste cannot hang the composer. */
+const CLIPBOARD_IMAGE_TIMEOUT_MS = 3_000
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 // PowerShell read: base64-encode the clipboard content to avoid ANSI codepage
 // corruption (same problem as the write path — see comment at line 94).
@@ -14,6 +18,90 @@ const POWERSHELL_READ_ARGS = [
 ] as const
 
 type ClipboardRun = typeof execFileAsync
+
+export interface ClipboardImagePayload {
+  contentBase64: string
+  filename: string
+}
+
+interface ClipboardImageCommand {
+  args: readonly string[]
+  cmd: string
+  output: 'base64' | 'binary'
+}
+
+const POWERSHELL_READ_IMAGE_ARGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  '-Command',
+  'Add-Type -AssemblyName System.Windows.Forms;' +
+    'Add-Type -AssemblyName System.Drawing;' +
+    '$img = [System.Windows.Forms.Clipboard]::GetImage();' +
+    'if ($null -eq $img) { exit 1 };' +
+    '$ms = New-Object System.IO.MemoryStream;' +
+    '$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);' +
+    '[System.Convert]::ToBase64String($ms.ToArray())'
+] as const
+
+function readClipboardImageCommands(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): ClipboardImageCommand[] {
+  if (platform === 'darwin') {
+    return [{ cmd: 'pngpaste', args: ['-'], output: 'binary' }]
+  }
+
+  if (platform === 'win32') {
+    return [{ cmd: 'powershell', args: POWERSHELL_READ_IMAGE_ARGS, output: 'base64' }]
+  }
+
+  const attempts: ClipboardImageCommand[] = []
+
+  if (env.WSL_INTEROP || env.WSL_DISTRO_NAME) {
+    attempts.push({ cmd: 'powershell.exe', args: POWERSHELL_READ_IMAGE_ARGS, output: 'base64' })
+  }
+
+  if (env.WAYLAND_DISPLAY) {
+    attempts.push({ cmd: 'wl-paste', args: ['--type', 'image/png'], output: 'binary' })
+  }
+
+  attempts.push({ cmd: 'xclip', args: ['-selection', 'clipboard', '-out', '-target', 'image/png'], output: 'binary' })
+
+  return attempts
+}
+
+function isPngBase64(contentBase64: string): boolean {
+  if (!contentBase64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(contentBase64)) {
+    return false
+  }
+
+  const bytes = Buffer.from(contentBase64, 'base64')
+  return bytes.length >= PNG_SIGNATURE.length && bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+}
+
+/** Read a clipboard image on the TUI host and normalize it to base64 PNG. */
+export async function readClipboardImage(
+  platform: NodeJS.Platform = process.platform,
+  run: ClipboardRun = execFileAsync,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ClipboardImagePayload | null> {
+  for (const attempt of readClipboardImageCommands(platform, env)) {
+    try {
+      const result = await run(attempt.cmd, [...attempt.args], {
+        encoding: attempt.output === 'base64' ? 'utf8' : 'base64',
+        maxBuffer: CLIPBOARD_IMAGE_MAX_BUFFER,
+        timeout: CLIPBOARD_IMAGE_TIMEOUT_MS,
+        windowsHide: true
+      })
+      const contentBase64 = typeof result.stdout === 'string' ? result.stdout.replace(/\s/g, '') : ''
+
+      if (isPngBase64(contentBase64)) {
+        return { contentBase64, filename: 'clipboard.png' }
+      }
+    } catch {
+      // Fall through to the next clipboard backend.
+    }
+  }
+
+  return null
+}
 
 export function isUsableClipboardText(text: null | string): text is string {
   if (!text || !/[^\s]/.test(text)) {

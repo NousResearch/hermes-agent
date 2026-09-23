@@ -9,7 +9,6 @@ const PDF_EXTENSIONS = new Set(['.pdf'])
 // Mirrors `_FS_DATA_URL_MAX_BYTES` in the backend filesystem endpoint.
 const REMOTE_HTML_PREVIEW_MAX_BYTES = 16 * 1024 * 1024
 const REMOTE_HTML_PREVIEW_MAX_BASE64_BYTES = Math.ceil(REMOTE_HTML_PREVIEW_MAX_BYTES / 3) * 4
-const WORKSPACE_RELOAD_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
   '.c': 'c',
@@ -81,7 +80,12 @@ function pathToFileUrl(path: string) {
   return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
 }
 
-export function isWorkspaceLiveReloadUrl(value: string): boolean {
+/** Loopback hosts — "this machine". The one address family an agent's dev
+ *  server lives on, and the one whose meaning changes with WHICH machine loads
+ *  it (a remote gateway's `localhost` is not ours). */
+const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1)$/
+
+export function isLoopbackPreviewUrl(value: string): boolean {
   try {
     const url = new URL(value)
 
@@ -89,9 +93,7 @@ export function isWorkspaceLiveReloadUrl(value: string): boolean {
       return false
     }
 
-    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
-
-    return WORKSPACE_RELOAD_HOSTS.has(hostname) || hostname.endsWith('.local')
+    return LOOPBACK_HOST_RE.test(url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, ''))
   } catch {
     return false
   }

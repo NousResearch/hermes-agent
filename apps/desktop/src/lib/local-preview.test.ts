@@ -9,7 +9,7 @@ vi.mock('@/lib/desktop-fs', () => ({
 }))
 
 import {
-  isWorkspaceLiveReloadUrl,
+  isLoopbackPreviewUrl,
   localPreviewTarget,
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
@@ -17,21 +17,20 @@ import {
   validatedRemoteHtmlDataUrl
 } from './local-preview'
 
-describe('workspace live reload URLs', () => {
-  it.each([
-    'http://localhost:5173',
-    'https://127.0.0.1:8443/app',
-    'http://0.0.0.0:3000',
-    'http://[::1]:4173',
-    'http://demo.local:8080'
-  ])('accepts local development origin %s', url => {
-    expect(isWorkspaceLiveReloadUrl(url)).toBe(true)
-  })
-
-  it.each(['https://x.com', 'https://localhost.example.com', 'https://demo.local.example.com', 'not a URL'])(
-    'rejects external or malformed origin %s',
+describe('isLoopbackPreviewUrl', () => {
+  it.each(['http://localhost:5173', 'https://127.0.0.2:8443/app', 'http://0.0.0.0:3000', 'http://[::1]:4173'])(
+    'accepts loopback origin %s',
     url => {
-      expect(isWorkspaceLiveReloadUrl(url)).toBe(false)
+      expect(isLoopbackPreviewUrl(url)).toBe(true)
+    }
+  )
+
+  // mDNS and LAN names are other devices (homeassistant.local), not the dev
+  // server the agent is building.
+  it.each(['https://x.com', 'https://localhost.example.com', 'http://homeassistant.local:8123', 'not a URL'])(
+    'rejects non-loopback or malformed origin %s',
+    url => {
+      expect(isLoopbackPreviewUrl(url)).toBe(false)
     }
   )
 })

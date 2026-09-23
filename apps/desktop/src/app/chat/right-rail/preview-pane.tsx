@@ -14,7 +14,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
-import { isWorkspaceLiveReloadUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
+import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
 import {
   addAnnotatePin,
@@ -164,10 +164,6 @@ function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['previe
   return copy.failedToLoad
 }
 
-/** Loopback hosts — the address family that means "this machine", and so the
- *  one family whose meaning changes with WHICH machine is running the page. */
-const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?)$/i
-
 /**
  * True when this address can't mean what the agent meant.
  *
@@ -177,15 +173,7 @@ const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?)$
  * URL isn't wrong, it's just addressed to a different computer.
  */
 function isRemoteLoopbackUrl(url: string): boolean {
-  if (!isRemoteGateway()) {
-    return false
-  }
-
-  try {
-    return LOOPBACK_HOST_RE.test(new URL(url).hostname)
-  } catch {
-    return false
-  }
+  return isRemoteGateway() && isLoopbackPreviewUrl(url)
 }
 
 function isModuleMimeError(message: string): boolean {
@@ -911,7 +899,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     lastReloadRequestRef.current = reloadRequest
 
-    if (target.kind !== 'url' || !isWorkspaceLiveReloadUrl(currentUrl)) {
+    // An agent's file edit can only change a page a local dev server serves.
+    // Reloading any other site just throws away the user's page state.
+    if (target.kind !== 'url' || !isLoopbackPreviewUrl(currentUrl)) {
       return
     }
 

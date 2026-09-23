@@ -19,21 +19,21 @@ metadata:
 
 # Google Workspace
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
+Gmail, Calendar, Drive, Contacts, Sheets, and Docs: through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
 
 ## References
 
-- `references/gmail-search-syntax.md` — Gmail search operators (is:unread, from:, newer_than:, etc.)
-- `references/daily-brief.md` — daily/morning brief procedure: schedule + conflicts + meeting prep + urgent mail from Gmail and Calendar. Load it when the user asks for a morning brief, meeting preparation, or "what's on my calendar and what email needs attention."
+- `references/gmail-search-syntax.md`: Gmail search operators (is:unread, from:, newer_than:, etc.)
+- `references/daily-brief.md`: daily/morning brief procedure: schedule + conflicts + meeting prep + urgent mail from Gmail and Calendar. Load it when the user asks for a morning brief, meeting preparation, or "what's on my calendar and what email needs attention."
 
 ## Scripts
 
-- `scripts/setup.py` — OAuth2 setup (run once to authorize)
-- `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
+- `scripts/setup.py`: OAuth2 setup (run once to authorize)
+- `scripts/google_api.py`: compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
 
 ## First-Time Setup
 
-The setup is fully non-interactive — you drive it step by step so it works
+The setup is fully non-interactive: you drive it step by step so it works
 on CLI, Telegram, Discord, or any platform.
 
 Run the setup script with Python from the Hermes environment, not an unrelated
@@ -53,9 +53,9 @@ GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspac
 $GSETUP --check
 ```
 
-If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
+If it prints `AUTHENTICATED`, skip to Usage: setup is already done.
 
-### Step 1: Triage — ask the user what they need
+### Step 1: Triage: ask the user what they need
 
 Before starting OAuth setup, ask the user TWO questions:
 
@@ -63,7 +63,7 @@ Before starting OAuth setup, ask the user TWO questions:
 Calendar/Drive/Sheets/Docs?"**
 
 - **Email only** → They don't need this skill at all. Use the `himalaya` skill
-  instead — it works with a Gmail App Password (Settings → Security → App
+  instead: it works with a Gmail App Password (Settings → Security → App
   Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
   Load the himalaya skill and follow its setup instructions.
 
@@ -79,7 +79,7 @@ Calendar/Drive/Sheets/Docs?"**
 
 **Question 2: "Does your Google account use Advanced Protection (hardware
 security keys required to sign in)? If you're not sure, you probably don't
-— it's something you would have explicitly enrolled in."**
+: it's something you would have explicitly enrolled in."**
 
 - **No / Not sure** → Normal setup. Continue below.
 - **Yes** → Their Workspace admin must add the OAuth client ID to the org's
@@ -161,7 +161,7 @@ browser redirect only.
 $GSETUP --check
 ```
 
-Should print `AUTHENTICATED`. Setup is complete — token refreshes automatically from now on.
+Should print `AUTHENTICATED`. Setup is complete: token refreshes automatically from now on.
 
 ### Notes
 
@@ -319,20 +319,20 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 ## Rules
 
 1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
-2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
-3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
-4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
-5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+2. **Check auth before first use**: run `setup.py --check`. If it fails, guide the user through setup.
+3. **Use the Gmail search syntax reference** for complex queries: load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
+4. **Calendar times must include timezone**: always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
+5. **Respect rate limits**: avoid rapid-fire sequential API calls. Batch reads when possible.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
-| `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
-| `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
+| `REFRESH_FAILED` | Token revoked or expired: redo Steps 3-5 |
+| `HttpError 403: Insufficient Permission` | Missing API scope: `$GSETUP --revoke` then redo Steps 3-5 |
 | `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
-| `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
+| `HttpError 403: Access Not Configured` | API not enabled: user needs to enable it in Google Cloud Console |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |
 

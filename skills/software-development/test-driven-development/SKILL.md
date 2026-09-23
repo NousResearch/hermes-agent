@@ -54,7 +54,7 @@ Implement fresh from tests. Period.
 
 ## Red-Green-Refactor Cycle
 
-### RED — Write Failing Test
+### RED: Write Failing Test
 
 Write one minimal test showing what should happen.
 
@@ -92,7 +92,7 @@ Vague name, tests mock not real code.
 - Real code, not mocks (unless truly unavoidable)
 - Name describes behavior, not implementation
 
-### Verify RED — Watch It Fail
+### Verify RED: Watch It Fail
 
 **MANDATORY. Never skip.**
 
@@ -110,7 +110,7 @@ Confirm:
 
 **Test errors?** Fix the error, re-run until it fails correctly.
 
-### GREEN — Minimal Code
+### GREEN: Minimal Code
 
 Write the simplest code to pass the test. Nothing more.
 
@@ -138,7 +138,7 @@ Don't add features, refactor other code, or "improve" beyond the test.
 
 We'll fix it in REFACTOR.
 
-### Verify GREEN — Watch It Pass
+### Verify GREEN: Watch It Pass
 
 **MANDATORY.**
 
@@ -159,7 +159,7 @@ Confirm:
 
 **Other tests fail?** Fix regressions now.
 
-### REFACTOR — Clean Up
+### REFACTOR: Clean Up
 
 After green only:
 - Remove duplication
@@ -234,7 +234,7 @@ TDD IS pragmatic:
 
 "Pragmatic" shortcuts = debugging in production = slower.
 
-**"Tests after achieve the same goals — it's spirit not ritual"**
+**"Tests after achieve the same goals: it's spirit not ritual"**
 
 No. Tests-after answer "What does this do?" Tests-first answer "What should this do?"
 
@@ -256,7 +256,7 @@ Tests-after are biased by your implementation. You test what you built, not what
 | "Manual test faster" | Manual doesn't prove edge cases. You'll re-test every change. |
 | "Existing code has no tests" | You're improving it. Add tests for the code you touch. |
 
-## Red Flags — STOP and Start Over
+## Red Flags: STOP and Start Over
 
 If you catch yourself doing any of these, delete the code and restart with TDD:
 
@@ -347,10 +347,10 @@ Never fix bugs without a test.
 
 ## Testing Anti-Patterns
 
-- **Testing mock behavior instead of real behavior** — mocks should verify interactions, not replace the system under test
-- **Testing implementation details** — test behavior/results, not internal method calls
-- **Happy path only** — always test edge cases, errors, and boundaries
-- **Brittle tests** — tests should verify behavior, not structure; refactoring shouldn't break them
+- **Testing mock behavior instead of real behavior**: mocks should verify interactions, not replace the system under test
+- **Testing implementation details**: test behavior/results, not internal method calls
+- **Happy path only**: always test edge cases, errors, and boundaries
+- **Brittle tests**: tests should verify behavior, not structure; refactoring shouldn't break them
 
 ## Final Rule
 

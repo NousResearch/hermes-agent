@@ -183,11 +183,7 @@ def _models_dev_id(
     key = (provider or "").strip()
     mdev_id = PROVIDER_TO_MODELS_DEV.get(key)
     if mdev_id is None:
-        alias = (
-            _configured_catalog_provider(key, config=config)
-            if config is not None
-            else _configured_catalog_provider(key)
-        )
+        alias = _configured_catalog_provider(key, config=config)
         mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
         if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
                 and mdev_id not in fetch_models_dev(allow_network=False):
@@ -517,11 +513,7 @@ def _get_provider_models(
 ) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict, or None if unknown.
     ``allow_network`` defaults to False — hot-path callers must never block."""
-    mdev_id = (
-        _models_dev_id(provider, config=config)
-        if config is not None
-        else _models_dev_id(provider)
-    )
+    mdev_id = _models_dev_id(provider, config=config)
     return _registry_models(mdev_id, allow_network=allow_network) if mdev_id else None
 
 
@@ -801,11 +793,7 @@ def _builtin_model_metadata(
     provider: str, model: str, *, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry."""
-    provider_key = (
-        _models_dev_id(provider, config=config)
-        if config is not None
-        else _models_dev_id(provider)
-    ) or (provider or "").strip()
+    provider_key = _models_dev_id(provider, config=config) or (provider or "").strip()
     return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
 
 
@@ -868,11 +856,7 @@ def get_model_capabilities(
     self-unblock path for custom/local models (#8731) and for models with wrong metadata in models.dev
     (#84482).
     """
-    models = (
-        _get_provider_models(provider, allow_network=allow_network, config=config)
-        if config is not None
-        else _get_provider_models(provider, allow_network=allow_network)
-    )
+    models = _get_provider_models(provider, allow_network=allow_network, config=config)
     entry = _find_model_entry(models, model, provider) if models is not None else None
     unknown_base = (
         entry is None
@@ -969,11 +953,7 @@ def get_provider_info(
     provider_id: str, *, allow_network: bool = True, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[ProviderInfo]:
     """Provider metadata by Hermes or models.dev ID, or None if not cataloged. ``allow_network`` defaults to True (interactive setup)."""
-    mdev_id = (
-        _models_dev_id(provider_id, config=config)
-        if config is not None
-        else _models_dev_id(provider_id)
-    ) or provider_id
+    mdev_id = _models_dev_id(provider_id, config=config) or provider_id
     raw = _registry_provider(mdev_id, allow_network)
     return _parse_provider_info(mdev_id, raw) if raw is not None else None
 
@@ -990,11 +970,7 @@ def get_model_info(
     this boundary, and sub-dicts (``limit``, ``modalities``) are merged rather than clobbered. See #84482,
     #8731.
     """
-    mdev_id = (
-        _models_dev_id(provider_id, config=config)
-        if config is not None
-        else _models_dev_id(provider_id)
-    ) or provider_id
+    mdev_id = _models_dev_id(provider_id, config=config) or provider_id
     models = _registry_models(mdev_id, allow_network=allow_network)
     mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False, provider=provider_id), (model_id, None)) if models is not None else (model_id, None)
     # Not in catalog — an override (explicit or _default) may still provide it.

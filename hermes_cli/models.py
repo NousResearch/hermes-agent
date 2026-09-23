@@ -1899,8 +1899,6 @@ def cached_provider_model_ids(
     if not normalized:
         return []
     is_ollama = normalized == "ollama"
-    if is_ollama:
-        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)

@@ -332,10 +332,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             reasoning = True
             if get_model_capabilities is not None and slug:
                 try:
-                    kwargs: dict[str, Any] = (
-                        {"config": metadata_config} if metadata_config is not None else {}
-                    )
-                    meta = get_model_capabilities(slug, model, **kwargs)
+                    meta = get_model_capabilities(slug, model, config=metadata_config)
                     if meta is not None and meta.supports_reasoning is not None:
                         reasoning = meta.supports_reasoning
                 except Exception:
@@ -386,11 +383,8 @@ def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) ->
                 break
             date = ""
             if get_model_info is not None:
-                kwargs: dict[str, Any] = (
-                    {"config": metadata_config} if metadata_config is not None else {}
-                )
-                info = (get_model_info(slug, model, **kwargs)
-                        or get_model_info("openrouter", model, **kwargs))
+                info = (get_model_info(slug, model, config=metadata_config)
+                        or get_model_info("openrouter", model, config=metadata_config))
                 date = getattr(info, "release_date", "") if info else ""
             by_lab.setdefault(lab, []).append((pos, date, model))
 

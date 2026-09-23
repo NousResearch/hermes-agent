@@ -175,7 +175,9 @@ def _cmd_restart() -> int:
 
 def _cmd_which(server_id: str) -> int:
     from agent.lsp.install import INSTALL_RECIPES, _existing_binary
-    resolved = _existing_binary((INSTALL_RECIPES.get(server_id) or {}).get("bin", server_id))
+    pkg = _recipe_pkg_for(server_id)
+    bin_name = (INSTALL_RECIPES.get(pkg) or {}).get("bin", pkg)
+    resolved = _existing_binary(bin_name) or _existing_binary(server_id)
     if resolved:
         sys.stdout.write(resolved + "\n")
         return 0

@@ -188,19 +188,88 @@ def _boolean_requirement_satisfied(field: str, expected: bool, post: str) -> boo
     return positive if expected else negated
 
 
+def _pending_tool_calls(messages: list[dict[str, Any]]) -> set[str]:
+    """Tool-call ids requested by an assistant turn that no tool message answers."""
+    pending: set[str] = set()
+    answered: set[str] = set()
+    for m in messages:
+        for call in m.get("tool_calls") or []:
+            if isinstance(call, dict) and call.get("id"):
+                pending.add(str(call["id"]))
+        if m.get("role") == "tool" and m.get("tool_call_id"):
+            answered.add(str(m["tool_call_id"]))
+    return pending - answered
+
+
+def _call_signature(msg: dict[str, Any]) -> list[tuple[str, str]]:
+    """Deterministic (name, canonical-args) pairs for an assistant message."""
+    sigs: list[tuple[str, str]] = []
+    for call in msg.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function") or {}
+        name = str(fn.get("name") or call.get("name") or "")
+        args = fn.get("arguments", call.get("arguments"))
+        try:
+            canonical = (
+                args
+                if isinstance(args, str)
+                else json.dumps(args, sort_keys=True, ensure_ascii=False)
+            )
+        except (TypeError, ValueError, RecursionError):
+            canonical = repr(args)
+        sigs.append((name, str(canonical)))
+    return sigs
+
+
+def trajectory_gate(
+    messages: list[dict[str, Any]], *, stuck_run: int = 3
+) -> tuple[bool, str]:
+    """SelfCompact-style timing rubric, deterministic version.
+
+    Compaction is suppressed when:
+    - ``pending-tool-calls``: an assistant turn requested tools that have no
+      result yet — the trajectory is mid-derivation and pruning could evict
+      context the in-flight call needs (SelfCompact C1 closed-unit).
+    - ``stuck-loop``: the last ``stuck_run`` assistant turns issued identical
+      tool calls — the agent is looping; the correct move is to diagnose,
+      not to erase evidence of the loop (SelfCompact N1 not-stuck).
+
+    Returns ``(allowed, reason)``. The gate only ever suppresses — the
+    fail-safe direction — so it is safe to leave enabled by default.
+    """
+    if not messages:
+        return True, "ok"
+    if _pending_tool_calls(messages):
+        return False, "pending-tool-calls"
+    assistant = [m for m in messages if m.get("role") == "assistant"]
+    if len(assistant) >= stuck_run:
+        tail = assistant[-stuck_run:]
+        sigs = [_call_signature(m) for m in tail]
+        if all(s and s == sigs[0] for s in sigs):
+            return False, "stuck-loop"
+    return True, "ok"
+
+
 def apply_extractive_tool_prune(
     messages: list[dict[str, Any]],
     query: str | None = None,
     *,
     min_chars: int = MIN_TOOL_CHARS,
     protect_last_tool: int = PROTECT_LAST_TOOL,
+    timing_gate: bool = True,
 ) -> tuple[list[dict[str, Any]], int]:
     """Compress old bulky tool payloads. Returns (messages, n_changed).
 
-    If nothing changes, returns the same list object.
+    If nothing changes — or ``timing_gate`` suppresses the pass — returns
+    the same list object.
     """
     if not messages:
         return messages, 0
+    if timing_gate:
+        allowed, _reason = trajectory_gate(messages)
+        if not allowed:
+            return messages, 0
     q = query if query is not None else last_user_text(messages)
     tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
     skip = set(tool_idxs[-protect_last_tool:]) if protect_last_tool else set()

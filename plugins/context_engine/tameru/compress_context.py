@@ -516,6 +516,13 @@ def _crush_value(
                 ):
                     out[k] = v
                     continue
+                # lcc TRIM refusal: if the tail being cut carries a
+                # qualifier/negation cue, truncation can invert the claim
+                # ("granted to all staff" ← "…, except contractors").
+                # A longer safe value beats a shorter misleading one.
+                if _QUALIFIER_CUE_RE.search(v, 100):
+                    out[k] = v
+                    continue
                 out[k] = v[:100] + f"... [{len(v) - 100} more chars]"
                 continue
             out[k] = _crush_value(v, depth + 1, query_needles, query_selectors)
@@ -1555,6 +1562,84 @@ def _graph_path_closure(
     return closed
 
 
+# Qualifier/negation cues: a dropped block carrying one of these while
+# sharing a rare entity with a kept block is a QUALIFIES edge — cutting it
+# can invert the surviving claim ("safe for adults" vs "safe for adults,
+# except when..."). Same vocabulary class as lcc's TRIM refusal.
+_QUALIFIER_CUE_RE = re.compile(
+    r"\b(except|exception|excluding|excluded|unless|only|not\b|no\b|never|"
+    r"but\b|however|although|though|nevertheless|otherwise|without|despite|"
+    r"until|provided\s+that|subject\s+to|if)\b",
+    re.IGNORECASE,
+)
+
+# Definition cues: the dropped block DEFINES a term the kept block uses.
+_DEFINITION_CUE_RE = re.compile(
+    r"\b(is\s+defined\s+as|refers?\s+to|stands\s+for|means|i\.e\.|namely|denotes)\b",
+    re.IGNORECASE,
+)
+
+
+def _dependency_closure(
+    blocks: list[dict[str, Any]],
+    kept: set[int],
+    *,
+    link_terms: dict[int, set[str]] | None = None,
+    budget_tokens: int | None = None,
+) -> tuple[set[int], list[int]]:
+    """Sufficiency restore over typed edges (lcc graph.closure lesson).
+
+    A dropped block that QUALIFIES or DEFINES a rare term carried by a
+    kept block changes the meaning of what survives — restore it. Rare
+    means document-frequency <= cap, so only genuinely linking terms form
+    edges; restoration is document-ordered and capped at 8 blocks so a
+    cue-dense corpus cannot flood the keep-set. Never resurrects
+    trust-risk or frozen-drop blocks; supersession still runs after this
+    and can evict stale restorations. ``budget_tokens`` (fixed mode)
+    refuses a restoration that would overflow the caller's hard budget.
+    """
+    if not kept or len(blocks) < 2:
+        return kept, []
+    if link_terms is None:
+        link_terms = {
+            b["id"]: (set() if b.get("trust_risk") else _block_link_terms(b["text"]))
+            for b in blocks
+        }
+    df: dict[str, int] = {}
+    for terms in link_terms.values():
+        for term in terms:
+            df[term] = df.get(term, 0) + 1
+    rare_cap = min(6, max(3, len(blocks) // 8))
+    kept_rare = {
+        term
+        for bid in kept
+        for term in link_terms.get(bid, ())
+        if df.get(term, 0) <= rare_cap
+    }
+    if not kept_rare:
+        return kept, []
+    used = sum(b["tokens"] for b in blocks if b["id"] in kept) if budget_tokens is not None else 0
+    restored: list[int] = []
+    for b in blocks:  # document order -> deterministic
+        if len(restored) >= 8:
+            break
+        bid = b["id"]
+        if bid in kept or b.get("trust_risk") or b.get("freeze_decision") == "drop":
+            continue
+        if not (link_terms.get(bid, set()) & kept_rare):
+            continue
+        text = b["text"]
+        if not (_QUALIFIER_CUE_RE.search(text) or _DEFINITION_CUE_RE.search(text)):
+            continue
+        if budget_tokens is not None and used + b["tokens"] > budget_tokens:
+            continue
+        restored.append(bid)
+        used += b["tokens"]
+    if not restored:
+        return kept, []
+    return kept | set(restored), restored
+
+
 def _counterfactual_overlap_ambiguity(
     blocks: list[dict[str, Any]],
     kept: set[int],
@@ -1791,6 +1876,9 @@ def select_adaptive(
             blocks, kept, query=query, link_terms=link_terms_map, semantic_tier=semantic_tier
         ):
             return _ret({b["id"] for b in blocks}, True, "high", "needle-ambiguous")
+        kept, restored = _dependency_closure(blocks, kept, link_terms=link_terms_map)
+        if restored and out is not None:
+            out["sufficiency_restored"] = restored
         return _ret(kept, False, "low", "needle")
     important = _important(blocks)
     safe_blocks = [b for b in blocks if not b.get("trust_risk")]
@@ -1876,6 +1964,9 @@ def select_adaptive(
         blocks, kept, query=query, link_terms=link_terms_map, semantic_tier=semantic_tier
     ):
         return _ret({b["id"] for b in blocks}, True, "high", "ambiguous-failopen")
+    kept, restored = _dependency_closure(blocks, kept, link_terms=link_terms_map)
+    if restored and out is not None:
+        out["sufficiency_restored"] = restored
     risk = "low"
     if keep_ratio > 0.8:
         risk = "medium"
@@ -1932,6 +2023,9 @@ def select_fixed(
     ):
         kept.add(blocks[-1]["id"])
     kept = _stitch_neighbors(blocks, kept)
+    kept, restored = _dependency_closure(blocks, kept, budget_tokens=budget)
+    if restored and out is not None:
+        out["sufficiency_restored"] = restored
     return kept, False, "low"
 
 
@@ -3032,7 +3126,7 @@ def inspect_compressibility(text: str, query: str) -> dict[str, Any]:
 
 def compress_context(
     context: str,
-    query: str,
+    query: str | Iterable[str],
     *,
     mode: str = "adaptive",
     budget_ratio: Optional[float] = None,
@@ -3057,6 +3151,10 @@ def compress_context(
     limits: IndustrialLimits | None = None,
 ) -> CompressResult:
     caller_text = str(context or "")
+    if not isinstance(query, str):
+        # PAACE-style plan awareness: a sequence of upcoming-task strings is
+        # scored as a union — a term from any planned step counts.
+        query = " ".join(str(part) for part in (query or []) if part)
     requested_mode = (mode or "adaptive").strip().lower()
     if requested_mode not in {"adaptive", "fixed", "compiler", "precision"}:
         raise ValueError(
@@ -3733,6 +3831,9 @@ def compress_context(
         # dsh-jev-prune lesson: never degrade silently — report which
         # selector path decided the keep-set.
         "selection": selection.get("path"),
+        # lcc sufficiency lesson: blocks restored because a kept block's
+        # rare terms were qualified or defined there.
+        "sufficiency_restored": selection.get("sufficiency_restored") or [],
         "industrial": industrial.to_dict(),
     }
     receipt.update(

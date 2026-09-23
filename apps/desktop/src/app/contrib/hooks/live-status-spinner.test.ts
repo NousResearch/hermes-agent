@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
-import { $workingSessionIds, clearAllSessionStates } from '@/store/session-states'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
+import { $sessionStates, $workingSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-background-sync'
 
@@ -16,6 +17,7 @@ import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-ba
 describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw start', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     $unreadFinishedSessionIds.set([])
     resetLiveRuntimeTracking()
@@ -26,6 +28,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     vi.useRealTimers()
     clearAllSessionStates()
     resetLiveRuntimeTracking()
+    $activeSessionId.set(null)
     $unreadFinishedSessionIds.set([])
   })
 
@@ -73,5 +76,33 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     })
 
     expect($workingSessionIds.get()).not.toContain('stored-boot')
+  })
+
+  it('settles a visible reply when the active-list poll reports the turn idle', () => {
+    $activeSessionId.set('runtime-reply')
+    publishSessionState('runtime-reply', {
+      ...createClientSessionState('stored-reply'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [
+        {
+          id: 'assistant-live',
+          role: 'assistant' as const,
+          parts: [{ type: 'text' as const, text: 'Finished reply' }],
+          pending: true
+        }
+      ],
+      sawAssistantPayload: true,
+      streamId: 'assistant-live',
+      turnLive: true
+    })
+
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-reply', session_key: 'stored-reply', status: 'idle' }]
+    })
+
+    const settled = $sessionStates.get()['runtime-reply']!
+    expect(settled).toMatchObject({ awaitingResponse: false, busy: false, streamId: null, turnLive: false })
+    expect(settled.messages[0]).toMatchObject({ pending: false })
   })
 })

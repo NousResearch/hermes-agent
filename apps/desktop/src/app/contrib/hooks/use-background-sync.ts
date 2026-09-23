@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { finalizeInterruptedMessages } from '@/app/session/hooks/use-prompt-actions/rewind'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -402,7 +403,8 @@ export function rehydrateLiveSessionStatuses(
     // information. The stream path refuses to clear busy in exactly this window
     // (`awaitingResponse && !sawAssistantPayload`); without the same refusal
     // here a poll lands between submit and first token and darkens the row.
-    const busy = working || Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
+    const settleVisibleTurn = !working && Boolean(existing?.sawAssistantPayload)
+    const busy = working || (!settleVisibleTurn && Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload))
 
     // Avoid re-arming the watchdog on every poll. Publish only when the
     // authoritative live snapshot differs from the renderer mirror; normal
@@ -411,13 +413,23 @@ export function rehydrateLiveSessionStatuses(
       !existing ||
       existing.storedSessionId !== storedSessionId ||
       existing.busy !== busy ||
-      existing.needsInput !== needsInput
+      existing.needsInput !== needsInput ||
+      settleVisibleTurn
     ) {
       publishSessionState(runtimeSessionId, {
         ...(existing ?? createClientSessionState(storedSessionId)),
         busy,
         needsInput,
-        storedSessionId
+        storedSessionId,
+        ...(settleVisibleTurn && existing
+          ? {
+              awaitingResponse: false,
+              messages: finalizeInterruptedMessages(existing.messages, existing.streamId, nowMs / 1000),
+              streamId: null,
+              turnLive: false,
+              turnStartedAt: null
+            }
+          : {})
       })
     }
 

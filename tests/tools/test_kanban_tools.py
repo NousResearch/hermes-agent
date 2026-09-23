@@ -139,6 +139,29 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_evidence_required_card_retries_with_structured_receipt(worker_env):
+    """The tool exposes the shared evidence gate and leaves a failed attempt active."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET completion_contract='evidence-required' WHERE id=?", (worker_env,))
+        conn.commit()
+    rejected = json.loads(kt._handle_complete({"summary": "done"}))
+    assert rejected["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+    completed = json.loads(kt._handle_complete({
+        "summary": "done",
+        "evidence": [{"kind": "test", "detail": "targeted test passed"}],
+    }))
+    assert completed["ok"] is True
+    with kbc.connect() as conn:
+        assert kb.latest_run(conn, worker_env).metadata["completion_evidence"][0]["kind"] == "test"
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

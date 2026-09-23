@@ -132,6 +132,58 @@ def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
         assert kb.parent_ids(conn, ready_child) == [parent]
         assert kb.parent_ids(conn, running_child) == []
         assert kb.parent_ids(conn, worker) == [parent]
+def test_cli_complete_persists_evidence_receipt(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="CLI evidence", completion_contract="evidence-required")
+    output = kc.run_slash(
+        f'''complete {task_id} --summary done --evidence '[{{"kind":"test","detail":"CLI targeted test"}}]' '''
+    )
+    assert f"Completed {task_id}" in output
+    with kbc.connect() as conn:
+        assert kb.latest_run(conn, task_id).metadata["completion_evidence"] == [
+            {"kind": "test", "detail": "CLI targeted test"},
+        ]
+
+
+def test_cli_complete_required_evidence_is_reported_without_traceback(kanban_home, capsys):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="receipt required", completion_contract="evidence-required")
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+
+    rc = kc.kanban_command(parser.parse_args(["kanban", "complete", task_id]))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "completion requires concrete evidence" in captured.err
+    assert "Traceback" not in captured.err
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
+def test_cli_bulk_complete_continues_after_evidence_rejection(kanban_home, capsys):
+    """Bulk completion is sequential: successes persist and rejected cards do not abort later ids."""
+    with kbc.connect() as conn:
+        ordinary = kb.create_task(conn, title="ordinary before")
+        required = kb.create_task(conn, title="receipt required", completion_contract="evidence-required")
+        later = kb.create_task(conn, title="ordinary after")
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+
+    rc = kc.kanban_command(parser.parse_args([
+        "kanban", "complete", ordinary, required, later, "--result", "completed",
+    ]))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert f"Completed {ordinary}" in captured.out
+    assert f"Completed {later}" in captured.out
+    assert required in captured.err
+    assert "Traceback" not in captured.err
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, ordinary).status == "done"
+        assert kb.get_task(conn, required).status == "ready"
+        assert kb.get_task(conn, later).status == "done"
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
@@ -242,5 +294,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

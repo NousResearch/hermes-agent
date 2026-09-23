@@ -22,6 +22,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.kanban_completion_evidence import CompletionEvidenceError
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -52,6 +53,19 @@ def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
     except (ValueError, json.JSONDecodeError) as exc:
         return None, _err(f"kanban: --metadata: {exc}", 2)
     return metadata, 0
+
+
+def _parse_evidence_flag(raw: Optional[str]) -> tuple[Optional[list], int]:
+    """Parse ``--evidence`` JSON without borrowing metadata's object contract."""
+    if not raw:
+        return None, 0
+    try:
+        evidence = json.loads(raw)
+        if not isinstance(evidence, list):
+            raise ValueError("must be a JSON list of {kind, detail} objects")
+    except (ValueError, json.JSONDecodeError) as exc:
+        return None, _err(f"kanban: --evidence: {exc}", 2)
+    return evidence, 0
 
 
 def _run_state_kwargs(args: argparse.Namespace, cmd: str) -> tuple[Optional[dict[str, str]], int]:
@@ -905,12 +919,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return rc
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
-    # Handoff fields are per-run; refuse to copy them across N runs.
-    if len(ids) > 1 and (summary or raw_meta):
-        return _err("kanban: --summary / --metadata are per-task and can't be used "
+    # Handoff fields and evidence are per-run; refuse to copy them across N runs.
+    if len(ids) > 1 and (summary or raw_meta or getattr(args, "evidence", None)):
+        return _err("kanban: --summary / --metadata / --evidence are per-task and can't be used "
                     "with multiple ids (would apply the same handoff to every task). "
                     "Complete tasks one at a time, or drop the flags for the bulk close.", 2)
     metadata, rc = _parse_metadata_flag(raw_meta)
+    if rc:
+        return rc
+    evidence, rc = _parse_evidence_flag(getattr(args, "evidence", None))
     if rc:
         return rc
     fail_msg: dict[str, str] = {}
@@ -927,6 +944,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
+                                        evidence=evidence,
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
@@ -936,6 +954,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
                                  f"describing what was done (an empty completion is not evidence).")
+                return False
+            except CompletionEvidenceError as exc:
+                # Completion evidence is a task-specific gate. Keep the established
+                # `_bulk_apply` contract: report this id, continue with later ids,
+                # and return 1 if any card failed. The gate runs before the write
+                # transaction, so this card remains unchanged and retryable.
+                fail_msg[tid] = (f"cannot complete {tid}: {exc}. "
+                                 "Provide --evidence with a JSON list of concrete receipts and retry.")
                 return False
             if not done:
                 # complete_task returns bare False for a dependency refusal too;

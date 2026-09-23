@@ -52,6 +52,14 @@ Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
 accepts the same `completion_contract`. Use `local-only` for intentionally local
 work; existing and undeclared cards retain that default. Prose URLs are not policy.
 
+For local work that needs an auditable closeout without a GitHub gate, create the
+card with `--completion-contract evidence-required`. Completion then needs at
+least one structured receipt: `--evidence '[{"kind":"test","detail":"scripts/run_tests.sh tests/..."}]'`.
+Tools and the dashboard accept the same `evidence` list. Receipts are stored in
+the closing run's `metadata.completion_evidence`; rejected attempts leave the
+card running so the caller can add evidence and retry. Existing and `local-only`
+cards remain compatible and do not require evidence.
+
 After publishing, pass `metadata.published_pr` to completion. The first matching
 URL binds the card permanently; retries cannot substitute a green sibling PR.
 CLI `show --json` and `kanban_show` expose the persisted contract.

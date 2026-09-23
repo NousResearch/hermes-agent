@@ -2724,7 +2724,8 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    fire_lifecycle_hook: bool = True, evidence: Optional[list[dict]] = None,
+    force: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2735,7 +2736,8 @@ def complete_task(
     :func:`request_review` applies. With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
-    ``created_cards`` are verified first — a phantom id raises
+    ``evidence`` is stored with the closing run. An ``evidence-required`` card
+    rejects absent or empty evidence without changing task state. ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
     Completions from non-review statuses need evidence: a stripped ``result``
@@ -2747,7 +2749,17 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    from hermes_cli.kanban_completion_evidence import (
+        EVIDENCE_REQUIRED_CONTRACT, normalize_completion_evidence,
+    )
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
+    task = get_task(conn, task_id)
+    normalized_evidence = normalize_completion_evidence(
+        evidence, required=bool(task and task.completion_contract == EVIDENCE_REQUIRED_CONTRACT),
+    )
+    if normalized_evidence:
+        metadata = dict(metadata or {})
+        metadata["completion_evidence"] = normalized_evidence
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(

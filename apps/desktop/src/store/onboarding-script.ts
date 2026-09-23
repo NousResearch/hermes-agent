@@ -65,15 +65,21 @@ export function machineForkOption(): string {
   return `Help me set up this ${machineKind()}`
 }
 
-/** The plugin-backed first task and the catalog plugins it installs. A Windows PC with an NVIDIA GPU gets the
- *  games and streaming job (NVIDIA App and Broadcast are Windows-only); every other computer gets Blender, which
- *  the catalog offers on all three platforms. */
-export function pluginForkOption(): { label: string; plugins: string[] } {
+export interface PluginTask {
+  label: string
+  plugins: string[]
+}
+
+const BLENDER_TASK: PluginTask = { label: 'Help me make something in Blender', plugins: ['blender'] }
+const NVIDIA_TASK: PluginTask = { label: 'Set up my games and streaming', plugins: ['nvidia-app', 'nvidia-broadcast'] }
+
+/** The plugin-backed first tasks and the catalog plugins each installs. Blender runs on all three platforms; the
+ *  NVIDIA App and Broadcast plugins are Windows-only, so the games and streaming job is offered only on a Windows
+ *  PC with an NVIDIA GPU, and it leads there. */
+export function pluginForkOptions(): PluginTask[] {
   const machine = $machine.get()
 
-  return machine?.platform === 'win32' && machine.nvidia
-    ? { label: 'Set up my games and streaming', plugins: ['nvidia-app', 'nvidia-broadcast'] }
-    : { label: 'Help me make something in Blender', plugins: ['blender'] }
+  return machine?.platform === 'win32' && machine.nvidia ? [NVIDIA_TASK, BLENDER_TASK] : [BLENDER_TASK]
 }
 
 const SOMETHING_ELSE = 'Something else'
@@ -114,22 +120,24 @@ export function forkOptions(): string[] {
 
   return machineSetupLeads()
     ? [machineForkOption(), SOMETHING_ELSE]
-    : [mind, automate, machineForkOption(), pluginForkOption().label, figure, skip]
+    : [mind, automate, machineForkOption(), ...pluginForkOptions().map(task => task.label), figure, skip]
 }
 
 /** What "Something else" opens onto. Empty when forkOptions() already listed every pill. */
 export function forkFallbackOptions(): string[] {
   const { automate, figure, mind, skip } = FORK_OPTIONS
 
-  return machineSetupLeads() ? [mind, automate, pluginForkOption().label, figure, skip] : []
+  return machineSetupLeads() ? [mind, automate, ...pluginForkOptions().map(task => task.label), figure, skip] : []
 }
 
 /** The install beat: the last thing before the handoff card, and the only place the guide installs (NS-960 D2, D3).
  *  The build session has no install tool, so a plugin the task needs must be in before the handoff. */
-function installBeat(pluginTask: { label: string; plugins: string[] }): string {
+function installBeat(tasks: PluginTask[]): string {
+  const implied = tasks.map(task => `for "${task.label}", ${task.plugins.join(' and ')}`).join('; ')
+
   return [
     'THE INSTALL BEAT, the last thing before the handoff card. The connectors note may list "plugins picked, not installed yet" (tools for this computer that Hermes installs and runs locally).',
-    `Once the task is decided, pick the ones this task needs: all of them for a machine-setup job or a task that names the app; for "${pluginTask.label}", ${pluginTask.plugins.join(' and ')} count as picked even if they were not.`,
+    `Once the task is decided, pick the ones this task needs: all of them for a machine-setup job or a task that names the app. These tasks bring their own plugins, which count as picked even if they were not: ${implied}.`,
     'A picked plugin the task does not need is not offered; leave it. When none are needed, go straight to the handoff.',
     'Otherwise, in that turn: one short sentence, then ONE manage_catalog call with action="install" and items=[{"kind":"plugin","id":"<name>"}, ...] carrying every needed id as a batch, using the exact names from the note. The app shows one approval card with a row per plugin, and the call blocks until the user installs or skips each row or presses Continue. Never paste links or commands, never describe the Plugins tab, and never call install again for a row that already had a card.',
     'Use the settled result: name in one sentence what is now available (the installed rows and their tools) and say it works in the task chat that opens next; say in a clause what was not installed. Failed or skipped rows are recorded; do not re-offer them. Then, in that same turn, the handoff line.'
@@ -141,7 +149,7 @@ export function buildChatOnboardingPrompt(suggestedName?: string | null, signedI
   const machine = machineForkOption()
   const fallback = forkFallbackOptions()
   const language = machineLanguageName()
-  const pluginTask = pluginForkOption()
+  const pluginTasks = pluginForkOptions()
 
   return [
     "You are Hermes, and this is a brand-new user's very first conversation with you. Your job right now is to get the app arranged around them and their first real job started.",
@@ -207,8 +215,11 @@ export function buildChatOnboardingPrompt(suggestedName?: string | null, signedI
     '   If they pick that one, hand off with plan="plugin" on the handoff line.',
     `   - "${FORK_OPTIONS.skip}": say one short line that the app is theirs and this chat stays here if they ever want a hand, then stand down. No more questions, no handoff.`,
     '   Connector-dependent tasks are welcome. They do NOT need a no-account substitute: checking email should read their real email after permission, not build a mock inbox. Explain in one short clause that the task will offer to connect the needed app. If they decline or the integration is unavailable, keep the original task honest about being blocked and let them choose another task or supply the data themselves. Never invent personal data or silently change the goal.',
-    `   - "${pluginTask.label}": the task is decided. Carry it into the handoff brief as a concrete first project, and run the install beat for ${pluginTask.plugins.join(' and ')}.`,
-    installBeat(pluginTask),
+    ...pluginTasks.map(
+      task =>
+        `   - "${task.label}": the task is decided. Carry it into the handoff brief as a concrete first project, and run the install beat for ${task.plugins.join(' and ')}.`
+    ),
+    installBeat(pluginTasks),
     '7. THE HANDOFF — you do not build the task in this conversation. Once the task is decided, reply with ONE short sentence framing it (you are giving the work its own chat so it has room, and this one stays open), then ::onboarding{step="handoff" task="short task name" brief="the build instruction, one sentence, written as the user\'s ask"} on a line of its own — task under 40 chars, brief under 200. Add plan="machine-setup" to that same line when the job is setting up their computer, or plan="plugin" when it is a piece of the Hermes interface. The app opens the session, moves the user into it, and starts the build from your brief.',
     '8. Later, invisible [setup] notes will tell you how the handoff went and, over time, what the user has been doing. When the handoff-complete note arrives, follow its instructions: one short line that you are around if they want a hand, then stop. If a handoff-failed note arrives instead, explain briefly that the first build did not start and point to Retry first build. Do not start another copy here or promise the build is running.',
     'Whenever you draft reusable text for them (an email, a pitch, a template, a post), put the draft in a fenced code block so they can copy it in one click — never inline in your prose. Your own commentary stays outside the block.',

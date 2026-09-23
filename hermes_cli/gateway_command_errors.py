@@ -1,4 +1,4 @@
-"""User-facing copy for ``hermes gateway start/stop/restart`` failures on systemd hosts.
+"""User-facing copy for gateway service command failures.
 
 ``hermes_cli/gateway.py`` is a facade; this sibling owns the small exception -> guidance table so
 the most common Linux service failures (``systemctl`` exited non-zero, or there is no ``systemctl``
@@ -45,6 +45,13 @@ def explain_service_failure(exc: BaseException) -> list[str] | None:
     if isinstance(exc, SystemctlUnavailableError):
         return list(_NO_SYSTEMCTL_LINES)
     if isinstance(exc, subprocess.CalledProcessError):
+        cmd = exc.cmd if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd).split()
+        if cmd and cmd[0] == "launchctl":
+            return [
+                "Could not update the gateway launchd service; check `hermes gateway status --deep`.",
+                "The service may be unloaded; inspect it with `launchctl list` and retry `hermes gateway install --force`.",
+                f"Details: {exc}",
+            ]
         lines = [line.format(verb=_verb_for(exc), journal=_JOURNAL_HINT) for line in _SYSTEMCTL_FAILED_LINES]
         lines.append(f"Details: {exc}")
         return lines

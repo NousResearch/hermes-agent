@@ -579,6 +579,7 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 def launchd_install(force: bool = False):
     plist_path = _gw().get_launchd_plist_path()
+    replacing = force and plist_path.exists()
 
     if plist_path.exists() and not force:
         if not _gw().launchd_plist_is_current():
@@ -603,14 +604,33 @@ def launchd_install(force: bool = False):
     new_plist = _gw().generate_launchd_plist()
     if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
+    label = _gw().get_launchd_label()
+    domain = _gw()._launchd_domain()
+    old_pid = _gw()._launchctl_supervised_pid(label) if replacing else None
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(new_plist, encoding="utf-8")
 
-    try:
-        _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, _gw().get_launchd_label(), timeout=30)
-    except subprocess.CalledProcessError as e:
-        _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
-        return
+    if replacing:
+        # A forced reinstall replaces a possibly live definition. Bootout can return while
+        # the old process/label is still draining; EIO at that point is not proof it survived.
+        subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                       check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+        budget = _launchd_reload_budget()
+        if old_pid is not None:
+            _gw()._wait_for_pid_exit(old_pid, budget)
+        if not _gw()._retry_launchctl_bootstrap_until_registered(
+            domain, plist_path, label, deadline=time.monotonic() + budget
+        ):
+            _gw().print_error(f"launchctl did not supervise {domain}/{label} after reinstall; service may be unloaded.")
+            print(f"  Check with: launchctl list {label}")
+            print(f"  Recover with: launchctl bootstrap {domain} {plist_path}")
+            sys.exit(1)
+    else:
+        try:
+            _gw()._launchctl_bootstrap(domain, plist_path, label, timeout=30)
+        except subprocess.CalledProcessError as e:
+            _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
+            return
 
     print()
     print("✓ Service installed and loaded!")

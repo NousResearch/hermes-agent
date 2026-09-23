@@ -2,7 +2,10 @@
 import subprocess
 from unittest.mock import MagicMock
 
+import pytest
+
 from hermes_cli import gateway as gw
+from hermes_cli.gateway_command_errors import explain_service_failure
 
 
 def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
@@ -44,3 +47,40 @@ def test_install_repair_warns_instead_of_claiming_success(tmp_path, monkeypatch,
     assert "Service definition updated" not in out
     assert "could not be reloaded" in out
     assert "~/.hermes-work/logs/launchd-reload.log" in out
+
+
+@pytest.mark.parametrize("registered", [True, False])
+def test_forced_install_waits_for_old_job_and_reports_actual_registration(
+    tmp_path, monkeypatch, capsys, registered
+):
+    """Regression for #120629: EIO during drain must not imply the old job survived."""
+    _stale_plist(tmp_path, monkeypatch, registered=registered)
+    calls = []
+    monkeypatch.setattr(gw, "_launchctl_supervised_pid", lambda label: 417)
+    monkeypatch.setattr(gw, "_wait_for_pid_exit", lambda pid, budget: calls.append(("wait", pid)) or True)
+    monkeypatch.setattr(gw, "_retry_launchctl_bootstrap_until_registered",
+                        lambda *a, **k: calls.append(("retry", a[2])) or registered)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: calls.append(("bootout", cmd)) or MagicMock())
+    monkeypatch.setattr(gw, "_clear_launchd_unsupported_marker", lambda: None)
+
+    if registered:
+        gw.launchd_install(force=True)
+    else:
+        with pytest.raises(SystemExit) as exc:
+            gw.launchd_install(force=True)
+        assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert [call[0] for call in calls] == ["bootout", "wait", "retry"]
+    assert ("wait", 417) in calls
+    assert ("retry", "com.hermes.agent") in calls
+    assert ("Service installed and loaded!" in out) is registered
+    if not registered:
+        assert "may be unloaded" in out
+        assert "launchctl bootstrap gui/501" in out
+
+
+def test_launchctl_failure_guidance_does_not_claim_systemd():
+    lines = explain_service_failure(subprocess.CalledProcessError(5, ["launchctl", "bootstrap"]))
+    assert "launchd" in " ".join(lines)
+    assert "systemd" not in " ".join(lines)
+    assert "journalctl" not in " ".join(lines)

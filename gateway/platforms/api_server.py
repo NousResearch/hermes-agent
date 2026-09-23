@@ -4117,6 +4117,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_run_events = _run_route_delegate("_handle_run_events")
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
+    @_admit_api_agent_request
+    async def _handle_continue_run(self, request: "web.Request") -> "web.Response":
+        return await _api_runs._handle_continue_run(self, request, _api_server=sys.modules[__name__])
+
     _handle_stop_run = _run_route_delegate("_handle_stop_run")
 
     async def _sweep_orphaned_runs(self) -> None:

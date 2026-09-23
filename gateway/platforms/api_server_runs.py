@@ -25,6 +25,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms import api_server_run_recovery as _recovery
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -189,6 +190,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
+        ("POST", "/v1/runs/{run_id}/continue", self._handle_continue_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
 
 
@@ -453,6 +455,8 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    recovery_binding: Optional[str] = None
+    continuation_proof: Optional[Dict[str, Any]] = None
 
     @property
     def approval_session_key(self) -> str:
@@ -564,7 +568,7 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
-async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
+async def _handle_runs(self, request: "web.Request", *, _api_server, continuation_source=None) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
     # Long-term memory scope header (see chat_completions for details).
@@ -578,11 +582,21 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    if not isinstance(body, dict):
+        return _json_error(_openai_error, "Expected a JSON object", status=400)
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+    recovery_binding = None
+    if body.get("recovery_policy") is not None or continuation_source is not None:
+        try:
+            _recovery.validate_request(body, durable=self._run_idempotency_store.durable,
+                                       idempotency_key=idempotency_key)
+            recovery_binding = _recovery.request_binding(body, gateway_session_key)
+        except _recovery.RecoveryBlocked as exc:
+            return _json_error(_openai_error, str(exc), code="invalid_recovery_request", status=400)
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
             _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
@@ -590,8 +604,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     idempotency_scope = idempotency_fingerprint = ""
     if idempotency_key:
         idempotency_scope = self._run_idempotency_scope(request)
+        fingerprint_payload = {"body": body, "gateway_session_key": gateway_session_key or ""}
+        if continuation_source is not None:
+            fingerprint_payload["continued_from_run_id"] = continuation_source
         idempotency_fingerprint = hashlib.sha256(json.dumps(
-            {"body": body, "gateway_session_key": gateway_session_key or ""},
+            fingerprint_payload,
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
     raw_input = body.get("input")
@@ -629,6 +646,23 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             retention_until=_room_retention_until(request))
         if outcome == "conflict" or (outcome == "reused" and record is not None):
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+    proof = None
+    if continuation_source is not None:
+        try:
+            record = self._run_idempotency_store.status_for_run(idempotency_scope, continuation_source)
+            source_status = record["status"] if record else {}
+            proof = source_status.get("recovery", {})
+            if (source_status.get("status") not in {"cancelled", "interrupted"}
+                    or proof.get("disposition") != "safe_to_continue"
+                    or proof.get("checkpoint_id") != body.get("checkpoint_id")):
+                raise _recovery.RecoveryBlocked("No settled, unclaimed checkpoint matches this request")
+            db = await self._ensure_session_db_async()
+            if db is None:
+                raise _recovery.RecoveryBlocked("The checkpoint transcript is unavailable")
+            conversation_history = await asyncio.to_thread(db.get_messages_as_conversation, proof["session_id"])
+            await asyncio.to_thread(_recovery.verify_checkpoint, proof, conversation_history, binding=recovery_binding or "")
+        except (_recovery.RecoveryBlocked, KeyError, OSError, ValueError) as exc:
+            return _json_error(_openai_error, str(exc), code="run_not_recoverable", status=409)
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
     if limited is not None:
@@ -638,7 +672,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
     # An explicit or chained session owns its routing key and is never rebound to the header.
-    _declared_selected = not session_id and bool(gateway_session_key)
+    # Recovery is opt-in and uses fresh run-owned sessions. It cannot turn a
+    # caller-supplied history or shared chat into apparent native effect receipts.
+    _declared_selected = not recovery_binding and not session_id and bool(gateway_session_key)
     selected_session_id = session_id or (
         await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
         if _declared_selected else None)
@@ -664,17 +700,30 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
         run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+    if recovery_binding:
+        initial_status["recovery"] = {"disposition": "blocked", "reason": "worker_not_settled"}
+        if continuation_source is not None:
+            initial_status["continued_from_run_id"] = continuation_source
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
             owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
+            retention_until=_room_retention_until(request),
+            **({"source_run_id": continuation_source, "checkpoint_id": body["checkpoint_id"]}
+               if continuation_source is not None else {}))
         if outcome != "created":
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
                 self._run_statuses, self._run_owners)
+            if outcome == "unrecoverable":
+                return _json_error(_openai_error, "The source checkpoint is no longer available",
+                                   code="run_not_recoverable", status=409)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+        if continuation_source in self._run_statuses:
+            source_record = self._run_idempotency_store.status_for_run(idempotency_scope, continuation_source)
+            if source_record:
+                self._run_statuses[continuation_source] = source_record["status"]
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -685,7 +734,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, recovery_binding=recovery_binding,
+        continuation_proof=proof if continuation_source is not None else None)
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
@@ -769,14 +819,25 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
             register_gateway_notify(run.approval_session_key, approval_notify)
+            if run.continuation_proof is not None:
+                _recovery.prepare_continuation(run, agent)
             # /v1/runs owns its agent lifecycle (no TurnRunner): record process ownership
             # so stop/cancel reaps only the background processes this run created.
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
+            if run.continuation_proof is not None:
+                # Session seeding can take time after the claim/queue check.
+                # Revalidate at the execution boundary, before any inference.
+                _recovery.verify_checkpoint(run.continuation_proof, run.conversation_history,
+                                            binding=run.recovery_binding or "")
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
                 task_id=effective_task_id, **author_kwargs)
+            if run.recovery_binding and isinstance(r, dict) and r.get("interrupted") is True:
+                # Prepare in the original backend scope. Publish only when the
+                # async caller observes full worker exit, including cleanup.
+                r["_api_recovery_candidate"] = _recovery.seal_after_worker(run, agent, r)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -923,6 +984,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             result = {}
         status, fields = terminal_run_status(result)
         if status == "cancelled":
+            if run.recovery_binding:
+                # The awaited worker returned normally. Cancelled asyncio futures
+                # never reach this seam, even if their thread eventually exits.
+                fields["recovery"] = result.get("_api_recovery_candidate", {
+                    "disposition": "blocked", "reason": "worker_checkpoint_unavailable"})
             _finish("cancelled", fields)
         elif result.get("failed"):
             # Non-retryable client errors (401/400) return failed=True rather than raising.
@@ -1004,6 +1070,19 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
     if status is None:
         return run_id, None, agent, task, _run_not_found(_openai_error, run_id)
     return run_id, status, agent, task, None
+
+
+async def _handle_continue_run(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """Refuse continuation without a durable, settled checkpoint owned by this caller."""
+    run_id, status, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="dispatch", active_fallback=False)
+    if err is not None:
+        return err
+    if not status or not status.get("recovery", {}).get("checkpoint_id"):
+        return _json_error(
+            _api_server._openai_error, "No settled recovery checkpoint is available for this run",
+            code="run_not_recoverable", status=409)
+    return await _handle_runs(self, request, _api_server=_api_server, continuation_source=run_id)
 
 
 async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.Response":

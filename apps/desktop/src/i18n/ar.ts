@@ -1227,6 +1227,9 @@ export const ar = defineLocale({
     }
   },
   skills: {
+    plugins: {
+      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
+    },
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
     all: 'الكل',

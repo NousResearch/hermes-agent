@@ -1527,6 +1527,9 @@ export const ja = defineLocale({
   },
 
   skills: {
+    plugins: {
+      pageBlurb: 'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。'
+    },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
     all: 'すべて',

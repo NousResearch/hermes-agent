@@ -1535,6 +1535,9 @@ export const zhHant = defineLocale({
   },
 
   skills: {
+    plugins: {
+      pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。'
+    },
     tabSkills: '技能',
     tabToolsets: '工具集',
     all: '全部',

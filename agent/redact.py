@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
+_VAULT_REDACTION_MIN_LENGTH = 12
 _VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
 _VAULT_REDACTION_LOCK = threading.Lock()
 
@@ -64,15 +65,15 @@ def clear_vault_redaction_values() -> None:
 
 
 def redact_registered_vault_values(text: str) -> str:
-    """Exact-substring scrub of every vault secret value registered for the current profile."""
+    """Scrub standalone, non-trivial vault secret values for the current profile."""
     if not isinstance(text, str) or not text:
         return text
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
         values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
     for value in values:
-        if value in text:
-            text = text.replace(value, "«redacted-vault-secret»")
+        if len(value) >= _VAULT_REDACTION_MIN_LENGTH and value in text:
+            text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", "«redacted-vault-secret»", text)
     return text
 
 # Sensitive query-string param names (case-insensitive): opaque tokens / OAuth

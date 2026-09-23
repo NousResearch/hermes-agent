@@ -588,6 +588,12 @@ class TestBrowserVaultTools:
             assert len(secret_exprs) == 1 and _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
             assert '"index": 3' not in secret_exprs[0]  # the email box is never a card target
             assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
+            # Short payment fields must not become global substring scrub keys,
+            # while a long card number remains protected only as a standalone value.
+            redact.register_vault_redaction_value("20")
+            assert redact.redact_sensitive_text("Issue 120655 costs £20 in 2026") == "Issue 120655 costs £20 in 2026"
+            assert redact.redact_sensitive_text("unit 7") == "unit 7"
+            assert _CARD["card_number"] in redact.redact_sensitive_text(f"x{_CARD['card_number']}x")
         finally:
             redact.clear_vault_redaction_values()
 

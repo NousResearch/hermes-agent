@@ -313,3 +313,31 @@ variable "max_session_duration" {
   type        = number
   default     = 3600
 }
+
+variable "backup_enabled" {
+  description = "Snapshot the state volume on a schedule (Data Lifecycle Manager). Leave on: it is the only backup of the work board, profiles and audit log."
+  type        = bool
+  default     = true
+}
+
+variable "snapshot_interval_hours" {
+  description = "Hours between state-volume snapshots — the most data an incident can lose (RPO)."
+  type        = number
+  default     = 6
+
+  validation {
+    condition     = contains([1, 2, 3, 4, 6, 8, 12, 24], var.snapshot_interval_hours)
+    error_message = "snapshot_interval_hours must be one of 1, 2, 3, 4, 6, 8, 12 or 24 (Data Lifecycle Manager's supported intervals)."
+  }
+}
+
+variable "snapshot_retain_count" {
+  description = "How many scheduled snapshots to keep. 28 at the 6-hour default is seven days."
+  type        = number
+  default     = 28
+
+  validation {
+    condition     = var.snapshot_retain_count >= 1 && var.snapshot_retain_count <= 1000
+    error_message = "snapshot_retain_count must be between 1 and 1000."
+  }
+}

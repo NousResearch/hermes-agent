@@ -191,3 +191,58 @@ Verified, offline, against the real AWS provider:
 Session Manager policy attachment were not exercised (the mock has neither a real AMI nor the
 AWS-managed policy catalogue), and `user_data.sh.tftpl` has never run on a booting host.
 Treat the first real deployment as a first real deployment.
+
+## Backups and recovering from a snapshot
+
+`backup.tf` snapshots the state volume with Data Lifecycle Manager every
+`snapshot_interval_hours` (default 6) and keeps `snapshot_retain_count` of them (default 28,
+seven days). The interval is the most work an incident can lose. The policy selects the
+volume by the `Name` tag it already carries, so enabling backups modifies nothing that
+exists. Snapshots are encrypted with the tenant key; the snapshot role may use that one key.
+
+**What a snapshot holds:** everything on the volume — the runtime's work board
+(`home/kanban.db`), every agent profile including conversation history and its `.env`, the
+knowledge index, the audit log and the deployed bundle. Treat snapshots as the secrets they
+contain; they never leave the account.
+
+### Proving a backup restores (do this before you rely on it)
+
+Two drills, both leaving nothing behind:
+
+* **Instance drill** — `restore-drill.sh <snapshot> <private-subnet> <sg> <instance-profile>
+  <control-plane-image> [ami]` launches a temporary instance whose second disk is created
+  from the snapshot, checks SQLite integrity of the board and knowledge index, starts the
+  control plane on it and prints a `DRILL REPORT` to the serial console
+  (`aws ec2 get-console-output --instance-id <id> --latest`). It never starts the gateway —
+  a second gateway would fight the live one for the same Telegram bot and Slack app — and it
+  terminates itself, deleting the restored disk, within 60 minutes.
+* **Offline drill** — `snapshot_restore_local.py <snapshot> state.img` rebuilds the snapshot
+  as a raw image through the EBS direct APIs, verifying every block's SHA-256, for mounting
+  and checking off-instance. Used when no instance can be launched.
+
+First drill, 2026-09-23, test environment: snapshot rebuilt offline (469 blocks, all
+checksums verified), XFS clean, `kanban.db` / knowledge index / both profiles' `state.db`
+`integrity_check: ok`, 4 tasks and 98 audit events present, control plane served the
+restored state with both agents in sync. The instance drill could not run: the AWS account
+was blocked from `RunInstances` pending AWS account verification.
+
+### Recovering onto a new server (warm standby)
+
+A snapshot restores in **any availability zone of the region**, which is the standby: no
+second server runs until it is needed.
+
+1. Pick the newest good snapshot: `aws ec2 describe-snapshots --owner-ids self
+   --filters Name=tag:nova:tenant,Values=<tenant> --query 'sort_by(Snapshots,&StartTime)[-1]'`.
+2. Create a volume from it in the recovery zone: `aws ec2 create-volume --snapshot-id <id>
+   --availability-zone <az> --volume-type gp3 --encrypted --kms-key-id <state key>`.
+3. Bring the runtime up there: point `subnet_id` at a **private subnet in that zone** and
+   plan with `-replace=aws_instance.runtime`, importing the new volume in place of the old
+   one (state surgery — human-approved, never automatic). The bootstrap mounts the volume,
+   `NOVA_APPLY_ON_START` reconciles the bundle, and the gateway reconnects the channels.
+4. Only then stop anything still running in the failed zone — two gateways must never run
+   against the same bots.
+
+The standby needs a **second private subnet in another zone, with a route to a NAT gateway
+or VPC endpoints**. This module never creates network, so that subnet is the customer's to
+provide. The test environment has one private subnet (eu-west-2a), so cross-zone recovery
+there needs that subnet first.

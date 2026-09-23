@@ -904,7 +904,7 @@ class TestRewindExclusion:
             assert entry["match_message_id"] != mid2
             assert "gamma" not in (entry.get("snippet") or "").lower()
 
-    def test_discovery_title_and_scroll_hide_invisible_neighbors(self, db):
+    def test_discovery_title_scroll_and_read_hide_invisible_neighbors(self, db):
         db.create_session("s_visibility", source="cli")
         db.set_session_title("s_visibility", "Visibility Recall Title")
         db.append_message("s_visibility", "user", "HIDDEN_START_MARKER", display_kind="hidden")
@@ -922,6 +922,7 @@ class TestRewindExclusion:
             json.loads(session_search(query="visible anchor needle", detail="full", db=db)),
             json.loads(session_search(query="Visibility Recall Title", db=db)),
             json.loads(session_search(session_id="s_visibility", around_message_id=anchor, db=db)),
+            json.loads(session_search(session_id="s_visibility", db=db)),
         ):
             assert result["success"] is True
             payload = json.dumps(result)

@@ -233,6 +233,68 @@ class TestCLIStatusBar:
 
 
 
+class TestStatusBarHostname:
+    """Hostname segment: medium/wide bars only, safe when the host has no name."""
+
+    @staticmethod
+    def _wide_cli():
+        return _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+    def test_hostname_shown_on_medium_and_wide_bars(self):
+        cli_obj = self._wide_cli()
+        host = HermesCLI._status_bar_hostname()
+        assert host  # '' is the safe fallback; a real host reports a name
+        for width in (60, 120):
+            assert host in cli_obj._build_status_bar_text(width=width)
+
+    def test_hostname_omitted_on_narrow_bars(self):
+        """Narrow tiers keep the minimal model+duration row."""
+        cli_obj = self._wide_cli()
+        host = HermesCLI._status_bar_hostname()
+        assert host
+        assert host not in cli_obj._build_status_bar_text(width=48)
+
+    def test_hostname_in_fragments(self):
+        cli_obj = self._wide_cli()
+        cli_obj._status_bar_visible = True
+        host = HermesCLI._status_bar_hostname()
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+        assert host in "".join(value for _, value in frags)
+
+    def test_hostname_honors_field_config(self):
+        """The segment is a normal field: display.status_bar.fields can hide it."""
+        cli_obj = self._wide_cli()
+        host = HermesCLI._status_bar_hostname()
+        assert host
+        cli_obj._status_bar_field_set_cache = frozenset({"model", "context_pct"})
+        assert host not in cli_obj._build_status_bar_text(width=120)
+
+    def test_hostname_never_raises(self):
+        with patch(
+            "hermes_cli.cli_status_bar_mixin.socket.gethostname",
+            side_effect=RuntimeError("no hostname in sandbox"),
+        ):
+            assert HermesCLI._status_bar_hostname() == ""
+
+    def test_long_hostname_truncated(self):
+        with patch(
+            "hermes_cli.cli_status_bar_mixin.socket.gethostname",
+            return_value="a-very-long-hostname.example.internal",
+        ):
+            assert HermesCLI._status_bar_hostname() == "a-very-long-hos..."
+
+
 class TestCLIUsageReport:
     def test_show_usage_omits_cost_reporting(self, capsys):
         cli_obj = _attach_agent(

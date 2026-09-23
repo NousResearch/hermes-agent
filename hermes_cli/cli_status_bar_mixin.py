@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import shutil
+import socket
 import threading
 import time
 
@@ -210,6 +211,7 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "hostname": self._status_bar_hostname(),
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -420,6 +422,22 @@ class CLIStatusBarMixin:
         self._status_bar_title_cache = title
         self._status_bar_title_checked_at = now
         return title
+
+    @staticmethod
+    def _status_bar_hostname() -> str:
+        """Short hostname label for the status bar.
+
+        Reads ``socket.gethostname()``; empty string on any failure so a
+        bare/remote backend never crashes the renderer. Truncated so a long FQDN
+        cannot dominate the single row.
+        """
+        try:
+            name = (socket.gethostname() or "").strip()
+        except Exception:
+            return ""
+        if len(name) > 18:
+            name = f"{name[:15]}..."
+        return name
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
@@ -988,7 +1006,7 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
+        Fields: model, hostname, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
@@ -1039,6 +1057,11 @@ class CLIStatusBarMixin:
             else:
                 segs.append([("", f"☤ {model_short}")])
         narrow, wide = width < 52, width >= 76
+        if not narrow:
+            # Medium/wide tiers only: narrow bars keep the minimal model+duration row.
+            hostname = snapshot.get("hostname") or ""
+            if hostname:
+                add("hostname", _DIM, hostname)
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
             add("duration", _DIM, duration_label)

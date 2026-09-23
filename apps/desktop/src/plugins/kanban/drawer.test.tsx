@@ -34,6 +34,10 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
     return { ok: true }
   }
 
+  if (path.startsWith('/tasks/t_example/comments') && options?.method === 'POST') {
+    return { ok: true }
+  }
+
   if (path === '/tasks/t_example') {
     return detail
   }
@@ -142,6 +146,24 @@ describe('task modal dialog', () => {
     const dialog = await screen.findByRole('dialog', { name: legacyDetail.task.title })
     fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('posts a comment from the named icon action in the field', async () => {
+    detail = { ...legacyDetail, attachments: [] }
+    openDrawer()
+
+    const send = await screen.findByRole('button', { name: en.comment })
+    expect((send as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.change(screen.getByPlaceholderText(en.addComment), { target: { value: 'looks good' } })
+    fireEvent.click(send)
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/tasks\/t_example\/comments/),
+        expect.objectContaining({ method: 'POST', body: expect.objectContaining({ body: 'looks good' }) })
+      )
+    )
   })
 
   it('shows the workspace path as its own value, not prefixed with the raw kind', async () => {

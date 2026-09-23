@@ -366,11 +366,17 @@ function CommentComposer({
     }
   }
 
+  const empty = !body.trim() || pending
+  const sendLabel = running ? k.send : k.comment
+
+  // Sized like the new-project idea field (default control padding, inset icon
+  // action); a labelled text button floating inside the textarea read as part
+  // of the input.
   return (
     <div className="flex flex-col gap-1.5">
       <div className="relative">
         <Textarea
-          className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pr-[3.5rem]' : 'pr-[5rem]')}
+          className="field-sizing-content max-h-40 resize-none pr-9 text-[0.8125rem]"
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
             if (isSubmitEnter(event) && !event.shiftKey) {
@@ -379,24 +385,26 @@ function CommentComposer({
             }
           }}
           placeholder={running ? k.messageWorker : k.addComment}
-          rows={1}
-          size="sm"
           value={body}
         />
-        <Button
-          className="absolute top-1 right-1"
-          disabled={!body.trim() || pending}
-          onClick={submit}
-          size="xs"
-          variant="secondary"
-        >
-          {running ? k.send : k.comment}
-        </Button>
+        <Tip label={sendLabel}>
+          <Button
+            aria-label={sendLabel}
+            className="absolute top-1 right-1 text-muted-foreground/80 hover:text-foreground"
+            disabled={empty}
+            onClick={submit}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="arrow-up" size="0.85rem" />
+          </Button>
+        </Tip>
       </div>
       {running && onRequeue && (
         <div className="flex items-center justify-between gap-2">
           <span className="text-[0.625rem] leading-tight text-(--ui-text-quaternary)">{k.deliveredLive}</span>
-          <Button className="shrink-0" disabled={!body.trim() || pending} onClick={requeue} size="xs" variant="outline">
+          <Button className="shrink-0" disabled={empty} onClick={requeue} size="xs" variant="outline">
             <Codicon name="debug-restart" size="0.7rem" />
             {k.requeueWithNote}
           </Button>
@@ -667,7 +675,7 @@ function FeedTabs({
   )
 
   const body = (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       {tab === 'comments' && (
         <>
           {detail.comments.length > 0 && (

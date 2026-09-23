@@ -164,13 +164,16 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     # A newly installed provider is normally first requested by its new name.
     # Refresh that miss immediately so installs remain usable without waiting
     # for the periodic stamp check, while known-provider lookups stay hot.
-    if profile is None:
+    # ``custom:<route>`` names resolve to the generic profile below on a miss, and
+    # the picker asks for them once per model, so they wait for the periodic check.
+    is_custom_route = isinstance(name, str) and name.lower().startswith("custom:")
+    if profile is None and not is_custom_route:
         layer = _home_layer(force_stamp_check=True)
         canonical = layer.aliases.get(name) or _ALIASES.get(name, name)
         profile = layer.registry.get(canonical) or _REGISTRY.get(canonical)
     # Named custom routes share the generic wire policy unless a plugin
     # explicitly registered that route. Other names retain exact lookup.
-    if profile is None and isinstance(name, str) and name.lower().startswith("custom:"):
+    if profile is None and is_custom_route:
         profile = layer.registry.get("custom") or _REGISTRY.get("custom")
     return profile
 

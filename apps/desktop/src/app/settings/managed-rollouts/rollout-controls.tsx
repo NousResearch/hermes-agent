@@ -20,9 +20,10 @@ export function RolloutControls({ phase, onCommand, onVerify }: { phase: string;
     setPending(action)
 
     try {
-      void Promise.resolve(onCommand(action)).then(accepted => {
-        if (accepted === false) {setPending(null)}
-      }, () => setPending(null))
+      // The command owner waits for its acknowledgement and snapshot refresh.
+      // A refresh can fail after acceptance, or skip an intermediate phase;
+      // neither case may leave these controls disabled indefinitely.
+      void Promise.resolve(onCommand(action)).then(() => setPending(null), () => setPending(null))
     } catch {
       setPending(null)
     }

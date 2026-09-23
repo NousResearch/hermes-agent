@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RolloutControls } from './rollout-controls'
@@ -8,6 +8,18 @@ afterEach(() => {
 })
 
 describe('rollout controls', () => {
+  it('releases pending after accepted command completion even if snapshot refresh has not repainted', async () => {
+    const onCommand = vi.fn().mockResolvedValue(true)
+    render(<RolloutControls onCommand={onCommand} onVerify={vi.fn()} phase="paused" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    expect(screen.getByRole('button', { name: 'Resume' })).toHaveProperty('disabled', true)
+
+    await act(async () => {await Promise.resolve()})
+
+    expect(screen.getByRole('button', { name: 'Resume' })).toHaveProperty('disabled', false)
+  })
+
   it('offers Resume for a paused rollout and waits for the running acknowledgement', () => {
     const onCommand = vi.fn().mockResolvedValue(true)
     const view = render(<RolloutControls onCommand={onCommand} onVerify={vi.fn()} phase="paused" />)

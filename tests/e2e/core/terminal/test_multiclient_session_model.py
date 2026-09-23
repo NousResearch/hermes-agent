@@ -89,6 +89,7 @@ class Turn:
     slow: bool
     attached: set[int]  # id() of connections attached to ``sid`` when the prompt was accepted
     interrupted: bool = False
+    frame_idx: int = 0  # the submitting connection's frame count when the accepted prompt.submit went out
 
 
 @dataclass
@@ -189,8 +190,10 @@ class Model:
         canary = f"cnry-s{self.seed}-{self.n:03d}"
         text = f"{'slow ' if slow else ''}please ack {canary}"
         refusals: list[str] = []
+        sent_at = [0]
 
         def attempt():
+            sent_at[0] = len(conn.snapshot())
             frame = conn.request("prompt.submit", {"session_id": slot.sid, "text": text})
             if "error" not in frame:
                 return frame["result"]
@@ -213,14 +216,15 @@ class Model:
         assert result.get("status") == "streaming", f"prompt to idle {key} was not started: {result}"
         sid = slot.sid
         assert sid is not None
-        turn = Turn(canary, key, sid, slot.name, slow, {id(c) for c in self.attached_live(sid)})
+        turn = Turn(canary, key, sid, slot.name, slow, {id(c) for c in self.attached_live(sid)}, frame_idx=sent_at[0])
         self.turns[canary] = turn
         self.sessions[key].prompts.append(canary)
         return turn
 
     def wait_first_delta(self, turn: Turn, conn: WSClient) -> None:
+        # From this turn's submit on: an earlier turn's delta on the same sid is not this turn streaming.
         conn.wait_for(lambda f: etype(f) == "message.delta" and f["params"].get("session_id") == turn.sid,
-                      timeout=STEP_TIMEOUT, what=f"first delta of {turn.canary}")
+                      timeout=STEP_TIMEOUT, start=turn.frame_idx, what=f"first delta of {turn.canary}")
 
     def db_has_reply(self, turn: Turn) -> bool:
         return bool(self.be.db_rows(

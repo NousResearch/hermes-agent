@@ -959,3 +959,21 @@ def test_barrier_cap_is_config_driven_and_releases_past_it(hermes_home, monkeypa
     mgr._save()
     assert mgr.is_waiting() is False
     assert mgr.state.waiting_on_pid is None
+
+
+def test_barrier_cap_also_releases_timed_waits_past_cap(hermes_home, monkeypatch):
+    """A timed deadline is an upper bound, not an exemption from the configured cap."""
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager
+
+    monkeypatch.setattr(goals, "_barrier_wait_cap_seconds", lambda: 60.0)
+    mgr = GoalManager(session_id="timed-cap")
+    mgr.set("g")
+    mgr.wait_for_seconds(1200, reason="subagent still running")
+    assert mgr.state is not None
+
+    mgr.state.waiting_since = time.time() - 61
+    mgr._save()
+    assert mgr.state.waiting_until > time.time()  # own deadline has not elapsed
+    assert mgr.is_waiting() is False
+    assert mgr.state.waiting_until == 0.0

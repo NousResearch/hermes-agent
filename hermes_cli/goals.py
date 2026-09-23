@@ -1435,7 +1435,7 @@ class GoalManager:
                     still = False
         else:
             return False
-        cap = _barrier_wait_cap_seconds() if s.waiting_until == 0.0 else 0.0
+        cap = _barrier_wait_cap_seconds()
         if still and cap and s.waiting_since and time.time() - s.waiting_since > cap:
             logger.info("goal %s: wait barrier on %s exceeded %ds; resuming judging",
                         self.session_id, s.waiting_on_session or s.waiting_on_pid, int(cap))

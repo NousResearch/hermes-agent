@@ -645,7 +645,7 @@ export function useMessageStream({
           }
         }
 
-        const streamId = state.streamId
+        const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
         const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
@@ -898,6 +898,7 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           adoptedRunningTurn: false,
+          heartbeatSettledStreamId: null,
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,

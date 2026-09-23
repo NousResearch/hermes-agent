@@ -1,12 +1,12 @@
 import type { GatewayEvent } from '@hermes/shared'
 // Repro for #119543: user sends a new message while the previous turn's
-// `background_review` fork is still in flight. The backend supersedes the
-// review (hard interrupt, socket shutdown) and its turn-end signal can race
-// the new turn's `message.start`. A straggler delta from the superseded
-// attempt may still sit in the per-session delta queue when the new turn
-// starts. Flushing it then seeds a bubble the new turn inherits (or that
-// settles beside it), painting a stale duplicate of the previous reply into
-// the transcript. Restart clears it because it was never persisted.
+// `background_review` fork is still in flight. The fork itself emits nothing
+// to the desktop, but the supersede window is where the previous turn's own
+// frames can arrive reordered: a delta that lands after that turn settled
+// still sits in the per-session queue when the new turn starts. Flushing it
+// then seeds a bubble the new turn inherits (or that settles beside it),
+// painting a stale duplicate of the previous reply into the transcript.
+// Restart clears it because it was never persisted.
 //
 // Spec: bytes queued BEFORE `message.start` while no turn is live are
 // orphans of a dead attempt and must be dropped at the boundary — never
@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { chatMessageText } from '@/lib/chat-messages'
 
-import { renderMessageStream, type MessageStreamHarness } from './test-harness'
+import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
 const SID = 'background-review-interrupt-session'
@@ -64,9 +64,8 @@ describe('background-review interrupt must not paint stale bytes into the next t
     expect(assistantTexts()).toEqual([STALE])
     expect(stream.state()?.streamId).toBeNull()
 
-    // A straggler from the superseded background-review attempt lands in the
-    // delta queue after turn A settled (abort unblocking the reader) and has
-    // not flushed yet when the user sends the next message.
+    // A reordered delta from turn A lands in the queue after turn A settled
+    // and has not flushed yet when the user sends the next message.
     emit({ payload: { text: STALE }, session_id: SID, type: 'message.delta' })
 
     // New turn starts: the orphan must be dropped at the boundary, not

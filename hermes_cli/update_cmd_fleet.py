@@ -346,6 +346,7 @@ def _marker_only_restart_obsolete() -> bool:
     ``update_inventory.report_unaccounted_runtimes``, which prints it and exits 1 when the restart
     phase never touched it — this marker only stops re-warning about it on every later startup.
     """
+    from hermes_cli.update_cmd_fleet_checkout import checkout_contains
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
     try:
@@ -387,9 +388,12 @@ def _marker_only_restart_obsolete() -> bool:
     if not expected_sha:
         return False
     checkout_sha = _current_checkout_sha()
-    if owed is not None and checkout_sha != expected_sha:
+    if owed is not None and checkout_sha != expected_sha and not checkout_contains(expected_sha):
         return False  # a newer pull moved HEAD; it owns a fresh obligation
-    target_sha = expected_sha if owed is not None else checkout_sha
+    # HEAD may sit past ``expected_sha`` by a carried local commit (a cherry-picked hotfix) that no
+    # pull made and no fresh obligation covers; the fleet is held to the code it actually runs, which
+    # is what an equality gate on ``expected_sha`` could never discharge (#119367).
+    target_sha = checkout_sha
     if not target_sha:
         return False
     try:

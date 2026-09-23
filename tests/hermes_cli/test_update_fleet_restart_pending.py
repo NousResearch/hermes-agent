@@ -866,7 +866,7 @@ def test_startup_warn_kept_when_inventory_holds_unclassified_serve(monkeypatch, 
         ("e" * 40, []),  # probe answered empty: no proof either way
         ("e" * 40, [{"profile": "default", "pid": 42, "code_sha": None, "code_version": None, "state": "unknown"}]),
         (None, [{"profile": "default", "code_sha": "e" * 40, "state": "current"}]),
-        # checkout advanced past the marker: a newer pull owns a fresh obligation
+        # checkout moved to a commit unrelated to the marker's SHA: a newer pull owns a fresh obligation
         ("f" * 40, [{"profile": "default", "pid": 42, "code_sha": "e" * 40, "code_version": None, "state": "current"}]),
     ],
     ids=["stale-row", "empty-probe", "unknown-identity", "unknown-checkout", "checkout-moved"],
@@ -875,6 +875,69 @@ def test_startup_warn_kept_without_positive_evidence(monkeypatch, capsys, disk_s
     update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40, runtimes=[{"kind": "gateway", "profile": "default"}])
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: fleet)
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+# ── Carried local commits: HEAD past ``expected_sha`` with no pull behind it (#119367) ──
+#
+# A cherry-picked hotfix on top of the pulled SHA moves HEAD without arming a fresh obligation,
+# so an equality gate on ``expected_sha`` could never discharge the old one: every CLI start
+# warned and every no-op ``hermes update`` exited 1 while the gateway verifiably served HEAD.
+
+
+def _checkout_with_carried_commit(monkeypatch, tmp_path):
+    """A real checkout: the update's SHA plus one local commit on top; returns (expected, head)."""
+    import subprocess
+
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "a").write_text("1")
+    git("add", "a")
+    git("commit", "-qm", "pulled")
+    expected = git("rev-parse", "HEAD")
+    (repo / "b").write_text("2")
+    git("add", "b")
+    git("commit", "-qm", "carried hotfix")
+    head = git("rev-parse", "HEAD")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+    _patch_marker_sha(monkeypatch, head)
+    return expected, head
+
+
+def test_obligation_discharges_when_gateway_serves_descendant_of_expected_sha(monkeypatch, tmp_path, capsys):
+    expected, head = _checkout_with_carried_commit(monkeypatch, tmp_path)
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=expected, runtimes=[{"kind": "gateway", "profile": "default"}])
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [{"profile": "default", "pid": 42, "code_sha": head, "code_version": "0.21.4", "state": "current"}],
+    )
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", lambda: pytest.fail("nothing to restart"))
+
+    update_cmd._apply_pending_fleet_restart_catchup()  # must not sys.exit(1)
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_obligation_kept_when_gateway_serves_stale_code_on_carried_checkout(monkeypatch, tmp_path, capsys):
+    expected, _head = _checkout_with_carried_commit(monkeypatch, tmp_path)
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=expected, runtimes=[{"kind": "gateway", "profile": "default"}])
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [{"profile": "default", "pid": 42, "code_sha": "0" * 40, "code_version": "0.21.3", "state": "stale"}],
+    )
 
     update_cmd._warn_pending_fleet_restart_on_startup()
 

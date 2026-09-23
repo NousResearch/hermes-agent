@@ -334,7 +334,7 @@ def _project_tree_row(r: dict) -> dict:
 
 
 def _project_tree_inputs(
-    db, session_limit: int, *, include_discovered: bool
+    db, session_limit: int, *, include_discovered: bool, include_archived: bool = False
 ) -> tuple[list[dict], list[dict], list[dict], str | None]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
     ``include_discovered`` is the zero-session-repo overview tier; drill-in skips it (and
@@ -354,7 +354,7 @@ def _project_tree_inputs(
         if include_discovered:
             pdb.reconcile_discovered_repos_policy(
                 conn, policy_key, preserve_unversioned=_repo_discovery_policy_is_default(policy))
-        projects = [p.to_dict() for p in pdb.list_projects(conn)]
+        projects = [p.to_dict() for p in pdb.list_projects(conn, include_archived=include_archived)]
         active_id = pdb.get_active_id(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = []
@@ -377,13 +377,14 @@ def _dir_exists_cached(path: str) -> bool:
 
 
 def _build_project_tree(
-    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
+    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool,
+    include_archived: bool = False
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
     _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
-        db, session_limit, include_discovered=include_discovered)
+        db, session_limit, include_discovered=include_discovered, include_archived=include_archived)
     # build_tree also resolves declared project folders and discovered roots — warm them too.
     git_probe.warm_roots(
         [str(f.get("path") or "") for p in projects for f in (p.get("folders") or [])]
@@ -391,7 +392,7 @@ def _build_project_tree(
     tree = project_tree.build_tree(
         projects, sessions, discovered, git_probe.resolve, preview_limit=preview_limit,
         hydrate=hydrate, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
-        exists=_dir_exists_cached)
+        exists=_dir_exists_cached, include_archived=include_archived)
     return tree, active_id
 
 

@@ -28,6 +28,8 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
+  removeProjectFolder,
+  renameProject,
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
@@ -165,7 +167,7 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
-    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { include_archived: true, preview_limit: 3, profile: 'coder' })
     expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
       profile: 'coder',
       project_id: 'p_123'
@@ -444,7 +446,7 @@ describe('createProject', () => {
     expect($projectTree.get()).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id })]))
     expect($activeProjectId.get()).toBe(created.id)
     expect(hermes.hermesApi).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/api/profiles/projects/tree?preview_limit=3' })
+      expect.objectContaining({ path: '/api/profiles/projects/tree?preview_limit=3&include_archived=1' })
     )
   })
 
@@ -596,6 +598,290 @@ describe('project writes while viewing all profiles', () => {
     }
   )
 })
+
+
+
+describe('explicit-profile writes while viewing all profiles', () => {
+  // The row-level picker (t_85158838): a write that NAMES its profile lands
+  // there, whatever profile is live — and neither the sidebar's active
+  // profile nor the All-profiles scope may move (acceptance 4). Ambient
+  // writes still ride the live profile (covered above).
+  const project: ProjectInfo = {
+    archived: false,
+    board_slug: null,
+    color: null,
+    created_at: 0,
+    description: null,
+    folders: [],
+    icon: null,
+    id: 'p_1',
+    name: 'Warsongs',
+    primary_path: '/srv/ws',
+    slug: 'warsongs'
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeProjectId.set(null)
+    $projectsRpcAvailable.set(null)
+    $projects.set([project])
+    $projectTree.set([
+      { id: project.id, label: project.name, path: project.primary_path, color: null, icon: null, repos: [], sessionCount: 0 }
+    ])
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(true)
+  })
+
+  afterEach(() => {
+    setShowAllProfiles(false)
+    $activeGatewayProfile.set('default')
+  })
+
+  it('routes a delete naming a profile there and leaves the active profile untouched', async () => {
+    const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(deleteProject(project.id, 'coder')).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith('projects.delete', expect.objectContaining({ profile: 'coder', id: project.id }))
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($profileScope.get()).toBe(ALL_PROFILES)
+  })
+
+  it('routes a rename naming a profile there and leaves the active profile untouched', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(renameProject(project.id, 'New name', 'coder')).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.update',
+      expect.objectContaining({ profile: 'coder', id: project.id, name: 'New name' })
+    )
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($profileScope.get()).toBe(ALL_PROFILES)
+  })
+})
+
+describe('removeProjectFolder', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+  })
+
+  type Folder = ProjectInfo['folders'][number]
+
+  const folder = (path: string, is_primary: boolean, added_at = 0): Folder => ({
+    added_at,
+    is_primary,
+    label: null,
+    path
+  })
+
+  const projectWith = (folders: Folder[], primary_path: null | string): ProjectInfo => ({
+    archived: false,
+    board_slug: null,
+    color: null,
+    created_at: 0,
+    description: null,
+    folders,
+    icon: null,
+    id: 'p1',
+    name: 'Wiki',
+    primary_path,
+    slug: 'wiki'
+  })
+
+  const node = (path: null | string): SidebarProjectTree => ({
+    id: 'p1',
+    label: 'Wiki',
+    path,
+    repos: [],
+    sessionCount: 0
+  })
+
+  // Stand-in for the projects.* backend: it owns the folders + primary_path,
+  // applies the removal the way projects_db.remove_folder does (repoint to the
+  // earliest folder left, or NULL when none is), and answers with the row a real
+  // DB read would return. The list/tree refreshes reconcile from the same state.
+  const backendFor = (state: { folders: Folder[]; primary_path: null | string }) => {
+    const row = () => projectWith(state.folders, state.primary_path)
+
+    return {
+      connectionState: 'open' as const,
+      request: vi.fn(async (method: string, params: Record<string, unknown>) => {
+        if (method === 'projects.remove_folder') {
+          const dropped = state.folders.find(f => f.path === params.path)
+          state.folders = state.folders.filter(f => f.path !== params.path)
+
+          if (dropped?.is_primary) {
+            const next = [...state.folders].sort((a, b) => a.added_at - b.added_at).at(0) ?? null
+            state.primary_path = next?.path ?? null
+            state.folders = state.folders.map(f => ({ ...f, is_primary: f.path === next?.path }))
+          }
+
+          return { project: row() }
+        }
+
+        return method === 'projects.list'
+          ? { active_id: null, projects: [row()] }
+          : { active_id: null, projects: [node(state.primary_path)], scoped_session_ids: [] }
+      })
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $projectsRpcAvailable.set(null)
+  })
+
+  it('sends the project id + path and drops a non-primary folder', async () => {
+    const state = {
+      folders: [folder('/repo/wiki', true, 1), folder('/repo/notes', false, 2)],
+      primary_path: '/repo/wiki'
+    }
+
+    $projects.set([projectWith(state.folders, state.primary_path)])
+    $projectTree.set([node('/repo/wiki')])
+    const gateway = backendFor(state)
+    activeGateway.mockReturnValue(gateway as never)
+
+    await removeProjectFolder('p1', '/repo/notes')
+
+    expect(gateway.request).toHaveBeenCalledWith('projects.remove_folder', {
+      id: 'p1',
+      path: '/repo/notes',
+      profile: 'default'
+    })
+    expect($projects.get()[0].folders.map(f => f.path)).toEqual(['/repo/wiki'])
+    expect($projects.get()[0].primary_path).toBe('/repo/wiki')
+    expect($projectTree.get()[0].path).toBe('/repo/wiki')
+  })
+
+  it('repoints the primary to the folder the DB read-back names', async () => {
+    const state = {
+      folders: [folder('/repo/wiki', true, 1), folder('/repo/notes', false, 2)],
+      primary_path: '/repo/wiki'
+    }
+
+    $projects.set([projectWith(state.folders, state.primary_path)])
+    $projectTree.set([node('/repo/wiki')])
+    activeGateway.mockReturnValue(backendFor(state) as never)
+
+    await removeProjectFolder('p1', '/repo/wiki')
+
+    expect($projects.get()[0].folders).toEqual([folder('/repo/notes', true, 2)])
+    expect($projects.get()[0].primary_path).toBe('/repo/notes')
+    expect($projectTree.get()[0].path).toBe('/repo/notes')
+  })
+
+  it('settles on the read-back, not the local guess, when the cache is stale', async () => {
+    // Another window added /repo/notes since this client last listed. Removing
+    // the primary must NOT conclude "no folders left" — the DB row carries the
+    // folder this client never saw, already repointed as primary.
+    const state = {
+      folders: [folder('/repo/wiki', true, 1), folder('/repo/notes', false, 2)],
+      primary_path: '/repo/wiki'
+    }
+
+    $projects.set([projectWith([folder('/repo/wiki', true, 1)], '/repo/wiki')])
+    $projectTree.set([node('/repo/wiki')])
+    activeGateway.mockReturnValue(backendFor(state) as never)
+
+    await removeProjectFolder('p1', '/repo/wiki')
+
+    expect($projects.get()[0].folders).toEqual([folder('/repo/notes', true, 2)])
+    expect($projects.get()[0].primary_path).toBe('/repo/notes')
+    expect($projectTree.get()[0].path).toBe('/repo/notes')
+  })
+
+  it('paints the removal before the round-trip lands, then settles on the row', async () => {
+    // The cache is a paint of server truth: the row updates on click, not after
+    // the RPC returns. Hold the write open to observe the intermediate state.
+    const state = {
+      folders: [folder('/repo/wiki', true, 1), folder('/repo/notes', false, 2)],
+      primary_path: '/repo/wiki'
+    }
+
+    $projects.set([projectWith(state.folders, state.primary_path)])
+    $projectTree.set([node('/repo/wiki')])
+    let settle: (value: unknown) => void = () => {}
+    const inFlight = new Promise(resolve => {
+      settle = resolve
+    })
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.remove_folder') {
+        return inFlight
+      }
+
+      return method === 'projects.list'
+        ? { active_id: null, projects: [projectWith(state.folders, state.primary_path)] }
+        : { active_id: null, projects: [node(state.primary_path)], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    const call = removeProjectFolder('p1', '/repo/wiki')
+
+    // The write context resolves on a microtask; let it land before observing
+    // the optimistic paint (the RPC itself is still held open below).
+    await Promise.resolve()
+
+    // Still awaiting the write: the folder is already gone and the survivor
+    // carries the primary, with the tree node repointed alongside it.
+    expect($projects.get()[0].folders).toEqual([folder('/repo/notes', true, 2)])
+    expect($projects.get()[0].primary_path).toBe('/repo/notes')
+    expect($projectTree.get()[0].path).toBe('/repo/notes')
+
+    // The DB row lands — and it stays the authority.
+    state.folders = [folder('/repo/notes', true, 2)]
+    state.primary_path = '/repo/notes'
+    settle({ project: projectWith(state.folders, state.primary_path) })
+    await call
+
+    expect($projects.get()[0].primary_path).toBe('/repo/notes')
+  })
+
+  it('leaves the project with zero folders when the last one goes', async () => {
+    // Legal end state (measured: primary_path=None) — the sidebar must render
+    // the folder-less project rather than crash on it.
+    const state = { folders: [folder('/repo/wiki', true, 1)], primary_path: '/repo/wiki' }
+    $projects.set([projectWith(state.folders, state.primary_path)])
+    $projectTree.set([node('/repo/wiki')])
+    activeGateway.mockReturnValue(backendFor(state) as never)
+
+    await removeProjectFolder('p1', '/repo/wiki')
+
+    expect($projects.get()[0].folders).toEqual([])
+    expect($projects.get()[0].primary_path).toBeNull()
+    expect($projectTree.get()[0].path).toBeNull()
+  })
+
+  it('rolls the cached folders + primary path back when the write fails', async () => {
+    const folders = [folder('/repo/wiki', true, 1), folder('/repo/notes', false, 2)]
+    $projects.set([projectWith(folders, '/repo/wiki')])
+    $projectTree.set([node('/repo/wiki')])
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn().mockRejectedValue(new Error('gateway down'))
+    } as never)
+
+    await expect(removeProjectFolder('p1', '/repo/wiki')).rejects.toThrow('gateway down')
+
+    expect($projects.get()[0].folders).toEqual(folders)
+    expect($projects.get()[0].primary_path).toBe('/repo/wiki')
+    expect($projectTree.get()[0].path).toBe('/repo/wiki')
+  })
+
+  it('refuses to write once the backend is known stale', async () => {
+    $projectsRpcAvailable.set(false)
+    const request = vi.fn()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(removeProjectFolder('p1', '/repo/wiki')).rejects.toThrow('sidebar.projects.staleBackend')
+    expect(request).not.toHaveBeenCalled()
+  })
+})
+
 
 describe('projects RPC capability', () => {
   beforeEach(() => {

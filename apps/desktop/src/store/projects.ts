@@ -292,17 +292,6 @@ export function projectProfile(): null | string {
   return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
 }
 
-// All profiles filters the sidebar. Writes still belong to the live gateway profile.
-function writableProjectProfile(): string {
-  const profile = normalizeProfileKey($activeGatewayProfile.get())
-
-  if (!profile || profile === ALL_PROFILES) {
-    throw new Error('Projects are unavailable while viewing all profiles')
-  }
-
-  return profile
-}
-
 function projectParams(
   params: Record<string, unknown> = {},
   profile: null | string = projectProfile()
@@ -331,14 +320,21 @@ function isRetryableProjectTreeReadError(error: unknown): boolean {
 interface ActiveProjectsContext {
   gateway: HermesGateway
   profile: string
+  // True when the caller named the profile explicitly (the all-profiles
+  // sidebar routes a write to the row's owner). Explicit writes only require
+  // the gateway to stay open — the live-gateway-profile equality guard is for
+  // ambient writes, which must not silently retarget across a profile swap.
+  explicit: boolean
 }
 
 function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
-  return activeGateway() === context.gateway && projectProfile() === context.profile
+  return activeGateway() === context.gateway && (context.explicit || projectProfile() === context.profile)
 }
 
 async function activeProjectsContext(profile = projectProfile()): Promise<ActiveProjectsContext> {
-  if (!profile || profile === ALL_PROFILES) {
+  const resolved = profile
+
+  if (!resolved || resolved === ALL_PROFILES) {
     throw new Error('Projects are unavailable while viewing all profiles')
   }
 
@@ -348,11 +344,43 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || gateway !== activeGateway() || profile !== normalizeProfileKey($activeGatewayProfile.get())) {
+  if (!gateway || gateway !== activeGateway() || resolved !== normalizeProfileKey($activeGatewayProfile.get())) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
-  return { gateway, profile }
+  return { gateway, profile: resolved, explicit: false }
+}
+
+// The WRITE sibling of activeProjectsContext. Ambient writes belong to the
+// live gateway profile — even while the sidebar filters by "All profiles"
+// (that view filters, it doesn't own; writes still ride the profile the
+// session is on). An explicit profile (the menu picker's choice on a
+// multi-owner row, a row's single stamped owner, or the create dialog's
+// selector) names the target directly and skips the retarget guard, which
+// exists for ambient writes only.
+async function writeProjectsContext(explicitProfile?: string): Promise<ActiveProjectsContext> {
+  const explicit = Boolean(explicitProfile)
+  const resolved = explicitProfile || normalizeProfileKey($activeGatewayProfile.get())
+
+  if (!resolved || resolved === ALL_PROFILES) {
+    throw new Error('Projects are unavailable while viewing all profiles')
+  }
+
+  let gateway = activeGateway()
+
+  if (!gateway || gateway.connectionState !== 'open') {
+    gateway = await ensureActiveGatewayOpen()
+  }
+
+  if (!gateway) {
+    throw new Error('Hermes gateway is not connected')
+  }
+
+  if (!explicit && (gateway !== activeGateway() || resolved !== normalizeProfileKey($activeGatewayProfile.get()))) {
+    throw new Error('Active Hermes profile changed while connecting')
+  }
+
+  return { gateway, profile: resolved, explicit }
 }
 
 function applyPayload(payload: ProjectsPayload): void {
@@ -441,7 +469,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       res = await gatewayRequestOn<ProjectTreePayload>(
         gateway,
         'projects.tree',
-        projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
+        projectParams({ include_archived: true, preview_limit: projectTreePreviewLimit() }, profile)
       )
     } catch (error) {
       // A remote source switch can leave the first read RPC on a newly-opened
@@ -455,7 +483,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       res = await gatewayRequestOn<ProjectTreePayload>(
         gateway,
         'projects.tree',
-        projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
+        projectParams({ include_archived: true, preview_limit: projectTreePreviewLimit() }, profile)
       )
     }
 
@@ -479,6 +507,34 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
 // Pull the authoritative project tree (overview structure + counts + preview
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
 // cached tree intact so the sidebar doesn't flicker.
+// Read ONE project row from an explicitly named profile — an all-profiles
+// row carries its owners, and the remove-folder dialog needs the picked
+// profile's folder list when the ambient cache doesn't know the row.
+export async function readProjectRow(id: string, profile: string): Promise<ProjectInfo | null> {
+  if ($projectsRpcAvailable.get() === false) {
+    throw projectsStaleBackendError()
+  }
+
+  const context = await writeProjectsContext(profile)
+
+  try {
+    const res = await gatewayRequestOn<{ project: ProjectInfo | null }>(
+      context.gateway,
+      'projects.get',
+      projectParams({ id }, context.profile)
+    )
+
+    return res.project ?? null
+  } catch (err) {
+    if (isMissingRpcMethod(err)) {
+      $projectsRpcAvailable.set(false)
+      throw projectsStaleBackendError()
+    }
+
+    throw err
+  }
+}
+
 export async function refreshProjectTree(): Promise<void> {
   if ($profileScope.get() === ALL_PROFILES) {
     await refreshProjectTreeAcrossProfiles()
@@ -503,7 +559,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 
   try {
     const res = await hermesApi<ProjectTreePayload>({
-      path: `/api/profiles/projects/tree?preview_limit=${projectTreePreviewLimit()}`,
+      path: `/api/profiles/projects/tree?preview_limit=${projectTreePreviewLimit()}&include_archived=1`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
 
@@ -787,6 +843,9 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
 
 export interface CreateProjectInput {
   name: string
+  // Owner profile for the write; required in the all-profiles view (the
+  // dialog's selector). Absent = the live gateway profile.
+  profile?: string
   folders?: string[]
   primaryPath?: string
   slug?: string
@@ -878,6 +937,43 @@ const reconcileProjects = (): void => {
   void refreshProjectTree()
 }
 
+// Fold a server read-back of ONE project into the cached list + tree. Every
+// projects.* mutation answers with the project row read fresh from the
+// per-profile DB after the write, so this is the authority an optimistic guess
+// settles on — e.g. which folder the backend repointed primary_path to. A no-op
+// for a project the cache doesn't know: the background reconcile carries it.
+function applyProjectReadback(project: null | ProjectInfo): void {
+  if (!project) {
+    return
+  }
+
+  const list = $projects.get()
+
+  if (list.some(proj => proj.id === project.id)) {
+    $projects.set(list.map(proj => (proj.id === project.id ? project : proj)))
+  }
+
+  // The tree node's path is the project's primary folder — the anchor reveal
+  // and "Start work" use. Re-derive it (null once no folder is left), but keep
+  // the array reference on a no-op so the sidebar tree doesn't re-render.
+  const path = project.primary_path ?? project.folders?.[0]?.path ?? null
+  let changed = false
+
+  const tree = $projectTree.get().map(node => {
+    if (node.id !== project.id || node.path === path) {
+      return node
+    }
+
+    changed = true
+
+    return { ...node, path }
+  })
+
+  if (changed) {
+    $projectTree.set(tree)
+  }
+}
+
 // Map a ProjectInfo (list shape) onto a minimal overview tree node so a created
 // project paints instantly. The backend seeds each folder as an (empty) repo, so
 // the next tree refresh fills in repos/counts; this is just the optimistic stub.
@@ -904,8 +1000,10 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
 
   try {
     // All profiles filters the sidebar, not the owner of a new project.
-    // Capture the live route so reconnecting cannot retarget the write.
-    const context = await activeProjectsContext(writableProjectProfile())
+    // Capture the live route so reconnecting cannot retarget the write; an
+    // explicit profile (the dialog's selector in the all-profiles view) names
+    // the owner directly.
+    const context = await writeProjectsContext(input.profile)
 
     res = await gatewayRequestOn<{ project: ProjectInfo | null }>(
       context.gateway,
@@ -977,8 +1075,8 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   return created
 }
 
-export async function renameProject(id: string, name: string): Promise<void> {
-  await updateProject(id, { name })
+export async function renameProject(id: string, name: string, profile?: string): Promise<void> {
+  await updateProject(id, { name }, profile)
 }
 
 // Patch top-level project fields (name / appearance). Optimistic: the cached
@@ -986,9 +1084,10 @@ export async function renameProject(id: string, name: string): Promise<void> {
 // lag; only a failed write reconciles from the server.
 export async function updateProject(
   id: string,
-  patch: { name?: string; color?: null | string; icon?: null | string }
+  patch: { name?: string; color?: null | string; icon?: null | string },
+  profile?: string
 ): Promise<void> {
-  const context = await activeProjectsContext(writableProjectProfile())
+  const context = await writeProjectsContext(profile)
   const snap = snapshotProjects()
 
   $projectTree.set(
@@ -1059,9 +1158,10 @@ export async function setProjectAppearance(
 export async function addProjectFolder(
   id: string,
   path: string,
-  opts: { label?: string; isPrimary?: boolean } = {}
+  opts: { label?: string; isPrimary?: boolean } = {},
+  profile?: string
 ): Promise<void> {
-  const context = await activeProjectsContext(writableProjectProfile())
+  const context = await writeProjectsContext(profile)
   const snap = snapshotProjects()
   const trimmed = path.trim()
 
@@ -1101,6 +1201,60 @@ export async function addProjectFolder(
   reconcileProjects()
 }
 
+// Remove one folder from a project — the missing half of "move a folder"
+// (a move is remove + add). Mirrors addProjectFolder: the cache updates
+// optimistically, the write rides the active gateway so it lands in the profile
+// the session is actually on, and the server's read-back is what the cache
+// settles on. Only the projects.db row goes: the folder on disk is never
+// touched. Removing the primary is legal — it repoints to the earliest folder
+// left, or leaves the project with none (primary_path = NULL).
+export async function removeProjectFolder(id: string, path: string, profile?: string): Promise<void> {
+  if ($projectsRpcAvailable.get() === false) {
+    throw projectsStaleBackendError()
+  }
+
+  const context = await writeProjectsContext(profile)
+  const snap = snapshotProjects()
+  const trimmed = path.trim()
+  const folders = snap.projects.find(proj => proj.id === id)?.folders ?? []
+  const dropped = folders.find(folder => folder.path === trimmed)
+
+  if (dropped) {
+    const remaining = folders.filter(folder => folder.path !== trimmed)
+    // Leftover primary, picked the way the backend picks it (earliest added
+    // first). Optimistic only — the read-back below has the last word.
+    const next = dropped.is_primary ? (remaining[0] ?? null) : null
+    const demote = dropped.is_primary
+
+    $projects.set(
+      snap.projects.map(proj =>
+        proj.id === id
+          ? {
+              ...proj,
+              folders: remaining.map(folder => (demote ? { ...folder, is_primary: folder.path === next?.path } : folder)),
+              ...(demote && { primary_path: next?.path ?? null })
+            }
+          : proj
+      )
+    )
+
+    if (demote) {
+      $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, path: next?.path ?? null } : node)))
+    }
+  }
+
+  await persistOrRollback(snap, async () => {
+    const res = await gatewayRequestOn<{ project: null | ProjectInfo }>(
+      context.gateway,
+      'projects.remove_folder',
+      projectParams({ id, path }, context.profile)
+    )
+
+    applyProjectReadback(res.project)
+  })
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.
@@ -1119,8 +1273,8 @@ function openSessionBelongsToProject(projectId: string, projects: ProjectInfo[])
 // Optimistic: drop the project from the cached tree + list the instant it's
 // clicked (the entered-scope effect exits if you deleted the project you were
 // inside), reconciling from the server payload. A failed delete restores both.
-export async function deleteProject(id: string): Promise<void> {
-  const context = await activeProjectsContext(writableProjectProfile())
+export async function deleteProject(id: string, profile?: string): Promise<void> {
+  const context = await writeProjectsContext(profile)
   const snap = snapshotProjects()
   // Capture membership BEFORE removal — the project's folders (which determine
   // ownership) are gone once it's dropped from the cache.
@@ -1151,8 +1305,22 @@ export async function deleteProject(id: string): Promise<void> {
   void refreshProjectTree()
 }
 
-export async function setActiveProject(id: null | string): Promise<void> {
-  const context = await activeProjectsContext(writableProjectProfile())
+// The Archived section's one action. The RPC is the same archive method the
+// backend exposes for both directions; the tree refresh re-homes the row from
+// the archived section back into the active list.
+export async function restoreProject(id: string, profile?: string): Promise<void> {
+  const context = await writeProjectsContext(profile)
+
+  await gatewayRequestOn<ProjectsPayload>(
+    context.gateway,
+    'projects.archive',
+    projectParams({ id, restore: true }, context.profile)
+  )
+  void refreshProjectTree()
+}
+
+export async function setActiveProject(id: null | string, profile?: string): Promise<void> {
+  const context = await writeProjectsContext(profile)
 
   const res = await gatewayRequestOn<{ active_id: null | string }>(
     context.gateway,
@@ -1165,17 +1333,22 @@ export async function setActiveProject(id: null | string): Promise<void> {
 
 // ── Project management dialog ────────────────────────────────────────────────
 // A single dialog mounted in the sidebar reads this atom, so a project node's
-// menu can open create / rename / add-folder flows without prop threading
-// (mirrors $profileCreateRequest).
+// menu can open create / rename / add-folder / remove-folder flows without prop
+// threading (mirrors $profileCreateRequest).
 export interface ProjectDialogState {
-  mode: 'add-folder' | 'create' | 'rename'
+  mode: 'add-folder' | 'create' | 'remove-folder' | 'rename'
   projectId?: string
   name?: string
+  // The profile a write targets. The menu sets it from the row's owner list
+  // (multi-owner rows pick one in the menu first); the create flow lets the
+  // user pick it (all-profiles view). Absent = ambient (the live gateway
+  // profile).
+  profile?: string
 }
 
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
-export function openProjectCreate(): void {
+export function openProjectCreate(profile?: string): void {
   if ($projectsRpcAvailable.get() === false) {
     notify({
       kind: 'warning',
@@ -1185,7 +1358,7 @@ export function openProjectCreate(): void {
     return
   }
 
-  $projectDialog.set({ mode: 'create' })
+  $projectDialog.set({ mode: 'create', ...(profile ? { profile } : {}) })
 }
 
 /** Clear the armed "New project" drag placement — on dialog close, so a later
@@ -1194,12 +1367,18 @@ export function clearNewProjectDropPlacement(): void {
   $newProjectDropPlacement.set(null)
 }
 
-export function openProjectRename(project: { id: string; name: string }): void {
-  $projectDialog.set({ mode: 'rename', name: project.name, projectId: project.id })
+export function openProjectRename(project: { id: string; name: string; profile?: string }): void {
+  $projectDialog.set({ mode: 'rename', name: project.name, projectId: project.id, ...(project.profile ? { profile: project.profile } : {}) })
 }
 
-export function openProjectAddFolder(project: { id: string; name: string }): void {
-  $projectDialog.set({ mode: 'add-folder', name: project.name, projectId: project.id })
+export function openProjectAddFolder(project: { id: string; name: string; profile?: string }): void {
+  $projectDialog.set({ mode: 'add-folder', name: project.name, projectId: project.id, ...(project.profile ? { profile: project.profile } : {}) })
+}
+
+// Remove-folder rides the same dialog atom: the picker lists the project's
+// folders, which the menu row that opens it doesn't carry.
+export function openProjectRemoveFolder(project: { id: string; name: string; profile?: string }): void {
+  $projectDialog.set({ mode: 'remove-folder', name: project.name, projectId: project.id, ...(project.profile ? { profile: project.profile } : {}) })
 }
 
 export function closeProjectDialog(): void {

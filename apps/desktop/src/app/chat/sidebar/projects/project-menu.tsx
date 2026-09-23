@@ -23,11 +23,15 @@ import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
+  $projects,
   copyPath,
   deleteProject,
   openProjectAddFolder,
+  openProjectRemoveFolder,
   openProjectRename,
+  restoreProject,
   revealPath,
   setActiveProject,
   setProjectAppearance
@@ -41,7 +45,7 @@ import type { SidebarProjectTree } from './workspace-groups'
 // Desktop / GitKraken): reveal in the file manager, copy path, and "Remove from
 // sidebar" (never deletes files — auto projects are dismissed, explicit ones
 // drop their entry). Explicit projects additionally get rename / add folder /
-// set active.
+// remove folder / set active.
 function useProjectActions({
   project,
   isActive,
@@ -55,8 +59,13 @@ function useProjectActions({
 }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
-  const target = { id: project.id, name: project.label }
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  // The tree node carries no folder detail — the cached project list does (a
+  // projects.* read-back folds into it after every mutation). Only computed for
+  // the explicit-project items below: an auto row never reaches them (its
+  // `identityItems` is empty), so an isAuto guard here would be dead logic.
+  const projects = useStore($projects)
+  const folders = projects.find(proj => proj.id === project.id)?.folders ?? []
 
   const removeAuto = () => {
     dismissAutoProject(project.id)
@@ -67,19 +76,77 @@ function useProjectActions({
   }
 
   const confirmDelete = async () => {
-    await deleteProject(project.id)
+    const { id, profile } = writeTarget()
+    await deleteProject(id, profile)
 
     if (scoped) {
       onExitScope?.()
     }
   }
 
-  // Rename / add folder / set active — explicit projects only (auto ones lack a
-  // materialized record). Appearance is handled per-surface (popover vs submenu)
-  // by the caller since its picker chrome differs.
-  const identityItems: ActionItemSpec[] = project.isAuto
+  // ── Write-target profile (Morten's row-level picker decision) ─────────────
+  // The backend stamps every claiming profile on the row. One owner: no
+  // picker, writes target that owner. Several: the menu shows a picker and
+  // every write lands in the picked profile — never the ambient live profile,
+  // which was the silent misroute this feature removes. None (a backend
+  // predating the stamp): ambient, unchanged from before.
+  const owners = project.profiles ?? []
+  const multiOwner = owners.length > 1
+  const [pickedProfile, setPickedProfile] = useState<string | null>(null)
+
+  const effectivePick = (): string | null => {
+    if (!multiOwner) {
+      return owners[0] ?? null
+    }
+
+    if (pickedProfile && owners.includes(pickedProfile)) {
+      return pickedProfile
+    }
+
+    const live = normalizeProfileKey($activeGatewayProfile.get())
+
+    return owners.includes(live) ? live : (owners[0] ?? null)
+  }
+
+  // The (id, profile) a write lands in. A merged row's `id` only names the
+  // project in the profile that won the identity, so a write aimed at another
+  // owner sends that owner's own id (`profileIds`).
+  const writeTarget = (): { id: string; profile?: string } => {
+    const picked = effectivePick()
+
+    if (!picked) {
+      return { id: project.id }
+    }
+
+    return { id: project.profileIds?.[picked] ?? project.id, profile: picked }
+  }
+
+  // No claimant profile means no write target: every mutation would fall
+  // back to the ambient live profile — the silent misroute this menu must
+  // never offer. Ownerless rows therefore carry no write actions at all.
+  const ownerless = !project.isAuto && effectivePick() === null
+
+  // Rename / add folder / remove folder / set active — explicit projects only
+  // (auto ones lack a materialized record). Appearance is handled per-surface
+  // (popover vs submenu) by the caller since its picker chrome differs.
+  const { id: targetId, profile: targetProfile } = writeTarget()
+  const target = {
+    id: targetId,
+    name: project.label,
+    ...(targetProfile ? { profile: targetProfile } : {})
+  }
+  // A row whose folders the ambient cache doesn't know (a merged row owned by
+  // a profile that isn't live) still offers remove-folder: the dialog fetches
+  // the picked profile's authoritative list. Otherwise keep the old gate — a
+  // project whose last folder was already removed would open an empty picker.
+  const canRemoveFolder = folders.length > 0 || Boolean(targetProfile)
+  const identityItems: ActionItemSpec[] = project.isAuto || ownerless
     ? []
-    : [
+    : project.archived
+      ? [
+          { icon: 'history', key: 'restore', label: p.menuRestore, onSelect: () => void restoreProject(target.id, target.profile) }
+        ]
+      : [
         { icon: 'edit', key: 'rename', label: p.menuRename, onSelect: () => openProjectRename(target) },
         {
           icon: 'new-folder',
@@ -87,14 +154,53 @@ function useProjectActions({
           label: p.menuAddFolder,
           onSelect: () => openProjectAddFolder(target)
         },
+        ...(canRemoveFolder
+          ? [
+              {
+                icon: 'remove',
+                key: 'remove-folder',
+                label: `${p.removeFolder}…`,
+                onSelect: () => openProjectRemoveFolder(target)
+              }
+            ]
+          : []),
         {
           disabled: isActive,
           icon: 'target',
           key: 'set-active',
           label: p.menuSetActive,
-          onSelect: () => void setActiveProject(project.id)
+          onSelect: () => void setActiveProject(targetId, targetProfile)
         }
       ]
+
+  // The row-level write-profile picker (multi-owner rows only). Radio-style:
+  // picking keeps the menu open (the checkmark moves), and the actions above
+  // then ride the picked profile.
+  const profilePicker = (kit: MenuKit): React.ReactNode => {
+    if (!multiOwner) {
+      return null
+    }
+
+    const picked = effectivePick()
+
+    return (
+      <>
+        <kit.Label>{p.profileLabel}</kit.Label>
+        {owners.map(owner =>
+          renderActionItem(kit, {
+            icon: owner === picked ? 'check' : 'blank',
+            key: `write-profile-${owner}`,
+            label: owner,
+            onSelect: event => {
+              event.preventDefault()
+              setPickedProfile(owner)
+            }
+          })
+        )}
+        <kit.Separator />
+      </>
+    )
+  }
 
   // The OS file manager needs the local filesystem; a remote backend's
   // project is not on this computer (the file trees hide reveal the same way).
@@ -119,9 +225,11 @@ function useProjectActions({
     }
   ]
 
-  const dangerItem: ActionItemSpec = project.isAuto
+  const dangerItem: ActionItemSpec | undefined = project.isAuto
     ? { icon: 'trash', key: 'remove', label: p.removeFromSidebar, onSelect: removeAuto, variant: 'destructive' }
-    : {
+    : ownerless
+      ? undefined
+      : {
         icon: 'trash',
         key: 'delete',
         label: `${p.menuDelete}…`,
@@ -141,7 +249,7 @@ function useProjectActions({
     />
   )
 
-  return { confirmDialog, dangerItem, identityItems, pathItems }
+  return { confirmDialog, dangerItem, identityItems, pathItems, profilePicker }
 }
 
 // Per-project actions. The kebab keeps its row-anchored Appearance popover; the
@@ -173,7 +281,7 @@ export function ProjectMenu({
   // when the panes are flipped (sidebar on the right).
   const panesFlipped = useStore($panesFlipped)
 
-  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+  const { confirmDialog, dangerItem, identityItems, pathItems, profilePicker } = useProjectActions({
     isActive,
     onExitScope,
     project,
@@ -237,6 +345,7 @@ export function ProjectMenu({
           onCloseAutoFocus={event => event.preventDefault()}
           sideOffset={6}
         >
+          {profilePicker(DROPDOWN_KIT)}
           {project.isAuto ? (
             // Inherited (auto) repos can still be themed — the change adopts the
             // repo as a real project. Rename / add-folder / set-active stay out
@@ -257,7 +366,7 @@ export function ProjectMenu({
           )}
           {pathItems.map(item => renderActionItem(DROPDOWN_KIT, item))}
           <DropdownMenuSeparator />
-          {renderActionItem(DROPDOWN_KIT, dangerItem)}
+          {dangerItem && renderActionItem(DROPDOWN_KIT, dangerItem)}
         </DropdownMenuContent>
       </DropdownMenu>
       <PopoverContent
@@ -301,7 +410,7 @@ export function ProjectContextMenu({
   const { t } = useI18n()
   const p = t.sidebar.projects
 
-  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+  const { confirmDialog, dangerItem, identityItems, pathItems, profilePicker } = useProjectActions({
     isActive,
     onExitScope,
     project,
@@ -316,6 +425,7 @@ export function ProjectContextMenu({
 
   const items = (kit: MenuKit) => (
     <>
+      {profilePicker(kit)}
       {identityItems.map(item => renderActionItem(kit, item))}
       {canTheme && (
         <kit.Sub>
@@ -337,7 +447,7 @@ export function ProjectContextMenu({
       {(identityItems.length > 0 || canTheme) && <kit.Separator />}
       {pathItems.map(item => renderActionItem(kit, item))}
       <kit.Separator />
-      {renderActionItem(kit, dangerItem)}
+      {dangerItem && renderActionItem(kit, dangerItem)}
     </>
   )
 

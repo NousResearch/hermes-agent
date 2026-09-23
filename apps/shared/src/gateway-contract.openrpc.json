@@ -23057,6 +23057,20 @@
             },
             "title": "Sessionids",
             "type": "array"
+          },
+          "profiles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "profileIds": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Profileids",
+            "type": "object"
           }
         },
         "required": [
@@ -23959,6 +23973,18 @@
             ],
             "default": null,
             "title": "Session Limit"
+          },
+          "include_archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Include Archived"
           }
         },
         "title": "ProjectsTreeParams",

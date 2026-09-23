@@ -3109,7 +3109,16 @@ export const en: Translations = {
       noFolders: 'No folders added yet.',
       addFolder: 'Add folder',
       primaryBadge: 'primary',
-      removeFolder: 'Remove',
+      // "Remove folder" names the operation wherever it appears: the create
+      // dialog's per-folder X, the project menu's ··· entry, and the confirm
+      // button in the picker. Files on disk are never touched.
+      removeFolder: 'Remove folder',
+      removeFolderDesc: 'The folder is dropped from this project only — nothing on disk is deleted.',
+      removeFolderFailed: 'Could not remove folder',
+      menuRestore: 'Restore',
+      workspaceArchived: 'Archived',
+      workspaceShared: 'Shared',
+      profileLabel: 'Profile',
       create: 'Create',
       menu: 'Actions',
       menuRename: 'Rename…',

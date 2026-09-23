@@ -282,3 +282,40 @@ class TestSidebarTruncation:
             _seed_session(home, f"s-{index}", source="desktop", pinned=index == 5)
         # Six on disk, two pins among the newest four: a full window, more below it.
         assert window() == (4, {"default": True})
+
+
+class TestRowOwnership:
+    """The all-profiles fan-out stamps every ROW with its claiming profiles.
+
+    A row that exists in one profile carries that one; a folder folded from two
+    profiles carries both, plus each profile's own project id — the client's
+    menu write-target picker is built off this list (t_85158838). The same
+    ``stamp_profile`` shapes the single-profile RPC tree, so a row never
+    claims a single owner in one surface and nothing in the other.
+    """
+
+    def test_merged_row_carries_every_claiming_profile(self, client, profiles_on_disk, tmp_path):
+        shared = tmp_path / "repos" / "both"
+        shared.mkdir(parents=True)
+        for name, home in profiles_on_disk.items():
+            _seed_session(home, f"{name}-chat", source="cli")
+            _seed_project(home, "Both", shared)
+
+        payload = client.get("/api/profiles/projects/tree").json()
+        row = next(project for project in payload["projects"] if project.get("label") == "Both")
+        assert sorted(row["profiles"]) == ["default", "worker"]
+        assert set(row["profileIds"]) == {"default", "worker"}
+        # Each claimant keeps its OWN id: the row's id is only the winner's.
+        assert row["profileIds"]["default"] != row["profileIds"]["worker"]
+
+    def test_single_owner_row_carries_that_one(self, client, profiles_on_disk, tmp_path):
+        only = tmp_path / "repos" / "one"
+        only.mkdir(parents=True)
+        for name, home in profiles_on_disk.items():
+            _seed_session(home, f"{name}-chat", source="cli")
+        _seed_project(profiles_on_disk["worker"], "Solo", only)
+
+        payload = client.get("/api/profiles/projects/tree").json()
+        row = next(project for project in payload["projects"] if project.get("label") == "Solo")
+        assert row["profiles"] == ["worker"]
+        assert row["profileIds"] == {"worker": row["id"]}

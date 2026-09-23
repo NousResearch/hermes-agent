@@ -274,11 +274,23 @@ class ProjectTreeNode(Result):
     repos: list[ProjectTreeRepo] = Field(default_factory=list)
     previewSessions: list[ProjectTreeSession] = Field(default_factory=list)
     sessionIds: list[str] = Field(default_factory=list)
+    # Every profile that claimed this folder, stamped by ``project_tree.stamp_profile``. A row
+    # served by one profile's own tree always has exactly one; the all-profiles fan-out folds
+    # the same folder from several profiles into ONE row, and this list is what names them --
+    # the desktop offers a write-target picker off it (absent at one entry).
+    profiles: list[str] = Field(default_factory=list)
+    # Each claimant profile's OWN id for the row: ids are minted per profile, so a merged
+    # row's ``id`` only names the project in the profile that won the identity. A write aimed
+    # at another claimant sends ``profileIds[owner]`` instead.
+    profileIds: dict[str, str] = Field(default_factory=dict)
 
 
 class ProjectsTreeParams(ProfileParams):
     preview_limit: int | None = None
     session_limit: int | None = None
+    # The sidebar asks for archived rows too (its Arkivet section); the handler
+    # reads this and the frontend sends it — the contract must accept it.
+    include_archived: bool | None = None
 
 
 class ProjectsTreeResult(Result):

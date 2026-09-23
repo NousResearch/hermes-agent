@@ -9,6 +9,7 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
+import { ALL_PROFILES, $profileScope } from '@/store/profile'
 import { fetchProjectSessions, projectProfile } from '@/store/projects'
 
 import {
@@ -165,6 +166,15 @@ export function ProjectOverviewRow({
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
   )
 
+  // In the all-profiles view every row is a merge of claims: say WHO owns it
+  // (single name, or the list when several profiles claim the same folder).
+  const scope = useStore($profileScope)
+  const ownerNames = project.profiles ?? []
+  const ownerHint =
+    scope === ALL_PROFILES && ownerNames.length > 0
+      ? ownerNames.slice(0, 2).join(', ') + (ownerNames.length > 2 ? ` +${ownerNames.length - 2}` : '')
+      : null
+
   const labelLink = (
     <SidebarRowLink
       // The glyph is aria-hidden and the tooltip only speaks on hover, so the
@@ -178,6 +188,9 @@ export function ProjectOverviewRow({
       onClick={() => onEnter?.(project.id)}
     >
       {project.label}
+      {ownerHint ? (
+        <span className="ml-1.5 truncate text-[0.7rem] font-normal text-(--ui-text-tertiary)">{ownerHint}</span>
+      ) : null}
     </SidebarRowLink>
   )
 

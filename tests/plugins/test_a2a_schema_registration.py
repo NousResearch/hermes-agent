@@ -52,4 +52,10 @@ def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
         "agent",
         "message",
         "context_id",
+        "metadata",
+    }
+    assert described["parameters"]["properties"]["metadata"] == {
+        "type": "object",
+        "description": "Optional metadata for SendMessage params.metadata.",
+        "additionalProperties": True,
     }

@@ -65,12 +65,6 @@ def test_faster_whisper_is_not_a_base_dependency():
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
 _STARLETTE_CVE_FLOOR = (1, 0, 1)
-# Advisory floors from `hermes security audit` / OSV on supported installs.
-# httpx2/httpcore2 2.7.0: GHSA-7mj9-2mp8-4m2p and related SOCKS/TLS,
-# decompression, SSE, and multipart findings. tornado 6.5.7:
-# GHSA-8423-8fgw-73vq and related request-parsing findings. setuptools
-# 79.0.1: GHSA-h35f-9h28-mq5c. The listed floors are the first clean
-# releases; pins may be newer.
 _HTTPX2_ADVISORY_FLOOR = Version("2.12.0")
 _HTTPCORE2_ADVISORY_FLOOR = Version("2.12.0")
 _TORNADO_ADVISORY_FLOOR = Version("6.5.8")
@@ -231,12 +225,6 @@ def _assert_versions_meet_floor(package: str, versions, floor: Version, source: 
 
 
 def test_httpx2_declared_pins_meet_advisory_floor():
-    """Every Hermes-declared httpx2 pin must be at the OSV-clean floor.
-
-    mcp 2.0.0 only requires httpx2>=2.5.0, so a missing or stale exact pin
-    lets 2.7.0 remain installed. The mcp, computer-use, and dev extras plus
-    LAZY_DEPS must all sit at 2.12.0 or newer.
-    """
     extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]["optional-dependencies"]
@@ -259,11 +247,6 @@ def test_httpx2_declared_pins_meet_advisory_floor():
 
 
 def test_locked_httpx2_and_httpcore2_meet_advisory_floor():
-    """uv.lock must resolve httpx2 and httpcore2 at the OSV-clean floors.
-
-    httpx2 2.12.0 exact-requires httpcore2==2.12.0, so a lock that upgrades
-    one without the other is still a finding.
-    """
     _assert_versions_meet_floor(
         "httpx2", _locked_versions("httpx2"), _HTTPX2_ADVISORY_FLOOR, "uv.lock"
     )
@@ -276,12 +259,6 @@ def test_locked_httpx2_and_httpcore2_meet_advisory_floor():
 
 
 def test_webhook_extras_pin_tornado_above_advisory_floor():
-    """python-telegram-bot[webhooks] requires tornado~=6.5, which includes 6.5.7.
-
-    Without a direct pin, `hermes update` reinstalls PTB and leaves an
-    already-installed 6.5.7 in place. Every extra that ships the webhooks
-    extra must exact-pin tornado at 6.5.8 or newer.
-    """
     extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]["optional-dependencies"]
@@ -308,18 +285,12 @@ def test_webhook_extras_pin_tornado_above_advisory_floor():
 
 
 def test_locked_tornado_meets_advisory_floor():
-    """Hash-verified installs must not resolve tornado below 6.5.8."""
     _assert_versions_meet_floor(
         "tornado", _locked_versions("tornado"), _TORNADO_ADVISORY_FLOOR, "uv.lock"
     )
 
 
 def test_setuptools_pins_meet_advisory_floor():
-    """Where Hermes controls setuptools, the pin and lock must stay at 83.0.0+.
-
-    Stale venvs can still carry 79.0.1 (GHSA-h35f-9h28-mq5c). Fresh installs
-    and lock-backed updates must not.
-    """
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     declared = set()
     for req in data.get("build-system", {}).get("requires", []):

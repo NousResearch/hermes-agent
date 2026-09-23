@@ -61,6 +61,19 @@ def _normalize_enabled(value: Any) -> bool:
 
 # --- Pending store (file-backed) ---
 
+# Pending ids are operator-typed (``/memory approve|reject <id>``, ``/skills diff <id>``) and
+# interpolated into a filename (``_pending_path``), so allow-list the charset ``stage_write``
+# generates (lowercase uuid4 hex; extra chars cost nothing and stay format-tolerant). Anything
+# with separators, dots or whitespace cannot name a file inside ``pending/<subsystem>/`` —
+# without this, ``/memory reject ../../auth`` resolved to ``<HERMES_HOME>/auth.json`` and
+# deleted it (#119997).
+_SAFE_PENDING_ID_RE = re.compile(r"[0-9A-Za-z_-]{1,64}")
+
+
+def _is_safe_pending_id(pending_id: str) -> bool:
+    return isinstance(pending_id, str) and _SAFE_PENDING_ID_RE.fullmatch(pending_id) is not None
+
+
 def _pending_path(subsystem: str, pending_id: str) -> Path:
     return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
 
@@ -104,7 +117,11 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
 
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
-    """Return a single pending record by id, or None."""
+    """Return a single pending record by id, or None. An id that cannot name a file inside
+    ``pending/<subsystem>/`` (separators, dots, whitespace) returns None, so callers report
+    it as not found and nothing outside the store is read (#119997)."""
+    if not _is_safe_pending_id(pending_id):
+        return None
     path = _pending_path(subsystem, pending_id)
     if not path.exists():
         return None
@@ -115,7 +132,10 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
-    """Delete a pending record. Returns True if it existed."""
+    """Delete a pending record. Returns True if it existed. Unsafe ids (see ``get_pending``)
+    return False without touching the filesystem (#119997)."""
+    if not _is_safe_pending_id(pending_id):
+        return False
     try:
         path = _pending_path(subsystem, pending_id)
         if path.exists():

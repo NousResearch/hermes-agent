@@ -169,6 +169,106 @@ _SKILL = (
 # ---------------------------------------------------------------------------
 
 
+def test_pending_id_roundtrip(hermes_home):
+    """Sanity: a legit staged id still resolves through get/discard."""
+    from tools import write_approval as wa
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
+                         summary="ok", origin="foreground")
+    got = wa.get_pending("memory", rec["id"])
+    assert got is not None and got["id"] == rec["id"]
+    assert wa.discard_pending("memory", rec["id"]) is True
+    assert wa.get_pending("memory", rec["id"]) is None
+    assert wa.discard_pending("memory", rec["id"]) is False
+
+
+def test_unsafe_pending_id_rejected_at_store_level(hermes_home):
+    """#119997: ids are operator-typed and interpolated into a filename. An id with
+    separators, dots or whitespace must resolve to None/False at the store, never to a
+    path outside pending/<subsystem>/."""
+    from tools import write_approval as wa
+    unsafe_ids = [
+        "../../auth",                       # relative traversal (the issue's repro)
+        "..\\..\\auth",                     # backslash form (Windows separators)
+        "a/b", "a\\b",                      # any separator
+        "..", ".",                          # dot segments
+        " ../../auth", "../../auth ",       # whitespace-padded
+        "../../auth%00",                    # no separators but contains dots/
+        "a b",                              # space inside
+    ]
+    for pid in unsafe_ids:
+        assert wa.get_pending("memory", pid) is None, pid
+        assert wa.discard_pending("memory", pid) is False, pid
+
+
+def _write_victim(home):
+    victim = os.path.join(home, "auth.json")
+    with open(victim, "w", encoding="utf-8") as f:
+        f.write('{"tokens": {}}')
+    return victim
+
+
+def test_reject_traversal_id_cannot_delete_outside_store(hermes_home, capsys):
+    """#119997 regression: ``/memory reject ../../auth`` must not delete
+    <HERMES_HOME>/auth.json — it reports not-found and touches nothing."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    victim = _write_victim(hermes_home)
+    # One real staged write so pending/<subsystem>/ exists, as in the issue.
+    wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
+                   summary="ok", origin="foreground")
+    out = handle_pending_subcommand(wa.MEMORY, ["reject", "../../auth"], memory_store=MemoryStore())
+    assert "No pending memory write with id '../../auth'" in out, out
+    assert os.path.exists(victim), "auth.json was deleted by a traversal id"
+    assert wa.pending_count("memory") == 1  # the real staged write is untouched
+    capsys.readouterr()
+
+
+def test_approve_traversal_id_reads_and_deletes_nothing(hermes_home):
+    """#119997 regression: ``/memory approve ../../auth`` must not read auth.json as a
+    pending record, replay its content as a memory write, or delete it."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    victim = _write_victim(hermes_home)
+    wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
+                   summary="ok", origin="foreground")
+    store = MemoryStore(); store.load_from_disk()
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", "../../auth"], memory_store=store)
+    assert "No pending memory write with id '../../auth'" in out, out
+    assert os.path.exists(victim), "auth.json was deleted by a traversal id"
+    assert store.memory_entries == []  # victim contents were not replayed as memory
+    assert wa.pending_count("memory") == 1
+
+
+def test_skills_diff_traversal_id_prints_nothing(hermes_home):
+    """#119997 regression: ``/skills diff ../../auth`` must not print auth.json's contents."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    victim = _write_victim(hermes_home)
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "x", "content": "hi"},
+                   summary="hi", origin="foreground")
+    out = handle_pending_subcommand(wa.SKILLS, ["diff", "../../auth"])
+    assert "No pending skill write with id '../../auth'" in out, out
+    assert "tokens" not in out, "auth.json contents were printed by a traversal id"
+    assert os.path.exists(victim)
+
+
+def test_approve_still_works_after_traversal_attempt(hermes_home):
+    """The guard must not break the real flow: traversal attempt first, then a legit approve."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    wa.stage_write("memory", {"action": "add", "target": "user", "content": "real write"},
+                   summary="real", origin="foreground")
+    handle_pending_subcommand(wa.MEMORY, ["reject", "../../auth"], memory_store=store)
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert "Approved 1" in out, out
+    assert store.user_entries == ["real write"]
+    assert wa.pending_count("memory") == 0
+
+
 # ---------------------------------------------------------------------------
 # Shared command handler
 # ---------------------------------------------------------------------------

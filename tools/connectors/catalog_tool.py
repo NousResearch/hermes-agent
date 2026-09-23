@@ -10,6 +10,7 @@ nothing else: the pin, scan, target profile and activation are the host's.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.registry import tool_error
@@ -127,13 +128,25 @@ def install(items: List[Dict[str, str]], *, session_id: Optional[str], tool_call
     from tools.connectors.operation import Target
     from tools.connectors.run import Kind, run_operation
 
-    seen, targets = set(), []
+    seen, keys = set(), []
     for item in items:
         key = (item["kind"], str(item["id"]).strip())
         if key not in seen:
             seen.add(key)
-            targets.append(Target(name=key[1], kind=key[0], action="install"))
-    runner = open_runner(installer)
+            keys.append(key)
+    counts = Counter(identifier for _, identifier in keys)
+    reserved = {identifier for _, identifier in keys}
+    identifiers, targets = {}, []
+    for kind, identifier in keys:
+        name = identifier
+        if counts[identifier] > 1:
+            name = f"{kind}:{identifier}"
+            while name in reserved:
+                name = f"{kind}:{name}"
+            reserved.add(name)
+        identifiers[name] = identifier
+        targets.append(Target(name=name, kind=kind, action="install"))
+    runner = open_runner(installer, identifiers=identifiers)
     try:
         return run_operation(
             targets, Kind(prepare=runner.prepare, observe=runner.observe, note=NOTE),

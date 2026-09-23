@@ -136,8 +136,9 @@ class _Work:
 class _Runner:
     """Resolved catalog facts and install work for one operation's rows."""
 
-    def __init__(self, installer: HostInstaller):
+    def __init__(self, installer: HostInstaller, identifiers: Optional[Dict[str, str]] = None):
         self.installer = installer
+        self.identifiers = identifiers or {}
         self.op_id: Optional[str] = None
         self.facts: Dict[str, Any] = {}  # row name -> PluginCatalogEntry | skill meta; never on the wire
         self.work: Dict[str, _Work] = {}
@@ -151,29 +152,33 @@ class _Runner:
         _RUNNERS[operation.op_id] = self
         self.op_id = operation.op_id
         for target in operation.targets:
-            target.extra = {"display": _display(target.name), "target_profile": DEFAULT_PROFILE}
+            target.extra = {"display": _display(self._id(target)), "target_profile": DEFAULT_PROFILE}
             try:
                 self._resolve(target)
             except Exception as exc:
                 _fail(operation, target, self._detail(exc, target))
 
+    def _id(self, target: Target) -> str:
+        return self.identifiers.get(target.name, target.name)
+
     def _resolve(self, target: Target) -> None:
+        identifier = self._id(target)
         if target.kind == "plugin":
-            entry = self.installer.plugin_entry(target.name)
+            entry = self.installer.plugin_entry(identifier)
             if entry is None:
-                raise LookupError(f"'{target.name}' is not in the Hermes plugin catalog")
+                raise LookupError(f"'{identifier}' is not in the Hermes plugin catalog")
             self.facts[target.name] = entry
             target.extra = _plugin_row(entry)
             target.required_env = [{"name": name, "required": False, "secret": True, "default": ""}
                                    for name in entry.capabilities.requires_env]
             self.installer.refuse(entry)
             return
-        meta = self.installer.skill_meta(target.name)
+        meta = self.installer.skill_meta(identifier)
         if not meta:
-            raise LookupError(f"'{target.name}' was not found in the skills hub")
+            raise LookupError(f"'{identifier}' was not found in the skills hub")
         self.facts[target.name] = meta
         target.extra = {
-            "display": str(meta.get("name") or _display(target.name)),
+            "display": str(meta.get("name") or _display(identifier)),
             "description": _first_sentence(meta.get("description") or ""),
             "tier": "official" if meta.get("source") == "official" else "community",
             "target_profile": DEFAULT_PROFILE,
@@ -208,7 +213,7 @@ class _Runner:
         declared = set(target_declared_env(self.facts.get(target.name)))
         undeclared = sorted(k for k in env if k not in _OPTION_KEYS and k not in declared)
         if undeclared:
-            return f"'{target.name}' does not declare {', '.join(undeclared)}"
+            return f"'{self._id(target)}' does not declare {', '.join(undeclared)}"
         return ""
 
     def _spawn(self, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
@@ -233,10 +238,11 @@ class _Runner:
         with target_scope(profile):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
             if target.kind == "skill":
-                identifier = str(self.facts[target.name].get("identifier") or target.name)
+                identifier = str(self.facts[target.name].get("identifier") or self._id(target))
                 return {"profile": profile, **self.installer.install_skill(identifier, force=force)}
             enable = _flag(env.get("enable"), True)
-            result = self.installer.install_plugin(target.name, force=force, enable=enable, ref=env.get("ref") or None)
+            result = self.installer.install_plugin(self._id(target), force=force, enable=enable,
+                                                   ref=env.get("ref") or None)
         if not result.get("ok"):
             raise RuntimeError(result.get("error") or "the install failed")
         return {"profile": profile, "enabled": enable, **result}
@@ -372,8 +378,9 @@ def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
     return None
 
 
-def open_runner(installer: Optional[HostInstaller] = None) -> _Runner:
-    return _Runner(installer or HostInstaller())
+def open_runner(installer: Optional[HostInstaller] = None,
+                identifiers: Optional[Dict[str, str]] = None) -> _Runner:
+    return _Runner(installer or HostInstaller(), identifiers)
 
 
 Callback = Callable[[Dict[str, Any]], Optional[str]]

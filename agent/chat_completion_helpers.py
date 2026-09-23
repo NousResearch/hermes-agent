@@ -2720,6 +2720,9 @@ class _StreamingCall(StreamingWaitMonitor):
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        # A superseded terminal finish_reason chunk's own reason, stashed by
+        # ``_accept_chat_chunk`` (#119663); attempt-local like the fields above.
+        self._fenced_terminal_finish_reason = None
         # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
         self._request_route = self._live_route()
 
@@ -2772,6 +2775,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
         # before any text must not label a later attempt's partial stub or its retry decision.
         self.result["partial_tool_names"] = []
+        self._fenced_terminal_finish_reason = None
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:
@@ -2957,11 +2961,18 @@ class _StreamingCall(StreamingWaitMonitor):
             # the in-flight tool call (retry policy must not see a partial text response).
             if getattr(delta, "tool_calls", None):
                 self.provider_tool_in_flight["yes"] = True
-            # Marker-only finish chunk (no writable delta) always passes: the fence only stops
-            # MORE text; fending the completion signal would mislabel a clean end as a drop.
-            if getattr(choice, "finish_reason", None) and not any(
-                getattr(delta, attr, None) for attr in ("content", "tool_calls", "reasoning_content", "reasoning")):
-                return True
+            finish_reason = getattr(choice, "finish_reason", None)
+            if finish_reason and not getattr(delta, "tool_calls", None):
+                # Marker-only finish chunk (no writable delta) always passes: the fence only stops
+                # MORE text; fending the completion signal would mislabel a clean end as a drop.
+                if not any(getattr(delta, attr, None) for attr in ("content", "reasoning_content", "reasoning")):
+                    return True
+                # A terminal chunk that ALSO carries trailing text: the single-writer invariant
+                # still forbids delivering that text once superseded (below), but the provider
+                # DID complete the stream. Remember its finish_reason so the drop-guard doesn't
+                # mistake the rejection of this one chunk for the stream never finishing and
+                # discard the text that was already delivered legitimately (#119663).
+                self._fenced_terminal_finish_reason = _normalize_finish_reason(finish_reason) or finish_reason
         if not self._stream_attempt_is_active(stream_attempt_id):
             return False
         if not self._writer_still_current("Streaming"):
@@ -3123,6 +3134,9 @@ class _StreamingCall(StreamingWaitMonitor):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
+        # The provider's own completion signal, even if it arrived on a chunk the
+        # single-writer fence rejected for carrying trailing text (#119663).
+        finish_reason = finish_reason or self._fenced_terminal_finish_reason
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,

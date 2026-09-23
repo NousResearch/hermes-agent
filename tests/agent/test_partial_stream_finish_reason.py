@@ -129,6 +129,45 @@ class TestTerminalChunkFenceException:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_superseded_writer_keeps_finish_reason_from_a_content_bearing_terminal_chunk(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """#119663: some providers put the last bit of text and finish_reason on
+        the SAME chunk instead of a separate marker-only terminal chunk. The
+        single-writer fence still must not deliver that trailing text (it
+        arrived after supersession, same as any other post-supersede content),
+        but it must not throw away the provider's finish_reason either — doing
+        so left finish_reason None after real text was delivered, and the
+        drop-guard misread the already-completed answer as a mid-stream drop.
+        """
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        agent_box = {}
+
+        class SupersedeBeforeCombinedFinal:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield _make_stream_chunk(content="Long prose that is complete.")
+                agent_box["agent"]._claim_stream_writer()
+                # Terminal chunk carries trailing text AND finish_reason together.
+                yield _make_stream_chunk(content=" Done.", finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = SupersedeBeforeCombinedFinal()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent_box["agent"] = agent
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        content = response.choices[0].message.content or ""
+        assert content == "Long prose that is complete."
+        assert "Done." not in content
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_superseded_writer_still_fences_further_content(
         self, _mock_close, mock_create, monkeypatch,
     ):

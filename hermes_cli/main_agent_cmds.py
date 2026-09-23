@@ -76,16 +76,37 @@ _ACP_FLAGS = (
     ("assume_yes", "--yes"))
 
 
+def _format_acp_import_error(exc: ImportError) -> list[str]:
+    """Map an ACP startup ImportError to user-facing diagnostic lines."""
+    missing = getattr(exc, "name", None) or ""
+    if missing == "acp" or missing.startswith("acp."):
+        return [
+            "ACP dependencies not installed.",
+            "Install them with:  pip install -e '.[acp]'",
+        ]
+    if not missing:
+        return [
+            f"hermes acp failed to start: {exc}",
+            "The failing import could not be identified; this may not be an "
+            "ACP packaging issue.",
+            "Check your hermes install with:  pip install -e '.[acp]'",
+        ]
+    return [
+        f"hermes acp failed to start: {exc}",
+        f"An unrelated module ({missing}) could not be imported — this is not "
+        "an ACP packaging issue.",
+        "Check your hermes install with:  pip install -e '.[acp]'",
+    ]
+
+
 def cmd_acp(args):
     """Launch Hermes Agent as an ACP server."""
     try:
         from acp_adapter.entry import main as acp_main
         acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
-    except ImportError as e:
-        from hermes_cli.main_dep_hints import missing_optional_deps_message
-
-        print(missing_optional_deps_message("ACP server", "its protocol packages", "acp"), file=sys.stderr)
-        print(f"Details: {e}", file=sys.stderr)
+    except ImportError as exc:
+        for line in _format_acp_import_error(exc):
+            print(line, file=sys.stderr)
         sys.exit(1)
 
 

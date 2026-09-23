@@ -15,6 +15,7 @@ export type ManagedRolloutMessages = {
   archived: string
   active: string
   sections: {
+    inventory: string
     fleet: string
     preparation: string
     configuration: string
@@ -27,6 +28,10 @@ export type ManagedRolloutMessages = {
     summary: string
   }
   actions: {
+    checking: string
+    renewReview: string
+    reviewSelected: string
+    retryInventory: string
     select: string
     selected: string
     prepare: string
@@ -77,6 +82,20 @@ export type ManagedRolloutMessages = {
     canaryGate: (gate: string) => string
   }
   labels: {
+    preparationOutcome: (installId: string, outcome: string, correlationId: string, restoreOk: boolean) => string
+    exclusionReason: string
+    receiptPending: string
+    pinnedTarget: string
+    planChange: (installId: string, field: string, before: string, after: string) => string
+    blocked: (reason: string) => string
+    aliases: (count: number) => string
+    observedHead: string
+    eligibility: string
+    observationTime: string
+    unknownFact: string
+    selectedCount: (count: number) => string
+    showingTargets: (visible: number, total: number) => string
+    searchTargets: string
     progressionMode: string
     concurrency: string
     inventoryRevision: (revision: string, capturedMono: number) => string
@@ -92,6 +111,8 @@ export type ManagedRolloutMessages = {
     archive: (archived: boolean) => string
   }
   warnings: {
+    restartReviewRequired: string
+    reviewUnavailable: string
     sharedMachine: string
     unsupportedTarget: string
     preparation: string
@@ -110,6 +131,14 @@ export type ManagedRolloutMessages = {
     reconnecting: string
   }
   descriptions: {
+    recoveryActions: string
+    configuration: string
+    rolloutCapacityUnavailable: (maxInstallations: number | null, reason: string | null) => string
+    noObservedInstallations: string
+    noMatchingTargets: string
+    preparationSeparate: string
+    inventoryLoading: string
+    preparationFinished: (outcomes: string) => string
     inventoryObserved: string
     serialCapability: string
     canonicalPlan: string

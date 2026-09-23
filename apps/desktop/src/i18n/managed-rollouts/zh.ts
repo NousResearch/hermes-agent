@@ -12,6 +12,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
   archived: '已归档',
   active: '活动',
   sections: {
+    inventory: '已观察到的托管 SSH 安装',
     fleet: '托管发布目标列表',
     preparation: '托管发布准备',
     configuration: '托管发布配置',
@@ -24,6 +25,10 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     summary: '托管发布摘要'
   },
   actions: {
+    checking: '正在检查…',
+    renewReview: '重新审核',
+    reviewSelected: '审核所选目标',
+    retryInventory: '重试清单',
     select: '选择',
     selected: '已选择',
     prepare: '准备所选目标',
@@ -74,6 +79,20 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     canaryGate: gate => `金丝雀门槛：${gate}`
   },
   labels: {
+    preparationOutcome: (installId, outcome, correlationId, restoreOk) => `${installId}：结果 ${outcome}；关联 ID ${correlationId}；恢复${restoreOk ? '已确认' : '未确认'}`,
+    exclusionReason: '排除原因',
+    receiptPending: '回执：待确认',
+    pinnedTarget: '固定目标',
+    planChange: (installId, field, before, after) => `${installId} 已更改：${field}（${before} → ${after}）。`,
+    blocked: reason => `已阻止：${reason}`,
+    aliases: count => `别名（${count}）`,
+    observedHead: '观察到的 HEAD',
+    eligibility: '资格',
+    observationTime: '观察时间',
+    unknownFact: '未知',
+    selectedCount: count => `已选择：${count}`,
+    showingTargets: (visible, total) => `显示 ${visible} / ${total} 个安装`,
+    searchTargets: '搜索目标',
     progressionMode: '推进模式',
     concurrency: '并发数',
     inventoryRevision: (revision, capturedMono) => `清单版本：${revision}；采集时的单调时钟时间：${capturedMono}。`,
@@ -91,6 +110,8 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     archive: archived => `归档状态：${archived ? '已归档' : '活动'}`
   },
   warnings: {
+    restartReviewRequired: '重启后升级前需重新审核。',
+    reviewUnavailable: '当前审核无法授权启动。请重新验证计划。',
     sharedMachine: '共享机器；准备前请检查目标所有权。',
     unsupportedTarget: '目标不受支持。',
     preparation: '准备操作遵循已配置的分支尖端；它不是固定目标的发布。',
@@ -109,6 +130,14 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     reconnecting: '正在重新连接托管发布状态…'
   },
   descriptions: {
+    recoveryActions: '重新检查是只读操作。恢复需要关联的解除证据。重试会开始新的审核；排除后原始尝试和安全栅栏仍可见。',
+    configuration: '更新保持串行。首个选定安装为金丝雀目标；Main 会在发出审核令牌之前验证提交的完整波次计划。',
+    rolloutCapacityUnavailable: (maxInstallations, reason) => `无法接纳部署${maxInstallations === null ? '' : `：容量 ${maxInstallations} 个安装`}。清单仍可查看，审核已禁用${reason ? `（${reason}）` : ''}。`,
+    noObservedInstallations: '未观察到托管 SSH 安装。',
+    noMatchingTargets: '没有与搜索匹配的安装。',
+    preparationSeparate: '准备操作会在配置的分支最新提交上运行现有的单项更新程序。它不固定目标，与部署分开，并使先前的审核失效。之后请重新检查清单。',
+    inventoryLoading: '正在加载已观察到的安装…',
+    preparationFinished: outcomes => `未固定目标的准备已完成：${outcomes}。请重新检查并审核固定目标。`,
     inventoryObserved: '清单仅反映已观测状态。仅选择目标并不代表其符合条件，也不授权更新。',
     serialCapability: '当前目标契约要求串行能力。在草稿发生变化前，已选择的金丝雀目标会保持不变。',
     canonicalPlan: '提交的草稿与预览中的规范波次计划完全一致。更新或变化的行需要重新确认。',

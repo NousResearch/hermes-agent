@@ -1,3 +1,6 @@
+import { useI18n } from '@/i18n'
+import { getManagedRolloutMessages } from '@/i18n/managed-rollouts'
+
 import type { RolloutDraft } from './rollout-config'
 
 export interface ActiveRolloutState {
@@ -11,12 +14,15 @@ export interface ActiveRolloutState {
 }
 
 export function ActiveRollout({ state, draft }: { state: ActiveRolloutState; draft: RolloutDraft }) {
-  return <section aria-label="Active managed rollout" className="grid min-w-0 gap-2">
-    <p className="text-sm">Phase: <strong>{state.phase}</strong></p>
-    <p className="text-xs text-(--ui-text-tertiary)">Progress: {state.completed} of {state.total} targets completed.</p>
-    <p className="text-xs text-(--ui-text-tertiary)">Mode: {draft.mode}; canary gate: {state.canaryGate}.</p>
-    {state.receipt ? <p className="text-xs">Receipt: {state.receipt.outcome} ({state.receipt.correlationId})</p> : <p className="text-xs text-(--ui-text-tertiary)">Receipt: pending</p>}
-    {state.readiness ? <p className="text-xs">Readiness: {state.readiness.ready ? 'ready' : state.readiness.reason ?? 'not ready'}</p> : <p className="text-xs text-(--ui-text-tertiary)">Readiness: pending evidence</p>}
-    {state.restartRequired ? <p className="text-xs text-amber-600">Restart requires a fresh review before promotion.</p> : null}
+  const { t } = useI18n()
+  const messages = getManagedRolloutMessages(t)
+
+  return <section aria-label={messages.sections.active} className="grid min-w-0 gap-2">
+    <p className="text-sm">{messages.status.activePhase(state.phase)}</p>
+    <p className="text-xs text-(--ui-text-tertiary)">{messages.labels.progress(state.completed, state.total)}</p>
+    <p className="text-xs text-(--ui-text-tertiary)">{messages.policy.mode(draft.mode)}; {messages.policy.canaryGate(state.canaryGate)}</p>
+    {state.receipt ? <p className="text-xs">{messages.labels.receipt(state.receipt.outcome, state.receipt.correlationId)}</p> : <p className="text-xs text-(--ui-text-tertiary)">{messages.labels.receiptPending}</p>}
+    {state.readiness ? <p className="text-xs">{messages.labels.readiness(state.readiness.ready ? messages.status.ready : state.readiness.reason ?? messages.status.pending)}</p> : <p className="text-xs text-(--ui-text-tertiary)">{messages.labels.readiness(messages.status.pending)}</p>}
+    {state.restartRequired ? <p className="text-xs text-amber-600">{messages.warnings.restartReviewRequired}</p> : null}
   </section>
 }

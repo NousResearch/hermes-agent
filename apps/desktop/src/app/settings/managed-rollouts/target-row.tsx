@@ -6,9 +6,11 @@ export interface ManagedRolloutTarget {
   installId: string
   connectionId?: string
   label: string
-  alias?: string | null
+  aliases?: readonly string[]
   machineId: string
-  supported: boolean
+  headSha: string
+  eligibility: 'unknown'
+  observedAt: string | null
   sharedMachine: boolean
 }
 
@@ -21,8 +23,19 @@ export function TargetRow({ target, selected, onToggle }: { target: ManagedRollo
   const { t } = useI18n()
   const messages = getManagedRolloutMessages(t)
 
-  return <div className="flex min-w-0 items-center justify-between gap-3 border-b border-(--ui-stroke-secondary) py-2">
-    <div className="min-w-0"><p className="truncate text-sm">{target.label}</p><p className="truncate text-xs text-(--ui-text-tertiary)">{target.alias ? `${target.alias} · ` : ''}{target.machineId} · {target.installId}</p>{target.sharedMachine ? <p className="text-xs text-amber-600">{messages.warnings.sharedMachine}</p> : null}{!target.supported ? <p className="text-xs text-amber-600">{messages.warnings.unsupportedTarget}</p> : null}</div>
-    <Button aria-pressed={selected} className="motion-reduce:transition-none" disabled={!target.supported} onClick={() => onToggle(identity)} size="sm" type="button" variant={selected ? 'default' : 'outline'}>{selected ? messages.actions.selected : messages.actions.select}</Button>
+  return <div className="flex min-w-0 items-start justify-between gap-3 border-b border-(--ui-stroke-secondary) py-2">
+    <div className="min-w-0 flex-1">
+      <p className="break-all text-sm font-medium">{target.label}</p>
+      <p className="break-all text-xs text-(--ui-text-tertiary)">{target.machineId} · {target.installId}</p>
+      {target.aliases?.length ? <details className="text-xs">
+        <summary className="w-fit cursor-pointer text-(--ui-text-secondary)">{messages.labels.aliases(target.aliases.length)}</summary>
+        <ul className="ms-4 list-disc break-all text-(--ui-text-secondary)">{target.aliases.map(alias => <li key={alias}>{alias}</li>)}</ul>
+      </details> : null}
+      <p className="break-all text-xs">{messages.labels.observedHead}: <span>{target.headSha ?? messages.labels.unknownFact}</span></p>
+      <p className="text-xs">{messages.labels.eligibility}: {messages.labels.unknownFact}</p>
+      <p className="text-xs">{messages.labels.observationTime}: {target.observedAt ?? messages.labels.unknownFact}</p>
+      {target.sharedMachine ? <p className="border-s-2 border-amber-700 ps-2 text-xs text-(--ui-text-primary) dark:border-amber-400">{messages.warnings.sharedMachine}</p> : null}
+    </div>
+    <Button aria-pressed={selected} className="motion-reduce:transition-none" onClick={() => onToggle(identity)} size="sm" type="button" variant={selected ? 'default' : 'outline'}>{selected ? messages.actions.selected : messages.actions.select}</Button>
   </div>
 }

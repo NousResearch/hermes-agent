@@ -5,10 +5,10 @@ import { targetIdentity, TargetRow } from './target-row'
 
 describe('managed rollout target identity', () => {
   it('keeps aliases display-only and keys selection by machine plus install identity', () => {
-    expect(targetIdentity({ installId: 'install-a', machineId: 'machine-a', label: 'Alias', alias: 'old-name', supported: true, sharedMachine: false })).toBe(
+    expect(targetIdentity({ installId: 'install-a', machineId: 'machine-a', label: 'Alias', aliases: ['old-name'], headSha: 'a'.repeat(40), eligibility: 'unknown', observedAt: null, sharedMachine: false })).toBe(
       JSON.stringify(['machine-a', 'install-a'])
     )
-    expect(targetIdentity({ installId: 'install-a', machineId: 'machine-a', label: 'Alias', alias: 'new-name', supported: true, sharedMachine: false })).toBe(
+    expect(targetIdentity({ installId: 'install-a', machineId: 'machine-a', label: 'Alias', aliases: ['new-name'], headSha: 'a'.repeat(40), eligibility: 'unknown', observedAt: null, sharedMachine: false })).toBe(
       JSON.stringify(['machine-a', 'install-a'])
     )
   })
@@ -26,7 +26,9 @@ describe('managed rollout target identity', () => {
             installId: 'install-a',
             label: 'A very long target label that must remain readable',
             machineId: 'machine-a',
-            supported: true,
+            headSha: 'a'.repeat(40),
+            eligibility: 'unknown',
+            observedAt: null,
             sharedMachine: false
           }}
         />

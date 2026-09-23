@@ -12,6 +12,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
   archived: 'архивировано',
   active: 'активно',
   sections: {
+    inventory: 'Обнаруженные управляемые установки SSH',
     fleet: 'Установки управляемого развёртывания',
     preparation: 'Подготовка управляемого развёртывания',
     configuration: 'Настройка управляемого развёртывания',
@@ -24,6 +25,10 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     summary: 'Итоги развёртывания'
   },
   actions: {
+    checking: 'Проверка…',
+    renewReview: 'Обновить проверку',
+    reviewSelected: 'Проверить выбранную цель',
+    retryInventory: 'Повторить загрузку списка',
     select: 'Выбрать',
     selected: 'Выбрано',
     prepare: 'Подготовить выбранные установки',
@@ -74,6 +79,20 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     canaryGate: gate => `Проверка канарейки: ${gate}`
   },
   labels: {
+    preparationOutcome: (installId, outcome, correlationId, restoreOk) => `${installId}: результат ${outcome}; ID связи ${correlationId}; восстановление ${restoreOk ? 'подтверждено' : 'не подтверждено'}`,
+    exclusionReason: 'Причина исключения',
+    receiptPending: 'Квитанция: ожидается',
+    pinnedTarget: 'Закреплённая цель',
+    planChange: (installId, field, before, after) => `Изменено ${installId}: ${field} (${before} → ${after}).`,
+    blocked: reason => `Заблокировано: ${reason}`,
+    aliases: count => `Псевдонимы (${count})`,
+    observedHead: 'Обнаруженный HEAD',
+    eligibility: 'Допуск',
+    observationTime: 'Время наблюдения',
+    unknownFact: 'неизвестно',
+    selectedCount: count => `Выбрано: ${count}`,
+    showingTargets: (visible, total) => `Показано ${visible} из ${total} установок`,
+    searchTargets: 'Поиск целей',
     progressionMode: 'Режим перехода между волнами',
     concurrency: 'Параллельность',
     inventoryRevision: (revision, capturedMono) => `Ревизия инвентаризации: ${revision}; монотонное время снимка: ${capturedMono}.`,
@@ -91,6 +110,8 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     archive: archived => `Архив: ${archived ? 'архивировано' : 'активно'}`
   },
   warnings: {
+    restartReviewRequired: 'После перезапуска перед продвижением нужна новая проверка.',
+    reviewUnavailable: 'Текущая проверка не разрешает запуск. Повторно проверьте план.',
     sharedMachine: 'Несколько установок находятся на одной машине; проверьте владельца каждой перед подготовкой.',
     unsupportedTarget: 'Эта установка не поддерживает управляемое развёртывание.',
     preparation: 'Подготовка следует за текущей вершиной настроенной ветки; она не входит в развёртывание закреплённой версии.',
@@ -112,6 +133,14 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     reconnecting: 'Восстанавливается соединение с состоянием управляемого развёртывания…'
   },
   descriptions: {
+    recoveryActions: 'Повторная проверка доступна только для чтения. Восстановление требует связанного подтверждения снятия блокировки. Повтор запускает новую проверку; исключение сохраняет видимость исходной попытки и барьера.',
+    configuration: 'Обновления выполняются последовательно. Первая выбранная установка — канарейка; Main проверяет весь отправленный план волн перед выдачей токена проверки.',
+    rolloutCapacityUnavailable: (maxInstallations, reason) => `Приём в развёртывание недоступен${maxInstallations === null ? '' : `: ёмкость ${maxInstallations} установок`}. Список остаётся доступным для просмотра; проверка отключена${reason ? ` (${reason})` : ''}.`,
+    noObservedInstallations: 'Управляемые установки SSH не обнаружены.',
+    noMatchingTargets: 'Установки по запросу не найдены.',
+    preparationSeparate: 'Подготовка запускает существующее индивидуальное обновление на вершине настроенной ветки. Она не закреплена за целью, выполняется отдельно от развёртывания и отменяет все предыдущие проверки. Затем повторно проверьте список.',
+    inventoryLoading: 'Загрузка обнаруженных установок…',
+    preparationFinished: outcomes => `Незакреплённая подготовка завершена: ${outcomes}. Повторно проверьте закреплённую цель.`,
     inventoryObserved: 'Инвентаризация отражает только наблюдаемое состояние. Выбор цели сам по себе не подтверждает её пригодность и не разрешает обновление.',
     serialCapability:
       'Контракт выбранной версии требует последовательного обновления. Выбранная канарейка остаётся прежней, пока черновик плана не изменится.',

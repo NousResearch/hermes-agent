@@ -12,6 +12,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
   archived: '已封存',
   active: '進行中',
   sections: {
+    inventory: '已觀察到的受管 SSH 安裝',
     fleet: '受控發布目標清單',
     preparation: '受控發布準備',
     configuration: '受控發布設定',
@@ -24,6 +25,10 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     summary: '受控發布摘要'
   },
   actions: {
+    checking: '正在檢查…',
+    renewReview: '重新審核',
+    reviewSelected: '審核所選目標',
+    retryInventory: '重試清單',
     select: '選取',
     selected: '已選取',
     prepare: '準備選取的目標',
@@ -74,6 +79,20 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     canaryGate: gate => `金絲雀閘門：${gate}`
   },
   labels: {
+    preparationOutcome: (installId, outcome, correlationId, restoreOk) => `${installId}：結果 ${outcome}；關聯 ID ${correlationId}；復原${restoreOk ? '已確認' : '未確認'}`,
+    exclusionReason: '排除原因',
+    receiptPending: '回執：待確認',
+    pinnedTarget: '固定目標',
+    planChange: (installId, field, before, after) => `${installId} 已變更：${field}（${before} → ${after}）。`,
+    blocked: reason => `已阻止：${reason}`,
+    aliases: count => `別名（${count}）`,
+    observedHead: '觀察到的 HEAD',
+    eligibility: '資格',
+    observationTime: '觀察時間',
+    unknownFact: '未知',
+    selectedCount: count => `已選取：${count}`,
+    showingTargets: (visible, total) => `顯示 ${visible} / ${total} 個安裝`,
+    searchTargets: '搜尋目標',
     progressionMode: '推進模式',
     concurrency: '並行數',
     inventoryRevision: (revision, capturedMono) => `清單版本：${revision}；擷取時的單調時鐘時間：${capturedMono}。`,
@@ -91,6 +110,8 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     archive: archived => `封存狀態：${archived ? '已封存' : '進行中'}`
   },
   warnings: {
+    restartReviewRequired: '重新啟動後升級前須重新審核。',
+    reviewUnavailable: '目前的審核無法授權啟動。請重新驗證計畫。',
     sharedMachine: '共用機器；準備前請檢查目標所有權。',
     unsupportedTarget: '不支援的目標。',
     preparation: '準備操作會遵循已設定的分支尖端；它不是固定目標的發布。',
@@ -109,6 +130,14 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     reconnecting: '正在重新連線受控發布狀態…'
   },
   descriptions: {
+    recoveryActions: '重新檢查是唯讀操作。復原需要相關的解除證據。重試會開始新的審核；排除後原始嘗試和安全柵欄仍可見。',
+    configuration: '更新維持序列執行。第一個選定安裝是金絲雀目標；Main 會在發出審核權杖前驗證提交的完整波次計畫。',
+    rolloutCapacityUnavailable: (maxInstallations, reason) => `無法接納部署${maxInstallations === null ? '' : `：容量 ${maxInstallations} 個安裝`}。清單仍可檢視，審核已停用${reason ? `（${reason}）` : ''}。`,
+    noObservedInstallations: '未觀察到受管 SSH 安裝。',
+    noMatchingTargets: '沒有符合搜尋的安裝。',
+    preparationSeparate: '準備操作會在設定的分支最新提交上執行現有的個別更新程式。此操作未固定目標，與部署分開，並使先前的審核失效。之後請重新檢查清單。',
+    inventoryLoading: '正在載入已觀察到的安裝…',
+    preparationFinished: outcomes => `未固定目標的準備已完成：${outcomes}。請重新檢查並審核固定目標。`,
     inventoryObserved: '清單僅反映已觀測狀態。僅選取目標不代表符合資格，也不授權更新。',
     serialCapability: '目前目標契約要求序列能力。在草稿變更前，已選取的金絲雀目標會保持不變。',
     canonicalPlan: '提交的草稿與預覽中的規範波次計畫完全一致。更新或變更的列需要重新確認。',

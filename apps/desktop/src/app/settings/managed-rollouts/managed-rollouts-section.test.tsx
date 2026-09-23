@@ -39,6 +39,7 @@ describe('managed rollout section', () => {
     await waitFor(() => expect(capabilities).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.getByRole('alert', { name: 'trusted-assurance-provider-unavailable' })).toBeTruthy())
     expect(screen.getByRole('status').textContent).toContain(managedRolloutsEn.warnings.unavailable)
+    expect(screen.getByText(/Rollout admission unavailable.*0 installations/i)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /start rollout/i })).toBeNull()
   })
 
@@ -60,6 +61,33 @@ describe('managed rollout section', () => {
     expect(screen.getByText('تعكس قائمة الأجهزة الحالة المرصودة فقط. لا يعني تحديد هدف وحده أنه مؤهل أو أن تحديثه مُصرَّح به.')).toBeTruthy()
     expect(screen.getByText('مراجعة القائمة: inventory-ar-1؛ وقت الالتقاط وفق الساعة الرتيبة: 100.')).toBeTruthy()
     expect(screen.queryByText(/Inventory is observed state/)).toBeNull()
+  })
+
+  it('keeps bridge inventory visible while rollout admission capacity is unavailable', async () => {
+    const inventory = vi.fn().mockResolvedValue({
+      inventoryRevision: 'inventory-readonly', capturedMono: 321,
+      observations: [{
+        installId: 'a'.repeat(32), connectionId: '11111111-1111-4111-8111-111111111111',
+        aliasConnectionIds: [], codeRoot: '/srv/hermes', repositoryId: 'github.com/NousResearch/hermes-agent',
+        headSha: 'b'.repeat(40), requiredScopeIds: [],
+        source: { connectionId: '11111111-1111-4111-8111-111111111111', verifiedHostKeyFingerprint: 'host-a' }
+      }]
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { connections: { managedRollouts: {
+        capabilities: vi.fn().mockResolvedValue({ protocol: 1, available: false, reason: 'measured-ssh-capacity-unavailable', maxConcurrency: 0, maxInstallations: 0 }),
+        activeRevision: vi.fn().mockResolvedValue(null), inventory
+      } } }
+    })
+
+    render(<ManagedRolloutsSection />)
+    await waitFor(() => expect(inventory).toHaveBeenCalledTimes(1))
+    expect(screen.getByText('b'.repeat(40))).toBeTruthy()
+    expect(screen.getByText(/Rollout admission unavailable.*0 installations/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    expect(screen.getByRole('button', { name: /review selected target/i })).toHaveProperty('disabled', true)
   })
 
   it('loads main-owned inventory and refuses target review when the reviewed manifest is unavailable', async () => {

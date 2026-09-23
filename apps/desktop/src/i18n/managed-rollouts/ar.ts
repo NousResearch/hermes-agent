@@ -12,6 +12,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
   archived: 'مؤرشف',
   active: 'نشط',
   sections: {
+    inventory: 'تثبيتات SSH المُدارة المرصودة',
     fleet: 'أهداف النشر المُدار',
     preparation: 'إعداد النشر المُدار',
     configuration: 'إعدادات النشر المُدار',
@@ -24,6 +25,10 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     summary: 'ملخص النشر المُدار'
   },
   actions: {
+    checking: 'جار الفحص…',
+    renewReview: 'تجديد المراجعة',
+    reviewSelected: 'مراجعة الهدف المحدد',
+    retryInventory: 'إعادة تحميل القائمة',
     select: 'تحديد',
     selected: 'محدد',
     prepare: 'إعداد الأهداف المحددة',
@@ -74,6 +79,20 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     canaryGate: gate => `حاجز الاختبار المصغر: ${gate}`
   },
   labels: {
+    preparationOutcome: (installId, outcome, correlationId, restoreOk) => `${installId}: النتيجة ${outcome}؛ المعرّف المرتبط ${correlationId}؛ الاسترداد ${restoreOk ? 'مؤكد' : 'غير مؤكد'}`,
+    exclusionReason: 'سبب الاستبعاد',
+    receiptPending: 'الإيصال: قيد الانتظار',
+    pinnedTarget: 'الهدف المثبت',
+    planChange: (installId, field, before, after) => `تغير ${installId}: ${field} (${before} ← ${after}).`,
+    blocked: reason => `محظور: ${reason}`,
+    aliases: count => `الأسماء المستعارة (${count})`,
+    observedHead: 'إصدار HEAD المرصود',
+    eligibility: 'الأهلية',
+    observationTime: 'وقت الرصد',
+    unknownFact: 'غير معروف',
+    selectedCount: count => `الأهداف المحددة: ${count}`,
+    showingTargets: (visible, total) => `عرض ${visible} من أصل ${total} تثبيتًا`,
+    searchTargets: 'البحث عن أهداف',
     progressionMode: 'وضع التقدم',
     concurrency: 'التزامن',
     inventoryRevision: (revision, capturedMono) => `مراجعة القائمة: ${revision}؛ وقت الالتقاط وفق الساعة الرتيبة: ${capturedMono}.`,
@@ -91,6 +110,8 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     archive: archived => `الأرشيف: ${archived ? 'مؤرشف' : 'نشط'}`
   },
   warnings: {
+    restartReviewRequired: 'تتطلب إعادة التشغيل مراجعة جديدة قبل الترقية.',
+    reviewUnavailable: 'لا يمكن للمراجعة الحالية السماح ببدء النشر. أعد تأهيل الخطة.',
     sharedMachine: 'آلة مشتركة؛ راجع الملكية قبل الإعداد.',
     unsupportedTarget: 'الهدف غير مدعوم.',
     preparation: 'يتبع الإعداد طرف الفرع المُهيأ؛ وليس نشرًا مثبت الهدف.',
@@ -109,6 +130,14 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     reconnecting: 'جار إعادة الاتصال بحالة النشر المُدار…'
   },
   descriptions: {
+    recoveryActions: 'إعادة الفحص للقراءة فقط. يتطلب الاسترداد إثبات إزالة الحاجز المرتبط. تبدأ إعادة المحاولة مراجعة جديدة؛ ويُبقي الاستبعاد المحاولة الأصلية والحاجز ظاهرين.',
+    configuration: 'تظل التحديثات تسلسلية. التثبيت الأول المحدد هو هدف الاختبار المصغر؛ ويتحقق Main من خطة الموجات المقدمة كاملة قبل إصدار رمز المراجعة.',
+    rolloutCapacityUnavailable: (maxInstallations, reason) => `قبول النشر غير متاح${maxInstallations === null ? '' : `: السعة ${maxInstallations} تثبيتًا`}. تبقى القائمة متاحة للفحص، والمراجعة معطلة${reason ? ` (${reason})` : ''}.`,
+    noObservedInstallations: 'لم تُرصد أي تثبيتات SSH مُدارة.',
+    noMatchingTargets: 'لا توجد تثبيتات تطابق البحث.',
+    preparationSeparate: 'يشغّل الإعداد المُحدّث الفردي الحالي عند آخر إصدار للفرع المُهيأ. وهو غير مثبت الهدف، ومنفصل عن النشر، ويلغي كل مراجعة سابقة. أعد فحص القائمة بعده.',
+    inventoryLoading: 'جار تحميل التثبيتات المرصودة…',
+    preparationFinished: outcomes => `اكتمل الإعداد غير المثبت: ${outcomes}. أعد الفحص وراجع الهدف المثبت.`,
     inventoryObserved: 'تعكس قائمة الأجهزة الحالة المرصودة فقط. لا يعني تحديد هدف وحده أنه مؤهل أو أن تحديثه مُصرَّح به.',
     serialCapability: 'يتطلب عقد الهدف النشط قدرة تسلسلية. يظل هدف الاختبار المصغر المحدد ثابتًا حتى يتغير المسودّة.',
     canonicalPlan: 'تطابق المسودة المقدمة خطة الموجات القانونية التي تمت معاينتها تمامًا. تتطلب الصفوف المجددة أو المتغيرة تأكيدًا جديدًا.',

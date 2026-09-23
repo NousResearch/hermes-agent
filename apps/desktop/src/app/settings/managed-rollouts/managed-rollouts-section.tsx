@@ -166,14 +166,14 @@ export function ManagedRolloutsSection({
       for (const target of chosen) {
         if (!target.connectionId) {throw new Error('selected-connection-unavailable')}
         const result = await update(target.connectionId)
-        outcomes.push(`${target.installId}: ${result.outcome}; correlation ${result.correlationId}; restore ${result.restoreOk ? 'confirmed' : 'not confirmed'}`)
+        outcomes.push(messages.labels.preparationOutcome(target.installId, result.outcome, result.correlationId, result.restoreOk))
 
         if (!result.ok || !result.updateOk || !result.restoreOk) {
           throw new Error(`preparation-refused: ${outcomes.join('; ')}`)
         }
       }
 
-      setOperatorNotice(`Unpinned preparation finished: ${outcomes.join('; ')}. Reinspect and review the pinned target.`)
+      setOperatorNotice(messages.descriptions.preparationFinished(outcomes.join('; ')))
     } catch (error) {
       setOperatorError(errorMessage(error))
     } finally {
@@ -349,16 +349,17 @@ export function ManagedRolloutsSection({
       <p aria-live="polite" className="text-xs text-(--ui-text-tertiary)" role="status">
         {unsupported ? messages.warnings.unavailable : snapshotLabel(state, messages.noActive, messages.status.activePhase)}
       </p>
+      {state.capabilities?.available === false ? <p className="text-xs text-(--ui-text-primary)">{messages.descriptions.rolloutCapacityUnavailable(state.capabilities.maxInstallations, state.capabilities.reason)}</p> : null}
       {unsupported && state.error ? <p aria-label={state.error} className="text-xs text-amber-600" role="alert">{state.error}</p> : null}
       {state.status === 'error' && state.error ? <p className="text-xs text-amber-600" role="alert">Snapshot unavailable: {state.error}</p> : null}
       {operatorError ? <p className="text-xs text-amber-600" role="alert">{operatorError}</p> : null}
       {operatorNotice ? <p aria-live="polite" className="text-xs">{operatorNotice}</p> : null}
     </div>
 
-    <section aria-label="Observed managed SSH installations" className="grid min-w-0 gap-2">
+    <section aria-label={messages.sections.inventory} className="grid min-w-0 gap-2">
       <p className="text-xs text-(--ui-text-tertiary)">{messages.descriptions.inventoryObserved}</p>
-      {inventoryStatus === 'loading' ? <p role="status">Loading observed installations…</p> : null}
-      {inventoryStatus === 'error' ? <Button onClick={() => { void refreshInventory() }} type="button" variant="outline">Retry inventory</Button> : null}
+      {inventoryStatus === 'loading' ? <p role="status">{messages.descriptions.inventoryLoading}</p> : null}
+      {inventoryStatus === 'error' ? <Button onClick={() => { void refreshInventory() }} type="button" variant="outline">{messages.actions.retryInventory}</Button> : null}
       {inventory && inventoryStatus === 'ready' ? <>
         <p className="text-xs">{messages.labels.inventoryRevision(inventory.inventoryRevision, inventory.capturedMono)}</p>
         <PreparationPanel

@@ -8,6 +8,7 @@ export const managedRolloutsEn: ManagedRolloutMessages = {
   archived: 'archived',
   active: 'active',
   sections: {
+    inventory: 'Observed managed SSH installations',
     fleet: 'Managed rollout fleet',
     preparation: 'Managed rollout preparation',
     configuration: 'Managed rollout configuration',
@@ -20,6 +21,10 @@ export const managedRolloutsEn: ManagedRolloutMessages = {
     summary: 'Managed rollout summary'
   },
   actions: {
+    checking: 'Checking…',
+    renewReview: 'Renew review',
+    reviewSelected: 'Review selected target',
+    retryInventory: 'Retry inventory',
     select: 'Select',
     selected: 'Selected',
     prepare: 'Prepare selected targets',
@@ -70,6 +75,20 @@ export const managedRolloutsEn: ManagedRolloutMessages = {
     canaryGate: gate => `Canary gate: ${gate}`
   },
   labels: {
+    preparationOutcome: (installId, outcome, correlationId, restoreOk) => `${installId}: ${outcome}; correlation ${correlationId}; restore ${restoreOk ? 'confirmed' : 'not confirmed'}`,
+    exclusionReason: 'Exclusion reason',
+    receiptPending: 'Receipt: pending',
+    pinnedTarget: 'Pinned target',
+    planChange: (installId, field, before, after) => `Changed ${installId}: ${field} (${before} → ${after}).`,
+    blocked: reason => `Blocked: ${reason}`,
+    aliases: count => `Aliases (${count})`,
+    observedHead: 'Observed HEAD',
+    eligibility: 'Eligibility',
+    observationTime: 'Observation time',
+    unknownFact: 'unknown',
+    selectedCount: count => `Selected: ${count}`,
+    showingTargets: (visible, total) => `Showing ${visible} of ${total} installations`,
+    searchTargets: 'Search targets',
     progressionMode: 'Progression mode',
     concurrency: 'Concurrency',
     inventoryRevision: (revision, capturedMono) => `Inventory revision: ${revision}; captured monotonic time: ${capturedMono}.`,
@@ -87,6 +106,8 @@ export const managedRolloutsEn: ManagedRolloutMessages = {
     archive: archived => `Archive: ${archived ? 'archived' : 'active'}`
   },
   warnings: {
+    restartReviewRequired: 'Restart requires a fresh review before promotion.',
+    reviewUnavailable: 'Current review cannot authorize Start. Requalify the plan.',
     sharedMachine: 'Shared machine; review ownership before preparation.',
     unsupportedTarget: 'Unsupported target.',
     preparation: 'Preparation follows the configured branch tip; it is not a pinned rollout.',
@@ -108,6 +129,14 @@ export const managedRolloutsEn: ManagedRolloutMessages = {
     reconnecting: 'Reconnecting to managed rollout status…'
   },
   descriptions: {
+    recoveryActions: 'Recheck is read-only. Recover requires correlated clearance. Retry starts a new review; exclusion leaves the original attempt and fence visible.',
+    configuration: 'Updates remain serial. The first selected installation is the canary; Main validates the complete submitted wave plan before issuing a review token.',
+    rolloutCapacityUnavailable: (maxInstallations, reason) => `Rollout admission unavailable${maxInstallations === null ? '' : `: ${maxInstallations} installations`}. Inventory remains visible for inspection; review is disabled${reason ? ` (${reason})` : ''}.`,
+    noObservedInstallations: 'No managed SSH installations were observed.',
+    noMatchingTargets: 'No installations match this search.',
+    preparationSeparate: 'Preparation runs the existing individual updater at the configured branch tip. It is unpinned, separate from the rollout, and invalidates every earlier review. Reinspect the inventory afterward.',
+    inventoryLoading: 'Loading observed installations…',
+    preparationFinished: outcomes => `Unpinned preparation finished: ${outcomes}. Reinspect and review the pinned target.`,
     inventoryObserved: 'Inventory is observed state. Selection alone does not establish eligibility or authorize an update.',
     serialCapability: 'Serial capability is required by the active target contract. The selected canary remains stable until the draft changes.',
     canonicalPlan:
@@ -130,7 +159,7 @@ export const managedRolloutsEn: ManagedRolloutMessages = {
   },
   a11y: {
     confirmPreparation: 'I confirm these targets are the intended separate preparation set.',
-    confirmPreflight: 'I confirm this preflight review.',
+    confirmPreflight: 'I confirm this exact preflight review.',
     selectTarget: label => `Select target ${label}`,
     selectedTarget: label => `Deselect target ${label}`,
     warning: message => `Warning: ${message}`,

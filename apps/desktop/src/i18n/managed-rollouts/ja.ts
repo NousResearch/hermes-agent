@@ -12,6 +12,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
   archived: 'アーカイブ済み',
   active: 'アクティブ',
   sections: {
+    inventory: '確認された管理対象 SSH インストール',
     fleet: '管理ロールアウトの対象一覧',
     preparation: '管理ロールアウトの準備',
     configuration: '管理ロールアウトの設定',
@@ -24,6 +25,10 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     summary: '管理ロールアウトの概要'
   },
   actions: {
+    checking: '確認中…',
+    renewReview: '審査を更新',
+    reviewSelected: '選択した対象を確認',
+    retryInventory: '一覧を再取得',
     select: '選択',
     selected: '選択済み',
     prepare: '選択した対象を準備',
@@ -74,6 +79,20 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     canaryGate: gate => `カナリアゲート：${gate}`
   },
   labels: {
+    preparationOutcome: (installId, outcome, correlationId, restoreOk) => `${installId}: 結果 ${outcome}、相関 ID ${correlationId}、復旧 ${restoreOk ? '確認済み' : '未確認'}`,
+    exclusionReason: '除外理由',
+    receiptPending: '受領記録: 保留中',
+    pinnedTarget: '固定された対象',
+    planChange: (installId, field, before, after) => `${installId} の変更: ${field} (${before} → ${after})。`,
+    blocked: reason => `ブロック: ${reason}`,
+    aliases: count => `別名 (${count})`,
+    observedHead: '確認された HEAD',
+    eligibility: '適格性',
+    observationTime: '確認時刻',
+    unknownFact: '不明',
+    selectedCount: count => `選択数: ${count}`,
+    showingTargets: (visible, total) => `${total} 件中 ${visible} 件を表示`,
+    searchTargets: '対象を検索',
     progressionMode: '進行モード',
     concurrency: '同時実行数',
     inventoryRevision: (revision, capturedMono) => `インベントリのリビジョン: ${revision}、取得時の単調時計時刻: ${capturedMono}。`,
@@ -91,6 +110,8 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     archive: archived => `アーカイブ：${archived ? 'アーカイブ済み' : 'アクティブ'}`
   },
   warnings: {
+    restartReviewRequired: '再起動後の昇格には新しい審査が必要です。',
+    reviewUnavailable: '現在の審査では開始を許可できません。計画を再確認してください。',
     sharedMachine: '共有マシンです。準備前に所有権を確認してください。',
     unsupportedTarget: 'サポートされていない対象です。',
     preparation: '準備は設定済みのブランチ先端に従います。固定されたロールアウトではありません。',
@@ -109,6 +130,14 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
     reconnecting: '管理ロールアウトの状態に再接続中…'
   },
   descriptions: {
+    recoveryActions: '再確認は読み取り専用です。復旧には対応付けられた解除の証拠が必要です。再試行は新しい審査を開始し、除外しても元の試行とフェンスは表示され続けます。',
+    configuration: '更新は逐次実行されます。最初に選択したインストールがカナリアです。Main は審査トークンを発行する前に、提出された全ウェーブ計画を検証します。',
+    rolloutCapacityUnavailable: (maxInstallations, reason) => `ロールアウトの受け入れは利用できません${maxInstallations === null ? '' : `（上限 ${maxInstallations} 件）`}。一覧は確認できますが、審査は無効です${reason ? `（${reason}）` : ''}。`,
+    noObservedInstallations: '管理対象の SSH インストールは確認されていません。',
+    noMatchingTargets: '検索に一致するインストールはありません。',
+    preparationSeparate: '準備は設定されたブランチの先端で既存の個別更新を実行します。ロールアウトとは別の未固定操作であり、以前の確認は無効になります。実行後に一覧を再確認してください。',
+    inventoryLoading: '確認されたインストールを読み込み中…',
+    preparationFinished: outcomes => `未固定の準備が完了しました: ${outcomes}。再確認して固定対象を審査してください。`,
     inventoryObserved: '一覧は観測された状態を示します。対象を選択しただけでは、適格性の確認や更新の承認にはなりません。',
     serialCapability: '現在の対象契約では直列実行が必要です。草稿を変更するまで、選択したカナリアは固定されます。',
     canonicalPlan: '送信された草稿はプレビューした正規のウェーブ計画と完全に一致します。更新または変更された行は再確認が必要です。',

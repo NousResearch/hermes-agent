@@ -47,6 +47,30 @@ describe('managed rollout fleet overview', () => {
     expect(onToggle).toHaveBeenCalledWith(JSON.stringify(['same-host', 'a'.repeat(32)]))
   })
 
+  it('shows the observed HEAD and states which eligibility and wall time facts are unknown', () => {
+    const [target] = targetsFromInventory(inventory)
+
+    expect(target.headSha).toBe('b'.repeat(40))
+    expect(target.eligibility).toBe('unknown')
+    expect(target.observedAt).toBeNull()
+    render(<FleetOverview onToggle={() => undefined} selected={new Set()} targets={[target]} />)
+    expect(screen.getByText('b'.repeat(40))).toBeTruthy()
+    expect(screen.getByText(/Eligibility: unknown/i)).toBeTruthy()
+    expect(screen.getByText(/Observation time: unknown/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Select' })).toHaveProperty('disabled', false)
+  })
+
+  it('makes every full alias discoverable through a keyboard accessible disclosure', () => {
+    const longAlias = 'fleet-alias-' + 'x'.repeat(100)
+    const [target] = targetsFromInventory({ ...inventory, observations: [{ ...inventory.observations[0], aliasConnectionIds: [longAlias] }] })
+    render(<FleetOverview onToggle={() => undefined} selected={new Set()} targets={[target]} />)
+
+    const disclosure = screen.getByText(/Aliases \(1\)/)
+    expect(disclosure.tagName).toBe('SUMMARY')
+    expect(screen.getByText(longAlias)).toBeTruthy()
+    expect(disclosure.closest('details')).toBeTruthy()
+  })
+
   it('makes an empty observed inventory explicit', () => {
     render(<FleetOverview onToggle={() => undefined} selected={new Set()} targets={[]} />)
     expect(screen.getByText(/No managed SSH installations were observed/)).toBeTruthy()
@@ -64,6 +88,8 @@ describe('managed rollout fleet overview', () => {
     expect(screen.getByRole('button', { name: managedRolloutsAr.actions.selected })).toBeTruthy()
     expect(screen.getByRole('button', { name: managedRolloutsAr.actions.select })).toBeTruthy()
     expect(screen.getAllByText(managedRolloutsAr.warnings.sharedMachine)).toHaveLength(2)
+    expect(screen.getAllByText(`${managedRolloutsAr.labels.eligibility}: ${managedRolloutsAr.labels.unknownFact}`)).toHaveLength(2)
+    expect(screen.getAllByText(`${managedRolloutsAr.labels.observationTime}: ${managedRolloutsAr.labels.unknownFact}`)).toHaveLength(2)
     expect(screen.queryByText(managedRolloutsEn.warnings.sharedMachine)).toBeNull()
   })
 })

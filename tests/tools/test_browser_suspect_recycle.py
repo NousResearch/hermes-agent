@@ -23,7 +23,8 @@ TASK = "suspect-task"
 
 
 @pytest.fixture(autouse=True)
-def _reset_browser_state():
+def _reset_browser_state(monkeypatch):
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **k: [])
     def _clear():
         bt._active_sessions.clear()
         bt._session_last_activity.clear()
@@ -73,10 +74,10 @@ class TestTimeoutMarksSuspect:
         # Daemon alive + responsive → recycle-at-next-use branch, no kill.
         monkeypatch.setattr("tools.browser_tool_session._read_browser_daemon_pid", lambda *_a: 4321)
         monkeypatch.setattr("tools.browser_tool_lifecycle._pid_exists", lambda _pid: True)
-        monkeypatch.setattr("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", lambda *_a: True)
+        monkeypatch.setattr("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", lambda *_a: 777)
         monkeypatch.setattr("tools.browser_tool_session._browser_daemon_responsive", lambda *_a, **_k: True)
         kills = []
-        monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **_k: kills.append(pid))
+        monkeypatch.setattr("tools.process_registry.ProcessRegistry._terminate_host_pid", lambda pid, **_k: kills.append(pid))
 
         marks = []
         original_mark = bt._BrowserSessionBackend.mark_suspect
@@ -177,7 +178,7 @@ class TestSuccessfulCallNeverRecycles:
             lambda *a: discard_calls.append(a),
         )
         kills = []
-        monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **_k: kills.append(pid))
+        monkeypatch.setattr("tools.process_registry.ProcessRegistry._terminate_host_pid", lambda pid, **_k: kills.append(pid))
 
         result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=5)
 
@@ -208,15 +209,19 @@ class TestWedgedDaemonTreeKill:
         process.wait.side_effect = [subprocess.TimeoutExpired("agent-browser", 1), -9]
         _install_command_stubs(monkeypatch, tmp_path, process)
 
-        # Wedged: daemon PID exists but the control socket is unresponsive.
-        monkeypatch.setattr("tools.browser_tool_lifecycle._pid_exists", lambda _pid: True)
-        monkeypatch.setattr("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", lambda *_a: True)
+        # Wedged: daemon is alive before the mocked signal, gone afterward.
+        monkeypatch.setattr("tools.browser_tool_lifecycle._pid_exists", lambda _pid: not kills)
+        monkeypatch.setattr("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", lambda *_a: 777)
         monkeypatch.setattr("tools.browser_tool_session._browser_daemon_responsive", lambda *_a, **_k: False)
 
         kills = []
+
+        def guarded_kill(pid, *, expected_start):
+            assert expected_start == 777
+            kills.append(pid)
+
         monkeypatch.setattr(
-            "agent.deadline.kill_process_tree",
-            lambda pid, **_k: kills.append(pid) or True,
+            "tools.process_registry.ProcessRegistry._terminate_host_pid", guarded_kill,
         )
 
         result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=1)
@@ -237,7 +242,7 @@ class TestWedgedDaemonTreeKill:
 
         kills = []
         monkeypatch.setattr(
-            "agent.deadline.kill_process_tree",
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
             lambda pid, **_k: kills.append(pid) or True,
         )
         monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda _tid: None)
@@ -295,7 +300,7 @@ class TestBackendLevelFailureRecycles:
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         monkeypatch.setattr("tools.browser_tool_real_profile._real_profile_cdp", lambda: (None, None))
-        monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **_k: None)
+        monkeypatch.setattr("tools.process_registry.ProcessRegistry._terminate_host_pid", lambda pid, **_k: None)
         return spawns
 
     def test_exit_101_evicts_poisoned_session_and_retries_once_on_a_fresh_one(self, monkeypatch, tmp_path):

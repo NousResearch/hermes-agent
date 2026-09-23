@@ -264,8 +264,8 @@ describe('managed rollout policy', () => {
     expect(canPromote(current, proof, 2_500, 4, { processGeneration: 2, evidenceGeneration: 3 })).toBe(true)
   })
 
-  it('accepts the manual canary approval before canaryApproved is set', () => {
-    const current = snapshot({ canaryApproved: false })
+  it('accepts manual canary approval under auto policy before canaryApproved is set', () => {
+    const current = snapshot({ canaryApproved: false, promotionPolicy: 'auto-if-healthy' })
 
     const proof = {
       observationId: 'epoch-1',
@@ -282,6 +282,10 @@ describe('managed rollout policy', () => {
       approval: 'manual' as const
     }
 
-    expect(canPromote(current, proof, 2_500, 4, { processGeneration: 2, evidenceGeneration: 3 })).toBe(true)
+    const context = { processGeneration: 2, evidenceGeneration: 3 }
+
+    expect(needsManualPromotion(current)).toBe(true)
+    expect(canPromote(current, { ...proof, approval: 'automatic' }, 2_500, 4, context)).toBe(false)
+    expect(canPromote(current, proof, 2_500, 4, context)).toBe(true)
   })
 })

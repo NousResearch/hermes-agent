@@ -216,9 +216,7 @@ export function CapabilityScopeSelector({
             <SelectValue />
           )}
         </SelectTrigger>
-        <SelectContent
-          className={compact ? 'max-w-(--radix-select-content-available-width)' : undefined}
-        >
+        <SelectContent className={compact ? 'max-w-(--radix-select-content-available-width)' : undefined}>
           {scope.options.map(option => (
             <SelectItem
               className={compact ? '[&>span:last-child]:min-w-0 [&>span:last-child]:truncate' : undefined}

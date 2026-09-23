@@ -318,14 +318,21 @@ async def _tick_socket_handler(reader: asyncio.StreamReader, writer: asyncio.Str
 def _sweep_stale_tick_sockets(own_path: Path) -> None:
     """Unlink loop-tick socket nodes left by dead PIDs (POSIX only; never raises).
     create_unix_server removes a leftover node at OUR path (os._exit / SIGKILL skip the
-    finally-unlink) but not SIBLING nodes from other dead PIDs. os.kill(pid, 0) is a liveness
-    probe only on POSIX (Windows would TerminateProcess)."""
+    finally-unlink) but not SIBLING nodes from other dead PIDs."""
+    from gateway.status import _pid_exists
+
     try:
         for stale in (p for p in own_path.parent.glob("gateway.loop-tick.*.sock") if p != own_path):
             try:
-                os.kill(int(stale.name.split(".")[-2]), 0)  # windows-footgun: ok — POSIX-only
-            except (ValueError, IndexError, OSError):
+                pid = int(stale.name.split(".")[-2])
+                if _pid_exists(pid):
+                    continue
+            except (ValueError, IndexError):
+                pass
+            try:
                 stale.unlink(missing_ok=True)
+            except OSError:
+                pass
     except Exception:
         logger.debug("stale loop-tick socket sweep failed", exc_info=True)
 

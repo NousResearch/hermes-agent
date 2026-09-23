@@ -1,5 +1,6 @@
 """Tests for gateway runtime status tracking."""
 
+import errno
 import json
 import os
 import threading
@@ -59,6 +60,44 @@ class TestGatewayPidState:
         status.release_gateway_runtime_lock()
 
         assert status.is_gateway_runtime_lock_active() is False
+
+    def test_runtime_lock_retries_interrupted_lock_acquisition(self, tmp_path, monkeypatch):
+        """An EINTR while taking the lock is transient, not lock contention."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+
+        def flock(_fd, _operation):
+            calls.append(1)
+            if len(calls) == 1:
+                raise InterruptedError(errno.EINTR, "interrupted")
+
+        monkeypatch.setattr(status.fcntl, "flock", flock)
+
+        assert status.acquire_gateway_runtime_lock() is True
+        status.release_gateway_runtime_lock()
+        assert len(calls) >= 2
+
+    def test_runtime_lock_reports_only_contention_as_not_acquired(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def flock(_fd, _operation):
+            raise BlockingIOError(errno.EAGAIN, "already locked")
+
+        monkeypatch.setattr(status.fcntl, "flock", flock)
+
+        assert status.acquire_gateway_runtime_lock() is False
+
+    def test_runtime_lock_propagates_non_contention_os_error(self, tmp_path, monkeypatch):
+        """I/O failures must not masquerade as another live gateway's lock."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def flock(_fd, _operation):
+            raise OSError(errno.EIO, "I/O error")
+
+        monkeypatch.setattr(status.fcntl, "flock", flock)
+
+        with pytest.raises(OSError, match="I/O error"):
+            status.acquire_gateway_runtime_lock()
 
 
     def test_get_running_pid_cached_invalidates_when_pid_file_changes(self, tmp_path, monkeypatch):

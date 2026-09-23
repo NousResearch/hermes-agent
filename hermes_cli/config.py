@@ -904,7 +904,11 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
             if key not in current:
                 missing.append({"key": full_key, "default": default_value,
                                 "description": f"New config option: {full_key}"})
-            elif isinstance(default_value, dict) and isinstance(current.get(key), dict):
+            elif (
+                isinstance(default_value, dict)
+                and isinstance(current.get(key), dict)
+                and not (prefix == "moa" and key == "presets")
+            ):
                 _check(default_value, current[key], full_key)
 
     _check(DEFAULT_CONFIG, load_config())

@@ -21,6 +21,10 @@ A small, deterministic Electron suite that guards three issue classes end to end
     `switch-back-race.spec.ts` forces both orders of "reply completes" vs "the
     switch-back REST hydrate resolves" with gates (no sleeps) under the same
     oracle.
+    `onboarding-first-chat.spec.ts` starts from a fresh home with no provider:
+    the real onboarding (custom endpoint → the fake provider's URL), then the
+    first chat, a second turn and a reload under the same oracle, plus
+    persisted config == entered endpoint and one live socket afterwards.
 - **C20 interactive prompts** — `interactive-prompts.spec.ts`: clarify (one
   card; the clicked choice is exactly what the model receives), approval
   Run once (the command runs only after the click) and Deny (never runs; the

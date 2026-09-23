@@ -4599,6 +4599,57 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
+# Last-seen live SQLite connection count per state.db path, for the
+# housekeeping fd-leak guard (#96027). Written only from the single
+# housekeeping thread, so no locking is needed.
+_fd_guard_last: Dict[str, int] = {}
+
+# Healthy ceiling for live connections to one state.db in a single-profile
+# gateway: 2 long-lived SessionDBs (SessionStore + AsyncSessionDB), each
+# holding 1 writer + up to _READ_POOL_MAX pooled readers. Anything above this
+# is an unclosed-handle leak, not configuration. _READ_POOL_MAX is resolved
+# lazily inside the guard so a future pool change cannot silently drift the
+# ceiling away from what a healthy gateway actually holds.
+def _fd_guard_warn_ceiling() -> int:
+    from hermes_state_readpool import _READ_POOL_MAX
+
+    return 2 * (1 + _READ_POOL_MAX) + 4
+
+
+def _housekeeping_state_db_fd_guard() -> None:
+    """Log live state.db connection growth for the #96027 fd-leak guard.
+
+    Counts this process's tracked sqlite3 connections to the active state.db
+    and compares against the last tick. INFO on any growth (the issue's
+    ``~2 connections/day`` signature shows up within hours), WARNING once the
+    count passes the healthy ceiling (the EMFILE cliff is still weeks away).
+    Pure read of the tracking registry — opens no descriptors, so the check
+    itself can never leak. Idempotent; call once per hour.
+    """
+    from hermes_cli.sqlite_safe_read import live_connection_count
+    from hermes_state import _default_db_path
+
+    db_path = str(Path(_default_db_path()).resolve())
+    current = live_connection_count(db_path)
+    previous = _fd_guard_last.get(db_path)
+    ceiling = _fd_guard_warn_ceiling()
+    if previous is not None and current > previous:
+        logger.info(
+            "state.db live SQLite connections grew %d -> %d (fd-leak guard, #96027)",
+            previous,
+            current,
+        )
+    if current > ceiling:
+        logger.warning(
+            "state.db live SQLite connections at %d exceed the healthy "
+            "ceiling (%d) — connections are leaking; check for unclosed "
+            "SessionDB handles (#96027)",
+            current,
+            ceiling,
+        )
+    _fd_guard_last[db_path] = current
+
+
 def _housekeeping_chore(label: str, fn, *args, **kwargs) -> None:
     """Run one housekeeping chore; failures log at debug (a persistent failure such as a broken
     import after a partial update would otherwise warn every tick forever) and never stop the loop."""
@@ -4831,6 +4882,10 @@ def _start_gateway_housekeeping(
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
             lambda _launch=_launch_sessions_dir(getattr(runner, "config", None)):
                 _housekeeping_state_db_maintenance(_launch))),
+        # SQLite fd-leak guard (#96027): a long-lived gateway whose live connection count keeps
+        # climbing (the issue's 48 db + 46 wal fds over 22 days) hits EMFILE with no diagnostic.
+        # Pure registry read — opens no descriptors, so the check itself can never leak.
+        (60, "state.db fd-leak guard", _housekeeping_state_db_fd_guard),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

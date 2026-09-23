@@ -14,6 +14,13 @@ _INITIAL_RETRY_DELAY_SECONDS = 1.0
 _MAX_RETRY_DELAY_SECONDS = 60.0
 
 
+def _close_handle(handle: Any) -> None:
+    """Default closer for a rejected cache handle (no close_all callback yet)."""
+    closer = getattr(handle, "close", None)
+    if callable(closer):
+        closer()
+
+
 @dataclass
 class _Unavailable:
     failures: int = 0
@@ -119,9 +126,19 @@ class RecoverableHandleCache:
                 self._unavailable.pop(path, None)
             close_rejected = self._close_rejected if stale else None
         if stale:
-            if close_rejected is not None:
-                with contextlib.suppress(Exception):
-                    close_rejected(handle)
+            # The handle lost the caching race (a concurrent close_all, or the
+            # unavailable entry being replaced mid-open). A handle that fails
+            # to enter the cache MUST still be released: on a long-lived
+            # gateway an open SessionDB dropped on the floor here keeps its
+            # state.db/-wal fds (and once its token writer starts, the atexit
+            # hook pins the instance for the life of the process — the exact
+            # leak shape of #96027). close_all() installs a closer; when none
+            # is installed (the pre-close_all window), fall back to the
+            # handle's own close() so the rejection path never depends on a
+            # shutdown callback that may not have run yet.
+            closer = close_rejected if close_rejected is not None else _close_handle
+            with contextlib.suppress(Exception):
+                closer(handle)
             return None
         _publish_health(self._health_source, path, "ok")
         if was_unavailable and on_recovered is not None:

@@ -15,6 +15,7 @@ from typing import Any
 # Provider-layer failure codes → (title, hint). Codes are ``agent.error_classifier.FailoverReason``
 # values carried in ``error_surface.code``; anything unlisted falls back on the layer table.
 _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
+    "credentials_missing": ("No model credentials are configured", "Choose a model and add its API key or sign in with /model."),
     "auth": ("The model provider rejected the API key", "Fix the key with /model, then /retry."),
     "auth_permanent": ("The model provider rejected the API key", "Fix the key with /model, then /retry."),
     "billing": ("The model provider reports no credit left", "Top up the account or switch with /model."),
@@ -94,6 +95,16 @@ def busy_message(command: str) -> str:
 def agent_init_failed_message(exc: Any) -> str:
     return (f"Hermes could not start the assistant for this session. Details: {exc}. "
             "Check the model and provider with /model, or run `hermes setup` in a terminal to reconfigure.")
+
+
+def agent_init_error_surface(exc: Any) -> dict:
+    """Structured setup guidance for an agent build failure, with a safe fallback."""
+    try:
+        from agent.error_surface import build_agent_init_error_surface
+
+        return build_agent_init_error_surface(exc)
+    except Exception:  # pragma: no cover - diagnostics must not break turn cleanup
+        return {"layer": "runtime", "code": "agent_init_failed", "retryable": True}
 
 
 AGENT_STILL_STARTING = (

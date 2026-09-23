@@ -32,6 +32,16 @@ def test_turn_error_text_without_a_surface_still_names_the_next_step():
     assert not text.startswith("Error:")
 
 
+def test_missing_credentials_copy_names_model_setup_not_a_provider_rejection():
+    text = um.turn_error_text("No LLM provider configured", {
+        "layer": "auth", "code": "credentials_missing", "retryable": False,
+    })
+
+    assert text.startswith("No model credentials are configured")
+    assert "API key" in text and "/model" in text
+    assert "rejected" not in text
+
+
 @pytest.mark.parametrize("command", ["undo", "compress", "reload-mcp", "rollback restore"])
 def test_busy_message_names_the_real_gesture_not_a_missing_slash_command(command):
     text = um.busy_message(command)

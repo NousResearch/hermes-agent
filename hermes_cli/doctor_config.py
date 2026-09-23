@@ -12,9 +12,22 @@ from hermes_cli.doctor_report import (
 
 
 def _has_provider_env_config(content: str) -> bool:
-    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
+    """Return True when ~/.hermes/.env contains provider credentials.
+
+    A base URL only says where Hermes would send a request; without a key or
+    OAuth credential it cannot start a turn.
+    """
     from hermes_cli.doctor import _PROVIDER_ENV_HINTS
-    return any(key in content for key in _PROVIDER_ENV_HINTS)
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        if separator and key.strip() in _PROVIDER_ENV_HINTS and value.strip().strip("'\""):
+            return True
+    return False
 
 
 # Legacy config keys still read for back-compat: warn-only with the modern replacement, never auto-migrated

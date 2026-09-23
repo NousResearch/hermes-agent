@@ -13,6 +13,7 @@ from agent.error_surface import (
     LAYER_PROVIDER,
     LAYER_STREAMING,
     build_error_surface_from_exception,
+    build_agent_init_error_surface,
     build_error_surface_from_result,
 )
 
@@ -229,6 +230,14 @@ def test_exception_never_raises_on_weird_input():
 
     # Must not raise, whatever it returns.
     build_error_surface_from_exception(Hostile("x"))
+
+
+def test_agent_init_missing_credentials_has_actionable_surface():
+    """An empty credential pool must not reach clients as a generic runtime error (#119105)."""
+    surface = build_agent_init_error_surface(
+        RuntimeError("No LLM provider configured. Run `hermes model` to select a provider."))
+
+    assert surface == {"layer": LAYER_AUTH, "code": "credentials_missing", "retryable": False}
 
 
 # ── Nous free tier ────────────────────────────────────────────────────────

@@ -170,6 +170,15 @@ describe('error copy never names a hidden Retry', () => {
   })
 })
 
+describe('missing credentials at turn start', () => {
+  it('guides the user to choose a model instead of showing the generic runtime error', () => {
+    const surface = parseErrorSurface({ layer: 'auth', code: 'credentials_missing', retryable: false })!
+
+    expect(errorCardText(en.assistant.thread, surface).body).toMatch(/model|API key/i)
+    expect(errorRecoveryPlan(surface)).toMatchObject({ retry: false, switchProvider: true })
+  })
+})
+
 describe('free-tier refusals', () => {
   const surface = parseErrorSurface({
     code: 'free_tier_disabled',

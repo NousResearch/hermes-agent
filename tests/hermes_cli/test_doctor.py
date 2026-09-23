@@ -76,6 +76,14 @@ class TestProviderEnvDetection:
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
 
+    def test_base_url_without_a_credential_does_not_count_as_provider_config(self):
+        """A custom endpoint alone cannot start a model turn (#119105)."""
+        content = "OPENAI_BASE_URL=https://openrouter.ai/api/v1\n"
+        assert not _has_provider_env_config(content)
+
+    def test_blank_api_key_does_not_count_as_provider_config(self):
+        assert not _has_provider_env_config("OPENROUTER_API_KEY=\n")
+
 
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):

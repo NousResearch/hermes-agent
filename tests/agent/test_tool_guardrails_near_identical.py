@@ -5,6 +5,7 @@ from agent.tool_guardrails import (
     NEAR_IDENTICAL_RESULT_JACCARD,
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
+    _args_overlap,
 )
 
 _KEY_PRELUDE = (
@@ -131,3 +132,67 @@ def test_threshold_is_configurable_via_nested_sections():
     assert cfg.near_identical_warn_after == 2
     assert cfg.near_identical_block_after == 3
     assert 0 < NEAR_IDENTICAL_ARGS_JACCARD < 1 and 0 < NEAR_IDENTICAL_RESULT_JACCARD <= 1
+
+
+# --- short commands, where a single decoration swap used to dilute Jaccard ---
+
+_SHORT = "bash scripts/check_changes.sh"
+_SHORT_DECORATIONS = [
+    _SHORT,
+    f"{_SHORT} 2>/dev/null",
+    f"{_SHORT} | head -5",
+    f"{_SHORT} > /tmp/o.txt 2>&1; echo EXIT:$?",
+    f"{_SHORT} || true",
+]
+
+
+def test_redecorated_short_command_is_a_loop():
+    """The reported gap: on a short command one decoration swap drops plain Jaccard below the threshold,
+    so the reworded call never counted and the loop ran to the iteration budget."""
+    controller = _unattended()
+    calls = [
+        ("terminal", {"command": _SHORT_DECORATIONS[i % len(_SHORT_DECORATIONS)]},
+         '{"output": "CHANGED:47/47", "exit_code": 0}')
+        for i in range(30)
+    ]
+    halt = _drive(controller, calls)
+
+    assert halt is not None
+    assert halt.code == "near_identical_call_streak_halt"
+
+
+def test_short_commands_differing_by_file_still_iterate():
+    """Containment must not chain a short-command sweep: `cat f1.txt` -> `cat f2.txt` is iteration,
+    even when every file happens to print the same thing."""
+    controller = _unattended()
+    calls = [
+        ("terminal", {"command": f"cat /tmp/f{i % 12}.txt"}, '{"output": "CHANGED:47/47", "exit_code": 0}')
+        for i in range(36)
+    ]
+    assert _drive(controller, calls) is None
+
+
+def test_containment_needs_a_minimum_command_size():
+    """A 2-token command must not be "contained" by an unrelated longer one just because it is short."""
+    tiny = frozenset({"ls"})
+    unrelated = frozenset({"ls", "la", "tmp", "dir1"})
+    assert _args_overlap(tiny, unrelated) < NEAR_IDENTICAL_ARGS_JACCARD
+
+    plain = frozenset({"bash", "scripts", "check_changes", "sh"})
+    decorated = plain | {"dev", "null"}
+    assert _args_overlap(plain, decorated) >= NEAR_IDENTICAL_ARGS_JACCARD
+    # ...while a long command still has to clear the plain Jaccard bar.
+    long_a = frozenset({"a", "b", "c", "d", "e", "f", "g", "h"})
+    assert _args_overlap(long_a, long_a | {"x", "y", "z", "w"}) < NEAR_IDENTICAL_ARGS_JACCARD
+
+
+def test_file_edit_result_still_clears_the_decorated_window():
+    """Decoration stripping must not weaken the edit-landed reset."""
+    controller = _unattended()
+    calls = []
+    for i in range(30):
+        calls.append(("terminal", {"command": _SHORT_DECORATIONS[i % len(_SHORT_DECORATIONS)]},
+                      '{"output": "CHANGED:47/47", "exit_code": 0}'))
+        calls.append(("patch", {"path": "/tmp/f.txt", "old_string": f"a{i}", "new_string": f"b{i}"},
+                      f'{{"success": true, "file": "/tmp/f.txt", "lines_changed": {i + 1}}}'))
+    assert _drive(controller, calls) is None

@@ -87,11 +87,30 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 # match so a sweep over N distinct records (similar args, different results) is never flagged.
 NEAR_IDENTICAL_ARGS_JACCARD = 0.8
 NEAR_IDENTICAL_RESULT_JACCARD = 0.9
+# On a short command one decoration swap (adding `2>/dev/null`, `| head`) drops plain Jaccard under the
+# threshold even though every meaningful token still matches, so below this many tokens containment
+# (intersection / smaller set) is allowed to satisfy the args test.
+NEAR_IDENTICAL_SHORT_ARGS_TOKENS = 6
+_NEAR_IDENTICAL_CONTAINMENT_MIN_TOKENS = 3  # 1-2 token args are too small for containment to mean anything
 _IDENTIFIER_MIN_CHARS = 8  # a differing token this long containing a digit = a record id, not a rephrase
 _NEAR_IDENTICAL_WINDOW_SLACK = 4  # window = block_after + slack; how many off-pattern calls a loop may contain
 _NEAR_IDENTICAL_RESULT_WINDOW_CHARS = 4000
 _NEAR_IDENTICAL_TOKEN_RE = re.compile(r"[^a-z0-9_#]+")
 _DIGIT_RUN_RE = re.compile(r"\d+")
+# Shell decoration a reworded command varies without changing what it does. Token sets already ignore
+# ordering, so `&&` vs newline needs nothing here; the rest are dropped before tokenising so they stop
+# diluting the overlap. Deliberately narrow: only pure no-ops (`; true`, `|| true`), truncation
+# (`| head`/`| tail`/`| cat`), redirects, and the `echo EXIT:$?` tail seen in the motivating session.
+_SHELL_DECORATION_RES = (
+    re.compile(r"\d*>>?&\d+"),                             # 2>&1, >&2
+    re.compile(r"\d*>>?\s*/dev/null"),                      # 2>/dev/null, > /dev/null
+    re.compile(r"\|+\s*(?:head|tail)\b(?:\s+-n?\s*\d+)?"),  # | head, | head -20, | tail -n 5
+    re.compile(r"\|+\s*cat\b"),
+    re.compile(r"\|\|?\s*true\b"),                          # || true
+    re.compile(r";\s*true\b"),
+    re.compile(r"echo\s+exit:\s*\$\?"),                     # echo EXIT:$?
+    re.compile(r"echo\s+\$\?"),
+)
 
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
@@ -566,8 +585,10 @@ class ToolCallGuardrailController:
         ``count`` = this call plus every call in the recent window on the SAME tool whose args token set
         overlaps at >= NEAR_IDENTICAL_ARGS_JACCARD and result token set at >= NEAR_IDENTICAL_RESULT_JACCARD.
         A window (not a consecutive streak) so a loop survives the model decorating one iteration with
-        `echo EXIT:$?`. A landed file edit clears the window (edit -> re-run is progress). Pollers are exempt
-        (an unchanged poll is progress). Non-string results are never counted.
+        `echo EXIT:$?`. Args are compared with shell decoration stripped and, on short commands, with
+        containment instead of Jaccard (see ``_args_overlap``). A landed file edit clears the window
+        (edit -> re-run is progress). Pollers are exempt (an unchanged poll is progress). Non-string
+        results are never counted.
         """
         if file_mutation_result_landed(tool_name, result):
             # An edit that landed makes the next re-run a new experiment.
@@ -575,7 +596,7 @@ class ToolCallGuardrailController:
             return None
         if result is None or is_stall_guard_repeatable(tool_name):
             return None
-        args_tokens = _token_set(" ".join(_leaf_strings(args)))
+        args_tokens = _token_set(_strip_shell_decorations(" ".join(_leaf_strings(args))))
         result_tokens = _token_set(result[:_NEAR_IDENTICAL_RESULT_WINDOW_CHARS], fold_digits=True)
         # Byte-identical args are the exact streak's business (and a poll shape upstream allows when the
         # result drifts); this window counts REPHRASED calls — rewording a command is not waiting on it.
@@ -583,7 +604,7 @@ class ToolCallGuardrailController:
             1 for prev_tool, prev_sig, prev_args, prev_result in self._near_window
             if prev_tool == tool_name
             and prev_sig != signature
-            and _jaccard(args_tokens, prev_args) >= NEAR_IDENTICAL_ARGS_JACCARD
+            and _args_overlap(args_tokens, prev_args) >= NEAR_IDENTICAL_ARGS_JACCARD
             and not _differs_by_identifier(args_tokens, prev_args)
             and _jaccard(result_tokens, prev_result) >= NEAR_IDENTICAL_RESULT_JACCARD
         )
@@ -708,6 +729,36 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     if not a and not b:
         return 1.0
     return len(a & b) / len(a | b)
+
+
+def _strip_shell_decorations(text: str) -> str:
+    """Drop decoration a reworded command varies (redirects, `| head`, `|| true`, `echo EXIT:$?`).
+
+    Token sets already ignore ordering, so the point is only to keep decoration from inflating the
+    denominator of an overlap on a command that is functionally identical.
+    """
+    for rx in _SHELL_DECORATION_RES:
+        text = rx.sub(" ", text)
+    return text
+
+
+def _args_overlap(a: frozenset[str], b: frozenset[str]) -> float:
+    """Args similarity: Jaccard, or containment (intersection / smaller set) for short commands.
+
+    A 6-token command that gains `2>/dev/null | head` on one side still matches on every meaningful
+    token, but Jaccard sees two new tokens against six and falls to ~0.75. Containment asks the weaker
+    question — is the smaller command entirely present in the larger one — which is what "same command,
+    decorated differently" actually looks like. Bounded to genuinely short commands and a minimum size
+    so a 2-token `ls` cannot be contained by an unrelated 12-token command.
+    """
+    if not a and not b:
+        return 1.0
+    intersection = len(a & b)
+    jaccard = intersection / len(a | b)
+    smaller = min(len(a), len(b))
+    if _NEAR_IDENTICAL_CONTAINMENT_MIN_TOKENS <= smaller <= NEAR_IDENTICAL_SHORT_ARGS_TOKENS and intersection:
+        return max(jaccard, intersection / smaller)
+    return jaccard
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

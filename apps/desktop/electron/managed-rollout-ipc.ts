@@ -23,6 +23,7 @@ export type ManagedRolloutIpcMethod =
   | 'preflight'
   | 'start'
   | 'activeRevision'
+  | 'read'
   | 'get'
   | 'command'
   | 'history'
@@ -55,6 +56,7 @@ export interface ManagedRolloutIpcAdapter {
   preflight?: (draft: unknown) => Promise<unknown>
   start?: (request: { token: string; requestId: string }) => Promise<unknown>
   activeRevision: () => Promise<number | null>
+  read?: (sinceRevision: number | null) => Promise<unknown>
   get: (id: string) => Promise<unknown | null>
   command: (command: ManagedRolloutIpcCommand) => Promise<unknown>
   history: (page: { cursor?: string; limit: number }) => Promise<unknown>
@@ -165,6 +167,13 @@ function startRequest(value: unknown): { token: string; requestId: string } | nu
   return { token: value.token, requestId }
 }
 
+function readRequest(value: unknown): { sinceRevision: number | null } | null {
+  if (!isObject(value) || !exactKeys(value, ['sinceRevision'])) return null
+  const sinceRevision = value.sinceRevision
+  if (sinceRevision !== null && (!Number.isSafeInteger(sinceRevision) || (sinceRevision as number) < 0)) return null
+  return { sinceRevision: sinceRevision as number | null }
+}
+
 function rejected(code: Extract<ManagedRolloutIpcResult, { ok: false }>['code'], message: string): ManagedRolloutIpcResult {
   return { ok: false, code, message }
 }
@@ -178,7 +187,7 @@ export function createManagedRolloutIpcHandler(
     if (byteLength(payload) > MAX_REQUEST_BYTES) return rejected('invalid-request', 'Managed rollout IPC request exceeds 256 KiB.')
     if (typeof method !== 'string' || ![
       'capabilities', 'inventory', 'resolveTarget', 'preflight', 'start',
-      'activeRevision', 'get', 'command', 'history', 'events'
+      'activeRevision', 'read', 'get', 'command', 'history', 'events'
     ].includes(method)) {
       return rejected('invalid-request', 'Managed rollout IPC method is not allowed.')
     }
@@ -191,6 +200,15 @@ export function createManagedRolloutIpcHandler(
           return { ok: true, value: await adapter.inventory() }
         }
         return { ok: true, value: method === 'capabilities' ? await adapter.capabilities() : await adapter.activeRevision() }
+      }
+
+      if (method === 'read') {
+        const parsed = readRequest(payload)
+        if (!parsed) return rejected('invalid-request', 'Managed rollout revision read request is invalid.')
+        if (!adapter.read) throw new Error('Managed rollout service is unavailable.')
+        const value = await adapter.read(parsed.sinceRevision)
+        if (byteLength(value) > MAX_SNAPSHOT_BYTES) return rejected('snapshot-too-large', 'Managed rollout snapshot exceeds 8 MiB.')
+        return { ok: true, value }
       }
 
       if (method === 'resolveTarget') {

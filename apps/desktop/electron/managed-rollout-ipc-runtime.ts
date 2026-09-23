@@ -15,6 +15,7 @@ const METHODS: readonly ManagedRolloutIpcMethod[] = [
   'preflight',
   'start',
   'activeRevision',
+  'read',
   'get',
   'command',
   'history',
@@ -40,6 +41,7 @@ export function createUnavailableManagedRolloutAdapter(): ManagedRolloutIpcAdapt
       maxInstallations: 0
     }),
     activeRevision: async () => null,
+    read: unavailable,
     get: unavailable,
     command: unavailable,
     history: unavailable,

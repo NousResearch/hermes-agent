@@ -9,7 +9,7 @@ test('registers every managed-rollout channel behind the trusted sender gate', a
     sender => sender === 'trusted'
   )
 
-  expect(handlers.size).toBe(10)
+  expect(handlers.size).toBe(11)
   const capabilities = await handlers.get('hermes:managed-rollouts:capabilities')!({ sender: 'trusted' }, undefined)
   expect(capabilities).toMatchObject({ ok: true, value: { available: false, maxConcurrency: 0, maxInstallations: 0 } })
 

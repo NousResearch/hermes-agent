@@ -14,6 +14,7 @@ function adapter(): { value: ManagedRolloutIpcAdapter; calls: string[] } {
     value: {
       capabilities: async () => ({ protocol: 1, available: true, reason: null, maxConcurrency: 1, maxInstallations: 0 }),
       activeRevision: async () => 4,
+      read: async sinceRevision => ({ revision: 4, snapshot: sinceRevision === 4 ? null : { id: ID } }),
       get: async id => ({ id }),
       command: async command => {
         calls.push(command.kind)
@@ -111,6 +112,22 @@ test('new provider routes are explicit and fail closed when the provider method 
       message: 'Managed rollout service is unavailable.'
     })
   }
+})
+
+test('read accepts only a bounded sinceRevision and preserves the revision acknowledgement shape', async () => {
+  const fixture = adapter()
+  const handler = createManagedRolloutIpcHandler(fixture.value, () => true)
+
+  assert.deepEqual(await handler({ sender: {} }, 'read', { sinceRevision: 4 }), {
+    ok: true,
+    value: { revision: 4, snapshot: null }
+  })
+  assert.deepEqual(await handler({ sender: {} }, 'read', { sinceRevision: null }), {
+    ok: true,
+    value: { revision: 4, snapshot: { id: ID } }
+  })
+  assert.equal((await handler({ sender: {} }, 'read', { sinceRevision: -1 })).ok, false)
+  assert.equal((await handler({ sender: {} }, 'read', { sinceRevision: 4, extra: true })).ok, false)
 })
 
 test('oversized requests fail before an adapter can mutate state', async () => {

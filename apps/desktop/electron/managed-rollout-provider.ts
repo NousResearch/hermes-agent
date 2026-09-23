@@ -595,6 +595,7 @@ function providerUnavailable(): ManagedRolloutProvider {
     preflight: reject,
     start: reject,
     activeRevision: async () => null,
+    read: reject,
     get: reject,
     command: reject,
     history: reject,
@@ -1132,6 +1133,17 @@ export function createManagedRolloutProvider(
       const page = deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE })
       const active = page.items.filter(item => activePhase(item.phase) && !item.archived)
       return active.length ? Math.max(...active.map(item => item.revision)) : null
+    },
+    read: async sinceRevision => {
+      if (sinceRevision !== null && (!Number.isSafeInteger(sinceRevision) || sinceRevision < 0)) throw new Error('managed-rollout-revision-invalid')
+      const page = deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE })
+      const active = page.items
+        .filter(item => activePhase(item.phase) && !item.archived)
+        .sort((left, right) => right.revision - left.revision)
+      if (!active.length) return { revision: 0, snapshot: null }
+      const current = active[0]
+      if (sinceRevision === current.revision) return { revision: current.revision, snapshot: null }
+      return { revision: current.revision, snapshot: validateRolloutSnapshot(deps.journal.read(current.id).snapshot) }
     },
     get: async id => {
       try {

@@ -353,6 +353,7 @@ test('runs an injected trusted rollout without exposing the launch capability', 
     assert.equal(snapshot?.phase, 'completed')
     assert.equal((snapshot.attempts as Array<Record<string, unknown>>)[0].phase, 'updated')
     assert.equal(await provider.activeRevision(), null)
+    assert.deepEqual(await provider.read(null), { revision: 0, snapshot: null })
 
     const command = {
       id: started.id as string,

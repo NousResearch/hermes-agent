@@ -293,35 +293,6 @@ def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
     return _profile_label_for_home(home) if isinstance(home, str) and home.strip() else None
 
 
-def _recorded_pid_home_conflict(profile_dir: Path) -> bool:
-    """``gateway.pid`` record names a DIFFERENT HERMES_HOME than ``profile_dir`` -> True.
-
-    A profile directory can be copied wholesale (sandbox injection, restore-from-backup,
-    cloning a profile). Its ``gateway.pid`` then belongs to a gateway of another home, and the
-    PID rung reports "gateway running" for a home that has none -- while ``hermes cron`` or
-    ``gateway list`` says the opposite on the same machine.
-    """
-    try:
-        with open(profile_dir / "gateway.pid", encoding="utf-8") as fh:
-            record = json.load(fh)
-    except Exception:
-        return False
-    return recorded_gateway_home_conflicts(record, expected_home=profile_dir)
-
-
-def _profile_dir_is_default_root_profile(profile_dir: Path) -> bool:
-    """True when ``profile_dir`` is ``<default root>/profiles/<name>`` (the pooled layout).
-
-    Rung 4 matches the multiplexer by profile *name*; a copied profile directory carries the
-    same name but no relation to that multiplexer, so the rung must not apply to it.
-    """
-    try:
-        from hermes_constants import get_default_hermes_root
-        return (Path(get_default_hermes_root()).resolve() / "profiles") == Path(profile_dir).resolve().parent
-    except Exception:
-        return False
-
-
 def _get_pid_path() -> Path:
     return _get_process_hermes_home() / "gateway.pid"
 
@@ -1302,6 +1273,11 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
     from hermes_constants import get_default_hermes_root
+    # The roster is matched by NAME, and the multiplexer only serves ``<default root>/profiles/<name>``:
+    # a profile directory copied to another root (sandbox, restore-from-backup) keeps the name but is
+    # not the home being served, so it must not borrow the multiplexer's PID.
+    if name != "default" and not _same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
+        return None
     topology = host_gateway_topology()
     if topology is not None and topology.serves(name):
         pid: Optional[int] = topology.pid
@@ -1395,10 +1371,6 @@ def resolve_gateway_liveness(
     # Zero-arg call when unscoped: callers monkeypatch with zero-arg lambdas and
     # /api/status's cache signature is keyed on the call shape.
     pid = guarded(_pid_probe, profile_dir / "gateway.pid") if scoped else guarded(_pid_probe)
-    if pid is not None and scoped and _recorded_pid_home_conflict(profile_dir):
-        # The record belongs to another home (copied profile dir) -> not this home's gateway.
-        # Fall through to the remaining rungs instead of reporting a false green.
-        pid = None
     if pid is not None:
         return GatewayLiveness(running=True, pid=pid, source="pid")
     health_body: Optional[dict[str, Any]] = None
@@ -1413,18 +1385,11 @@ def resolve_gateway_liveness(
     if runtime is _UNSET:
         reader_kwargs = {"path": profile_dir / "gateway_state.json"} if scoped else {}
         runtime = guarded(_runtime_reader, **reader_kwargs)
-    # A scoped read that found no record must not degrade into "read the PROCESS home's file":
-    # ``get_runtime_status_running_pid(None, ...)`` re-reads the default path, and a copied profile
-    # directory keeps the profile NAME -- so the serving gateway's record would lend it a running PID
-    # it does not own. Hand rung 3 an empty record instead of None.
+    # A scoped home with no ``gateway_state.json`` gets an EMPTY record, never ``None``: ``None`` makes
+    # the probe re-read the PROCESS home's record and lend that gateway's PID to a home it does not
+    # own (a profile directory copied out of another root).
     probe_kwargs = {"expected_home": profile_dir} if scoped else {}
-    runtime_pid = guarded(
-        _runtime_pid_probe, {} if (scoped and runtime is None) else runtime, **probe_kwargs
-    )
-    if runtime_pid is not None and scoped and recorded_gateway_home_conflicts(
-            runtime if isinstance(runtime, dict) else None, expected_home=profile_dir):
-        # Same stale-green shape as rung 1, via a copied gateway_state.json.
-        runtime_pid = None
+    runtime_pid = guarded(_runtime_pid_probe, {} if (scoped and runtime is None) else runtime, **probe_kwargs)
     if runtime_pid is not None:
         return GatewayLiveness(
             running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
@@ -1434,10 +1399,6 @@ def resolve_gateway_liveness(
     # question is about the process's OWN home — which is a named profile inside a pooled
     # `hermes --profile X serve` (the Desktop's per-profile backend answers its REST without
     # `?profile=`), so it takes the same rung instead of reporting the served profile stopped.
-    if scoped and not _profile_dir_is_default_root_profile(profile_dir):
-        return GatewayLiveness(
-            running=False, pid=None, source="none", health_body=health_body, probe_error=probe_error
-        )
     own_home = profile_dir if scoped else _get_process_hermes_home()
     served = guarded(multiplexer_liveness_for_profile, own_home)
     if served is not None:
@@ -1465,9 +1426,12 @@ def get_runtime_status_running_pid(
     pid = _live_pid_from_record(payload)
     if pid is None:
         return None
-    # Active-profile context: the record's hermes_home must match this process so a stale record
-    # cannot lend another profile's identity.
+    # The record's hermes_home must match the home asked about (this process unscoped) so a stale
+    # or copied record cannot lend another home's gateway identity; legacy records without the
+    # stamp prove nothing either way and fall through to the live command-line check.
     if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
+        return None
+    if expected_home is not None and recorded_gateway_home_conflicts(payload, expected_home=expected_home):
         return None
     if not _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
         return None

@@ -1,19 +1,14 @@
-"""A profile directory copied from another HERMES_HOME must never read as running.
+"""A profile directory copied out of another HERMES_HOME must never read as running.
 
-Copying a profile directory wholesale (sandbox injection, restore-from-backup,
-cloning a profile) carries that home's ``gateway.pid`` and ``gateway_state.json``
-along. The liveness ladder trusted those records' PID, and its last rung matched the
-default multiplexer by profile *name* -- which the copied directory keeps. So the
-dashboard and ``hermes -p X status`` reported a phantom gateway as running (with the
-production gateway's PID) while ``hermes cron`` / ``gateway list`` said the opposite on
-the same machine.
-
-These pin the ladder's contract: a record naming another home is not this home's
-identity, the pooled-layout premise is required for the name-matching rung, and a
-record naming *this* home is still believed.
+Copying a profile directory wholesale (sandbox injection, restore-from-backup, cloning) carries
+that home's ``gateway_state.json`` along, and a copy with NO identity files at all still keeps
+the profile *name*. The liveness ladder must neither believe a record stamped with another
+home nor borrow the process home's record / the multiplexer's roster for it.
 """
 
 import json
+
+import pytest
 
 from gateway import status
 import hermes_constants
@@ -21,118 +16,63 @@ import hermes_constants
 _LIVE_PID = 4242
 
 
-def _pooled_profile_dir(name="eagle"):
-    """A real ``<default root>/profiles/<name>`` -- the pooled layout rung 4 assumes."""
-    return hermes_constants.get_default_hermes_root() / "profiles" / name
+@pytest.fixture
+def fake_root(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setattr(hermes_constants.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None, raising=False)
+    return root
 
 
-def _write_pid_record(profile_dir, hermes_home, pid=_LIVE_PID):
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    (profile_dir / "gateway.pid").write_text(
-        json.dumps(
-            {
-                "pid": pid,
-                "kind": "hermes-gateway",
-                "argv": ["python", "-m", "hermes_cli.main", "gateway"],
-                "hermes_home": str(hermes_home),
-            }
-        ),
-        encoding="utf-8",
-    )
+def _live_record(hermes_home):
+    return {
+        "pid": _LIVE_PID, "kind": "hermes-gateway", "gateway_state": "running", "start_time": 1000,
+        "argv": ["python", "-m", "hermes_cli.main", "-p", "eagle", "gateway", "run"],
+        "hermes_home": str(hermes_home),
+    }
 
 
-def _liveness(profile_dir, **overrides):
-    kwargs = dict(
-        profile_dir=profile_dir,
-        runtime=None,
-        health_probe=None,
-        pid_probe=lambda *a, **k: _LIVE_PID,
-        runtime_reader=lambda **k: {},
-        runtime_pid_probe=lambda *a, **k: None,
-        use_cache=False,
-    )
-    kwargs.update(overrides)
-    return status.resolve_gateway_liveness(**kwargs)
+def _alive(monkeypatch, cmdline="python -m hermes_cli.main -p eagle gateway run"):
+    monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == _LIVE_PID)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: cmdline)
 
 
-def test_identity_files_recorded_for_another_home_never_report_running(tmp_path, monkeypatch):
-    """Rung 1 (gateway.pid) and rung 3 (gateway_state.json) both carry a foreign identity."""
-    # Isolate the identity rungs: no live multiplexer serves this profile name.
+def test_a_runtime_record_stamped_for_another_home_is_not_this_homes_gateway(fake_root, tmp_path, monkeypatch):
+    """Rung 3: ``gateway_state.json`` copied along with the directory names the ORIGINAL home."""
+    _alive(monkeypatch)
+    copied = tmp_path / "sandbox-root" / "profiles" / "eagle"
+    copied.mkdir(parents=True)
+    foreign = _live_record(fake_root / "profiles" / "eagle")
+    (copied / "gateway_state.json").write_text(json.dumps(foreign), encoding="utf-8")
     monkeypatch.setattr(status, "multiplexer_liveness_for_profile", lambda *a, **k: None)
-    profile_dir = _pooled_profile_dir()
-    foreign_home = tmp_path / "production-home"
 
-    _write_pid_record(profile_dir, hermes_home=foreign_home)
-    pid_rung = _liveness(profile_dir)
-    assert pid_rung.running is False
-    assert pid_rung.source == "none"
-
-    runtime = {"gateway_state": "running", "pid": _LIVE_PID, "hermes_home": str(foreign_home)}
-    runtime_rung = _liveness(
-        profile_dir,
-        pid_probe=lambda *a, **k: None,
-        runtime=runtime,
-        runtime_pid_probe=lambda *a, **k: _LIVE_PID,
-    )
-    assert runtime_rung.running is False
-    assert runtime_rung.source == "none"
+    assert status.get_runtime_status_running_pid(foreign, expected_home=copied) is None
+    assert status.resolve_gateway_liveness(profile_dir=copied, use_cache=False).running is False
+    # Control: the same record asked about from the home it names is believed.
+    assert status.get_runtime_status_running_pid(foreign, expected_home=fake_root / "profiles" / "eagle") == _LIVE_PID
 
 
-def test_identity_files_recorded_for_this_home_still_report_running():
-    """The guard must not disable the PID rung for a gateway that really owns this home."""
-    profile_dir = _pooled_profile_dir()
-    _write_pid_record(profile_dir, hermes_home=profile_dir)
-
-    result = _liveness(profile_dir)
-
-    assert result.running is True
-    assert result.source == "pid"
-    assert result.pid == _LIVE_PID
-
-
-def test_a_profile_dir_outside_the_default_root_never_takes_the_multiplexer_rung(tmp_path, monkeypatch):
-    """Rung 4 matches a profile *name*; that premise only holds under ``<root>/profiles/``."""
-    profile_dir = tmp_path / "sandbox-home" / "profiles" / "eagle"
-    profile_dir.mkdir(parents=True)
-    assert profile_dir != _pooled_profile_dir()
-    # The live multiplexer claims to serve this profile name -- true only for the pooled layout.
+def test_a_copied_dir_with_no_identity_files_borrows_neither_the_process_record_nor_the_roster(
+    fake_root, tmp_path, monkeypatch
+):
+    """The process home's ``gateway_state.json`` names a live ``-p eagle`` gateway and the multiplexer
+    roster lists ``eagle``; a same-named directory under another root is served by neither."""
+    _alive(monkeypatch)
+    (fake_root / "gateway_state.json").write_text(json.dumps(_live_record(fake_root)), encoding="utf-8")
+    copied = tmp_path / "sandbox-root" / "profiles" / "eagle"
+    copied.mkdir(parents=True)
+    from gateway import host_topology
     monkeypatch.setattr(
-        status, "multiplexer_liveness_for_profile", lambda *a, **k: (_LIVE_PID, {"gateway_state": "running"})
+        host_topology, "host_gateway_topology",
+        lambda: host_topology.HostGatewayTopology(pid=_LIVE_PID, profiles=("default", "eagle"), source="test"),
     )
 
-    result = _liveness(
-        profile_dir,
-        pid_probe=lambda *a, **k: None,
-        runtime_pid_probe=lambda *a, **k: None,
-    )
-
-    assert result.running is False
-    assert result.source == "none"
-
-
-def test_a_scoped_read_that_found_nothing_does_not_borrow_the_process_home_record(tmp_path, monkeypatch):
-    """A missing per-profile ``gateway_state.json`` must not fall back to the PROCESS home's file.
-
-    ``get_runtime_status_running_pid(None, ...)`` re-reads the DEFAULT home's ``gateway_state.json``
-    -- and a copied profile directory keeps the profile *name*, so the live serving gateway's record
-    would lend it that gateway's PID. Rung 3 must be handed "no record", never ``None``.
-    """
-    monkeypatch.setattr(status, "multiplexer_liveness_for_profile", lambda *a, **k: None)
-    profile_dir = tmp_path / "sandbox-home" / "profiles" / "eagle"
-    profile_dir.mkdir(parents=True)
-    handed_to_rung3 = []
-
-    def _runtime_pid_probe(record, **kw):
-        handed_to_rung3.append(record)
-        # Mirrors the production probe: ``None`` means "re-read the default home's record".
-        return _LIVE_PID if record is None else None
-
-    result = _liveness(
-        profile_dir,
-        pid_probe=lambda *a, **k: None,
-        runtime_reader=lambda **k: None,  # the profile's own gateway_state.json is absent
-        runtime_pid_probe=_runtime_pid_probe,
-    )
-
-    assert handed_to_rung3 == [{}]
-    assert result.running is False
+    assert status.resolve_gateway_liveness(profile_dir=copied, use_cache=False).running is False
+    assert status.multiplexer_liveness_for_profile(copied) is None
+    # Control: the pooled ``<root>/profiles/eagle`` IS the served home.
+    pooled = fake_root / "profiles" / "eagle"
+    pooled.mkdir(parents=True)
+    assert status.multiplexer_liveness_for_profile(pooled) is not None

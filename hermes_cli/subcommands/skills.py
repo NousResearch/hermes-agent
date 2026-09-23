@@ -169,6 +169,8 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
+    tap_refresh = tap_subparsers.add_parser("refresh", help="Refresh tap index cache")
+    tap_refresh.add_argument("repo", nargs="?", default="", help="GitHub repo to refresh (omit to refresh all taps)")
 
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser(

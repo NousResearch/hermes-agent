@@ -2667,7 +2667,10 @@ def _completed_event_payload(
     # ignored the config (#18994).
     payload: dict = {
         "result_len": len(result) if result else 0,
-        "summary": _first_line(event_summary, 400) or None,
+        # Full summary (bounded) so gateway notifiers render the worker's
+        # multi-line briefing — a first-line-only clip collapsed Slack pings
+        # to a title line. Wake handoffs re-clip to one line in the notifier.
+        "summary": (event_summary or "").strip()[:1500] or None,
     }
     if verified_cards:
         payload["verified_cards"] = verified_cards

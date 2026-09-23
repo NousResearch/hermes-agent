@@ -321,11 +321,14 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
-def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
-    """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
-    authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
-    their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
-    socket and never enters the conversation."""
+def browser_vault_enter_code(
+    handle: str = "", code_handle: str = "", task_id: Optional[str] = None
+) -> str:
+    """Second factor: fill the one-time code the CURRENT page asks for. Sources, in order:
+    a trusted ``code_handle`` (SMS/email code already parked server-side by ``hermes codes put``),
+    an authenticator seed on the saved login (minted server-side, nobody asked), or a private
+    surface prompt. The code goes into the page over the supervisor socket and never enters
+    the conversation."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_backends import backend_for_handle
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
@@ -351,8 +354,27 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
+    # Source 0 — trusted retrieval already parked the code; never fall back to
+    # prompting the user when a handle was supplied and is dead (#119683).
+    if not code and code_handle:
+        from agent.code_registry import consume as consume_code
+
+        minted_source = ""
+        from agent.code_registry import peek_source
+
+        minted_source = peek_source(code_handle) or ""
+        code = consume_code(code_handle, origin=origin)
+        if code:
+            source = minted_source or "handle"
+        else:
+            return json.dumps({
+                "success": False,
+                "error_type": "code_handle_expired",
+                "error": (f"{site}: the code handle is expired, already used, or bound to another origin. "
+                          "Retrieve a fresh code — do not reuse this handle."),
+            })
     backend = backend_for_handle(handle) if handle else None
-    if backend is not None:
+    if not code and backend is not None:
         try:
             code = backend.resolve_otp(handle)
         except Exception:
@@ -653,23 +675,31 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
 BROWSER_VAULT_ENTER_CODE_SCHEMA = {
     "name": "browser_vault_enter_code",
     "description": (
-        "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
-        "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
-        "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
-        "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
-        "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
-        "for the page to move on."
+        "The page asks for a one-time / verification / 2FA code after the password: call this. If you already hold "
+        "a code_handle from a trusted retrieval step (hermes codes put), pass it — the code is entered with no "
+        "questions. Otherwise, if the saved login has an authenticator key the code is generated and entered with no "
+        "questions; otherwise the user is asked for the code in their UI (they read it from their phone, email or "
+        "authenticator app). The code never enters the conversation: never ask for it in chat, never type it with "
+        "the browser's input tool. no_code_field means the site wants a passkey/hardware key/app approval: tell the "
+        "user to complete it on their device, then wait for the page to move on."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."}},
+        "properties": {
+            "handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."},
+            "code_handle": {"type": "string", "description": "Opaque otp_… handle from hermes codes put when a trusted step already fetched an SMS/email code. Single-use, expires in ~5 minutes. Prefer this over asking the user."},
+        },
         "required": [],
     },
 }
 
 
 def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id"))
+    return browser_vault_enter_code(
+        handle=str(args.get("handle") or ""),
+        code_handle=str(args.get("code_handle") or ""),
+        task_id=kwargs.get("task_id"),
+    )
 
 
 def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:

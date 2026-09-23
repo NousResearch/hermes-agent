@@ -697,6 +697,9 @@ def _twilio_inbox(
     mark_seen: bool = False,
     phone_identifier: str | None = None,
     state_path: Path | None = None,
+    mint_code: bool = False,
+    mint_origin: str = "",
+    mint_ttl: float | None = None,
 ) -> dict[str, Any]:
     owned = _resolve_twilio_number(phone_identifier)
     payload = _twilio_request(
@@ -733,6 +736,16 @@ def _twilio_inbox(
         twilio_state["last_inbound_message_date"] = last_seen_date
         _save_state(state, state_path)
 
+    if mint_code:
+        return _mint_from_messages(
+            message_rows,
+            phone_number=owned.phone_number,
+            origin=mint_origin,
+            ttl_s=mint_ttl,
+            marked_seen=bool(mark_seen and message_rows),
+            state_path=state_path,
+        )
+
     return {
         "success": True,
         "provider": "twilio",
@@ -743,6 +756,63 @@ def _twilio_inbox(
         "marked_seen": bool(mark_seen and message_rows),
         "state_path": str(state_path or _state_path()),
         "last_seen_message_sid": twilio_state.get("last_inbound_message_sid", ""),
+    }
+
+
+def _mint_from_messages(
+    message_rows: list[dict[str, Any]],
+    *,
+    phone_number: str,
+    origin: str = "",
+    ttl_s: float | None = None,
+    marked_seen: bool = False,
+    state_path: Path | None = None,
+) -> dict[str, Any]:
+    """Mint an otp_… handle from the newest inbound OTP; never return message bodies."""
+    try:
+        from agent.code_registry import extract_verification_code, mint
+    except ImportError as exc:
+        raise TelephonyError(
+            "agent.code_registry is unavailable; run this under Hermes so the agent package is importable"
+        ) from exc
+
+    for row in message_rows:
+        if str(row.get("direction") or "") not in ("inbound", "received", ""):
+            continue
+        code = extract_verification_code(str(row.get("body") or ""))
+        if not code:
+            continue
+        kwargs: dict[str, Any] = {"source": "sms"}
+        if origin:
+            kwargs["origin"] = origin
+        if ttl_s is not None:
+            kwargs["ttl_s"] = ttl_s
+        try:
+            minted = mint(code, **kwargs)
+        except ValueError as exc:
+            raise TelephonyError(str(exc)) from exc
+        del code
+        return {
+            "success": True,
+            "provider": "twilio",
+            "phone_number": phone_number,
+            "code_handle": minted["code_handle"],
+            "expires_at": minted["expires_at"],
+            "source": minted["source"],
+            "origin": minted["origin"],
+            "message_sid": row.get("sid"),
+            "from_phone_number": row.get("from_phone_number"),
+            "marked_seen": marked_seen,
+            "state_path": str(state_path or _state_path()),
+        }
+    return {
+        "success": False,
+        "provider": "twilio",
+        "phone_number": phone_number,
+        "error": "no_verification_code_found",
+        "count": len(message_rows),
+        "marked_seen": marked_seen,
+        "state_path": str(state_path or _state_path()),
     }
 
 
@@ -1209,6 +1279,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--since-last", action="store_true")
     p.add_argument("--mark-seen", action="store_true")
     p.add_argument("--phone-number", default="")
+    p.add_argument(
+        "--mint-code",
+        action="store_true",
+        help="Extract the newest OTP and mint an otp_… handle instead of returning message bodies",
+    )
+    p.add_argument("--origin", default="", help="Site origin to bind a minted handle to")
+    p.add_argument("--ttl", type=float, default=None, metavar="SECONDS", help="Mint TTL seconds (default 300; clamped 30..900)")
 
     p = sub.add_parser("vapi-import-twilio", help="Import an owned Twilio number into Vapi")
     p.add_argument("--phone-number", default="")
@@ -1286,6 +1363,9 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             since_last=args.since_last,
             mark_seen=args.mark_seen,
             phone_identifier=args.phone_number or None,
+            mint_code=args.mint_code,
+            mint_origin=args.origin or "",
+            mint_ttl=args.ttl,
         )
     if cmd == "vapi-import-twilio":
         return _vapi_import_twilio_number(

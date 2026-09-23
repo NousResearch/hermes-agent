@@ -106,6 +106,22 @@ folder.aliases.trash = "Trash"
 - Use `--output json` for structured output that's easier to parse programmatically
 - The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure", pty=true)`
 
+### Verification codes (model-blind)
+
+When a site emails a verification code and the page Hermes is driving needs
+it, mint a one-time handle so the code never enters the conversation. Pipe
+the message body straight into `hermes codes put --extract` — only the handle
+reaches stdout:
+
+```bash
+himalaya message read 42 | hermes codes put - --extract --source email
+```
+
+Then pass the returned `code_handle` to `browser_vault_enter_code`. Optional
+`--origin https://example.com` binds the handle to that site; single-use,
+expires in ~5 minutes. Do not `himalaya message read` first into context —
+the pipeline is the extraction step.
+
 ## Common Operations
 
 ### List Folders

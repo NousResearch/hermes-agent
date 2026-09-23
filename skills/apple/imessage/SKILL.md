@@ -74,6 +74,23 @@ imsg send --to "+14155551212" --text "Hi" --service sms
 imsg watch --chat-id 1 --attachments
 ```
 
+### Hand an SMS/iMessage verification code to the browser without reading it
+
+When a site texts a code to a chat Hermes can read, mint a one-time handle
+instead of putting the body in the conversation. Pipe the message text
+straight into `hermes codes put --extract` — only the handle reaches stdout:
+
+```bash
+imsg history --chat-id 1 --limit 5 --json \
+  | python -c 'import json,sys; print(json.load(sys.stdin)[-1]["text"])' \
+  | hermes codes put - --extract --source sms
+```
+
+Then pass the returned `code_handle` to `browser_vault_enter_code`. Optional
+`--origin https://example.com` binds the handle to that site; single-use,
+expires in ~5 minutes. Prefer this over `imsg history` when the goal is only
+to fill a verification field — the pipeline is the extraction step.
+
 ## Service Options
 
 - `--service imessage` — Force iMessage (requires recipient has iMessage)

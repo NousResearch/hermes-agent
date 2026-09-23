@@ -27,6 +27,15 @@ Verify with the OTP:
 agentmail agent verify --otp-code 123456
 ```
 
+If the OTP arrived in another inbox (SMS or a different email) and you must
+hand it to a page Hermes is driving, mint a handle instead of reading the
+code into context:
+
+```bash
+# body on stdin → only an otp_… handle on stdout; then browser_vault_enter_code
+hermes codes put - --extract --source email
+```
+
 ## Notes
 
 - Use a real human email address for `--human-email`.

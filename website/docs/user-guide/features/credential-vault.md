@@ -46,6 +46,12 @@ Sites that ask for a code after the password are handled the same way:
 - **Code sent to your phone or email**: a small prompt appears in your
   surface ("Verification code for github.com"), you type the code, Hermes
   enters it into the page. The code never enters the conversation either.
+- **Code already retrieved by a skill** (Twilio inbox, AgentMail, Himalaya,
+  iMessage): the skill parks it with `hermes codes put` (or
+  `twilio-inbox --mint-code`) and returns only an opaque `otp_…` handle.
+  Pass that handle to the page fill; the raw code stays server-side for
+  about five minutes, single-use, and never appears in chat, logs, or the
+  session database. Bind it with `--origin` when the target site is known.
 - **Passkeys, hardware keys, app approvals** ("tap Approve in Duo"): nothing
   to type. The agent tells you to complete it on your device and waits for
   the page to move on.

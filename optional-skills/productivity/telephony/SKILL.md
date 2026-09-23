@@ -280,6 +280,24 @@ python "$SCRIPT" twilio-inbox --since-last --mark-seen
 
 This is the main answer to “how do I access messages the number receives next time the skill is loaded?”
 
+#### Hand an SMS verification code to the browser without reading it
+
+When a site texts a verification code to the Twilio number, mint a one-time
+handle instead of putting the body in the conversation:
+
+```bash
+python "$SCRIPT" twilio-inbox --since-last --mark-seen --mint-code
+```
+
+Returns only `{"code_handle": "otp_…", "expires_at": …, …}` — the raw code
+and message body never appear in the tool result. Pass that handle to
+`browser_vault_enter_code` as `code_handle`. Optional `--origin
+https://example.com` binds the handle to that site; `--ttl SECONDS` overrides
+the 300s default. `"error": "no_verification_code_found"` means no OTP was in
+the new messages (bodies are never returned in mint mode). For a code that
+arrives outside this script, pipe the body to `hermes codes put - --extract
+--source sms` instead.
+
 ### D. Make a direct Twilio call with built-in TTS
 
 ```bash

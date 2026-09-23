@@ -88,6 +88,23 @@ agentmail inboxes list --format json
 - Prefer `extracted_text` or `extracted_html` for LLM input when present.
 - React to `message.received`, not messages the agent sent.
 
+## Verification codes (model-blind)
+
+When an inbound AgentMail message carries a site verification code, mint a
+one-time handle so the code never enters the conversation. Pipe the body
+straight into `hermes codes put --extract` — only the handle reaches stdout:
+
+```bash
+agentmail inboxes:messages read --inbox-id my-agent@agentmail.to --message-id "$MID" \
+  --format json --field extracted_text \
+  | hermes codes put - --extract --source email
+```
+
+Then pass the returned `code_handle` to `browser_vault_enter_code`. Optional
+`--origin https://example.com` binds the handle to that site; single-use,
+expires in ~5 minutes. Never `read` the message body into context first —
+the pipeline is the extraction step.
+
 ## Verification
 
 ```bash

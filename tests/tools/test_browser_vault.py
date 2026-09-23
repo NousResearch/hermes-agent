@@ -866,3 +866,94 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field" and "device" in out["error"]
+
+
+class TestCodeHandleHandoff:
+    """#119683 — model-blind SMS/email code handle → browser_vault_enter_code."""
+
+    def test_code_handle_fills_without_prompt_and_code_stays_hidden(self):
+        from agent import code_registry
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        code_registry.clear_codes()
+        minted = code_registry.mint("246810", source="sms", origin="https://acme.test")
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "999999")
+        boxes = [{"index": i, "type": "tel", "name": f"digit{i}", "label": "",
+                  "autocomplete": "one-time-code", "formIndex": 0, "maxLength": 1}
+                 for i in range(6)]
+        seen = {}
+
+        def fake_eval(t, e):
+            return {"success": True,
+                    "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
+
+        def fake_secret(t, e):
+            seen["expr"] = e
+            return {"success": True, "result": json.dumps({"filled": 6})}
+
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+                raw = browser_vault_tool.browser_vault_enter_code(
+                    code_handle=minted["code_handle"], task_id="t")
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+            code_registry.clear_codes()
+
+        out = json.loads(raw)
+        assert out["success"] and out["source"] == "sms" and out["filled_fields"] == 6
+        assert asked == []  # never fell back to the user prompt
+        assert "246810" not in raw
+        # per-digit fill proves the parked code (not the prompt's 999999) reached the page
+        assert re.findall(r'"value": "(\d)"', seen["expr"]) == list("246810")
+
+    def test_dead_code_handle_errors_without_prompt_fallback(self):
+        from agent import code_registry
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        code_registry.clear_codes()
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "111111")
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code",
+                     "autocomplete": "one-time-code"}]
+
+        def fake_eval(t, e):
+            return {"success": True,
+                    "result": json.dumps(controls) if "querySelectorAll" in e else "https://acme.test/login"}
+
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret",
+                              return_value={"success": True, "result": json.dumps({"filled": 1})}):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(
+                    code_handle="otp_deadbeef", task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+            code_registry.clear_codes()
+
+        assert out["error_type"] == "code_handle_expired"
+        assert asked == []  # supplied handle never falls back to the user
+
+    def test_schema_exposes_code_handle(self):
+        from tools.browser_vault_tool import BROWSER_VAULT_ENTER_CODE_SCHEMA as schema
+
+        assert "code_handle" in schema["parameters"]["properties"]
+        # existing handle param still present
+        assert "handle" in schema["parameters"]["properties"]
+
+    def test_dispatcher_passes_code_handle(self):
+        from tools import browser_vault_tool
+
+        with patch.object(browser_vault_tool, "browser_vault_enter_code",
+                          return_value="{}") as enter:
+            browser_vault_tool._handle_vault_enter_code(
+                {"handle": "vault_x", "code_handle": "otp_y"}, task_id="t9")
+        enter.assert_called_once_with(
+            handle="vault_x", code_handle="otp_y", task_id="t9")

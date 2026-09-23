@@ -183,6 +183,56 @@ def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatc
     assert signalled == [owner_pid]
 
 
+def test_replace_degrades_to_start_beside_another_profiles_standalone_owner(
+        tmp_path, monkeypatch, owner_pid, caplog):
+    """The #119467 deadlock: a `--replace` drop-in an older build prescribed (to break a respawn
+    storm) plus the newer cross-profile ownership guard = exit 1 forever under ``Restart=always``.
+    Without ``--replace`` the same topology STARTs beside the owner; ``--replace`` must degrade to
+    that outcome instead of demanding a kill the ownership guard will always refuse."""
+    owner_home = tmp_path / "root" / "profiles" / "tank"
+    _publish(owner_pid, owner_home, ("tank",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["tank"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home",
+                        lambda: tmp_path / "root" / "profiles" / "nous")
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
+
+    async def _never(pid, replace):
+        raise AssertionError("--replace must not signal another profile's standalone gateway")
+
+    monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", _never)
+
+    with caplog.at_level("WARNING", logger="gateway.host_attach"):
+        decision = host_attach.decide(tmp_path / "root" / "profiles" / "nous", replace=True)
+    assert decision.outcome == host_attach.START
+    assert any("migrate --multiplex" in r.getMessage() for r in caplog.records), \
+        "the converge hint is logged"
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=True)) is None
+
+
+def test_replace_still_targets_our_own_standalone_gateway(tmp_path, monkeypatch, owner_pid):
+    """The drop-in's original job was reclaiming a stray lock-holder of OUR profile. A standalone
+    owner that serves this profile is this profile's own gateway — ``--replace`` keeps signalling
+    it, so the degrade never disarms the legit same-profile takeover."""
+    ours = tmp_path / "root" / "profiles" / "nous"
+    _publish(owner_pid, ours, ("nous",))
+    _answer_identify(monkeypatch, owner_pid, ours, ["nous"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: ours)
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["nous"]})
+    signalled: list[int] = []
+
+    async def _replace(pid, replace):
+        signalled.append(pid)
+        return True
+
+    monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", _replace)
+
+    assert host_attach.decide(ours, replace=True).outcome == host_attach.REPLACE_HOST
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=True)) is None
+    assert signalled == [owner_pid]
+
+
 def test_force_starts_without_consulting_the_owner(tmp_path, monkeypatch, owner_pid):
     """``--force`` printed the starting banner and then attached anyway. It must START."""
     owner_home = tmp_path / "root"

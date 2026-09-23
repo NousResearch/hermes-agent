@@ -339,7 +339,22 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
     if replace:
         # --replace is explicit authority over the host role; the target is the host process,
-        # whichever home launched it.
+        # whichever home launched it. One topology makes that demand unlawful: another profile's
+        # STANDALONE gateway. No pid record of ours can ever prove ownership of that PID, so the
+        # cross-profile guard below refuses the kill — and a superseded `--replace` drop-in under
+        # Restart=always turns "refuse → exit 1" into a respawn loop that cannot self-heal
+        # (#119467). Degrade to the START-beside-it outcome the non-replace path already uses.
+        asked = request_serve_profile(profile, owner=gateway)
+        if asked is not None and asked.standalone and not asked.serves(profile):
+            logger.warning(
+                "Another profile's standalone gateway owns this host (%s); --replace cannot signal "
+                "a process this home can never prove ownership of — starting profile '%s' beside "
+                "it instead. Fold every profile onto one gateway with: "
+                "hermes gateway migrate --multiplex",
+                asked.describe(),
+                profile,
+            )
+            return HostAttachDecision(START, "")
         return HostAttachDecision(REPLACE_HOST, "", gateway)
     if gateway.served_known:
         standalone = standalone_attach_decision(our_home, gateway)

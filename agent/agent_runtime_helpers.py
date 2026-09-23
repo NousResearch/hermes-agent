@@ -3111,9 +3111,12 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# Includes Dutch intent phrasings ("Laat me ...", "Ik ga/zal nu ...", "Nu ga/zal ik ...") so the
+# stall guard also fires for non-English sessions.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
-    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
+    r"|\bla(?:at)? (?:me|ik)\b|\bik (?:ga|zal) nu\b|\bnu (?:ga|zal) ik\b)"
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 

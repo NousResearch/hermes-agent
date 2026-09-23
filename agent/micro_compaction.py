@@ -123,8 +123,7 @@ class MicroCompactionMixin:
             "max_tokens": min(1500, self.max_summary_tokens or 1500),
             "temperature": 0.1,
         }
-        if self.summary_model:
-            call_kwargs["model"] = self.summary_model
+        self._apply_summary_route(call_kwargs)
         if self.model:
             call_kwargs.setdefault("main_runtime", {
                 "model": self.model, "provider": self.provider or "", "base_url": self.base_url or "",

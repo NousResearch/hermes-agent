@@ -300,6 +300,36 @@ export const $hiddenStripTabs = modeLayout.atom<ReadonlySet<string>>(
   paneSetCodec
 )
 
+/** Persisted renderer state is untrusted: an older build (or a layout change)
+ * may have stored every tab in a zone as hidden. Keep the active tab as the
+ * same escape hatch enforced by setStripTabHidden for new interactions. */
+function repairPersistedStripTabs() {
+  const tree = $layoutTree.get()
+
+  if (!tree) return
+
+  const stored = $hiddenStripTabs.get()
+  const repaired = new Set(stored)
+  const visited = new Set<string>()
+
+  for (const paneId of stored) {
+    const group = findGroupOfPane(tree, paneId)
+    if (!group || visited.has(group.id)) continue
+    visited.add(group.id)
+
+    if (group.panes.length > 0 && group.panes.every(id => repaired.has(id))) {
+      repaired.delete(group.panes.includes(group.active) ? group.active : group.panes[0])
+    }
+  }
+
+  if (repaired.size === stored.size) return
+  saveHiddenStripTabs(repaired)
+
+  for (const paneId of stored) {
+    if (!repaired.has(paneId)) setTreePaneHidden(paneId, false)
+  }
+}
+
 export function isStripTabHidden(paneId: string): boolean {
   return $hiddenStripTabs.get().has(paneId)
 }
@@ -315,7 +345,7 @@ function isLastShownInGroup(paneId: string): boolean {
     return false
   }
 
-  const hidden = $hiddenTreePanes.get()
+  const hidden = new Set([...$hiddenTreePanes.get(), ...$hiddenStripTabs.get()])
 
   return !group.panes.some(id => id !== paneId && !hidden.has(id))
 }
@@ -352,6 +382,8 @@ $hiddenStripTabs.subscribe((hidden, previous) => {
     setTreePaneHidden(paneId, hidden.has(paneId))
   }
 })
+
+repairPersistedStripTabs()
 
 const paneClosers: Record<string, () => void> = {}
 const paneOpeners: Record<string, () => void> = {}

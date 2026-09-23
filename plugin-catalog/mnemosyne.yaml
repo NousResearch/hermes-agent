@@ -1,9 +1,9 @@
 name: mnemosyne
 repo: https://github.com/mnemosyne-oss/mnemosyne
-sha: 95ef3be20d28bd9ee1d517bcb25ed00000eab577
+sha: d73848735a2a48471a62d2c8fb96cd7183c97491
 subdir: integrations/hermes-catalog
 requires_hermes: ">=0.21.4"
-version: "0.7.0"
+version: "0.7.3"
 description: Local-first memory layer for Hermes Agent — SQLite with vector + FTS5 hybrid recall, episodic consolidation, temporal knowledge graph. Zero cloud.
 maintainer: mnemosyne-oss
 tier: community
@@ -33,6 +33,7 @@ capabilities:
   - mnemosyne_recall_diagnostics
   - mnemosyne_remember
   - mnemosyne_remember_canonical
+  - mnemosyne_remember_media
   - mnemosyne_scratchpad_clear
   - mnemosyne_scratchpad_read
   - mnemosyne_scratchpad_write
@@ -54,4 +55,5 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+
 

@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Agent 自我优化与持续进化系统设计</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #1a1d2e;
+    --bg-card2: #232740;
+    --border: #2d3250;
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+    --accent: #6366f1;
+    --accent2: #8b5cf6;
+    --green: #10b981;
+    --green-dim: rgba(16,185,129,0.15);
+    --amber: #f59e0b;
+    --amber-dim: rgba(245,158,11,0.15);
+    --red: #ef4444;
+    --red-dim: rgba(239,68,68,0.15);
+    --blue: #3b82f6;
+    --blue-dim: rgba(59,130,246,0.15);
+    --cyan: #06b6d4;
+    --pink: #ec4899;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
+  h2 { font-size: 1.5rem; font-weight: 600; margin: 2.5rem 0 1rem; color: var(--accent); }
+  h3 { font-size: 1.15rem; font-weight: 600; margin: 1.5rem 0 0.75rem; }
+  p { color: var(--text-dim); margin-bottom: 1rem; }
+  .subtitle { color: var(--text-dim); font-size: 1.05rem; margin-bottom: 2rem; }
+
+  /* Hero */
+  .hero {
+    background: linear-gradient(135deg, #1e1b4b 0%, #0f172a 50%, #0c1220 100%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 3rem;
+    margin-bottom: 2rem;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    right: -20%;
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, rgba(99,102,241,0.12) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero h1 { position: relative; }
+  .hero .subtitle { position: relative; }
+  .badge-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1.5rem; position: relative; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 500;
+  }
+  .badge-purple { background: rgba(139,92,246,0.15); color: #a78bfa; border: 1px solid rgba(139,92,246,0.25); }
+  .badge-green { background: var(--green-dim); color: var(--green); border: 1px solid rgba(16,185,129,0.25); }
+  .badge-blue { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(59,130,246,0.25); }
+  .badge-amber { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,0.25); }
+
+  /* Cards */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+
+  /* Architecture Diagram */
+  .arch-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2rem;
+    margin: 2rem 0;
+    overflow-x: auto;
+  }
+  .arch-flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    min-width: 700px;
+  }
+  .arch-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 1rem 1.25rem;
+    border-radius: 12px;
+    min-width: 110px;
+    text-align: center;
+    position: relative;
+    transition: transform 0.2s;
+  }
+  .arch-node:hover { transform: translateY(-3px); }
+  .arch-node .icon { font-size: 1.5rem; }
+  .arch-node .label { font-size: 0.85rem; font-weight: 600; }
+  .arch-node .desc { font-size: 0.7rem; color: var(--text-dim); }
+
+  .node-observe { background: var(--blue-dim); border: 1px solid rgba(59,130,246,0.3); }
+  .node-evaluate { background: rgba(139,92,246,0.12); border: 1px solid rgba(139,92,246,0.3); }
+  .node-reflect { background: rgba(6,182,212,0.12); border: 1px solid rgba(6,182,212,0.3); }
+  .node-learn { background: var(--green-dim); border: 1px solid rgba(16,185,129,0.3); }
+  .node-evolve { background: var(--amber-dim); border: 1px solid rgba(245,158,11,0.3); }
+  .node-data { background: rgba(236,72,153,0.1); border: 1px solid rgba(236,72,153,0.25); }
+
+  .arch-arrow {
+    font-size: 1.5rem;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  /* Timeline */
+  .timeline {
+    position: relative;
+    padding-left: 2.5rem;
+    margin: 2rem 0;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 0.75rem;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--accent), var(--cyan), var(--green), var(--amber));
+  }
+  .tl-item {
+    position: relative;
+    margin-bottom: 2rem;
+    padding: 1.25rem 1.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .tl-item::before {
+    content: '';
+    position: absolute;
+    left: -2.05rem;
+    top: 1.4rem;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--bg);
+  }
+  .tl-item.night::before { border-color: var(--cyan); }
+  .tl-item.morning::before { border-color: var(--green); }
+  .tl-item.action::before { border-color: var(--amber); }
+  .tl-item .tl-time {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--cyan);
+    margin-bottom: 0.35rem;
+  }
+  .tl-item.morning .tl-time { color: var(--green); }
+  .tl-item.action .tl-time { color: var(--amber); }
+  .tl-item .tl-title { font-weight: 600; margin-bottom: 0.5rem; }
+  .tl-item .tl-desc { font-size: 0.9rem; color: var(--text-dim); }
+
+  /* Flowchart-style dream */
+  .flow-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1rem;
+    background: var(--bg-card2);
+    border-radius: 8px;
+    border-left: 3px solid var(--accent);
+  }
+  .flow-step.step-error { border-left-color: var(--red); }
+  .flow-step.step-waste { border-left-color: var(--amber); }
+  .flow-step.step-model { border-left-color: var(--cyan); }
+  .flow-step.step-output { border-left-color: var(--green); }
+  .flow-step .step-num {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+  .flow-step.step-error .step-num { background: var(--red); }
+  .flow-step.step-waste .step-num { background: var(--amber); }
+  .flow-step.step-model .step-num { background: var(--cyan); }
+  .flow-step.step-output .step-num { background: var(--green); }
+  .flow-step .step-content { flex: 1; }
+  .flow-step .step-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.25rem; }
+  .flow-step .step-desc { font-size: 0.85rem; color: var(--text-dim); }
+  .flow-step ul { margin: 0.35rem 0 0 1rem; font-size: 0.85rem; color: var(--text-dim); }
+  .flow-step li { margin-bottom: 0.15rem; }
+
+  /* Feishu mockup */
+  .feishu-card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 1.5rem;
+    color: #1f2937;
+    max-width: 420px;
+    margin: 1.5rem auto;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+    font-size: 0.9rem;
+  }
+  .feishu-card .fc-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 0.75rem;
+  }
+  .feishu-card .fc-header .fc-icon {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 1rem;
+  }
+  .feishu-card .fc-header .fc-title { font-weight: 600; }
+  .feishu-card .fc-section { margin-bottom: 0.75rem; }
+  .feishu-card .fc-section-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.35rem; color: #374151; }
+  .feishu-card .fc-row { display: flex; justify-content: space-between; font-size: 0.8rem; color: #6b7280; padding: 0.1rem 0; }
+  .feishu-card .fc-proposal {
+    background: #f9fafb;
+    border-radius: 8px;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+  .feishu-card .fc-proposal-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem; }
+  .feishu-card .fc-proposal-desc { font-size: 0.78rem; color: #6b7280; margin-bottom: 0.5rem; }
+  .feishu-card .fc-btns { display: flex; gap: 0.5rem; }
+  .feishu-card .fc-btn {
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+  }
+  .fc-btn-approve { background: #3b82f6; color: #fff; }
+  .fc-btn-modify { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; }
+  .fc-btn-reject { background: #fef2f2; color: #ef4444; border: 1px solid #fecaca; }
+
+  /* Ref table */
+  .ref-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+  .ref-card {
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+  }
+  .ref-card .ref-source {
+    font-size: 0.75rem;
+    color: var(--cyan);
+    margin-bottom: 0.5rem;
+    font-family: 'SF Mono', monospace;
+  }
+  .ref-card .ref-title { font-weight: 600; margin-bottom: 0.5rem; }
+  .ref-card .ref-desc { font-size: 0.85rem; color: var(--text-dim); }
+
+  /* DB schema */
+  .db-table {
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.8rem;
+  }
+  .db-table .db-name {
+    color: var(--cyan);
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+  }
+  .db-table .db-col { color: var(--text-dim); padding: 0.1rem 0; }
+  .db-table .db-col span { color: var(--amber); }
+
+  /* Safety */
+  .safety-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+  .safety-item {
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    text-align: center;
+  }
+  .safety-item .safety-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+  .safety-item .safety-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.35rem; }
+  .safety-item .safety-desc { font-size: 0.82rem; color: var(--text-dim); }
+
+  /* File tree */
+  .file-tree {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.82rem;
+    line-height: 1.8;
+    color: var(--text-dim);
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    overflow-x: auto;
+  }
+  .file-tree .dir { color: var(--cyan); font-weight: 600; }
+  .file-tree .file { color: var(--text); }
+  .file-tree .comment { color: var(--text-dim); font-style: italic; }
+
+  /* Quality formula */
+  .formula {
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem 2rem;
+    margin: 1rem 0;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.88rem;
+    text-align: center;
+    line-height: 2;
+  }
+  .formula .w { color: var(--amber); }
+  .formula .var { color: var(--cyan); }
+  .formula .op { color: var(--text-dim); }
+
+  /* Integration table */
+  .int-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.88rem;
+  }
+  .int-table th {
+    text-align: left;
+    padding: 0.75rem 1rem;
+    background: var(--bg-card2);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .int-table td {
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .int-table .hook {
+    font-family: 'SF Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--cyan);
+    background: rgba(6,182,212,0.1);
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+  }
+  .int-table .no-mod { color: var(--green); }
+
+  /* Phase timeline */
+  .phases { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 1.5rem 0; }
+  .phase {
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    position: relative;
+  }
+  .phase .phase-num {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--accent);
+    opacity: 0.3;
+    margin-bottom: 0.25rem;
+  }
+  .phase .phase-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; }
+  .phase ul { margin-left: 1rem; font-size: 0.82rem; color: var(--text-dim); }
+  .phase li { margin-bottom: 0.25rem; }
+
+  /* Arrow connector between phases */
+  .phase:not(:last-child)::after {
+    content: '→';
+    position: absolute;
+    right: -1.2rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 1.5rem;
+    color: var(--text-dim);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  @media (max-width: 768px) {
+    body { padding: 1rem; }
+    .phases { grid-template-columns: 1fr 1fr; }
+    .phase:not(:last-child)::after { display: none; }
+    .arch-flow { flex-direction: column; }
+    .arch-arrow { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════ Hero ═══════ -->
+<div class="hero">
+  <h1>Hermes Agent 自我优化与持续进化系统</h1>
+  <p class="subtitle">一套完全插件化的 agent 自我进化机制 — 通过每日"梦境整理"和"飞书审批流"实现闭环自我优化</p>
+  <div class="badge-row">
+    <span class="badge badge-purple">零侵入核心代码</span>
+    <span class="badge badge-blue">完全插件化</span>
+    <span class="badge badge-green">GLM-5.1 / Qwen 降级</span>
+    <span class="badge badge-amber">飞书审批流</span>
+  </div>
+</div>
+
+<!-- ═══════ Architecture ═══════ -->
+<h2>核心架构：五层闭环</h2>
+<p>观察 → 评估 → 反思 → 学习 → 进化，形成持续自我改进的闭环循环。</p>
+
+<div class="arch-container">
+  <div class="arch-flow">
+    <div class="arch-node node-observe">
+      <span class="icon">📡</span>
+      <span class="label">观察</span>
+      <span class="desc">遥测采集<br>post_tool_call</span>
+    </div>
+    <span class="arch-arrow">→</span>
+    <div class="arch-node node-evaluate">
+      <span class="icon">📊</span>
+      <span class="label">评估</span>
+      <span class="desc">质量评分<br>on_session_end</span>
+    </div>
+    <span class="arch-arrow">→</span>
+    <div class="arch-node node-reflect">
+      <span class="icon">🌙</span>
+      <span class="label">反思</span>
+      <span class="desc">梦境整理<br>凌晨 1:00</span>
+    </div>
+    <span class="arch-arrow">→</span>
+    <div class="arch-node node-learn">
+      <span class="icon">🧠</span>
+      <span class="label">学习</span>
+      <span class="desc">进化提案<br>策略生成</span>
+    </div>
+    <span class="arch-arrow">→</span>
+    <div class="arch-node node-evolve">
+      <span class="icon">🚀</span>
+      <span class="label">进化</span>
+      <span class="desc">飞书审批 → 执行<br>19:00 推送</span>
+    </div>
+    <span class="arch-arrow">↩</span>
+    <div class="arch-node node-data">
+      <span class="icon">💾</span>
+      <span class="label">存储</span>
+      <span class="desc">evolution.db<br>strategies.json</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ Daily Flow ═══════ -->
+<h2>每日流程</h2>
+<p>从凌晨梦境整理到晚间飞书推送，一天的自动进化循环。</p>
+
+<div class="timeline">
+  <div class="tl-item night">
+    <div class="tl-time">01:00 — 梦境整理（自动执行）</div>
+    <div class="tl-title">DreamEngine.run() — 分析前日全部 session</div>
+    <div class="flow-box" style="margin-top: 1rem;">
+      <div class="flow-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-title">数据汇总</div>
+          <div class="step-desc">读取 state.db（只读）+ evolution.db，计算各 session 质量评分</div>
+        </div>
+      </div>
+      <div class="flow-step step-error">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-title">错误分析（重点）</div>
+          <ul>
+            <li>工具调用失败统计（按工具、按错误类型分布）</li>
+            <li>反复重试检测（同一工具同一 session 调用 > 2次）</li>
+            <li>未完成 session、用户纠正消息、API 错误</li>
+            <li>错误连锁分析（一个失败是否引发后续失败）</li>
+          </ul>
+        </div>
+      </div>
+      <div class="flow-step step-waste">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-title">时间浪费分析（重点）</div>
+          <ul>
+            <li>耗时最长的工具调用 TOP 10</li>
+            <li>重复操作（多次读同一文件、重复搜索）</li>
+            <li>低效 session（迭代轮数过多、工具调用过多）</li>
+            <li>可缩短的工具调用链</li>
+          </ul>
+        </div>
+      </div>
+      <div class="flow-step step-model">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-title">深度反思（GLM-5.1 优先 / Qwen 降级）</div>
+          <div class="step-desc">将分析结果发送到本地模型，产出结构化 ReflectionReport：错误根因 + 浪费根因 + 可操作建议</div>
+        </div>
+      </div>
+      <div class="flow-step step-output">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-title">模式识别 + 生成进化提案</div>
+          <div class="step-desc">高成功率模式 → 候选技能 ｜ 重复错误 → 候选规避策略 ｜ 系统性浪费 → 候选流程优化</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tl-item morning">
+    <div class="tl-time">19:00 — 飞书推送进化方案</div>
+    <div class="tl-title">FeishuNotifier.send_daily_report()</div>
+    <div class="tl-desc">读取当日凌晨产出的 pending_approval 提案，格式化为飞书交互卡片推送给用户。</div>
+  </div>
+
+  <div class="tl-item action">
+    <div class="tl-time">用户审批后 — 执行进化</div>
+    <div class="tl-title">EvolutionExecutor.execute()</div>
+    <div class="tl-desc">飞书回调触发执行：技能创建 / 策略调整 / 记忆更新 / 工具偏好变更。执行后自动创建 A/B 测试追踪单元。</div>
+  </div>
+</div>
+
+<!-- ═══════ Feishu Mockup ═══════ -->
+<h3>飞书卡片消息预览</h3>
+<div class="feishu-card">
+  <div class="fc-header">
+    <div class="fc-icon">🌅</div>
+    <div>
+      <div class="fc-title">Hermes 每日进化报告 (2026-04-18)</div>
+    </div>
+  </div>
+  <div class="fc-section">
+    <div class="fc-section-title">📊 前日概况</div>
+    <div class="fc-row"><span>完成 sessions</span><span>23</span></div>
+    <div class="fc-row"><span>平均质量评分</span><span>0.78 ↑0.03</span></div>
+    <div class="fc-row"><span>工具调用 / 成功率</span><span>156次 / 91%</span></div>
+  </div>
+  <div class="fc-section">
+    <div class="fc-section-title">❌ 错误分析</div>
+    <div class="fc-row"><span>browser_tool 失败</span><span>5次 (超时3次)</span></div>
+    <div class="fc-row"><span>未完成 session</span><span>2个</span></div>
+    <div class="fc-row"><span>用户纠正</span><span>3次</span></div>
+  </div>
+  <div class="fc-section">
+    <div class="fc-section-title">⏱️ 时间浪费分析</div>
+    <div class="fc-row"><span>重复读取同一文件</span><span>8次</span></div>
+    <div class="fc-row"><span>web_search→browser 冗余</span><span>6次</span></div>
+    <div class="fc-row"><span>平均迭代轮数</span><span>12轮 (理想8轮)</span></div>
+  </div>
+  <hr style="border-color:#e5e7eb; margin:0.75rem 0;">
+  <div class="fc-section">
+    <div class="fc-section-title">📋 进化提案 (3项)</div>
+    <div class="fc-proposal">
+      <div class="fc-proposal-title">[1] 🛠️ 创建技能: web_search_pipeline</div>
+      <div class="fc-proposal-desc">预期: 搜索任务成功率 +15% ｜ 风险: low</div>
+      <div class="fc-btns">
+        <button class="fc-btn fc-btn-approve">通过</button>
+        <button class="fc-btn fc-btn-modify">修改</button>
+        <button class="fc-btn fc-btn-reject">拒绝</button>
+      </div>
+    </div>
+    <div class="fc-proposal">
+      <div class="fc-proposal-title">[2] ⚡ 策略调整: 优先 grep 替代 find</div>
+      <div class="fc-proposal-desc">预期: 文件搜索效率 +25% ｜ 风险: low</div>
+      <div class="fc-btns">
+        <button class="fc-btn fc-btn-approve">通过</button>
+        <button class="fc-btn fc-btn-modify">修改</button>
+        <button class="fc-btn fc-btn-reject">拒绝</button>
+      </div>
+    </div>
+    <div class="fc-proposal">
+      <div class="fc-proposal-title">[3] 🧠 记忆更新: 用户偏好中文回复</div>
+      <div class="fc-proposal-desc">预期: 用户满意度提升 ｜ 风险: low</div>
+      <div class="fc-btns">
+        <button class="fc-btn fc-btn-approve">通过</button>
+        <button class="fc-btn fc-btn-modify">修改</button>
+        <button class="fc-btn fc-btn-reject">拒绝</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ Quality Score ═══════ -->
+<h2>质量评分体系</h2>
+<p>每个 session 结束时自动计算复合质量评分，零 API 成本。</p>
+
+<div class="formula">
+  <span class="var">session_quality</span> <span class="op">=</span>
+  <span class="w">0.40</span> × <span class="var">completion_rate</span> <span class="op">+</span>
+  <span class="w">0.20</span> × <span class="var">efficiency_score</span> <span class="op">+</span>
+  <span class="w">0.15</span> × <span class="var">cost_efficiency</span> <span class="op">+</span>
+  <span class="w">0.25</span> × <span class="var">satisfaction_proxy</span>
+</div>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>completion_rate <span style="color:var(--w);font-size:0.8rem;">权重 0.40</span></h3>
+    <p>任务是否完成。completed=1.0, interrupted=0.5, failed=0.0</p>
+  </div>
+  <div class="card">
+    <h3>efficiency_score <span style="color:var(--w);font-size:0.8rem;">权重 0.20</span></h3>
+    <p>迭代效率。理想轮数 / 实际轮数，上限 1.0</p>
+  </div>
+  <div class="card">
+    <h3>cost_efficiency <span style="color:var(--w);font-size:0.8rem;">权重 0.15</span></h3>
+    <p>工具使用效率。期望调用数 / 实际调用数，上限 1.0</p>
+  </div>
+  <div class="card">
+    <h3>satisfaction_proxy <span style="color:var(--w);font-size:0.8rem;">权重 0.25</span></h3>
+    <p>满意度代理。单轮完成=0.9, 多轮完成=0.75, 预算耗尽=-0.2</p>
+  </div>
+</div>
+
+<!-- ═══════ Claude Code References ═══════ -->
+<h2>Claude Code 设计参考</h2>
+<p>本方案借鉴了 Claude Code 开源项目中的四个核心设计模式。</p>
+
+<div class="ref-grid">
+  <div class="ref-card">
+    <div class="ref-source">plugins/hookify/agents/conversation-analyzer.md</div>
+    <div class="ref-title">梦境整理 ← conversation-analyzer</div>
+    <div class="ref-desc">
+      分析对话历史 → 识别纠正/沮丧/重复问题信号 → 提取可匹配正则规则 → 按严重程度分级（高/中/低）。
+      <br><br><b>我们的扩展</b>：从手动触发升级为每日自动运行，增加错误分析和时间浪费分析。
+    </div>
+  </div>
+  <div class="ref-card">
+    <div class="ref-source">plugins/ralph-wiggum/</div>
+    <div class="ref-title">进化执行 ← Ralph Wiggum</div>
+    <div class="ref-desc">
+      自我引用反馈环：Stop hook 拦截退出 → 重喂 prompt → agent 看到自己的修改 → 自动迭代直到满足条件。
+      <br><br><b>我们的扩展</b>：进化执行后创建验证追踪单元（类似 completion_promise），不满足条件自动回滚。
+    </div>
+  </div>
+  <div class="ref-card">
+    <div class="ref-source">plugins/learning-output-style/</div>
+    <div class="ref-title">策略注入 ← SessionStart hook</div>
+    <div class="ref-desc">
+      通过 SessionStart hook 在每个 session 自动注入行为上下文，等效于 CLAUDE.md 但更灵活。
+      <br><br><b>我们的扩展</b>：使用 pre_llm_call 钩子注入已学习的行为提示，完全隔离于核心代码。
+    </div>
+  </div>
+  <div class="ref-card">
+    <div class="ref-source">plugins/hookify/core/rule_engine.py</div>
+    <div class="ref-title">规则引擎 ← rule_engine</div>
+    <div class="ref-desc">
+      LRU 缓存编译正则（128 上限），支持 regex_match/contains/equals/not_contains，区分 block/warn 级别。
+      <br><br><b>我们的扩展</b>：策略注入条件化，根据 session 特征（平台/任务类型/模型）匹配最相关规则。
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ Isolation ═══════ -->
+<h2>隔离策略：零侵入核心代码</h2>
+<p>所有功能以插件形式实现，通过钩子集成，不修改任何上游核心文件。</p>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>插件文件结构</h3>
+    <div class="file-tree">
+<span class="dir">self_evolution/</span>
+├── plugin.yaml
+├── __init__.py          <span class="comment"># register(ctx)</span>
+├── db.py                <span class="comment"># 独立 SQLite</span>
+├── hooks.py             <span class="comment"># 3个钩子</span>
+├── quality_scorer.py    <span class="comment"># 质量评分</span>
+├── <span class="dir">reflection_engine.py</span>  <span class="comment"># 梦境整理</span>
+├── rule_engine.py       <span class="comment"># 条件匹配</span>
+├── evolution_proposer.py
+├── evolution_executor.py
+├── feishu_notifier.py
+├── strategy_injector.py
+├── strategy_store.py
+├── cron_jobs.py
+├── models.py
+├── <span class="dir">agents/</span>
+│   ├── dream_analyzer.md
+│   └── evolution_planner.md
+└── <span class="dir">prompts/</span>
+    └── reflection.md
+    </div>
+  </div>
+  <div class="card">
+    <h3>钩子集成方式</h3>
+    <table class="int-table">
+      <tr><th>功能</th><th>集成方式</th><th>修改核心</th></tr>
+      <tr><td>工具调用遥测</td><td><span class="hook">post_tool_call</span></td><td class="no-mod">NO</td></tr>
+      <tr><td>Session 评分</td><td><span class="hook">on_session_end</span></td><td class="no-mod">NO</td></tr>
+      <tr><td>策略注入</td><td><span class="hook">pre_llm_call</span></td><td class="no-mod">NO</td></tr>
+      <tr><td>定时任务</td><td>cron/jobs.json</td><td class="no-mod">NO</td></tr>
+      <tr><td>飞书通知</td><td>gateway/ 飞书网关</td><td class="no-mod">NO</td></tr>
+      <tr><td>技能创建</td><td>skill_manager_tool</td><td class="no-mod">NO</td></tr>
+      <tr><td>记忆更新</td><td>memory_tool</td><td class="no-mod">NO</td></tr>
+      <tr><td>历史数据</td><td>state.db 只读</td><td class="no-mod">NO</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ═══════ Database ═══════ -->
+<h2>独立数据库设计</h2>
+<p>独立于核心 state.db，7 张表存储于 <code>~/.hermes/self_evolution/evolution.db</code></p>
+
+<div class="card-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+  <div class="db-table">
+    <div class="db-name">tool_invocations</div>
+    <div class="db-col">session_id <span>TEXT</span></div>
+    <div class="db-col">tool_name <span>TEXT</span></div>
+    <div class="db-col">duration_ms <span>INT</span></div>
+    <div class="db-col">success <span>BOOL</span></div>
+    <div class="db-col">error_type <span>TEXT</span></div>
+  </div>
+  <div class="db-table">
+    <div class="db-name">session_scores</div>
+    <div class="db-col">session_id <span>TEXT PK</span></div>
+    <div class="db-col">composite_score <span>REAL</span></div>
+    <div class="db-col">completion_rate <span>REAL</span></div>
+    <div class="db-col">efficiency_score <span>REAL</span></div>
+    <div class="db-col">task_category <span>TEXT</span></div>
+  </div>
+  <div class="db-table">
+    <div class="db-name">outcome_signals</div>
+    <div class="db-col">session_id <span>TEXT</span></div>
+    <div class="db-col">signal_type <span>TEXT</span></div>
+    <div class="db-col">signal_value <span>REAL</span></div>
+    <div class="db-col">metadata <span>TEXT JSON</span></div>
+  </div>
+  <div class="db-table">
+    <div class="db-name">reflection_reports</div>
+    <div class="db-col">sessions_analyzed <span>INT</span></div>
+    <div class="db-col">avg_score <span>REAL</span></div>
+    <div class="db-col">error_summary <span>TEXT</span></div>
+    <div class="db-col">worst_patterns <span>TEXT JSON</span></div>
+    <div class="db-col">recommendations <span>TEXT JSON</span></div>
+  </div>
+  <div class="db-table">
+    <div class="db-name">evolution_proposals</div>
+    <div class="db-col">id <span>TEXT PK</span></div>
+    <div class="db-col">proposal_type <span>TEXT</span></div>
+    <div class="db-col">title, description <span>TEXT</span></div>
+    <div class="db-col">status <span>TEXT</span> <span style="color:var(--green);">pending→approved→executed</span></div>
+  </div>
+  <div class="db-table">
+    <div class="db-name">improvement_units</div>
+    <div class="db-col">proposal_id <span>TEXT FK</span></div>
+    <div class="db-col">baseline_score <span>REAL</span></div>
+    <div class="db-col">current_score <span>REAL</span></div>
+    <div class="db-col">status <span>TEXT</span> <span style="color:var(--green);">active→promoted</span> / <span style="color:var(--red);">reverted</span></div>
+  </div>
+  <div class="db-table">
+    <div class="db-name">strategy_versions</div>
+    <div class="db-col">version <span>INT</span></div>
+    <div class="db-col">strategies_json <span>TEXT</span></div>
+    <div class="db-col">avg_score <span>REAL</span></div>
+    <div class="db-col">active_from / active_until <span>REAL</span></div>
+  </div>
+</div>
+
+<!-- ═══════ Safety ═══════ -->
+<h2>安全机制：防止退化漂移</h2>
+<p>六层防护确保进化方向正确且可回滚。</p>
+
+<div class="safety-grid">
+  <div class="safety-item">
+    <div class="safety-icon">🗄️</div>
+    <div class="safety-title">独立数据库</div>
+    <div class="safety-desc">不碰 state.db，上游 schema 变更无影响</div>
+  </div>
+  <div class="safety-item">
+    <div class="safety-icon">🔒</div>
+    <div class="safety-title">只读核心</div>
+    <div class="safety-desc">所有集成通过钩子完成，不修改核心文件</div>
+  </div>
+  <div class="safety-item">
+    <div class="safety-icon">🚧</div>
+    <div class="safety-title">人工闸门</div>
+    <div class="safety-desc">进化方案必须通过飞书审批，不自动执行</div>
+  </div>
+  <div class="safety-item">
+    <div class="safety-icon">⏪</div>
+    <div class="safety-title">版本回滚</div>
+    <div class="safety-desc">策略变更版本化，评分连续下降自动回滚</div>
+  </div>
+  <div class="safety-item">
+    <div class="safety-icon">🛡️</div>
+    <div class="safety-title">有界变更</div>
+    <div class="safety-desc">只能写 PERFORMANCE.md、创建 learned skills</div>
+  </div>
+  <div class="safety-item">
+    <div class="safety-icon">📚</div>
+    <div class="safety-title">拒绝学习</div>
+    <div class="safety-desc">被拒绝的提案会被分析，避免重复提出</div>
+  </div>
+</div>
+
+<!-- ═══════ Implementation Phases ═══════ -->
+<h2>实施路径</h2>
+<p>四个阶段，每阶段约 1 周。</p>
+
+<div class="phases">
+  <div class="phase">
+    <div class="phase-num">01</div>
+    <div class="phase-title">基础设施</div>
+    <ul>
+      <li>插件骨架</li>
+      <li>独立数据库 db.py</li>
+      <li>遥测采集 hooks.py</li>
+      <li>质量评分器</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <div class="phase-num">02</div>
+    <div class="phase-title">梦境整理</div>
+    <ul>
+      <li>反思引擎 reflection_engine.py</li>
+      <li>错误分析 + 时间浪费分析</li>
+      <li>进化提案生成器</li>
+      <li>凌晨 1:00 cron 注册</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <div class="phase-num">03</div>
+    <div class="phase-title">飞书审批</div>
+    <ul>
+      <li>飞书通知器 feishu_notifier.py</li>
+      <li>卡片消息 + 按钮回调</li>
+      <li>19:00 cron 注册</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <div class="phase-num">04</div>
+    <div class="phase-title">进化执行</div>
+    <ul>
+      <li>进化执行器 + 回滚</li>
+      <li>策略注入 + 规则引擎</li>
+      <li>策略存储 + 版本管理</li>
+      <li>A/B 测试追踪</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════ Model Config ═══════ -->
+<h2>模型配置</h2>
+<div class="card">
+  <div class="file-tree">
+<span class="comment"># ~/.hermes/self_evolution/config.yaml</span>
+<span class="var">model:</span>
+  <span class="var">primary:</span>
+    <span class="var">provider:</span> <span style="color:var(--green);">"zhipu"</span>           <span class="comment"># 优先使用 GLM-5.1</span>
+    <span class="var">model:</span> <span style="color:var(--green);">"glm-5.1"</span>
+  <span class="var">fallback:</span>
+    <span class="var">provider:</span> <span style="color:var(--cyan);">"ollama"</span>         <span class="comment"># GLM 不可用时降级到本地 Qwen</span>
+    <span class="var">model:</span> <span style="color:var(--cyan);">"qwen3:32b"</span>
+    <span class="var">base_url:</span> <span style="color:var(--cyan);">"http://localhost:11434"</span>
+
+<span class="var">schedule:</span>
+  <span class="var">dream_time:</span> <span style="color:var(--amber);">"0 1 * * *"</span>      <span class="comment"># 凌晨 1:00</span>
+  <span class="var">propose_time:</span> <span style="color:var(--amber);">"0 19 * * *"</span>    <span class="comment"># 当日 19:00</span>
+  </div>
+</div>
+
+<!-- ═══════ Footer ═══════ -->
+<div style="margin-top: 4rem; padding-top: 2rem; border-top: 1px solid var(--border); text-align: center; color: var(--text-dim); font-size: 0.85rem;">
+  <p>Hermes Agent Self-Evolution System — Designed with reference from Claude Code open-source patterns</p>
+  <p style="margin-top: 0.5rem; font-size: 0.78rem;">conversation-analyzer · Ralph Wiggum · learning-output-style · rule_engine</p>
+</div>
+
+</body>
+</html>

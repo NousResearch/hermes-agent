@@ -355,6 +355,13 @@ class TestParseHooksBlock:
         })
         assert specs[0].timeout == shell_hooks.MAX_TIMEOUT_SECONDS
 
+    def test_timeout_clamped_to_configured_max(self):
+        specs = shell_hooks.iter_configured_hooks({
+            "hooks_max_timeout": 900,
+            "hooks": {"pre_verify": [{"command": "/tmp/slow.sh", "timeout": 9999}]},
+        })
+        assert specs[0].timeout == 900
+
 
 
     def test_none_hooks_block(self):

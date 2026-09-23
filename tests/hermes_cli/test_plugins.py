@@ -1294,6 +1294,25 @@ class TestForceReloadSymmetry:
             {"context": "hi"}
         ]
 
+    def test_shell_hook_uses_its_own_timeout(self, monkeypatch):
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.01
+        )
+
+        def shell_hook(**_kwargs):
+            time.sleep(0.05)
+            return {"action": "continue", "message": "tests still running"}
+
+        shell_hook._shell_hook_timeout_seconds = 1
+        mgr = PluginManager()
+        mgr._hooks["pre_verify"] = [shell_hook]
+
+        assert mgr.invoke_hook("pre_verify") == [
+            {"action": "continue", "message": "tests still running"}
+        ]
+
     def test_hook_exception_still_isolated_under_timeout_path(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
@@ -2112,6 +2131,18 @@ class TestGetPreVerifyContinueMessage:
         assert seen["coding"] is True
         assert seen["attempt"] == 2
         assert seen["changed_paths"] == ["a.py"]
+
+    def test_block_reasons_win_and_are_combined(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda _name, **_kwargs: [
+                {"action": "continue", "message": "formatting is still running"},
+                {"action": "block", "message": "unit tests failed"},
+                {"action": "block", "message": "type checks failed"},
+            ],
+        )
+
+        assert get_pre_verify_continue_message() == "unit tests failed\n\ntype checks failed"
 
 
 class TestThreadToolWhitelist:

@@ -1978,21 +1978,26 @@ def get_pre_verify_continue_message(
     *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
     attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,
 ) -> Optional[str]:
-    """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
-    ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
-    other return lets the turn finish. ``coding``/``attempt`` let hooks scope and self-throttle."""
+    """Check ``pre_verify`` hooks for continuation directives.
+
+    Any blocking response wins over continue responses; all winning reasons are joined so a
+    later gate cannot be hidden by an earlier hook. ``coding``/``attempt`` let hooks scope and
+    self-throttle.
+    """
     hook_results = invoke_hook(
         "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
         attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
     )
+    blocks, continues = [], []
     for result in hook_results:
         if not isinstance(result, dict):
             continue
         action = str(result.get("action") or result.get("decision") or "").strip().lower()
         message = result.get("message") or result.get("reason")
         if action in ("continue", "block") and isinstance(message, str) and message.strip():
-            return message.strip()
-    return None
+            (blocks if action == "block" else continues).append(message.strip())
+    messages = blocks or continues
+    return "\n\n".join(messages) if messages else None
 
 
 def get_plugin_error_classification(

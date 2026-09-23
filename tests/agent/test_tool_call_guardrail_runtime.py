@@ -400,6 +400,68 @@ def test_context_pruned_effectful_call_blocks_before_plugins_and_dispatch():
     assert "Recover the exact content from its durable source" in payload["message"]
 
 
+def test_original_pruned_args_never_reach_real_managed_relay(tmp_path, monkeypatch):
+    """A Relay execution interceptor may short-circuit Hermes entirely, so it must
+    never receive synthetic compressor content from the model-facing history."""
+    pytest.importorskip("nemo_relay")
+    from agent import relay_runtime
+
+    session_id = "session-pruned-relay"
+    consumer = "test.context-pruned-relay-guard"
+    interceptor_name = "test-context-pruned-short-circuit"
+    seen = []
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    relay_runtime._reset_for_tests()
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id=session_id,
+        platform="cli",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease, turn_id="turn-pruned-relay", task_id="task-1",
+    )
+    lease.host.retain_managed_execution(consumer)
+    relay = lease.host.relay
+
+    async def short_circuit(_name, args, next_call):
+        del next_call
+        seen.append(dict(args))
+        return relay.ToolExecutionInterceptOutcome({"intercepted": True})
+
+    relay.intercepts.register_tool_execution(interceptor_name, 1, short_circuit)
+    try:
+        assert lease.host.managed_execution_enabled()
+
+        agent = _make_agent("test_effectful_write")
+        agent.session_id = session_id
+        pruned = _compressed_args("body")
+        tc = _mock_tool_call(
+            "test_effectful_write",
+            json.dumps(pruned, ensure_ascii=False),
+            "c-pruned-real-relay",
+        )
+        msg = SimpleNamespace(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch:
+            agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+        # The guard is before relay_tools.execute(): a configured native interceptor
+        # never gets authority to observe, forward, or short-circuit poisoned args.
+        assert seen == []
+        dispatch.assert_not_called()
+        payload = json.loads(messages[0]["content"])
+        assert payload["error"] == "suspected_pruned_tool_arguments"
+        assert payload["argument_paths"] == ["$.body"]
+    finally:
+        relay.intercepts.deregister_tool_execution(interceptor_name)
+        lease.host.release_managed_execution(consumer)
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+        relay_runtime._reset_for_tests()
+
+
 def test_request_middleware_pruned_args_block_before_short_circuit_execution_middleware():
     agent = _make_agent("test_effectful_write")
     pruned = _compressed_args("body")

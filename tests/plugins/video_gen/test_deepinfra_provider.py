@@ -155,3 +155,31 @@ def test_generate_text_to_video_downloads_url_and_saves_locally():
     assert "image_url" not in captured["kwargs"].get("extra_body", {})
 
 
+def test_credentials_follow_the_profile_secret_scope(monkeypatch):
+    """On a multiplexed gateway os.environ is the launch profile's .env: the key and base URL come from the
+    routed profile's scope, and a profile without a key is unavailable instead of borrowing the launch key."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+    monkeypatch.setenv("DEEPINFRA_BASE_URL", "https://launch.example/v1")
+    provider = deepinfra_plugin.DeepInfraVideoGenProvider()
+    captured: dict = {}
+    set_multiplex_active(True)
+    try:
+        token = set_secret_scope({"DEEPINFRA_API_KEY": "profile-b-key", "DEEPINFRA_BASE_URL": "https://profile-b.example/v1"})
+        try:
+            with patch.dict("sys.modules", {"openai": _fake_openai_with_capture(captured)}), \
+                    _mock_url_download(captured):
+                assert provider.generate(prompt="a cube", model="vendor/x")["success"]
+        finally:
+            reset_secret_scope(token)
+        token = set_secret_scope({})
+        try:
+            assert provider.is_available() is False
+        finally:
+            reset_secret_scope(token)
+    finally:
+        set_multiplex_active(False)
+        if captured.get("http_client") is not None:
+            captured["http_client"].close()
+    assert captured["api_key"] == "profile-b-key"
+    assert captured["base_url"] == "https://profile-b.example/v1"

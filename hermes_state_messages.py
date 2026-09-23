@@ -1065,6 +1065,43 @@ class SessionMessagesMixin:
                     ORDER BY id ASC""",
                 chunk)]
 
+    def recent_channel_messages(self, platform: str, chat_id: str, chat_type: str, thread_id: Optional[str] = None,
+                                *, roles: Optional[List[str]] = None, limit: int = 20,
+                                since_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Messages in one channel/thread across ALL its sessions, newest-first — the query behind
+        the opt-in channel-context continuity block and the ``session_search`` channel filter.
+
+        A channel is ``(platform, chat_id, chat_type)`` (``thread_id`` NULL); a thread is
+        ``(platform, chat_id, thread_id)``. ``roles`` bounds the returned roles (default: none =
+        every role); ``since_ts`` (unix epoch) bounds the window; ``limit`` caps the result. One
+        bounded indexed query over ``sessions`` joined to ``messages``; active rows only.
+        """
+        clauses = ["s.chat_id = ?", "s.source = ?", "m.active = 1"]
+        params: List[Any] = [str(chat_id), str(platform)]
+        if thread_id is None:
+            clauses.append("s.thread_id IS NULL")
+        else:
+            clauses.append("s.thread_id = ?")
+            params.append(str(thread_id))
+        if chat_type:
+            clauses.append("s.chat_type = ?")
+            params.append(str(chat_type))
+        if roles:
+            clauses.append(f"m.role IN ({','.join('?' for _ in roles)})")
+            params.extend(str(r) for r in roles)
+        if since_ts is not None:
+            clauses.append("m.timestamp >= ?")
+            params.append(float(since_ts))
+        sql = (
+            "SELECT m.* FROM messages m JOIN sessions s ON s.id = m.session_id "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY m.timestamp DESC, m.id DESC LIMIT ?"
+        )
+        params.append(int(limit))
+        rows = self._read_all(sql, params)
+        return [self._row_to_message_dict(r, warn_context="recent_channel_messages", summary_flag=False)
+                for r in rows]
+
     def get_messages_around(self, session_id: str, around_message_id: int, window: int = 5) -> Dict[str, Any]:
         """Up to *window* messages either side of an anchor id (ascending). ``messages_before``/``_after`` count
         strictly around the anchor (fewer than *window* = session boundary). Empty for a foreign anchor."""

@@ -1282,6 +1282,20 @@ DEFAULT_CONFIG = {
             "info_log_min_delta_mb": 0.0,
         },
     },
+    # Optional cross-session/cross-channel context continuity (all off by default = opt-in). Closes
+    # the fragmentation gap where an agent cannot see its own prior messages across sessions and
+    # channels (cron posts to a channel from its OWN session; cross-channel recall is manual).
+    "continuity": {
+        # Feature A: inject a compact block of the agent's recent messages in the current channel
+        # (across sessions, incl. cron) into context. Off by default; Slack + Discord only.
+        "channel_context": False,
+        # Max assistant messages injected (clamped 1..200).
+        "channel_context_max_messages": 20,
+        # Only messages within this many days are injected (clamped 1..365).
+        "channel_context_lookback_days": 7,
+        # false = inject ONLY the agent's own messages; true = include other participants' too.
+        "channel_context_include_other_users": False,
+    },
     "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,

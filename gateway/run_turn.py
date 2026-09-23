@@ -163,6 +163,14 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
+def _clamp_channel_context_int(value, default: int, lo: int, hi: int) -> int:
+    """Coerce an optional ``continuity.*`` int config value into ``[lo, hi]``, default on garbage."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -555,6 +563,37 @@ class GatewayTurnMixin:
 
         # was_auto_reset was consumed in _hmwa_open_session; only the reason needs clearing.
         session_entry.auto_reset_reason = None
+
+    async def _hmwa_channel_context_note(self, source, turn_sidecar_notes):
+        """Append the opt-in channel-context block (``continuity.channel_context``) to the turn
+        sidecar notes. Computed fresh each turn and appended at the tail (prompt-cache safe); never
+        touches the cached system prompt. Any config/DB failure appends nothing — never break a turn."""
+        from gateway.run import _gateway_session_db_inner, _load_gateway_config
+        from gateway.session import build_channel_context_block
+        try:
+            cfg = _load_gateway_config()
+            continuity = cfg.get("continuity") if isinstance(cfg, dict) else None
+            if not isinstance(continuity, dict) or not bool(continuity.get("channel_context")):
+                return
+            max_messages = _clamp_channel_context_int(continuity.get("channel_context_max_messages"), 20, 1, 200)
+            lookback_days = _clamp_channel_context_int(continuity.get("channel_context_lookback_days"), 7, 1, 365)
+            include_other = bool(continuity.get("channel_context_include_other_users"))
+        except Exception:
+            logger.debug("channel context config read failed", exc_info=True)
+            return
+        session_db = _gateway_session_db_inner(self)
+        if session_db is None:
+            return
+        try:
+            block = await asyncio.to_thread(
+                build_channel_context_block, session_db, source,
+                max_messages=max_messages, lookback_days=lookback_days, include_other_users=include_other,
+            )
+        except Exception:
+            logger.debug("channel context block failed", exc_info=True)
+            return
+        if block:
+            turn_sidecar_notes.append(block)
 
     def _hmwa_auto_load_skills(self, event, _auto, _quick_key, session_key):
         """Prepend topic/channel-bound skill payload(s) to ``event.text`` on a new session."""
@@ -2087,6 +2126,10 @@ class GatewayTurnMixin:
             ), _session_env_tokens
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+
+        # Channel context continuity (opt-in): append the agent's recent messages in this channel
+        # on every turn. Config-gated; no-op when disabled or the channel has no prior messages.
+        await self._hmwa_channel_context_note(source, turn_sidecar_notes)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).

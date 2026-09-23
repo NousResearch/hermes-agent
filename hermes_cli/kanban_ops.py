@@ -17,6 +17,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
+from hermes_cli.worktree_ops import release_lsp_clients
 
 
 def _kanban_config() -> dict:
@@ -303,52 +304,119 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _cmd_gc(args: argparse.Namespace) -> int:
-    """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
-    import shutil
+    """Recover terminal scratch residue and prune old events and worker logs."""
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
     if event_days < 0 or log_days < 0:
         return _err("kanban gc: retention days must be >= 0 (0 disables that sweep)", 2)
     scratch_root = kb.workspaces_root()
+    resolved_scratch_root = scratch_root.resolve(strict=False)
     removed_ws = 0
+    retained_ws = 0
     with kbc.connect_closing() as conn:
         rows = conn.execute(
             "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
-            "WHERE status = 'archived'"
+            "WHERE status = 'archived' OR "
+            "(status = 'done' AND workspace_kind = 'scratch')"
         ).fetchall()
-    for row in rows:
-        if row["workspace_kind"] == "worktree":
-            # Backstop for worktrees that escaped the completion/archive hook.
-            # Same safety predicate: only clean, fully-pushed worktrees go.
-            wt_path = row["workspace_path"]
-            if wt_path and Path(wt_path).is_dir():
+        for row in rows:
+            kind = row["workspace_kind"]
+            if kind not in kbw._REMOVABLE_KINDS:
+                continue
+            if kind == "worktree":
+                # Archived-worktree backstop remains unchanged: only clean,
+                # fully-pushed worktrees go.
+                wt_path = row["workspace_path"]
+                if not wt_path or not Path(wt_path).is_dir():
+                    continue
+                if kbw._has_active_children(conn, row["id"]):
+                    retained_ws += 1
+                    print(
+                        f"GC: skipped workspace for {row['id']}: "
+                        "active child still needs it",
+                        file=sys.stderr,
+                    )
+                    continue
                 kbw._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
-                if not Path(wt_path).is_dir():
+                if not os.path.lexists(wt_path):
                     removed_ws += 1
-            continue
-        if row["workspace_kind"] != "scratch":
-            continue
-        path = Path(row["workspace_path"] or (scratch_root / row["id"]))
-        try:
-            path = path.resolve()
-        except OSError:
-            continue
-        try:
-            path.relative_to(scratch_root.resolve())
-        except ValueError:
-            # Safety: never delete outside the scratch root.
-            continue
-        if path.exists() and path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-            removed_ws += 1
+                else:
+                    retained_ws += 1
+                    print(
+                        f"GC: skipped workspace for {row['id']}: worktree was preserved: "
+                        f"{wt_path}",
+                        file=sys.stderr,
+                    )
+                continue
+
+            recorded_path = Path(row["workspace_path"] or (scratch_root / row["id"]))
+            if not os.path.lexists(recorded_path):
+                continue
+            if kbw._has_active_children(conn, row["id"]):
+                retained_ws += 1
+                print(
+                    f"GC: skipped workspace for {row['id']}: active child still needs it",
+                    file=sys.stderr,
+                )
+                continue
+            if recorded_path.is_symlink():
+                retained_ws += 1
+                print(
+                    f"GC: skipped workspace for {row['id']}: refusing symlink: "
+                    f"{recorded_path}",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                path = recorded_path.resolve()
+            except OSError as exc:
+                retained_ws += 1
+                print(
+                    f"GC: skipped workspace for {row['id']}: cannot resolve "
+                    f"{recorded_path}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            in_current_board = (
+                path != resolved_scratch_root
+                and path.is_relative_to(resolved_scratch_root)
+            )
+            if not in_current_board or not kbw._is_managed_scratch_path(path):
+                if os.path.lexists(recorded_path):
+                    retained_ws += 1
+                    print(
+                        f"GC: skipped workspace for {row['id']}: outside current board's "
+                        f"managed scratch root: {recorded_path}",
+                        file=sys.stderr,
+                    )
+                continue
+            if recorded_path.is_dir():
+                release_lsp_clients(str(recorded_path))
+                if kbw._rmtree_workspace(recorded_path):
+                    removed_ws += 1
+                else:
+                    retained_ws += 1
+                    print(
+                        f"GC: failed to remove workspace for {row['id']}; path remains: "
+                        f"{recorded_path}",
+                        file=sys.stderr,
+                    )
+            else:
+                retained_ws += 1
+                print(
+                    f"GC: skipped workspace for {row['id']}: expected a directory, "
+                    f"path remains: {recorded_path}",
+                    file=sys.stderr,
+                )
 
     removed_events = 0
     if event_days:
         with kbc.connect_closing() as conn:
             removed_events = kb.gc_events(conn, older_than_seconds=event_days * 24 * 3600)
     removed_logs = kb.gc_worker_logs(older_than_seconds=log_days * 24 * 3600) if log_days else 0
+    retained_note = f", {retained_ws} workspace(s) retained/skipped" if retained_ws else ""
     print(f"GC complete: {removed_ws} workspace(s), "
-          f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+          f"{removed_events} event row(s), {removed_logs} log file(s) removed{retained_note}")
     return 0
 
 

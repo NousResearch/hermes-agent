@@ -652,7 +652,7 @@ def _repair_venv_on_current_checkout(
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
     # Same order as the pull and ZIP paths: the ``[all]`` reinstall above may have stripped the
-    # active memory provider's bridge packages (hindsight-embed, torch, ...).
+    # active memory provider's bridge packages (torch, embedding stacks, ...).
     _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —

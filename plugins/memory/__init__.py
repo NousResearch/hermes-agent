@@ -238,9 +238,9 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
     except Exception:
         logger.debug("memory provider '%s' warm-up import failed", name, exc_info=True)
     if imported:
-        # The deadlock is numpy's lazy ``_core`` init; hindsight defers that import to
-        # ``is_available()`` (sentence_transformers), so the provider module alone leaves
-        # it unwarmed. Every reporter's workaround was a plain ``import numpy`` up front.
+        # The deadlock is numpy's lazy ``_core`` init; embedding-backed providers (e.g. the
+        # hindsight plugin) defer that import to ``is_available()`` (sentence_transformers), so
+        # the provider module alone leaves it unwarmed. Every reporter's workaround was a plain ``import numpy`` up front.
         for module in _NATIVE_WARM_IMPORTS:
             try:
                 importlib.import_module(module)

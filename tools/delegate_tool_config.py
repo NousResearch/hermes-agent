@@ -306,6 +306,33 @@ def _merge_request_overrides(runtime_overrides, explicit_overrides):
         merged["extra_body"] = explicit_extra
     return merged or None
 
+
+def _resolve_delegation_profile(cfg: dict, profile: Optional[str]) -> tuple[dict, Optional[str]]:
+    """Return the effective route for one task and its selected profile name.
+
+    Profiles are shallow route overrides of ``delegation``. Their
+    ``request_overrides`` merge over the global value using the same one-level
+    ``extra_body`` handling as runtime provider overrides. An unknown profile
+    deliberately fails open to the global route.
+    """
+    base = {key: value for key, value in cfg.items() if key != "profiles"}
+    if profile is None:
+        return base, None
+
+    profiles = cfg.get("profiles")
+    selected = profiles.get(profile) if isinstance(profiles, dict) else None
+    if not isinstance(selected, dict):
+        logger.warning("Unknown delegation profile %r; using the default delegation route.", profile)
+        return base, None
+
+    effective = dict(base)
+    effective.update({key: value for key, value in selected.items() if key != "request_overrides"})
+    if "request_overrides" in selected:
+        effective["request_overrides"] = _merge_request_overrides(
+            base.get("request_overrides"), selected.get("request_overrides"),
+        )
+    return effective, profile
+
 # Native-SDK providers speak their own wire protocol and can't be reached via chat_completions against a base_url:
 # always take the runtime-provider path (a configured base_url still flows through it, e.g. a Bedrock region).
 _NATIVE_SDK_PROVIDERS = frozenset({"bedrock", "vertex", "google", "google-genai"})

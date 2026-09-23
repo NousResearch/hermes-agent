@@ -2915,6 +2915,10 @@ delegation:
   #   extra_body:                           # Merged into the request's extra_body — e.g. OpenRouter routing hints:
   #     provider:
   #       sort: throughput
+  # profiles:                               # Named per-task routes selected with tasks[].profile.
+  #   coder:
+  #     model: "moonshotai/kimi-k2.7-code"
+  #     provider: "nous"                   # provider/base_url/api_key/api_mode/request_overrides may also override defaults
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
@@ -2923,6 +2927,8 @@ delegation:
 ```
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+
+**Per-task profiles:** Define `delegation.profiles.<name>` to override the global delegation route for a task, then pass that name as `profile` in the task object: `delegate_task(tasks=[{"goal": "Implement the fix", "profile": "coder"}])`. A profile may override `model`, `provider`, `base_url`, `api_key`, `api_mode`, and `request_overrides`; its request overrides merge over the global delegation request overrides. Resolution is task profile → global `delegation` route → parent inheritance. Unknown profile names are logged and fall back to the global route.
 
 **Subagent fallback chain:** Set `delegation.fallback_providers` to give workers their own chain (same entry shape as the top-level list). An explicitly pinned child (by provider, endpoint, or model) uses that chain only when it is declared; otherwise it fails loudly instead of borrowing the parent agent's route. For an unpinned child, an absent or `null` setting preserves parent-chain inheritance. Use `fallback_providers: []` under `delegation:` to disable child fallback entirely.
 

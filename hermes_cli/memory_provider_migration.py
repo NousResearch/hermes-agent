@@ -97,8 +97,11 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     from hermes_cli.plugin_python_deps import dependency_homes
     installed: list[str] = []
     for home in dependency_homes():
+        def say_for_home(message: str, home: Path = home) -> None:
+            say(f"  [{home}] {message.lstrip()}")
+
         try:
-            name = migrate_home(home, install=_install_into(home), say=say)
+            name = migrate_home(home, install=_install_into(home), say=say_for_home)
         except Exception as exc:
             logger.debug("memory provider migration skipped for %s: %s", home, exc)
             continue
@@ -107,17 +110,26 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     return installed
 
 
-def recover_at_startup(name: str) -> bool:
+def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None) -> bool:
     """Agent-init hook for a configured provider that resolved nowhere. One attempt per process per
     name; honours ``security.allow_lazy_installs`` because it installs code. True when installed."""
     if name in _attempted:
         return False
     _attempted.add(name)
+
+    def report(message: str) -> None:
+        logger.warning(message)
+        if say is not None:
+            try:
+                say(message)
+            except Exception:
+                logger.debug("Memory migration notification failed", exc_info=True)
+
     from tools.lazy_deps import _allow_lazy_installs
     if not _allow_lazy_installs():
-        logger.warning("Memory provider '%s' is not installed; security.allow_lazy_installs is off — "
-                       "run `hermes plugins install %s`.", name, name)
+        report(f"Memory provider '{name}' is not installed; security.allow_lazy_installs is off — "
+               f"run `hermes plugins install {name}`.")
         return False
     from hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
-    return migrate_home(home, install=_install_into(home), say=logger.warning) == name
+    return migrate_home(home, install=_install_into(home), say=report) == name

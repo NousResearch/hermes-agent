@@ -9,6 +9,7 @@ Siblings: ``cua_backend_driver`` (binary/contract/update), ``cua_backend_capture
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib
 import logging
 import os
@@ -112,6 +113,196 @@ def _manifest_is_mode_independent(path: str) -> bool:
         return False
     version = parsed.get("version") if isinstance(parsed, dict) else None
     return isinstance(version, int) and not isinstance(version, bool) and version >= 3
+
+# ---------------------------------------------------------------------------
+# Windows Session-0 transport policy (issue #94756)
+# ---------------------------------------------------------------------------
+#
+# cua-driver refuses to spawn ``mcp`` in a non-interactive Windows session:
+#   "Cua Driver requires an interactive Windows user session: running in
+#    Windows Session 0"
+#
+# That breaks the long-lived Hermes gateway topology — Scheduled Task /
+# Windows service in Session 0 + canonical CUA daemon in the logged-in
+# owner's interactive session — because the gateway's child inherits
+# Session 0 even though the daemon itself is reachable through the
+# brokered CLI transport.
+#
+# Hermes policy:
+#   * never let the raw cua-driver rejection leak: surface a distinct
+#     ``ComputerUseSession0UnavailableError`` (RuntimeError subclass) with
+#     an actionable message naming every escape hatch from the issue
+#   * honor ``computer_use.session0_transport`` (env override
+#     ``HERMES_CUA_SESSION0_TRANSPORT``):
+#       ``auto``  (default) -> CLI transport in Session 0; MCP otherwise
+#       ``cli``             -> always brokered CLI transport (skip MCP)
+#       ``mcp``             -> force MCP (will fail closed in Session 0)
+#       ``off``             -> refuse ``computer_use`` in Session 0
+#
+# The auto default mirrors how the macOS CuaDriver.app case is handled
+# today: the host's session topology decides the transport, the user
+# only sets a knob when the default doesn't fit.
+
+
+_SESSION0_TRANSPORT_ENV = "HERMES_CUA_SESSION0_TRANSPORT"
+_SESSION0_TRANSPORT_CHOICES = frozenset({"auto", "cli", "mcp", "off"})
+
+
+class ComputerUseSession0UnavailableError(RuntimeError):
+    """Raised when ``computer_use`` is unusable in Windows Session 0.
+
+    Distinct subclass so callers (CLI, doctor, gateway health checks) can
+    catch it specifically and render the escape hatches from the issue
+    (issue #94756) instead of dumping the raw cua-driver rejection text.
+    Still a ``RuntimeError`` so callers that already catch ``RuntimeError``
+    keep working.
+    """
+
+
+def _windows_session_id() -> Optional[int]:
+    """Return the Windows session id of *this process*, or None on failure.
+
+    Uses ``ProcessIdToSessionId(GetCurrentProcessId(), &out)``, the
+    process-scoped query, to detect whether the current process is running
+    in Session 0 (services, scheduled tasks, background daemons) or in the
+    interactive session (typically id 1) that cua-driver needs.
+
+    ``WTSGetActiveConsoleSessionId`` is NOT a substitute: it takes no
+    arguments, so its result is a property of the *machine* — the session
+    currently attached to the physical console — and cannot name the
+    caller's session. On the very topology this policy exists for (gateway
+    in Session 0, owner logged in interactively) it reports the owner's
+    session, ``_is_windows_session_zero()`` answers False, ``auto`` picks
+    MCP, and cua-driver rejects the spawn with the exact Session-0 error
+    being worked around here. The console session id also changes on RDP
+    connect/disconnect and Fast User Switching, whereas a process's session
+    id is fixed at creation — which is what makes it safe to cache.
+
+    Returns None when the syscall is unavailable (non-Windows, ctypes
+    failure, missing kernel32 export) or the query itself fails. Callers
+    must treat None as "unknown — keep the existing behavior" rather than
+    crashing.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # ctypes defaults restype to c_int — too narrow for a 32-bit
+        # unsigned session id. Pin every signature explicitly so the DWORD
+        # round-trips on hosts with many sessions.
+        kernel32.GetCurrentProcessId.restype = ctypes.c_uint32
+        kernel32.GetCurrentProcessId.argtypes = []
+        kernel32.ProcessIdToSessionId.restype = ctypes.c_int32
+        kernel32.ProcessIdToSessionId.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        session_id = ctypes.c_uint32()
+        ok = kernel32.ProcessIdToSessionId(
+            kernel32.GetCurrentProcessId(), ctypes.byref(session_id)
+        )
+        if not ok:
+            # Query failed (BOOL == 0). Unknown is safer than a guess: the
+            # transport policy stays on its existing MCP default.
+            return None
+        return int(session_id.value)
+    except (OSError, AttributeError):
+        return None
+
+
+@functools.lru_cache(maxsize=1)
+def _is_windows_session_zero() -> Optional[bool]:
+    """True when this process is in Windows Session 0, False when in an
+    interactive Windows session, None on non-Windows / probe failure.
+
+    The detector is cached because the syscall cost is real on a hot
+    computer_use path and the answer cannot change for the lifetime of the
+    process: Windows session assignment is fixed at process start
+    by the kernel and inherited by every child.
+
+    The cached answer is for *this process*: tests patch the helper seam
+    (``_windows_session_id``) so they can drive the policy on any host
+    without a real Session-0 daemon.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        session_id = _windows_session_id()
+    except Exception:
+        return None
+    if session_id is None:
+        return None
+    return session_id == 0
+
+
+def _cua_session0_transport() -> str:
+    """Read ``computer_use.session0_transport`` from config + env.
+
+    Env override ``HERMES_CUA_SESSION0_TRANSPORT`` always wins (same
+    precedence model as ``_CUA_DRIVER_CMD_ENV`` / ``HERMES_CUA_TELEMETRY``):
+    an operator can force a transport without rewriting ``config.yaml``.
+
+    Recognized values: ``auto`` (default), ``cli``, ``mcp``, ``off``.
+    Unknown / unreadable values fall closed to ``auto``.
+    """
+    env_value = os.environ.get(_SESSION0_TRANSPORT_ENV, "").strip().lower()
+    if env_value in _SESSION0_TRANSPORT_CHOICES:
+        return env_value
+    raw = _computer_use_cfg().get("session0_transport")
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in _SESSION0_TRANSPORT_CHOICES:
+            return normalized
+    return "auto"
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_session0_transport() -> str:
+    """Collapse config + Session-0 detection into a single transport verdict.
+
+    Cached so repeated calls in the hot path pay zero detection cost.
+    Callers that want a fresh re-resolution (tests, doctor after a config
+    edit) clear the cache explicitly.
+
+    Returns one of: ``mcp`` (default — start the stdio MCP runtime),
+    ``cli`` (brokered CLI transport — skip MCP), ``off`` (refuse in
+    Session 0 with a recoverable error).
+    """
+    configured = _cua_session0_transport()
+    if configured != "auto":
+        # Explicit user choice wins — ``cli`` even on interactive hosts
+        # is the contract (operator wants the brokered transport for
+        # portability / process-model reasons).
+        return configured
+    # ``auto`` -> let the host topology decide.
+    is_session0 = _is_windows_session_zero()
+    if is_session0 is True:
+        return "cli"
+    # Non-Windows, interactive Windows, or probe failure: stay on MCP,
+    # which is the right transport for a Hermes process running where
+    # cua-driver can actually open its MCP stdio.
+    return "mcp"
+
+
+def _session0_unavailable_error() -> ComputerUseSession0UnavailableError:
+    """Build the actionable Session-0 refusal message (issue #94756).
+
+    The text names every escape hatch from the issue so the user is not
+    left re-reading the raw cua-driver "running in Windows Session 0"
+    rejection and guessing what to do next.
+    """
+    return ComputerUseSession0UnavailableError(
+        "computer_use is unavailable: this Hermes process is running in "
+        "Windows Session 0 (cua-driver requires an interactive Windows "
+        "user session). Either run Hermes from the logged-in owner's "
+        "interactive session, set computer_use.session0_transport=cli to "
+        "broker through the existing interactive cua-driver daemon, or "
+        "set computer_use.session0_transport=off to fail closed here "
+        "without breaking the rest of the gateway."
+    )
+
 
 def _computer_use_max_image_dimension() -> Optional[int]:
     """``computer_use.max_image_dimension`` longest-edge cap (default 1456 = aux-vision downscale); ``0``/negative -> None."""

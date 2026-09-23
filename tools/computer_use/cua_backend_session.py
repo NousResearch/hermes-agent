@@ -21,6 +21,12 @@ from tools.computer_use.cua_backend_parse import _extract_tool_result, _mcp_fiel
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
 
+def _cb():
+    """Facade module (config/policy helpers), looked up lazily to avoid the import cycle."""
+    from tools.computer_use import cua_backend
+    return cua_backend
+
+
 class _AsyncBridge:
     """Runs one asyncio loop on a daemon thread; marshals coroutines from the caller."""
 
@@ -466,6 +472,24 @@ class _CuaDriverSession:
                     os.remove(shot_file)
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # Issue #94756: Windows Session-0 policy. When the host topology
+        # decides (auto) or the operator forces (``cli``) the brokered CLI
+        # transport, every tool call funnels through ``cua-driver call``
+        # instead of the stdio MCP handshake — cua-driver refuses to
+        # spawn ``mcp`` from Session 0 with "requires an interactive
+        # Windows user session". The daemon itself is reachable through
+        # the CLI, so we never reach for the bridge. ``off`` refuses the
+        # call up front with a recoverable, actionable error so the
+        # operator can pick an explicit transport instead of a silent
+        # half-broken session.
+        from tools.computer_use.cua_backend import _resolve_session0_transport
+
+        transport = _resolve_session0_transport()
+        if transport == "off":
+            raise _cb()._session0_unavailable_error()
+        if transport == "cli":
+            return self._call_tool_via_cli(name, args, timeout)
+
         if name not in self._LIFECYCLE_CALLS:
             # A prior MCP timeout marks the session suspect (possibly wedged): recreate it so one timeout never
             # poisons the run. Healthy sessions are never restarted here.

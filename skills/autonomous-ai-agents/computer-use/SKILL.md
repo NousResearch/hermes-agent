@@ -354,3 +354,48 @@ agent; `cua-driver skills status` shows the link state). You'll then have:
 Those files describe the driver's OWN MCP tools (`get_window_state`,
 `element_token`, `snapshot_id`, …). Read them for platform context; keep
 calling the Hermes actions from this file — the wrapper does the translation.
+
+## Windows Session 0 (issue #94756)
+
+`cua-driver` refuses to spawn its `mcp` (stdio) runtime from a
+non-interactive Windows session with:
+
+```
+Cua Driver requires an interactive Windows user session: running in Windows Session 0
+```
+
+That breaks the long-lived gateway topology — Scheduled Task or Windows
+service running in **Session 0** + canonical CUA daemon running in the
+logged-in owner's **interactive** session — because the gateway's child
+inherits Session 0 even though the daemon itself is reachable through
+the brokered CLI transport (`cua-driver call <tool> <json>`).
+
+Hermes auto-detects the topology and picks a transport:
+
+| `computer_use.session0_transport` | Behavior |
+| --------------------------------- | -------- |
+| `auto` (default) | Session 0 -> brokered CLI transport (skip MCP); interactive -> MCP |
+| `cli` | Always brokered CLI; never spawn `cua-driver mcp` |
+| `mcp` | Force MCP (will fail closed in Session 0) |
+| `off` | Refuse `computer_use` in Session 0 with a recoverable error |
+
+You can override at runtime with `HERMES_CUA_SESSION0_TRANSPORT` (env
+always wins; same precedence as `HERMES_CUA_DRIVER_CMD`). When `off` is
+selected, `computer_use` raises `ComputerUseSession0UnavailableError` —
+the message names every escape hatch from the issue so you can pick
+the right transport instead of re-reading the raw cua-driver text.
+
+Detection scope: `auto` queries the *Windows* session of the Hermes
+process itself (`ProcessIdToSessionId`), so it fires on a Windows gateway
+in Session 0 regardless of who is logged in at the console. It cannot
+fire on a non-Windows host: a WSL2 Hermes that spawns a Windows
+`cua-driver.exe` through interop is still a POSIX process with no way to
+read the child's Windows session, so detection is "unknown" and `auto`
+stays on MCP. If that WSL host is a *system* service (its Windows
+children land in Session 0 and hit the same rejection), set
+`computer_use.session0_transport: cli` explicitly — the escape hatch is
+platform-independent.
+
+The MCP transport remains the default for interactive Hermes processes
+on Windows, macOS, and Linux. The Session-0 branch only kicks in when
+the host topology forces it.

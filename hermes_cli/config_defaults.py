@@ -2519,6 +2519,41 @@ DEFAULT_CONFIG = {
         # closed unless signed with the official com.trycua.driver identity. Only for local driver
         # development from source.
         "allow_unsigned_driver": False,
+        # Windows Session-0 transport policy (issue #94756).
+        #
+        # cua-driver refuses to spawn ``mcp`` in Windows Session 0
+        # ("requires an interactive Windows user session"). A long-lived
+        # Hermes gateway installed as a Scheduled Task or Windows service
+        # inherits Session 0, so its child cua-driver MCP spawn dies
+        # before MCP initialization — even though the canonical
+        # interactive CUA daemon is healthy and reachable through
+        # ``cua-driver call``.
+        #
+        #   auto (default) -> Session 0 routes via the brokered CLI
+        #     transport (``cua-driver call <tool> <json>``), bypassing
+        #     the stdio MCP handshake entirely. Interactive sessions
+        #     (and non-Windows hosts) keep using MCP. The host topology
+        #     decides; you only set this when the default doesn't fit.
+        #   cli            -> always brokered CLI transport; never spawn
+        #     ``cua-driver mcp``. Use this on an always-on Session 0
+        #     gateway that owns a separate interactive daemon.
+        #   mcp            -> force MCP (will fail closed in Session 0
+        #     with the actionable ComputerUseSession0UnavailableError).
+        #   off            -> refuse ``computer_use`` in Session 0 with
+        #     that error so the rest of the gateway keeps working.
+        #
+        # Override at runtime with HERMES_CUA_SESSION0_TRANSPORT (env
+        # always wins — same precedence model as HERMES_CUA_DRIVER_CMD
+        # and HERMES_CUA_TELEMETRY).
+        #
+        # Scope: ``auto`` can only detect *Windows* hosts (the detector is a
+        # kernel32 query). A Hermes running on Linux — including a WSL2
+        # host reaching a Windows ``cua-driver.exe`` through interop —
+        # cannot see the Windows session of the child it spawns: detection
+        # answers "unknown" and ``auto`` stays on MCP. When such a setup is
+        # a WSL *system* service, its Windows children land in Session 0
+        # and hit the same rejection, so set ``cli`` explicitly there.
+        "session0_transport": "auto",
     },
     # Egress credential-injection proxy (iron-proxy) for remote terminal sandboxes (Docker today):
     # the sandbox sees opaque tokens and iron-proxy swaps in real credentials at egress, so a

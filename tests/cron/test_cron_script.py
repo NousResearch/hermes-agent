@@ -15,6 +15,8 @@ import sys
 import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -565,8 +567,58 @@ class TestRunJobEnvVarCleanup:
 class TestScriptTimeoutTreeKill:
     """Phase 4a (#85125): a script timeout must leave zero living descendants."""
 
+    @staticmethod
+    def _stub_kills(monkeypatch, tree_kill_result):
+        """Record both OS-signalling paths instead of sending real signals."""
+        from agent import deadline
+        from cron import scheduler_script as sched_script
 
+        tree_kill_calls, fallback_calls = [], []
+        monkeypatch.setattr(
+            deadline, "kill_process_tree",
+            lambda pid: tree_kill_calls.append(pid) or tree_kill_result,
+        )
+        monkeypatch.setattr(sched_script, "_terminate_cron_script_process", fallback_calls.append)
+        return tree_kill_calls, fallback_calls
 
+    def test_unified_tree_kill_failure_falls_back(self, monkeypatch):
+        """A tree-kill that signals nothing must not leave the timed-out script
+        running: the process-group termination still runs."""
+        from cron import scheduler_script as sched_script
+
+        proc = SimpleNamespace(pid=12345, poll=lambda: None)
+        tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, False)
+
+        sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+
+        assert tree_kill_calls == [12345]
+        assert fallback_calls == [proc]
+
+    def test_invalid_pid_never_reaches_unified_tree_kill(self, monkeypatch):
+        """pid 0 must never reach kill_process_tree: on POSIX its final
+        ``os.kill(0, SIGKILL)`` signals the scheduler's own process group."""
+        from cron import scheduler_script as sched_script
+
+        proc = SimpleNamespace(pid=0, poll=lambda: None)
+        tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, True)
+
+        sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+
+        assert tree_kill_calls == []
+        assert fallback_calls == [proc]
+
+    def test_already_exited_proc_is_left_alone(self, monkeypatch):
+        """A script that finished right at the deadline is already reaped: its
+        pid may be recycled, so neither kill path may signal it."""
+        from cron import scheduler_script as sched_script
+
+        proc = SimpleNamespace(pid=12345, poll=lambda: 0)
+        tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, True)
+
+        sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+
+        assert tree_kill_calls == []
+        assert fallback_calls == []
 
     def test_cancel_path_also_tree_kills(self, monkeypatch, cron_env):
         """The ownership-lost/cancel kill site is the timeout site's sibling:

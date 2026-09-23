@@ -83,6 +83,19 @@ def _cmd_add(args) -> None:
             meta = get_vault_store().add_item(
                 kind="login", label=label, secret=secret, origin=origin
             )
+        elif kind == "identity":
+            from agent.vault_store import IDENTITY_FIELDS
+
+            origin = ""
+            while not origin:
+                origin = input("Site origin the item may be filled on (e.g. https://ssa.gov): ").strip()
+            c.print("[dim]Identity numbers are filled only on that origin after you confirm; values are read hidden.[/]")
+            secret = {}
+            for field in IDENTITY_FIELDS:
+                value = getpass.getpass(f"{field.replace('_', ' ')} (optional; at least one required): ").strip()
+                if value:
+                    secret[field] = value
+            meta = get_vault_store().add_item(kind=kind, label=label, secret=secret, origin=origin)
         else:
             from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
 
@@ -191,7 +204,7 @@ def register_cli(subparser) -> None:
         help="Save a login, card or address ahead of time (optional: the agent asks you on the page when it needs one)",
     )
     p_add.add_argument(
-        "--kind", choices=["login", "payment", "address"], default=None,
+        "--kind", choices=["login", "payment", "address", "identity"], default=None,
         help="Item kind (interactive prompt when omitted)",
     )
     p_add.set_defaults(_vault_handler=_cmd_add)

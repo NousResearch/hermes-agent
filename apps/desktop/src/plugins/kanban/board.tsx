@@ -85,6 +85,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
+import { KanbanSessionsView } from './sessions'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
@@ -1091,6 +1092,7 @@ export function KanbanBoardPage() {
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
+  const [sessionsView, setSessionsView] = useState(false)
 
   // Live updates ride the events socket (bindApi); this interval is only the
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
@@ -1339,7 +1341,8 @@ export function KanbanBoardPage() {
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
           {total}
         </span>
-        {board && (
+        <Button onClick={() => setSessionsView(v => !v)} size="sm" variant={sessionsView ? 'default' : 'outline'}>{sessionsView ? k.title : k.sessions}</Button>
+        {!sessionsView && board && (
           <FilterMenu
             archived={archived}
             assignee={assignee}
@@ -1374,7 +1377,7 @@ export function KanbanBoardPage() {
 
       {board && <Intro />}
 
-      {errorMessage && !board ? (
+      {sessionsView ? <KanbanSessionsView /> : errorMessage && !board ? (
         <div className="grid flex-1 place-items-center">
           <ErrorState title={errorMessage} />
         </div>

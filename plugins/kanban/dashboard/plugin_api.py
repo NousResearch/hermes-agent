@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_db_session_mirror as kbsm
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -340,6 +341,68 @@ async def get_board_endpoint(
         workflow_template_id=workflow_template_id,
         current_step_key=current_step_key,
     )
+
+
+# --- Session mirrors: metadata-only, separate from executable task columns ----
+
+_MIRROR_FIELDS = (
+    "id", "profile", "platform", "chat_id", "thread_id", "session_id", "title",
+    "status", "received_at", "started_at", "completed_at", "updated_at", "archived_at", "promoted_task_id",
+)
+
+
+def _mirror_metadata(row: dict) -> dict:
+    """Allowlist metadata fields; never expose message/transcript contents."""
+    return {key: row.get(key) for key in _MIRROR_FIELDS}
+
+
+@router.get("/mirrors")
+def list_session_mirrors(
+    include_archived: bool = Query(False), limit: int = Query(100, ge=1, le=500),
+    board: Optional[str] = _BOARD_Q,
+):
+    with _board_conn(board) as (_board, conn):
+        rows = kbsm.list_mirrors(conn, include_archived=include_archived, limit=limit)
+        return {"mirrors": [_mirror_metadata(row) for row in rows]}
+
+
+@router.post("/mirrors/{mirror_id}/archive")
+def archive_session_mirror(mirror_id: int, board: Optional[str] = _BOARD_Q):
+    with _board_conn(board) as (_board, conn):
+        if not kbsm.archive_mirror(conn, mirror_id):
+            raise HTTPException(status_code=404, detail="session mirror not found")
+        return {"ok": True, "id": mirror_id}
+
+
+@router.delete("/mirrors/{mirror_id}")
+def delete_session_mirror(mirror_id: int, board: Optional[str] = _BOARD_Q):
+    with _board_conn(board) as (_board, conn):
+        if not kbsm.delete_mirror(conn, mirror_id):
+            raise HTTPException(status_code=404, detail="session mirror not found")
+        return {"deleted": True, "id": mirror_id}
+
+
+class PromoteMirrorBody(BaseModel):
+    title: str
+    body: Optional[str] = None
+
+
+@router.post("/mirrors/{mirror_id}/promote")
+def promote_session_mirror(mirror_id: int, payload: PromoteMirrorBody, board: Optional[str] = _BOARD_Q):
+    if not payload.title.strip():
+        raise HTTPException(status_code=400, detail="task title is required")
+    selected_board = _resolve_board(board) or kanban_db.get_current_board()
+    with _board_conn(selected_board) as (_board, conn), _value_error_400():
+        try:
+            task_id = _with_board_pinned(
+                selected_board,
+                lambda: kbsm.promote_mirror(
+                    conn, mirror_id, title=payload.title, body=payload.body,
+                    created_by="dashboard", board=selected_board),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="session mirror not found")
+        return {"task_id": task_id}
 
 
 # --- GET /tasks/:id ---------------------------------------------------------

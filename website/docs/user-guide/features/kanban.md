@@ -809,7 +809,25 @@ The decomposer's routing decisions depend on profile descriptions, which is a pe
 
 `kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
 
-Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
+### Gateway session mirrors
+
+Hermes can show externally initiated gateway turns in a separate **Sessions** view in the Desktop Kanban plugin. Mirrors are not tasks: they are stored in a separate SQLite table, never appear in task lanes, and are ignored by the dispatcher. They record profile/platform/chat/thread/session identifiers, timestamps, and `received`, `running`, `completed`, `failed`, or `cancelled` status. No user/assistant text, summaries, or user IDs are copied. Events without a stable platform message ID are skipped rather than risk duplicates.
+
+The feature is off by default and uses explicit per-profile allowlists. Empty `profiles` or `platforms` means nothing is mirrored. Put the configuration in each source profile's own `config.yaml`; rows go into the selected Kanban board database and retain the source profile as metadata:
+
+```yaml
+kanban:
+  session_mirror:
+    enabled: true
+    profiles: [default]
+    platforms: [telegram]
+    mode: read_only
+    retention_days: 30
+```
+
+`retention_days: 0` disables automatic expiry. Expiry removes only old terminal mirror records, never active turns, tasks, or transcripts. The documented `retention_days` option makes the policy visible; the Sessions view permits archiving or deleting a mirror. **Promote to task** is an explicit action: the user supplies the task title and description; the new task is parked in `blocked` so it cannot run until the user explicitly unblocks/assigns it. Promotion does not copy the session transcript.
+
+### Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 
 | Key | Default | Purpose |
 |---|---|---|
@@ -820,6 +838,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
+| `session_mirror` | disabled | Optional metadata-only, read-only mirror of externally initiated gateway turns. Requires explicit profile and platform allowlists; empty lists mirror nothing. Stored outside `tasks`, never dispatched, and never copies transcripts. `retention_days: 0` disables expiry. See [Gateway session mirrors](#gateway-session-mirrors). |
 
 And the two auxiliary LLM slots:
 

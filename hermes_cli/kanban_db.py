@@ -1063,6 +1063,27 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Read-only references to real gateway agent turns. These are intentionally a separate relation,
+-- not a task subtype, so all task/dispatcher queries remain exclusive to executable work.
+CREATE TABLE IF NOT EXISTS session_mirrors (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile          TEXT NOT NULL,
+    platform         TEXT NOT NULL,
+    chat_id          TEXT NOT NULL,
+    thread_id        TEXT NOT NULL DEFAULT '',
+    session_id       TEXT NOT NULL,
+    message_id       TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    status           TEXT NOT NULL CHECK (status IN ('received', 'running', 'completed', 'failed', 'cancelled')),
+    received_at      INTEGER NOT NULL,
+    started_at       INTEGER,
+    completed_at     INTEGER,
+    updated_at       INTEGER NOT NULL,
+    archived_at      INTEGER,
+    promoted_task_id TEXT,
+    UNIQUE (profile, platform, chat_id, thread_id, message_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
@@ -1072,6 +1093,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_session_mirrors_order ON session_mirrors(archived_at, received_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_session_mirrors_expiry ON session_mirrors(status, updated_at);
 """
 
 

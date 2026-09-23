@@ -231,6 +231,19 @@ function withBoard(path: string, params: Record<string, string> = {}): string {
   return qs ? `${path}?${qs}` : path
 }
 
+export interface SessionMirror {
+  id: number; profile: string; platform: string; chat_id: string; thread_id: string | null
+  session_id: string; title: string; status: string; received_at: number
+  started_at: number | null; completed_at: number | null; updated_at: number
+  archived_at: number | null; promoted_task_id: string | null
+}
+
+export const fetchSessionMirrors = () => call<{ mirrors: SessionMirror[] }>(withBoard('/mirrors'))
+export const archiveSessionMirror = (id: number) => call(withBoard(`/mirrors/${id}/archive`), { method: 'POST' })
+export const deleteSessionMirror = (id: number) => call(withBoard(`/mirrors/${id}`), { method: 'DELETE' })
+export const promoteSessionMirror = (id: number, title: string, body: string) =>
+  call<{ task_id: string }>(withBoard(`/mirrors/${id}/promote`), { method: 'POST', body: { title, body } })
+
 // ── query keys (connection- and board-scoped; scope is always segment [2]) ────
 
 /** Prefix matching every board query on one connection (all slugs, both

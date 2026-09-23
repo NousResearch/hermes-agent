@@ -372,6 +372,15 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Mirror only explicitly selected external gateway sessions as metadata-only, read-only records.
+  # The allowlists apply in the selected source profile's config.yaml; mirror rows are stored in
+  # the selected Kanban board database with the originating profile recorded as metadata.
+  session_mirror:
+    enabled: false
+    profiles: []
+    platforms: []
+    mode: read_only
+    retention_days: 30  # 0 disables expiry; archived/terminal mirrors expire after this many days.
 
 # =============================================================================
 # Terminal Tool Configuration

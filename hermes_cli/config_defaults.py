@@ -1910,6 +1910,16 @@ DEFAULT_CONFIG = {
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.
         "reconcile_orphans": True,
+        # Read-only copies of externally initiated gateway turns. This is a profile-scoped allowlist;
+        # both lists are fail-closed (empty means no profiles/platforms). Mirror rows live outside
+        # `tasks`, never enter the dispatcher, and never store message/transcript content.
+        "session_mirror": {
+            "enabled": False,
+            "profiles": [],
+            "platforms": [],
+            "mode": "read_only",
+            "retention_days": 30,
+        },
         # Notify subscriptions survive `done` (completion is reversible) and are removed on archive.
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.

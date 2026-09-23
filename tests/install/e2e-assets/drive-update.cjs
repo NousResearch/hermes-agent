@@ -142,8 +142,8 @@ async function main() {
   // buttonless boot-progress card ("Starting Hermes... 86%"), then the
   // provider picker with "I'll choose a provider later".
   // Two traps: a one-shot dismiss probe fires before the picker's button
-  // exists, and isVisible() on the settings gear reports true while the
-  // gear sits UNDER the fullscreen overlay that intercepts every click.
+  // exists, and isVisible() on the settings cogwheel reports true while the
+  // cogwheel sits UNDER the fullscreen overlay that intercepts every click.
   // So: alternate short-timeout dismiss clicks with short-timeout settings
   // clicks until a settings click actually LANDS - Playwright's click
   // checks the hit target, so a landed click is proof the overlay is gone.

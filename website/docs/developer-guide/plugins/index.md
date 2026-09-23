@@ -630,7 +630,7 @@ Config and state have different owners: settings are user-visible behavior in
 ### Settings form in the Desktop
 
 Every key you declare in the manifest's `config_schema` renders as a field in the
-Desktop app's **Capabilities → Plugins** tab (the gear on the plugin's row). No
+Desktop app's **Capabilities → Plugins** tab (the cogwheel on the plugin's row). No
 Desktop code is needed: the backend's `plugins.manage list` returns the schema
 plus each key's current value, and saving writes through the same writer as
 `ctx.set_config()`, so `plugins.entries.<id>.settings.<key>` is what your plugin

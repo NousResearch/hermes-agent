@@ -1224,7 +1224,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,
-  // settings gear) — fixed chrome positioned via the same CSS vars AppShell
+  // settings cogwheel) — fixed chrome positioned via the same CSS vars AppShell
   // sets, computed here from the live connection. Page-registered tools
   // (preview's monitor/devtools cluster, …) arrive as registry contributions.
   const leftTitlebarTools = useTitlebarToolContributions('left')

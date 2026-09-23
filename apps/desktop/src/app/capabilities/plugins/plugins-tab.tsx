@@ -339,8 +339,8 @@ function PackageRow({
               </Tip>
             )}
           </span>
-          {/* Fixed slot for the settings gear: only plugins whose manifest declares
-            a config_schema get one. */}
+          {/* Fixed slot for the settings cogwheel: only plugins whose manifest
+            declares a config_schema get one. */}
           <span className="flex size-7 shrink-0 items-center justify-center">
             {hasSettings && (
               <Tip label={p.settingsToggle(pkg.name)}>

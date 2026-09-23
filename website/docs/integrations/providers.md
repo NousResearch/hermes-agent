@@ -968,7 +968,7 @@ Hermes preserves the context of an already-loaded LM Studio instance. For an unl
 
 To change context length in LM Studio:
 
-1. Click the gear icon next to the model picker
+1. Click the cogwheel icon next to the model picker
 2. Set "Context Length" to at least 64000 for a smooth experience
 3. Reload the model for the change to take effect
 4. If your machine cannot fit 64000, consider using a smaller model with larger context lengths.
@@ -977,7 +977,7 @@ Alternatively, use the CLI: `lms load model-name --context-length 64000`
 
 You can use the CLI to estimate if the model will fit: `lms load model-name --context-length 64000 --estimate-only`
 
-To set persistent per-model defaults: My Models tab → gear icon on the model → set context size.
+To set persistent per-model defaults: My Models tab → cogwheel icon on the model → set context size.
 :::
 
 If you use LM Studio's Just-In-Time loading / Auto-Evict feature and want LM Studio to manage model loading and eviction from normal chat requests, skip Hermes' explicit preload step:

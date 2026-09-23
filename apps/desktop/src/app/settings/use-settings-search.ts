@@ -247,7 +247,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       description: appearance.appActionsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.appActions}`,
-      keywords: ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],
+      keywords: ['titlebar', 'settings cogwheel', 'layout', 'HUD', 'left', 'right', 'tabs'],
       label: appearance.appActionsTitle,
       target: { setting: APPEARANCE_SETTING_IDS.appActions, view: 'config:appearance' }
     },

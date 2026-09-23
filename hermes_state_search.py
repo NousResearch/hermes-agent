@@ -63,10 +63,12 @@ SELECT t.id AS match_id, m.role, m.content
 FROM target t JOIN messages m ON m.id IN (
     t.id,
     (SELECT p.id FROM messages p
-     WHERE p.session_id = t.session_id AND (p.timestamp, p.id) < (t.timestamp, t.id)
+     WHERE p.session_id = t.session_id AND (p.active = 1 OR p.compacted = 1)
+       AND (p.timestamp, p.id) < (t.timestamp, t.id)
      ORDER BY p.timestamp DESC, p.id DESC LIMIT 1),
     (SELECT n.id FROM messages n
-     WHERE n.session_id = t.session_id AND (n.timestamp, n.id) > (t.timestamp, t.id)
+     WHERE n.session_id = t.session_id AND (n.active = 1 OR n.compacted = 1)
+       AND (n.timestamp, n.id) > (t.timestamp, t.id)
      ORDER BY n.timestamp, n.id LIMIT 1)
 )
 ORDER BY t.id, m.timestamp, m.id"""

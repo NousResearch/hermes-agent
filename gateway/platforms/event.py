@@ -84,6 +84,10 @@ class MessageEvent:
     internal: bool = False
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Set by the gateway when agent execution failed before completing a substantive turn. Platform
+    # completion hooks can inspect this independently of ``ProcessingOutcome``, which remains a
+    # delivery lifecycle signal (a sanitized failure reply may be delivered successfully).
+    agent_turn_failed: bool = False
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.

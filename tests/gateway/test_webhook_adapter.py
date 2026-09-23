@@ -22,16 +22,19 @@ import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import gateway.platforms.webhook as webhook_module
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
 )
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +120,76 @@ def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> st
     signed = msg_id.encode() + b"." + timestamp.encode() + b"." + body
     digest = hmac.new(key, signed, hashlib.sha256).digest()
     return "v1," + base64.b64encode(digest).decode()
+
+
+def _signed_callback_route(**overrides):
+    route = {
+        "secret": "ingress-secret",
+        "prompt": "Process session {agentSession.id}",
+        "deliver": "signed_callback",
+        "callback_url": "https://worker.example.test/linear/agent-result",
+        "callback_secret": "outbound-secret",
+        "deliver_extra": {"agent_session_id": "{agentSession.id}"},
+    }
+    route.update(overrides)
+    return route
+
+
+class _CallbackResponse:
+    def __init__(self, status):
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+
+class _CallbackSession:
+    def __init__(self, http_stub):
+        self.http_stub = http_stub
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    def post(self, url, *, data, headers, allow_redirects):
+        self.http_stub.calls.append((url, data, dict(headers), allow_redirects))
+        status = self.http_stub.statuses.pop(0) if self.http_stub.statuses else 200
+        return _CallbackResponse(status)
+
+
+class _CallbackHTTPStub:
+    def __init__(self, statuses=()):
+        self.calls = []
+        self.statuses = list(statuses)
+
+    def client_session(self, *, timeout):
+        return _CallbackSession(self)
+
+
+def _make_signed_callback_delivery():
+    route = _signed_callback_route()
+    adapter = _make_adapter(routes={"linear": route}, secret="ingress-secret")
+    chat_id = "webhook:linear:created:session-42"
+    adapter._delivery_info[chat_id] = {
+        "deliver": "signed_callback",
+        "callback_url": route["callback_url"],
+        "callback_secret": route["callback_secret"],
+        "delivery_id": "created:session-42",
+        "route_name": "linear",
+        "deliver_extra": {"agent_session_id": "session-42"},
+    }
+    adapter._delivery_info_created[chat_id] = time.time()
+    event = MessageEvent(
+        text="Process session session-42",
+        source=SessionSource(platform=Platform.WEBHOOK, chat_id=chat_id),
+        message_id="created:session-42",
+    )
+    return adapter, chat_id, event
 
 
 # ===================================================================
@@ -759,6 +832,196 @@ class TestDeliveryCleanup:
         assert result2.success is True
         assert chat_id in adapter._delivery_info
 
+
+
+class TestSignedCallback:
+    @pytest.mark.asyncio
+    async def test_buffers_only_final_notify_and_posts_signed_terminal_json(self, monkeypatch, caplog):
+        adapter, chat_id, event = _make_signed_callback_delivery()
+        http = _CallbackHTTPStub()
+        monkeypatch.setattr(webhook_module.aiohttp, "ClientSession", http.client_session)
+
+        await adapter.send(chat_id, "interim progress")
+        assert "terminal_response" not in adapter._delivery_info[chat_id]
+        await adapter.send(chat_id, "final response", metadata={"notify": True})
+        assert http.calls == []
+
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        assert len(http.calls) == 1
+        url, raw_body, headers, allow_redirects = http.calls[0]
+        timestamp = headers["X-Webhook-Timestamp"]
+        assert url == "https://worker.example.test/linear/agent-result"
+        assert allow_redirects is False
+        assert json.loads(raw_body) == {
+            "delivery_id": "created:session-42",
+            "agent_session_id": "session-42",
+            "type": "response",
+            "body": "final response",
+        }
+        assert headers["Idempotency-Key"] == "created:session-42"
+        assert headers["X-Request-ID"] == "created:session-42"
+        assert headers["X-Webhook-Signature-V2"] == _generic_v2_signature(
+            raw_body, "outbound-secret", timestamp
+        )
+        assert "interim progress" not in caplog.text
+        assert "final response" not in caplog.text
+        assert "outbound-secret" not in caplog.text
+
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        assert len(http.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_failure_ignores_buffered_partial_text_and_retries_with_one_stable_id(self, monkeypatch):
+        adapter, chat_id, event = _make_signed_callback_delivery()
+        http = _CallbackHTTPStub((503, 502, 503))
+        monkeypatch.setattr(webhook_module.aiohttp, "ClientSession", http.client_session)
+        monkeypatch.setattr(webhook_module, "_CALLBACK_RETRY_DELAY_SECONDS", 0)
+
+        await adapter.send(chat_id, "uncommitted partial answer", metadata={"notify": True})
+        await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+        assert len(http.calls) == webhook_module._CALLBACK_MAX_ATTEMPTS
+        request_bodies = {call[1] for call in http.calls}
+        assert len(request_bodies) == 1
+        assert json.loads(http.calls[0][1]) == {
+            "delivery_id": "created:session-42",
+            "agent_session_id": "session-42",
+            "type": "error",
+            "body": "Agent run failed.",
+        }
+        assert b"uncommitted partial answer" not in http.calls[0][1]
+        assert adapter._delivery_info[chat_id]["terminal_callback_started"] is True
+        assert "callback_secret" not in adapter._delivery_info[chat_id]
+        await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+        assert len(http.calls) == webhook_module._CALLBACK_MAX_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_cancelled_run_ignores_buffered_partial_text(self, monkeypatch):
+        adapter, chat_id, event = _make_signed_callback_delivery()
+        http = _CallbackHTTPStub()
+        monkeypatch.setattr(webhook_module.aiohttp, "ClientSession", http.client_session)
+
+        await adapter.send(chat_id, "uncommitted partial answer", metadata={"notify": True})
+        await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+
+        assert len(http.calls) == 1
+        assert json.loads(http.calls[0][1]) == {
+            "delivery_id": "created:session-42",
+            "agent_session_id": "session-42",
+            "type": "error",
+            "body": "Agent run was cancelled.",
+        }
+        assert b"uncommitted partial answer" not in http.calls[0][1]
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "🙂" * (webhook_module._CALLBACK_MAX_RESPONSE_BYTES // 4 + 1),
+            "\x00" * webhook_module._CALLBACK_MAX_RESPONSE_BYTES,
+        ],
+        ids=("utf8-boundary", "json-escaped-envelope"),
+    )
+    @pytest.mark.asyncio
+    async def test_oversized_response_is_truncated_safely_below_callback_body_cap(self, monkeypatch, response):
+        adapter, chat_id, event = _make_signed_callback_delivery()
+        http = _CallbackHTTPStub()
+        monkeypatch.setattr(webhook_module.aiohttp, "ClientSession", http.client_session)
+
+        await adapter.send(chat_id, response, metadata={"notify": True})
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        assert len(http.calls) == 1
+        payload = json.loads(http.calls[0][1])
+        assert payload["type"] == "response"
+        assert payload["body"].endswith(webhook_module._CALLBACK_RESPONSE_TRUNCATION_MARKER)
+        assert len(payload["body"].encode("utf-8")) <= webhook_module._CALLBACK_MAX_RESPONSE_BYTES
+        assert len(http.calls[0][1]) <= webhook_module._CALLBACK_MAX_ENVELOPE_BYTES
+
+    def test_valid_callback_route_is_allowed(self):
+        route = _signed_callback_route()
+        adapter = _make_adapter(routes={"linear": route}, secret="ingress-secret")
+
+        assert adapter._dynamic_route_allowed("linear", route) is True
+
+    def test_agent_session_id_must_be_payload_rendered(self):
+        route = _signed_callback_route(deliver_extra={"agent_session_id": "session-42"})
+        adapter = _make_adapter(routes={"linear": route}, secret="ingress-secret")
+
+        with pytest.raises(ValueError):
+            adapter._validate_route("linear", route)
+
+    @pytest.mark.parametrize(
+        "callback_url",
+        [
+            "http://worker.example.test/linear/agent-result",
+            "https://user:pass@worker.example.test/linear/agent-result",
+            "https://worker.example.test/{host}/agent-result",
+            "https://worker.example.test:99999/linear/agent-result",
+            "https://worker.example.test/linear/agent-result#fragment",
+        ],
+    )
+    def test_invalid_callback_url_fails_route_validation(self, callback_url):
+        route = _signed_callback_route(callback_url=callback_url)
+        adapter = _make_adapter(routes={"linear": route}, secret="ingress-secret")
+
+        with pytest.raises(ValueError):
+            adapter._validate_route("linear", route)
+
+    @pytest.mark.parametrize("callback_secret", ["", "   ", None, _INSECURE_NO_AUTH, "ingress-secret"])
+    def test_invalid_or_reused_callback_secret_fails_route_validation(self, callback_secret):
+        route = _signed_callback_route(callback_secret=callback_secret)
+        adapter = _make_adapter(routes={"linear": route}, secret="ingress-secret")
+
+        with pytest.raises(ValueError):
+            adapter._validate_route("linear", route)
+
+    @pytest.mark.asyncio
+    async def test_replay_uses_stable_request_id_not_subscription_id(self):
+        route = _signed_callback_route()
+        adapter = _make_adapter(routes={"linear": route}, secret="ingress-secret")
+        adapter.handle_message = AsyncMock()
+        raw_body = json.dumps({
+            "agentSession": {"id": "session-42"},
+            "delivery_id": "created:session-42",
+            "type": "created",
+        }).encode()
+        timestamp = str(int(time.time()))
+        headers = {
+            "X-Request-ID": "created:session-42",
+            "webhook-id": "linear-subscription-id",
+            "X-Webhook-Timestamp": timestamp,
+            "X-Webhook-Signature-V2": _generic_v2_signature(raw_body, "ingress-secret", timestamp),
+        }
+
+        first = await adapter._handle_webhook(
+            _mock_request(headers=headers, body=raw_body, match_info={"route_name": "linear"})
+        )
+        pending = list(adapter._background_tasks)
+        replay = await adapter._handle_webhook(
+            _mock_request(headers=headers, body=raw_body, match_info={"route_name": "linear"})
+        )
+
+        assert first.status == 202
+        assert json.loads(first.text)["delivery_id"] == "created:session-42"
+        assert replay.status == 200
+        assert json.loads(replay.text) == {"status": "duplicate", "delivery_id": "created:session-42"}
+
+        mutated_request_id = dict(headers)
+        mutated_request_id["X-Request-ID"] = "prompted:another-activity"
+        mismatch = await adapter._handle_webhook(
+            _mock_request(headers=mutated_request_id, body=raw_body, match_info={"route_name": "linear"})
+        )
+        assert mismatch.status == 400
+        missing_request_id = dict(headers)
+        missing_request_id.pop("X-Request-ID")
+        missing_id_response = await adapter._handle_webhook(
+            _mock_request(headers=missing_request_id, body=raw_body, match_info={"route_name": "linear"})
+        )
+        assert missing_id_response.status == 400
+        await asyncio.gather(*pending)
+        adapter.handle_message.assert_awaited_once()
+        delivery = adapter._delivery_info["webhook:linear:created:session-42"]
+        assert delivery["deliver_extra"]["agent_session_id"] == "session-42"
 
 # ===================================================================
 # __raw__ template token

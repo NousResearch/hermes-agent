@@ -6,6 +6,7 @@ deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (
 job per event; the rendered prompt is transient per-run context; exclusive with deliver_only). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
 replay protection; body-only V1 is deprecated but accepted with a warning."""
+# ``signed_callback`` posts the terminal ``notify`` response to a trusted HTTPS callback with HMAC V2.
 
 import asyncio
 import base64
@@ -21,18 +22,21 @@ import time
 from collections import deque
 from contextlib import nullcontext, suppress
 from typing import Any, Deque, Dict, List, Optional
+from urllib.parse import urlsplit
 
 try:
+    import aiohttp
     from aiohttp import web
 
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
+    aiohttp = None
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
@@ -65,6 +69,13 @@ _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
 _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
+
+_CALLBACK_MAX_ATTEMPTS = 3
+_CALLBACK_TIMEOUT_SECONDS = 10
+_CALLBACK_RETRY_DELAY_SECONDS = 0.5
+_CALLBACK_MAX_RESPONSE_BYTES = 32 * 1024
+_CALLBACK_MAX_ENVELOPE_BYTES = 60 * 1024
+_CALLBACK_RESPONSE_TRUNCATION_MARKER = "\n\n[Response truncated]"
 
 
 def _is_loopback_host(host: Optional[str]) -> bool:
@@ -213,7 +224,39 @@ class WebhookAdapter(BasePlatformAdapter):
                 raise ValueError(f"[webhook] Route '{name}' sets both deliver_only and cron_job. They are mutually "
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
+        self._validate_signed_callback_route(name, route)
         validate_coalesce_config(name, route)
+
+    def _validate_signed_callback_route(self, name: str, route: dict) -> None:
+        """Fail closed unless signed_callback uses a static HTTPS target and its own secret."""
+        if route.get("deliver") != "signed_callback":
+            return
+        if route.get("deliver_only") or route.get("cron_job") or route.get("coalesce"):
+            raise ValueError(f"[webhook] Route '{name}' cannot combine signed_callback with deliver_only, cron_job, "
+                             "or coalesce.")
+        callback_url = route.get("callback_url")
+        if (not isinstance(callback_url, str) or not callback_url or callback_url != callback_url.strip()
+                or "{" in callback_url or "}" in callback_url or "\r" in callback_url or "\n" in callback_url):
+            raise ValueError(f"[webhook] Route '{name}' signed_callback requires a static HTTPS callback_url.")
+        try:
+            parsed_url = urlsplit(callback_url)
+            _ = parsed_url.port  # Validate malformed/out-of-range ports.
+        except ValueError:
+            raise ValueError(f"[webhook] Route '{name}' signed_callback callback_url is invalid.") from None
+        if (parsed_url.scheme != "https" or not parsed_url.hostname or parsed_url.username is not None
+                or parsed_url.password is not None or parsed_url.fragment):
+            raise ValueError(f"[webhook] Route '{name}' signed_callback requires a static HTTPS callback_url.")
+        callback_secret = route.get("callback_secret")
+        if (not isinstance(callback_secret, str) or not callback_secret.strip()
+                or callback_secret == _INSECURE_NO_AUTH):
+            raise ValueError(f"[webhook] Route '{name}' signed_callback requires a non-empty callback_secret.")
+        if callback_secret == route.get("secret", self._global_secret):
+            raise ValueError(f"[webhook] Route '{name}' callback_secret must differ from its inbound HMAC secret.")
+        deliver_extra = route.get("deliver_extra", {})
+        if (not isinstance(deliver_extra, dict) or not isinstance(deliver_extra.get("agent_session_id"), str)
+                or not _TEMPLATE_KEY_RE.search(deliver_extra["agent_session_id"])):
+            raise ValueError(f"[webhook] Route '{name}' signed_callback requires a payload template in "
+                             "deliver_extra.agent_session_id.")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
@@ -266,6 +309,12 @@ class WebhookAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
+        if deliver_type == "signed_callback":
+            # Intermediate/status sends share this method. Only the final user-visible text is retained;
+            # the actual callback belongs to the terminal processing hook below.
+            if metadata and metadata.get("notify"):
+                delivery["terminal_response"] = content
+            return SendResult(success=True)
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
@@ -360,6 +409,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return False
         try:
             # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
+            self._validate_signed_callback_route(name, route)
             validate_coalesce_config(name, route)
         except ValueError as e:
             logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
@@ -582,6 +632,13 @@ class WebhookAdapter(BasePlatformAdapter):
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
+        signed_callback_delivery_id = None
+        if route_config.get("deliver") == "signed_callback":
+            signed_callback_delivery_id = (request.headers.get("X-Request-ID") or "").strip()
+            payload_delivery_id = payload.get("delivery_id") if isinstance(payload, dict) else None
+            if (not signed_callback_delivery_id or not isinstance(payload_delivery_id, str)
+                    or payload_delivery_id != signed_callback_delivery_id):
+                return _json_error("Signed callback route requires a matching delivery_id", 400)
         headers = request.headers
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
@@ -611,9 +668,12 @@ class WebhookAdapter(BasePlatformAdapter):
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
-        now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
+        if signed_callback_delivery_id is not None:
+            delivery_id = signed_callback_delivery_id
+        else:
+            delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
+                "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
+        now = time.time()  # idempotency: skip duplicate deliveries before starting another run
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
@@ -648,9 +708,19 @@ class WebhookAdapter(BasePlatformAdapter):
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
-        self._delivery_info[session_chat_id] = {
-            "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+        delivery = {
+            "deliver": route_config.get("deliver", "log"),
+            "profile": profile,
+            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+        }
+        if delivery["deliver"] == "signed_callback":
+            delivery.update(
+                callback_url=route_config["callback_url"],
+                callback_secret=route_config["callback_secret"],
+                delivery_id=delivery_id,
+                route_name=route_name,
+            )
+        self._delivery_info[session_chat_id] = delivery
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -668,10 +738,139 @@ class WebhookAdapter(BasePlatformAdapter):
         return task
 
     async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
-        """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so
-        unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
-        first-reason-wins."""
-        await self._end_webhook_session(event, event.source.chat_id)
+        """Post any terminal signed callback, then close this one-shot delivery's session."""
+        try:
+            await self._deliver_signed_callback(event, outcome)
+        finally:
+            await self._end_webhook_session(event, event.source.chat_id)
+
+    async def _deliver_signed_callback(self, event: "MessageEvent", outcome: Any) -> None:
+        """Deliver one final signed_callback envelope, retrying transient failures with one stable key."""
+        delivery = self._delivery_info.get(event.source.chat_id)
+        if not delivery or delivery.get("deliver") != "signed_callback" or delivery.get("terminal_callback_started"):
+            return
+        delivery["terminal_callback_started"] = True
+        final_text = delivery.pop("terminal_response", None)
+        agent_failed = getattr(event, "agent_failed", False) is True
+        if outcome == ProcessingOutcome.CANCELLED:
+            callback_type, body = "error", "Agent run was cancelled."
+        elif outcome == ProcessingOutcome.SUCCESS and not agent_failed and final_text:
+            callback_type, body = "response", final_text
+        elif outcome == ProcessingOutcome.SUCCESS and not agent_failed:
+            callback_type, body = "error", "No response was generated."
+        else:
+            callback_type, body = "error", "Agent run failed."
+        try:
+            await self._post_signed_callback(delivery, callback_type, body)
+        finally:
+            delivery.pop("callback_secret", None)
+
+    async def _post_signed_callback(self, delivery: dict, callback_type: str, body: str) -> bool:
+        """POST the final callback with a stable delivery ID and a timestamped HMAC-SHA256 signature."""
+        callback_url = delivery.get("callback_url")
+        callback_secret = delivery.get("callback_secret")
+        delivery_id = delivery.get("delivery_id")
+        route_name = delivery.get("route_name", "")
+        extra = delivery.get("deliver_extra", {})
+        agent_session_id = extra.get("agent_session_id") if isinstance(extra, dict) else None
+        if (not AIOHTTP_AVAILABLE or not isinstance(callback_url, str) or not isinstance(callback_secret, str)
+                or not isinstance(delivery_id, str) or not delivery_id or not isinstance(agent_session_id, str)
+                or not agent_session_id or _TEMPLATE_KEY_RE.search(agent_session_id)):
+            logger.warning("[webhook] signed callback skipped: incomplete route configuration or session ID "
+                           "route=%s delivery=%s", route_name, delivery_id or "(missing)")
+            return False
+
+        if callback_type == "response":
+            try:
+                encoded_body = body.encode("utf-8")
+            except UnicodeEncodeError:
+                encoded_body = body.encode("utf-8", errors="replace")
+                body = encoded_body.decode("utf-8")
+            if len(encoded_body) > _CALLBACK_MAX_RESPONSE_BYTES:
+                marker = _CALLBACK_RESPONSE_TRUNCATION_MARKER
+                marker_bytes = marker.encode("utf-8")
+                body = encoded_body[:_CALLBACK_MAX_RESPONSE_BYTES - len(marker_bytes)].decode(
+                    "utf-8", errors="ignore"
+                ) + marker
+                response_truncated = True
+            else:
+                response_truncated = False
+        else:
+            response_truncated = False
+
+        def _serialize_callback(body_text: str) -> bytes:
+            return json.dumps(
+                {
+                    "delivery_id": delivery_id,
+                    "agent_session_id": agent_session_id,
+                    "type": callback_type,
+                    "body": body_text,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+
+        raw_body = _serialize_callback(body)
+        if len(raw_body) > _CALLBACK_MAX_ENVELOPE_BYTES:
+            if callback_type != "response":
+                logger.warning("[webhook] signed callback envelope too large route=%s delivery=%s",
+                               route_name, delivery_id)
+                return False
+            marker = _CALLBACK_RESPONSE_TRUNCATION_MARKER
+            prefix = body[:-len(marker)] if response_truncated else body
+            low, high = 0, len(prefix)
+            bounded_body = bounded_raw_body = None
+            while low <= high:
+                middle = (low + high) // 2
+                candidate = prefix[:middle] + marker
+                candidate_raw_body = _serialize_callback(candidate)
+                if len(candidate_raw_body) <= _CALLBACK_MAX_ENVELOPE_BYTES:
+                    bounded_body, bounded_raw_body = candidate, candidate_raw_body
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            if bounded_raw_body is None:
+                logger.warning("[webhook] signed callback envelope too large route=%s delivery=%s",
+                               route_name, delivery_id)
+                return False
+            body, raw_body = bounded_body, bounded_raw_body
+        timestamp = str(int(time.time()))
+        signature = _hex_hmac(callback_secret, timestamp.encode() + b"." + raw_body)
+        headers = {
+            "Content-Type": "application/json",
+            "Idempotency-Key": delivery_id,
+            "X-Request-ID": delivery_id,
+            "X-Webhook-Timestamp": timestamp,
+            "X-Webhook-Signature-V2": signature,
+        }
+        for attempt in range(1, _CALLBACK_MAX_ATTEMPTS + 1):
+            try:
+                timeout = aiohttp.ClientTimeout(total=_CALLBACK_TIMEOUT_SECONDS)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        callback_url, data=raw_body, headers=headers, allow_redirects=False
+                    ) as response:
+                        status = response.status
+            except Exception as exc:
+                if attempt == _CALLBACK_MAX_ATTEMPTS:
+                    logger.warning("[webhook] signed callback failed route=%s delivery=%s error=%s",
+                                   route_name, delivery_id, type(exc).__name__)
+                    return False
+            else:
+                if 200 <= status < 300:
+                    logger.debug("[webhook] signed callback delivered route=%s delivery=%s", route_name, delivery_id)
+                    return True
+                if status not in (408, 429) and status < 500:
+                    logger.warning("[webhook] signed callback rejected route=%s delivery=%s status=%d",
+                                   route_name, delivery_id, status)
+                    return False
+                if attempt == _CALLBACK_MAX_ATTEMPTS:
+                    logger.warning("[webhook] signed callback failed route=%s delivery=%s status=%d",
+                                   route_name, delivery_id, status)
+                    return False
+            if _CALLBACK_RETRY_DELAY_SECONDS:
+                await asyncio.sleep(_CALLBACK_RETRY_DELAY_SECONDS * attempt)
+        return False
 
     async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:
         """Mark the per-delivery session ended via ``SessionDB.end_session`` (never a hand-written UPDATE),

@@ -2163,6 +2163,7 @@ class GatewayTurnMixin:
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
         if not isinstance(prepared, self._PreparedTurn):
+            event.agent_failed = isinstance(prepared, str)
             return prepared
         history, message_text = prepared.history, prepared.message_text
 
@@ -2238,6 +2239,7 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            event.agent_failed = agent_failed_early
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
@@ -2256,6 +2258,7 @@ class GatewayTurnMixin:
             )
 
         except Exception as e:
+            event.agent_failed = True
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
             # Restore session context variables to their pre-handler state

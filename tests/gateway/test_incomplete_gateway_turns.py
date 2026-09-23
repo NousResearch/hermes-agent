@@ -12,6 +12,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
+from gateway.platforms.webhook import WebhookAdapter
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -158,3 +159,61 @@ async def test_incomplete_codex_turn_closes_transcript_without_slack_delivery(mo
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),
     ]
+
+
+@pytest.mark.parametrize("failure_path", ["agent_result", "runner_exception", "prepared_error_reply"])
+@pytest.mark.asyncio
+async def test_agent_failure_propagates_to_signed_callback_after_successful_text_delivery(
+    monkeypatch, tmp_path, failure_path
+):
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={}))
+    runner = _make_runner(adapter)
+    if failure_path == "agent_result":
+        runner._run_agent = AsyncMock(
+            return_value={
+                "failed": True,
+                "final_response": "provider failure text",
+                "error": "provider failure details",
+                "messages": [],
+                "history_offset": 0,
+                "last_prompt_tokens": 0,
+            }
+        )
+    elif failure_path == "runner_exception":
+        runner._run_agent = AsyncMock(side_effect=RuntimeError("controlled provider failure"))
+    else:
+        runner._hmwa_prepare_turn = AsyncMock(return_value=("History unavailable", []))
+    runner.adapters = {Platform.SLACK: adapter}
+    adapter.gateway_runner = runner
+    adapter._delivery_info["C123"] = {
+        "deliver": "signed_callback",
+        "callback_url": "https://worker.example.test/linear/agent-result",
+        "callback_secret": "outbound-secret",
+        "delivery_id": "created:sess-1",
+        "route_name": "linear",
+        "deliver_extra": {"agent_session_id": "sess-1"},
+    }
+    adapter._post_signed_callback = AsyncMock(return_value=True)
+    adapter.on_processing_complete = AsyncMock(wraps=adapter.on_processing_complete)
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")
+    adapter.set_message_handler(runner._handle_message)
+    adapter._keep_typing = lambda *_args, **_kwargs: asyncio.Event().wait()
+
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert event.agent_failed is True
+    adapter.on_processing_complete.assert_awaited_once()
+    assert adapter.on_processing_complete.await_args.args[1] == ProcessingOutcome.SUCCESS
+    adapter._post_signed_callback.assert_awaited_once()
+    _, callback_type, body = adapter._post_signed_callback.await_args.args
+    assert callback_type == "error"
+    assert body == "Agent run failed."
+    assert "provider failure" not in body

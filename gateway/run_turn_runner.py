@@ -838,6 +838,10 @@ class TurnRunner:
         ctx = self._ctx
         if ctx.native_cot_mode == "off":
             return
+        if ctx.native_cot is not None:
+            # _run_agent_inner and _run_agent_local_turn both call this; the
+            # second call must not mint a duplicate COT card in the chat.
+            return
         adapter = self._runner._delivery_adapter_for(ctx.source)
         try:
             start_native_cot = getattr(adapter, "start_native_cot")

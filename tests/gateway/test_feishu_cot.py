@@ -336,6 +336,30 @@ async def test_default_off_does_not_call_adapter():
 
 
 @pytest.mark.asyncio
+async def test_start_native_cot_is_idempotent():
+    calls = []
+
+    async def create(*args):
+        calls.append(args)
+        return SimpleNamespace(commentary=lambda *_: None)
+
+    adapter = SimpleNamespace(start_native_cot=create)
+    ctx = TurnContext(
+        native_cot_mode="brief",
+        source=SimpleNamespace(chat_id="oc"),
+        inbound_message_id="om",
+    )
+    runner = TurnRunner(SimpleNamespace(_delivery_adapter_for=lambda _: adapter), ctx)
+
+    await runner.start_native_cot()
+    first_cot = ctx.native_cot
+    await runner.start_native_cot()
+
+    assert ctx.native_cot is first_cot
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_create_failure_falls_back_to_existing_tool_progress():
     adapter = SimpleNamespace(
         start_native_cot=lambda *_: asyncio.sleep(0, result=None),

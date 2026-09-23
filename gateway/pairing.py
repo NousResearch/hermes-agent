@@ -20,7 +20,7 @@ from typing import Optional
 
 from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
-from utils import atomic_json_write
+from utils import atomic_json_write, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +379,7 @@ class PairingStore:
             # fstat identifies the actual opened file even during atomic replacement.
             with path.open("rb") as stream:
                 st = os.fstat(stream.fileno())
-                key = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+                key = (st.st_dev, *file_signature(st))
                 cached = self._approved_cache.get(platform)
                 if cached is not None and cached[0] == key:
                     return cached[1]

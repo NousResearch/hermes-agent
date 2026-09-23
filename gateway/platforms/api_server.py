@@ -2646,9 +2646,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         store = self._browser_control_artifacts.get(profile_key)
         if store is not None:
             return store
-        lock = self._browser_control_artifact_locks.get(profile_key)
-        if lock is None:
-            lock = self._browser_control_artifact_locks.setdefault(profile_key, asyncio.Lock())
+        lock = self._browser_control_artifact_locks.setdefault(profile_key, asyncio.Lock())
         async with lock:
             store = self._browser_control_artifacts.get(profile_key)
             if store is not None:

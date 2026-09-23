@@ -7,6 +7,7 @@ def test_export_all_batches_message_reads_without_changing_export_rows(tmp_path,
         for index, source in enumerate(("cli", "telegram", "cli", "cli")):
             session_id = f"session-{index}"
             db.create_session(session_id=session_id, source=source)
+            db.record_auxiliary_usage(session_id, "vision", model="aux", input_tokens=index + 1)
             db.append_messages_batch(
                 session_id,
                 [
@@ -21,7 +22,7 @@ def test_export_all_batches_message_reads_without_changing_export_rows(tmp_path,
 
         sessions = db.search_sessions(source="cli", limit=100000)
         expected = [
-            {**session, "messages": db.get_messages(session["id"])}
+            {**session, **db.export_session(session["id"])}
             for session in sessions
         ]
 
@@ -36,10 +37,8 @@ def test_export_all_batches_message_reads_without_changing_export_rows(tmp_path,
         monkeypatch.setattr(db, "_read_all", counted_read_all)
 
         exported = db.export_all(source="cli")
-        # Export rows carry a derived `timings` block on top of the session +
-        # messages; strip it so the batching contract compares like with like.
-        assert [{k: v for k, v in row.items() if k != "timings"} for row in exported] == expected
-        assert all("timings" in row for row in exported)
-        assert read_calls <= 2
+        assert exported == expected
+        # One query each for sessions, messages, and usage, not one per session.
+        assert read_calls <= 3
     finally:
         db.close()

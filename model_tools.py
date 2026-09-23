@@ -1158,6 +1158,33 @@ def _emit_post_tool_call_hook(
     result *after* the gate (parsing the result is only worth it when a
     listener will actually consume it).
     """
+    # The mutation journal is an internal observer, not a plugin hook. Keep it
+    # outside the plugin suppression context so delegated/normal gateway work
+    # cannot silently skip durable mutation accounting. It receives raw data
+    # only transiently and is responsible for producing the safe projection.
+    try:
+        from agent.action_mutations import record_tool_mutation
+
+        observed_status = status
+        if observed_status is None:
+            observed_status, _, _ = _tool_result_observer_fields(
+                function_name,
+                result,
+            )
+        record_tool_mutation(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            status=observed_status,
+            session_id=session_id or "",
+            turn_id=turn_id or "",
+            tool_call_id=tool_call_id or "",
+            api_request_id=api_request_id or "",
+        )
+    except Exception:
+        # Observability must never change tool success/failure semantics. Do
+        # not include upstream payloads or exception text in the log.
+        logger.debug("mutation journal observer failed")
     if _post_tool_call_hook_suppressed.get():
         return
     try:

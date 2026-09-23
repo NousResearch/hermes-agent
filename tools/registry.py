@@ -207,12 +207,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "mutation",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 mutation=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -231,6 +232,7 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.mutation = mutation
 
 
 class _PluginOverridePolicy:
@@ -756,6 +758,7 @@ class ToolRegistry:
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
         scope: Optional[str] = None,
+        mutation=None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -765,6 +768,13 @@ class ToolRegistry:
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
         """
+        if mutation is not None:
+            try:
+                from agent.action_mutations import MutationSpec
+            except Exception as exc:
+                raise TypeError("mutation metadata is unavailable") from exc
+            if not isinstance(mutation, MutationSpec):
+                raise TypeError("mutation must be a MutationSpec")
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner
@@ -851,6 +861,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                mutation=mutation,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by

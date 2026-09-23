@@ -4378,6 +4378,50 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     return hint is True
 
 
+def _annotation_mutation_spec(mcp_tool: Any) -> Any:
+    """Return explicitly declared Hermes mutation metadata, if valid.
+
+    Standard MCP annotations do not prove that a call changed state. Hermes
+    servers may opt into the durable journal with the additive
+    ``hermesMutation`` annotation; malformed or read-only declarations fail
+    closed and are not registered as mutation metadata.
+    """
+    annotations = getattr(mcp_tool, "annotations", None)
+    if isinstance(annotations, dict):
+        raw = annotations.get("hermesMutation")
+    else:
+        raw = getattr(annotations, "hermesMutation", None) if annotations is not None else None
+    if not isinstance(raw, dict) or _annotation_read_only_hint(mcp_tool) is True:
+        return None
+    try:
+        from agent.action_mutations import MutationSpec
+
+        return MutationSpec(
+            action_type=raw["action_type"],
+            provider=raw["provider"],
+            operation=raw["operation"],
+            one_shot=raw.get("one_shot", False),
+            requires_receipt=raw.get("requires_receipt", False),
+            destination_arg=raw.get("destination_arg"),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _annotation_mutation_payload(mcp_tool: Any) -> dict[str, Any] | None:
+    spec = _annotation_mutation_spec(mcp_tool)
+    if spec is None:
+        return None
+    return {
+        "action_type": spec.action_type,
+        "provider": spec.provider,
+        "operation": spec.operation,
+        "one_shot": spec.one_shot,
+        "requires_receipt": spec.requires_receipt,
+        **({"destination_arg": spec.destination_arg} if spec.destination_arg else {}),
+    }
+
+
 def _record_tool_trust_metadata(
     server_name: str, config: dict, tools: List[Any]
 ) -> None:
@@ -6821,6 +6865,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                     name, mcp_tool.name, server.tool_timeout
                 ),
                 "check_fn": check_fn,
+                "mutation": _annotation_mutation_spec(mcp_tool),
             }
         )
 
@@ -6951,6 +6996,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=candidate["check_fn"],
             is_async=False,
             description=candidate["schema"]["description"],
+            mutation=candidate.get("mutation"),
         )
 
         # The pre-check above is advisory only. Multiple servers connect in
@@ -6990,6 +7036,11 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                     # startup without spawning the server.
                     "annotations": {
                         "readOnlyHint": _annotation_read_only_hint(mcp_tool),
+                        **(
+                            {"hermesMutation": _annotation_mutation_payload(mcp_tool)}
+                            if _annotation_mutation_payload(mcp_tool) is not None
+                            else {}
+                        ),
                     },
                 })
             utility_payload = [
@@ -7013,12 +7064,13 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 class _CachedMCPTool:
     """Minimal stand-in for MCP Tool objects loaded from the schema cache."""
 
-    __slots__ = ("name", "description", "inputSchema")
+    __slots__ = ("name", "description", "inputSchema", "annotations")
 
-    def __init__(self, name: str, description: str, inputSchema: dict):
+    def __init__(self, name: str, description: str, inputSchema: dict, annotations: dict | None = None):
         self.name = name
         self.description = description
         self.inputSchema = inputSchema or {}
+        self.annotations = annotations
 
 
 def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
@@ -7082,6 +7134,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             raw_name,
             raw.get("description") or "",
             raw_schema if isinstance(raw_schema, dict) else {},
+            raw.get("annotations") if isinstance(raw.get("annotations"), dict) else None,
         )
         # Defense-in-depth: the cache file is user-writable JSON, so run the
         # same injection scan the eager discovery path applies.
@@ -7104,6 +7157,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
+            mutation=_annotation_mutation_spec(mcp_tool),
         )
         if registry.get_toolset_for_tool(registry_name) != toolset_name:
             continue

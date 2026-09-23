@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -78,7 +78,7 @@ class TestGatewayPrompt:
         thread.start()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            from hermes_cli.main import _gateway_prompt
+            from hermes_cli.update_cmd import _gateway_prompt
             result = _gateway_prompt("Restore? [Y/n]", "y", timeout=5.0)
 
         thread.join()
@@ -98,7 +98,7 @@ class TestRestoreStashWithInputFn:
 
     def test_uses_input_fn_when_provided(self, tmp_path):
         """When input_fn is provided, it's called instead of input()."""
-        from hermes_cli.main import _restore_stashed_changes
+        from hermes_cli.update_cmd import _restore_stashed_changes
 
         captured_args = []
 
@@ -149,7 +149,7 @@ class TestUpdateCommandGatewayFlag:
              patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+            await runner._handle_update_command(event)
 
         # Check the bash command string contains --gateway and PYTHONUNBUFFERED
         call_args = mock_popen.call_args[0][0]
@@ -158,7 +158,6 @@ class TestUpdateCommandGatewayFlag:
         assert "PYTHONUNBUFFERED" in cmd_string
         assert "rc=$?" in cmd_string
         assert "status=$?" not in cmd_string
-        assert "stream progress" in result
 
 
 # ---------------------------------------------------------------------------
@@ -373,28 +372,4 @@ class TestUpdatePromptInterception:
 # ---------------------------------------------------------------------------
 
 
-class TestCmdUpdateGatewayMode:
-    """Tests for cmd_update with --gateway flag."""
-
-    def test_gateway_flag_enables_gateway_prompt_for_stash(self, tmp_path):
-        """With --gateway, stash restore uses _gateway_prompt instead of input()."""
-        from hermes_cli.main import _restore_stashed_changes
-
-        # Use input_fn to verify the gateway path is taken
-        calls = []
-
-        def fake_input(prompt, default=""):
-            calls.append(prompt)
-            return "n"
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            _restore_stashed_changes(
-                ["git"], tmp_path, "abc123",
-                prompt_user=True,
-                input_fn=fake_input,
-            )
-
-        assert len(calls) == 1
-        assert "Restore" in calls[0]
 

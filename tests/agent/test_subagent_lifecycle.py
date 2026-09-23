@@ -25,14 +25,18 @@ class FakeChild:
         self.model = "test-model"
         self.interrupted = False
         self.interrupt_kind = None
+        self.interrupt_message = None
+        self.tool_reason = None
 
     def interrupt(self, _reason):
         self.interrupted = True
         self.interrupt_kind = "soft"
 
-    def hard_interrupt(self, _reason):
+    def hard_interrupt(self, reason, *, tool_reason=None):
         self.interrupted = True
         self.interrupt_kind = "hard"
+        self.interrupt_message = reason
+        self.tool_reason = tool_reason
 
 
 @pytest.fixture
@@ -90,6 +94,8 @@ def test_cancel_uses_explicit_hard_interrupt(lifecycle):
     assert lifecycle.cancel(handle, reason="explicit user cancel").accepted
 
     assert record.agent.interrupt_kind == "hard"
+    assert "explicit user cancel" in record.agent.interrupt_message
+    assert record.agent.tool_reason == "subagent cancellation requested"
     lifecycle.wait(handle, timeout_seconds=1)
 
 

@@ -56,3 +56,26 @@ export function selectPoolEvictions<K>(
 
   return evictions
 }
+
+/**
+ * Evict enough stale spawned backends to make room, and do not report the
+ * room as available until every selected child has actually exited.
+ *
+ * Selection and teardown deliberately live in one helper: callers that fire
+ * stopBackend() without awaiting it can enqueue a replacement while the old
+ * child still owns its hard spawn slot. Under a restore stampede that race
+ * turns successful LRU selection into a 30-second queue timeout.
+ */
+export async function evictPoolEntries<K>(
+  entries: Iterable<[K, PoolEvictionEntry]>,
+  keep: number,
+  now: number,
+  freshMs: number,
+  stopBackend: (key: K) => Promise<void>
+): Promise<K[]> {
+  const evictions = selectPoolEvictions(entries, keep, now, freshMs)
+
+  await Promise.all(evictions.map(key => stopBackend(key)))
+
+  return evictions
+}

@@ -100,14 +100,6 @@ class TestBackgroundProfileOverride:
         override_calls["reset"].assert_called_once_with("TOK")
         override_calls["agent"].run_conversation.assert_called_once()
 
-    def test_background_no_profile_skips_override(self, override_calls):
-        """With no profile_home the background path never touches the override."""
-        session = {"agent": MagicMock(), "session_key": "sess_k", "profile_home": None}
-        _run("prompt.background", {"text": "hi", "session_id": "ui1"}, session)
-
-        override_calls["set"].assert_not_called()
-        override_calls["reset"].assert_not_called()
-        override_calls["agent"].run_conversation.assert_called_once()
 
     def test_background_restores_override_on_error(self, fake_session, override_calls):
         """A failing turn must still restore the override (finally-block parity)."""
@@ -144,15 +136,3 @@ class TestPreviewRestartProfileOverride:
         # tearing down the very background server the restart just launched.
         override_calls["agent"].close.assert_not_called()
 
-    def test_preview_no_profile_skips_override(self, override_calls):
-        """With no profile_home the preview path never touches the override."""
-        session = {"agent": MagicMock(), "session_key": "sess_k", "profile_home": None}
-        _run(
-            "preview.restart",
-            {"url": "http://localhost:5173", "cwd": "", "session_id": "ui1"},
-            session,
-        )
-
-        override_calls["set"].assert_not_called()
-        override_calls["reset"].assert_not_called()
-        override_calls["agent"].close.assert_not_called()

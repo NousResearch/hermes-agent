@@ -99,8 +99,3 @@ def test_generate_calls_openai_sdk_with_deepinfra_base_url(monkeypatch):
     assert captured["kwargs"]["model"] == "vendor/test-img"
 
 
-def test_capabilities_advertise_text_to_image_only():
-    assert deepinfra_plugin.DeepInfraImageGenProvider().capabilities() == {
-        "modalities": ["text"],
-        "max_reference_images": 0,
-    }

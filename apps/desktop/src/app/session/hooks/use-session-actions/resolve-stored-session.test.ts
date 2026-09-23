@@ -3,10 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
-import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $projectTree } from '@/store/projects'
+import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { resolveSessionProfile, resolveStoredSession } from './utils'
+import { cachedSessionRow, resolveStoredSession } from './utils'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
@@ -24,8 +25,10 @@ describe('resolveStoredSession profile ownership', () => {
     $cronSessions.set([])
     $messagingSessions.set([])
     $sessions.set([])
+    $projectTree.set([])
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
+    $unlistedSessionOwnerRows.set([])
     mockGetSession.mockReset()
   })
 
@@ -33,8 +36,10 @@ describe('resolveStoredSession profile ownership', () => {
     $cronSessions.set([])
     $messagingSessions.set([])
     $sessions.set([])
+    $projectTree.set([])
     $profiles.set([])
     $activeGatewayProfile.set('default')
+    $unlistedSessionOwnerRows.set([])
   })
 
   it('returns a cached row that carries an owning profile', async () => {
@@ -57,6 +62,19 @@ describe('resolveStoredSession profile ownership', () => {
     expect(resolved?.profile).toBe('default')
     expect(mockGetSession).not.toHaveBeenCalled()
     expect($sessions.get()).toEqual([])
+  })
+
+  it('routes a moved resolve into its current slice instead of duplicating it', async () => {
+    // Cross-room /resume rewrote the row to source='matrix' (#113827): the
+    // stale regular-sessions copy must go and the row must land in messaging.
+    $sessions.set([session({ id: 's1' })])
+    mockGetSession.mockResolvedValueOnce(session({ id: 's1', profile: 'meta', source: 'matrix' }))
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.source).toBe('matrix')
+    expect($sessions.get()).toEqual([])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['s1'])
   })
 
   it('treats a profile-less cache hit as unresolved when multiple profiles exist', async () => {
@@ -112,6 +130,20 @@ describe('resolveStoredSession profile ownership', () => {
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('meta')
   })
 
+  it('parks a hidden by-id hit off-list — canonical Bot Chats never get a sidebar row (#113273)', async () => {
+    // Opening a bot's chat resolves it by id; the backend row carries
+    // hidden=true. Listed, it would paint a Sessions row the refresh
+    // keep-list then holds open indefinitely.
+    mockGetSession.mockResolvedValueOnce(session({ hidden: true, id: 's1' }))
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.hidden).toBe(true)
+    expect($sessions.get()).toEqual([])
+    // owner resolution still finds the row on the off-list stub atom
+    expect($unlistedSessionOwnerRows.get().find(s => s.id === 's1')?.hidden).toBe(true)
+  })
+
   it('probed desktop profile overrides a remote backend answering as its own "default"', async () => {
     // Per-profile remote override: Electron strips the desktop alias before
     // forwarding, so the standalone backend stamps its backend-local root.
@@ -136,11 +168,51 @@ describe('resolveStoredSession profile ownership', () => {
     // the cached row is owned too — no unowned row is ever re-cached
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('default')
   })
+})
 
-  it('resolveSessionProfile routes a default-profile session from a non-default gateway', async () => {
-    mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))
-    mockGetSession.mockResolvedValueOnce(session({ id: 's1', profile: 'default' }))
+describe('cachedSessionRow owner preference', () => {
+  const projectNode = (sessions: SessionInfo[], preview: SessionInfo[] = []) =>
+    ({
+      previewSessions: preview,
+      repos: [{ groups: [{ sessions }] }]
+    }) as never
 
-    await expect(resolveSessionProfile('s1')).resolves.toBe('default')
+  beforeEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $sessions.set([])
+    $projectTree.set([])
+    mockGetSession.mockReset()
+  })
+
+  afterEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $sessions.set([])
+    $projectTree.set([])
+  })
+
+  it('prefers a self-describing project-tree row over an ownerless Recents duplicate', () => {
+    // The same conversation, listed twice: a legacy Recents row with no owner
+    // and the profile-scoped project-tree row the gateway stamped. Picking the
+    // Recents copy throws away the only routing information there is, and the
+    // branch then creates its child on whichever backend is active.
+    $sessions.set([session({ cwd: '/wrong', id: 's1' })])
+    $projectTree.set([projectNode([session({ connection_id: 'pandora', cwd: '/right', id: 's1', profile: 'work' })])])
+
+    expect(cachedSessionRow('s1')).toMatchObject({ connection_id: 'pandora', cwd: '/right', profile: 'work' })
+  })
+
+  it('finds a project-tree preview row when the session is in no other list', () => {
+    $projectTree.set([projectNode([], [session({ connection_id: 'rigremote', id: 's1', profile: 'default' })])])
+
+    expect(cachedSessionRow('s1')).toMatchObject({ connection_id: 'rigremote' })
+  })
+
+  it('keeps the plain Recents row when nothing carries an owner', () => {
+    $sessions.set([session({ cwd: '/only', id: 's1' })])
+
+    expect(cachedSessionRow('s1')).toMatchObject({ cwd: '/only' })
+    expect(cachedSessionRow('missing')).toBeUndefined()
   })
 })

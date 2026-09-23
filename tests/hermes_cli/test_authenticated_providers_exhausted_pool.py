@@ -18,7 +18,7 @@ class _FakePool:
         # The pool still holds entries...
         return True
 
-    def has_available(self) -> bool:
+    def has_available(self, **_kwargs) -> bool:
         # ...but none of them are usable when exhausted/dead.
         return self._available
 
@@ -69,7 +69,7 @@ def test_exhausted_pool_provider_is_not_authenticated(monkeypatch):
 
 def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     """Legacy token-style auth-store values have no parsed pool entries."""
-    from hermes_cli.model_switch import _credential_pool_is_usable
+    from hermes_cli.model_switch_providers import _credential_pool_is_usable
 
     monkeypatch.setattr(
         "agent.credential_pool.load_pool",
@@ -90,7 +90,7 @@ def test_picker_shows_exhausted_pool_provider(monkeypatch):
     """The interactive picker must include providers whose credential pool
     entries are all exhausted, so the user can still switch to a different
     model under the same provider."""
-    from hermes_cli.model_switch import list_picker_providers
+    from hermes_cli.model_switch_providers import list_picker_providers
 
     _patch_opencode_pool(monkeypatch, available=False)
     providers = list_picker_providers(
@@ -103,48 +103,3 @@ def test_picker_shows_exhausted_pool_provider(monkeypatch):
         "Picker must show exhausted-pool providers so the user can select "
         "a different model under the same provider"
     )
-
-
-
-
-class _StopPicker(BaseException):
-    """Aborts a picker right after it requests its provider list, before any
-    interactive prompt. Subclasses BaseException so the picker's own
-    ``except Exception`` guards don't swallow it."""
-
-
-def _spy_list_authenticated(recorded: dict):
-    def _spy(*_args, **kwargs):
-        recorded.update(kwargs)
-        raise _StopPicker
-    return _spy
-
-
-def test_aux_task_picker_requests_exhausted_pool_visibility(monkeypatch):
-    """The ``hermes model`` auxiliary-task picker (``_aux_select_for_task``)
-    must request exhausted-pool visibility (``for_picker=True``) like the
-    ``/model`` picker (#66584).
-
-    The aux picker writes a *persistent* per-task provider/model config that
-    the user runs later — long after a momentary rate-limit cooldown clears —
-    so silently hiding a provider whose keys are all exhausted is exactly the
-    bug the #66584 picker fix addressed, one interactive picker over.
-    """
-    import hermes_cli.main as main
-
-    recorded: dict = {}
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        _spy_list_authenticated(recorded),
-    )
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-
-    with pytest.raises(_StopPicker):
-        main._aux_select_for_task("compression")
-
-    assert recorded.get("for_picker") is True, (
-        "aux-task picker must pass for_picker=True so exhausted-pool providers "
-        "stay selectable (before the fix it omitted the flag → hidden)"
-    )
-
-

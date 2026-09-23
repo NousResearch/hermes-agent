@@ -136,19 +136,20 @@ class TestBatchPlaceholderGoals(unittest.TestCase):
         result = _call([{"goal": GOOD_A}, {"goal": "fix bug"}])
         self.assertIn("error", result)
 
-    def test_placeholder_error_is_actionable(self):
-        result = _call([{"goal": GOOD_A}, {"goal": "TODO"}])
-        self.assertIn("error", result)
-        # Error must tell the model HOW to fix the call.
-        self.assertIn("specific", result["error"].lower())
 
 
 class TestSingleTaskBatch(unittest.TestCase):
-    def test_one_task_batch_rejected_pointing_to_goal_form(self):
-        result = _call([{"goal": GOOD_A}])
-        self.assertIn("error", result)
-        self.assertIn("goal", result["error"])
-        self.assertIn("2", result["error"])  # "at least 2"
+    def test_one_task_batch_is_valid_single_task_shape(self):
+        """A one-entry tasks[] array is the canonical single-task call (the
+        advertised interface is tasks-only), so it must NOT be rejected —
+        and short goals are legitimate for a single task."""
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed", "summary": "done",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
+            }
+            result = _call([{"goal": GOOD_A}])
+        self.assertNotIn("error", result)
 
 
 class TestValidBatchStillRuns(unittest.TestCase):

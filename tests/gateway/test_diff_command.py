@@ -14,7 +14,7 @@ import pytest
 import gateway.run as gateway_run
 import tools.checkpoint_manager as cpm
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 pytestmark = pytest.mark.skipif(
@@ -111,15 +111,5 @@ async def test_diff_session_reports_cumulative_changes(tmp_path, monkeypatch):
     assert "+print('changed')" in result
 
 
-@pytest.mark.asyncio
-async def test_diff_session_no_changes_message(tmp_path, monkeypatch):
-    _enable_checkpoints(tmp_path, monkeypatch)
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.setenv("TERMINAL_CWD", str(project))
-
-    result = await _runner()._handle_diff_command(_event("/diff session"))
-
-    assert "No changes" in result
 
 

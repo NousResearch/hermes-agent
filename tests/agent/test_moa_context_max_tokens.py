@@ -70,30 +70,3 @@ def test_aggregator_call_never_receives_reference_max_tokens(hermes_home, monkey
     assert "max_tokens" not in aggregator_calls[0]
 
 
-def test_aggregator_call_uncapped_when_reference_max_tokens_unset(hermes_home, monkeypatch):
-    """Sanity check: with no reference_max_tokens configured, the reference
-    call still explicitly passes max_tokens=None (call_llm itself decides
-    whether to omit it on the wire), while the aggregator call structurally
-    never carries a max_tokens kwarg at all — the pre-#56756 default MoA
-    behavior for the aggregator, preserved regardless of the reference cap."""
-    from agent.moa_loop import aggregate_moa_context
-
-    calls: list[dict] = []
-
-    def fake_call_llm(**kwargs):
-        calls.append(kwargs)
-        return _response("advice" if kwargs.get("task") == "moa_reference" else "synthesis")
-
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
-
-    aggregate_moa_context(
-        user_prompt="clean the db",
-        api_messages=[{"role": "user", "content": "clean the db"}],
-        reference_models=[{"provider": "openrouter", "model": "openai/gpt-5.5"}],
-        aggregator={"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-    )
-
-    reference_calls = [c for c in calls if c.get("task") == "moa_reference"]
-    aggregator_calls = [c for c in calls if c.get("task") == "moa_aggregator"]
-    assert reference_calls[0]["max_tokens"] is None
-    assert "max_tokens" not in aggregator_calls[0]

@@ -25,6 +25,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     parse_cron_drain_timeout,
     resolve_cron_drain_budget,
+    resolve_systemd_timeout_stop_sec,
 )
 from tests.gateway.restart_test_helpers import make_restart_runner
 
@@ -156,3 +157,27 @@ class TestResolveCronDrainBudget:
         assert resolve_cron_drain_budget(
             None, "30", watchdog_delay=60.0, elapsed=None
         ) == 30.0
+
+
+class TestResolveSystemdTimeoutStopSec:
+    """#94759: TimeoutStopSec must cover cron drain, not just chat drain."""
+
+
+    def test_configured_drain_still_extends_the_deadline_directly(self):
+        assert resolve_systemd_timeout_stop_sec(60.0, 30.0) == 90
+        assert resolve_systemd_timeout_stop_sec(180.0, 30.0) == 210
+
+    def test_larger_cron_floor_raises_timeout_stop_sec(self):
+        # 60s cron + 10s reserve + 30s headroom = 100s
+        assert resolve_systemd_timeout_stop_sec(0.0, 60.0) == 100
+
+    def test_zero_cron_floor_is_an_opt_out_not_a_hidden_default(self):
+        assert resolve_systemd_timeout_stop_sec(0.0, 0.0) == 60
+
+    def test_cron_floor_never_shortens_a_long_drain(self):
+        assert resolve_systemd_timeout_stop_sec(180.0, 30.0) == resolve_systemd_timeout_stop_sec(
+            180.0, 0.0
+        )
+
+    def test_garbage_inputs_degrade_to_the_floor(self):
+        assert resolve_systemd_timeout_stop_sec("soon", None) == 60

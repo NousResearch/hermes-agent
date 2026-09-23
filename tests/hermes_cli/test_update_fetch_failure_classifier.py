@@ -51,6 +51,16 @@ class TestClassifyFetchFailure:
         )
         assert msg.startswith("✗ Network error")
 
+    def test_username_prompt_401_reports_github_not_user_credentials(self):
+        # What GitHub's HTTP 401 looks like once the terminal prompt is
+        # disabled — must NOT be blamed on the user's credentials.
+        msg = update_cmd._classify_fetch_failure(
+            "fatal: could not read Username for 'https://github.com':"
+            " terminal prompts disabled"
+        )
+        assert "GitHub" in msg and "outage" in msg
+        assert "check your git credentials" not in msg
+
     def test_auth_failure(self):
         msg = update_cmd._classify_fetch_failure(
             "fatal: Authentication failed for 'https://github.com/x.git/'"
@@ -75,3 +85,20 @@ class TestPrintFetchFailure:
         update_cmd._print_fetch_failure("")
         out = capsys.readouterr().out.strip().splitlines()
         assert out == ["✗ Failed to fetch updates from origin."]
+
+
+def test_update_network_git_calls_never_prompt_for_credentials():
+    """Every `git fetch`/`pull`/`push` in the updater runs with prompts disabled.
+
+    Live incident (Sep 2026): a GitHub-side 401 made `hermes update` sit on
+    ``Username for 'https://github.com':`` instead of failing with a diagnosis.
+    """
+    import os
+    import subprocess
+
+    kw = update_cmd._no_prompt_git_kwargs()
+    assert kw["stdin"] is subprocess.DEVNULL
+    assert kw["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    # Only the prompt is disabled — credential helpers / askpass stay
+    # configured so a private-fork origin still authenticates.
+    assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")

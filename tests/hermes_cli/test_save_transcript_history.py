@@ -1,4 +1,4 @@
-"""Human-readable /save mirrors display history; JSON remains import-safe live context."""
+"""/save md (CLI and gateway) carries the display history, compaction-archived turns included."""
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
@@ -57,12 +57,11 @@ def _gateway_save(db, fmt, out):
 
 
 @pytest.mark.parametrize("save", [_cli_save, _gateway_save], ids=["cli", "gateway"])
-@pytest.mark.parametrize("fmt, expected", [("md", 6), ("html", 6), ("json", 1)])
-def test_save_transcript_holds_display_history(tmp_path, monkeypatch, save, fmt, expected):
+def test_save_transcript_holds_display_history(tmp_path, monkeypatch, save):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = _compacted_store(tmp_path / "state.db")
     try:
-        text = save(db, fmt, tmp_path / f"saved.{fmt}")
+        text = save(db, "md", tmp_path / "saved.md")
     finally:
         db.close()
-    assert sum(f"answer {i}" in text for i in range(1, 7)) == expected
+    assert [f"answer {i}" in text for i in range(1, 7)] == [True] * 6

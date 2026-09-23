@@ -1708,22 +1708,18 @@ class GatewayAdapterLifecycleMixin:
 
         Without this an inline-button caller approved only in the routed profile's pairing store was denied
         (#86296), because the adapter's callback source was never route-stamped. A secondary-owned bot's
-        callback runs outside the profile runtime scope (built at configure time, invoked from the
-        adapter's event loop), so it re-enters the owning profile's scope per call — the gate's scoped
-        env read otherwise falls back to os.environ (the default profile's env) and denies the
-        secondary's own allowlisted callers (#120639).
+        callback fires outside the profile runtime scope (straight off the adapter's event loop), so the
+        check re-enters the owning profile's scope per call — the gate's scoped env read otherwise falls
+        back to os.environ (the default profile's env) and denies the secondary's own allowlisted
+        callers (#120639).
         """
         from gateway.run import get_hermes_home
         transport_home = Path(get_hermes_home()) if self._multiplex_on() and profile_name is None else None
-        # Prebuild the secondary's secret scope at configure time so entering it per callback never
-        # touches the adapter event loop with file IO; an unresolvable profile home keeps the
-        # credential-reads-fail-closed behavior of every other secondary handler.
-        secondary_scope = None
-        if profile_name:
-            profile_home = self._routed_profile_home(profile_name)
-            if profile_home is not UNRESOLVED_PROFILE_HOME:
-                from agent.secret_scope import build_profile_secret_scope
-                secondary_scope = (profile_home, build_profile_secret_scope(profile_home))
+        # Resolve the owning profile's home once; the scope itself is entered per call so a callback
+        # reads the same per-turn allowlist freshness (and external-secret hydration) as the message
+        # path — ``_make_profile_message_handler`` re-reads the profile's ``.env`` per message, and a
+        # snapshot built here would keep a tap denied after an operator edits that ``.env``.
+        profile_home = self._routed_profile_home(profile_name) if profile_name else None
 
         def check(
             user_id: str, chat_type: Optional[str] = None, chat_id: Optional[str] = None, *,
@@ -1744,12 +1740,12 @@ class GatewayAdapterLifecycleMixin:
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
-                if secondary_scope is None:
-                    return self._is_user_authorized(source)
-                # The cold-path message handler authorizes under ``_profile_runtime_scope``; a
-                # callback must read the same allowlist scope, not ambient os.environ.
+                # Per call, like every sibling secondary handler: same ``.env`` freshness and hydration
+                # as the message path. ``_scope_or_null`` keeps the fail-closed behavior for an
+                # unresolvable profile home (bind nothing; an unscoped read raises instead of
+                # borrowing another profile's env).
                 from gateway.run import _profile_runtime_scope
-                with _profile_runtime_scope(secondary_scope[0], secondary_scope[1]):
+                with self._scope_or_null(_profile_runtime_scope, profile_home):
                     return self._is_user_authorized(source)
             # Canonicalize FIRST (callback sources never went through ``build_source``): the routed
             # profile's pairing store is consulted, allowlists read under the transport home.

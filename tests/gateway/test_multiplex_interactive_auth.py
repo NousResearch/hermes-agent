@@ -129,6 +129,27 @@ def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home):
     assert tg._is_callback_user_authorized("999", chat_id="111", chat_type="private") is False
 
 
+def test_secondary_callback_allowlist_follows_env_edits(mux_home):
+    """#120639 review: the secondary's callback check re-enters the owning
+    profile's scope per call, so an operator's runtime edit to
+    ``profiles/<name>/.env`` reaches the NEXT button tap — the same freshness
+    the message path gives (``_make_profile_message_handler`` re-reads the
+    ``.env`` per message), no allow/deny split until the adapter reconnects."""
+    runner = _runner(mux_home)
+    env_path = mux_home / "profiles" / "secondary" / ".env"
+    env_path.write_text("TELEGRAM_ALLOWED_USERS=555\n")
+    tg = _telegram(runner)
+    tg._hermes_profile_name = "secondary"
+    runner._profile_adapters = {"secondary": {Platform.TELEGRAM: tg}}
+    tg.set_authorization_check(
+        runner._make_adapter_auth_check(Platform.TELEGRAM, profile_name="secondary")
+    )
+
+    assert tg._is_callback_user_authorized("777", chat_id="111", chat_type="private") is False
+    env_path.write_text("TELEGRAM_ALLOWED_USERS=555,777\n")  # operator adds a user at runtime
+    assert tg._is_callback_user_authorized("777", chat_id="111", chat_type="private") is True
+
+
 def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatch):
     """#72657: a multiplexed Slack adapter's button gate resolves through the
     wired ``_make_adapter_auth_check`` for its own profile; the DEFAULT

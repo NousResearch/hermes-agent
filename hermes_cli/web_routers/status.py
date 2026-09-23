@@ -546,7 +546,7 @@ async def get_status(profile: Optional[str] = None):
 
 
 @router.get("/api/system/stats")
-async def get_system_stats():
+def get_system_stats():
     """Host + process system stats for the System page (stdlib identity; psutil CPU/memory/
     disk/uptime when available). Non-sensitive: no env values, no paths beyond hermes home."""
     import platform as _platform

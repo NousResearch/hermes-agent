@@ -2685,6 +2685,7 @@ export const ru = defineLocale({
       backgroundRunning: 'Фоновая задача выполняется',
       draftSession: 'Черновик — ещё ничего не отправлено',
       handoffOrigin: platform => `Передано из ${platform}`,
+      sourceBadge: platform => `Источник: ${platform}`,
       ownedByProfile: profile => `Профиль: ${profile}`,
       renamed: 'Переименовано',
       renameFailed: 'Переименование не удалось',

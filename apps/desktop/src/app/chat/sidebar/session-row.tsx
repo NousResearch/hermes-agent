@@ -20,7 +20,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
-import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import { handoffOriginSource, sessionSourceBadgeId, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -250,9 +250,14 @@ function SidebarSessionRowImpl({
   const chipEndsSlot = trailing.length > 0 && !figures.length && !pinnedAge
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
-  // Telegram thread continued here still reads as Telegram.
+  // Telegram thread continued here still reads as Telegram. A session that
+  // still lives on a messaging platform badges with its live source instead:
+  // pinned rows from mixed origins are otherwise indistinguishable, and the
+  // handoff path only covers sessions whose live source already became local.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
-  const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
+  const liveSource = sessionSourceBadgeId(session.source)
+  const badgeSource = liveSource ?? handoffSource
+  const badgeLabel = badgeSource ? (sessionSourceLabel(badgeSource) ?? badgeSource) : null
   // The same resolved state the row's dot paints, so the arc and the dot cannot
   // contradict each other. A selector, not a plain useStore: the map is rebuilt
   // whenever any session's status changes, but a row only repaints on its own.
@@ -484,13 +489,18 @@ function SidebarSessionRowImpl({
               </SidebarRowLead>
             )
 
+            // One badge slot for the row's platform identity: the live source
+            // when the session still runs on a messaging platform, else the
+            // handoff origin. The tip names what the mark says — "Source: X"
+            // for a live platform row, the handoff phrasing for a thread that
+            // moved here.
             const handoffBadge =
-              handoffSource && handoffLabel ? (
-                <Tip label={r.handoffOrigin(handoffLabel)}>
+              badgeSource && badgeLabel ? (
+                <Tip label={liveSource ? r.sourceBadge(badgeLabel) : r.handoffOrigin(badgeLabel)}>
                   <PlatformAvatar
                     className="-mt-px size-4 shrink-0 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                    platformId={handoffSource}
-                    platformName={handoffLabel}
+                    platformId={badgeSource}
+                    platformName={badgeLabel}
                   />
                 </Tip>
               ) : null

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 

@@ -62,13 +62,15 @@ class SessionPostgresSearchMixin:
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        after_ts: Optional[int] = None, before_ts: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         result_fields = self._search_message_fields(fields)
         query = self._sanitize_fts5_query(query or "")
         if not query or limit == 0 or source_filter == []:
             return []
         filters = dict(include_inactive=include_inactive, source_filter=source_filter,
-                       exclude_sources=exclude_sources or None, role_filter=role_filter)
+                       exclude_sources=exclude_sources or None, role_filter=role_filter,
+                       after_ts=after_ts, before_ts=before_ts)
         route = dict(limit=None if limit < 0 else limit, offset=max(0, offset), sort=sort, **filters)
         if self._contains_cjk(query) or (role_filter and "tool" in role_filter):
             matches = self._search_messages_like_fallback(query, **route)

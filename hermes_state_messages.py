@@ -928,7 +928,7 @@ class SessionMessagesMixin:
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
                     "display_kind, display_metadata, display_order, display_identity "
-                    "FROM messages INDEXED BY idx_messages_session_id "
+                    f"FROM messages {self._messages_session_index_hint} "
                     "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
                     "ORDER BY id LIMIT 1000",
                     (session_id, last_id))

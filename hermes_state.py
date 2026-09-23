@@ -461,6 +461,7 @@ class SessionDB(
     database_errors = (sqlite3.Error,)
     database_operational_errors = (sqlite3.OperationalError,)
     _unlimited_sql_limit = -1
+    _messages_session_index_hint = "INDEXED BY idx_messages_session_id"
 
     def __new__(cls, db_path=None, read_only=False, *, database_settings=None):
         if cls is SessionDB:

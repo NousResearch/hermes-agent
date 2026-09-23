@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_ineffective_count BIGINT NOT NULL DEFAULT 0,
     compression_recovery_deadline DOUBLE PRECISION,
     profile_name TEXT,
+    transport_profile TEXT,
     rewind_count BIGINT NOT NULL DEFAULT 0,
     archived BIGINT NOT NULL DEFAULT 0,
     pinned BIGINT NOT NULL DEFAULT 0,

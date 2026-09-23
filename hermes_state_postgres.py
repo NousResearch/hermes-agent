@@ -82,6 +82,7 @@ class PostgresSessionDB(SessionPostgresSearchMixin, SessionPostgresMaintenanceMi
     database_errors = (psycopg.Error,)
     database_operational_errors = (psycopg.OperationalError, psycopg.ProgrammingError)
     _unlimited_sql_limit = None
+    _messages_session_index_hint = ""
     _CONTENT_JSON_PREFIX = "\x01json:"
     _CONTENT_BYTES_PREFIX = "\x01bytes:"
 

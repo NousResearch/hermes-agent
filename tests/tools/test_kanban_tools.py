@@ -196,6 +196,107 @@ def test_complete_reports_registered_attachments(worker_env):
     assert readback["attachments"] == d["attachments"]
 
 
+def test_block_structured_handoff_preserves_scratch_artifact(worker_env, monkeypatch):
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_workspace as kbw
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-block-123")
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        workspace = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, worker_env, workspace)
+    artifact = workspace / "checkpoint.txt"
+    artifact.write_text("resume here\n", encoding="utf-8")
+
+    out = json.loads(kt._handle_block({
+        "reason": "need clarification",
+        "kind": "needs_input",
+        "metadata": {"checkpoint": "drafted"},
+        "artifacts": [str(artifact)],
+    }))
+
+    assert out["ok"] is True
+    assert [(a["filename"], a["uploaded_by"]) for a in out["attachments"]] == [
+        ("checkpoint.txt", "kanban_block")
+    ]
+    with kbc.connect() as conn:
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        assert run.metadata is not None
+        persisted = Path(run.metadata["artifacts"][0])
+    assert run.metadata["checkpoint"] == "drafted"
+    assert run.metadata["worker_session_id"] == "session-block-123"
+    assert persisted.read_text(encoding="utf-8") == "resume here\n"
+    assert persisted.parent == kb.task_attachments_dir(worker_env)
+    assert workspace.exists(), "blocked scratch remains available for continuation"
+
+
+def test_block_artifact_failure_keeps_run_in_flight(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_workspace as kbw
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        workspace = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, worker_env, workspace)
+    missing = workspace / "missing.txt"
+
+    out = json.loads(kt._handle_block({
+        "reason": "need clarification",
+        "kind": "needs_input",
+        "artifacts": [str(missing)],
+    }))
+
+    assert "could not preserve the declared artifacts" in out["error"]
+    assert "still in-flight" in out["error"]
+    with kbc.connect() as conn:
+        task_after = kb.get_task(conn, worker_env)
+        run = kb.latest_run(conn, worker_env)
+        assert kb.list_attachments(conn, worker_env) == []
+        assert not [e for e in kb.list_events(conn, worker_env) if e.kind == "blocked"]
+    assert task_after is not None
+    assert run is not None
+    assert task_after.status == "running"
+    assert run.ended_at is None
+    assert workspace.exists()
+
+
+def test_block_rejects_secret_bearing_artifact_path(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    secret = "ghp_" + "C" * 40
+    out = json.loads(kt._handle_block({
+        "reason": "need clarification",
+        "kind": "needs_input",
+        "artifacts": [f"/tmp/{secret}.txt"],
+    }))
+
+    assert "artifact paths must not contain secrets" in out["error"]
+    assert secret not in out["error"]
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+
+
+def test_block_schema_exposes_structured_handoff_fields():
+    from tools.kanban_tools_schemas import KANBAN_BLOCK_SCHEMA
+
+    properties = KANBAN_BLOCK_SCHEMA["parameters"]["properties"]
+    assert properties["metadata"]["type"] == "object"
+    assert properties["artifacts"]["type"] == "array"
+
+
 def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, worker_env, tmp_path):
     """#106163: a non-profile ``reviewer`` (e.g. the literal "reviewer") must be
     refused with an error the model sees, leaving the task running under the

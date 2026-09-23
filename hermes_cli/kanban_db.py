@@ -2757,7 +2757,8 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
-    with write_txn(conn):
+    artifact_copies: list[Path] = []
+    with _artifact_write_txn(conn, artifact_copies):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
@@ -2794,7 +2795,7 @@ def complete_task(
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
-            _stage_completion_artifacts(conn, task_id, metadata, now)
+            artifact_copies.extend(_stage_completion_artifacts(conn, task_id, metadata, now))
         run_id = _end_run(
             conn, task_id, outcome="completed", status="done", summary=handoff_summary,
             metadata=metadata,
@@ -2898,13 +2899,16 @@ def _stage_completion_artifacts(
     """Copy scratch artifacts to the attachments dir and record each as an
     attachment row; returns the copies so the caller can discard them if its
     transaction rolls back."""
-    _persist_scratch_completion_artifacts(conn, task_id, metadata)
-    staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
-    for path in staged:
-        _insert_completion_attachment(
-            conn, task_id, filename=path.name, stored_path=str(path),
-            size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
-        )
+    staged = _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    try:
+        for path in staged:
+            _insert_completion_attachment(
+                conn, task_id, filename=path.name, stored_path=str(path),
+                size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
+            )
+    except BaseException:
+        _discard_artifact_copies(staged)
+        raise
     return staged
 
 
@@ -3000,23 +3004,22 @@ def _merge_completion_prose_artifacts(
 
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+) -> list[Path]:
+    """Validate declared artifacts and durably copy managed-scratch files."""
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
-        return
+        return []
 
     workspace = _scratch_workspace(conn, task_id)
-    if workspace is None:
-        return
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
-        return
-
-    try:
-        workspace_root = workspace.resolve()
-    except OSError:
-        return
+    workspace_root: Optional[Path] = None
+    board: Optional[str] = None
+    if workspace is not None:
+        is_managed, board = _managed_scratch_path_info(workspace)
+        if is_managed:
+            try:
+                workspace_root = workspace.resolve()
+            except OSError:
+                workspace_root = None
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
@@ -3033,25 +3036,27 @@ def _persist_scratch_completion_artifacts(
         src = Path(artifact).expanduser()
         try:
             resolved_src = src.resolve()
-        except OSError:
-            persisted.append(artifact)
-            continue
-
-        if not resolved_src.is_relative_to(workspace_root):
-            persisted.append(artifact)
-            continue
+        except OSError as exc:
+            _discard_copies()
+            raise ArtifactPreservationError(
+                f"declared artifact is unavailable: {artifact}"
+            ) from exc
 
         problem = None
-        if not src.is_file():
-            problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
+        if not resolved_src.is_file():
+            problem = f"declared artifact is unavailable or not a regular file: {artifact}"
         elif resolved_src.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
             problem = (
-                f"declared scratch artifact exceeds the "
+                f"declared artifact exceeds the "
                 f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
             )
         if problem:
             _discard_copies()
             raise ArtifactPreservationError(problem)
+
+        if workspace_root is None or not resolved_src.is_relative_to(workspace_root):
+            persisted.append(artifact)
+            continue
 
         dest: Optional[Path] = None
         try:
@@ -3074,9 +3079,7 @@ def _persist_scratch_completion_artifacts(
 
     if changed:
         metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+    return list(used_destinations)
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:
@@ -3087,6 +3090,29 @@ def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None
             Path(copied).unlink(missing_ok=True)
     with contextlib.suppress(OSError):
         attachment_dir.rmdir()
+
+
+def _discard_artifact_copies(copied_paths: Iterable[Path]) -> None:
+    """Best-effort rollback for filesystem copies created inside a DB txn."""
+    parents: set[Path] = set()
+    for copied in copied_paths:
+        parents.add(copied.parent)
+        with contextlib.suppress(OSError):
+            copied.unlink(missing_ok=True)
+    for parent in parents:
+        with contextlib.suppress(OSError):
+            parent.rmdir()
+
+
+@contextlib.contextmanager
+def _artifact_write_txn(conn: sqlite3.Connection, copied_paths: list[Path]):
+    """Rollback copied artifact files when the enclosing DB transaction fails."""
+    try:
+        with write_txn(conn):
+            yield
+    except BaseException:
+        _discard_artifact_copies(copied_paths)
+        raise
 
 
 def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
@@ -3207,7 +3233,8 @@ def edit_task(
 
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    kind: Optional[str] = None, metadata: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3222,10 +3249,17 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    ``metadata`` is stored on the ended run. Explicit paths in
+    ``metadata["artifacts"]`` that live inside a managed scratch workspace are
+    copied to the task's durable attachment directory before the transition;
+    an unpreservable file aborts the block so the worker can retry safely.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
-    with write_txn(conn):
+    metadata = redact_review_value(metadata)
+    artifact_copies: list[Path] = []
+    with _artifact_write_txn(conn, artifact_copies):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -3286,8 +3320,18 @@ def block_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        if isinstance(metadata, dict):
+            artifact_copies.extend(
+                _stage_completion_artifacts(
+                    conn, task_id, metadata, int(time.time()), uploaded_by="kanban_block",
+                )
+            )
+            artifacts = _cleaned_artifact_paths(metadata)
+            if artifacts:
+                payload["artifacts"] = artifacts
         run_id = _end_or_synthesize_run(
-            conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
+            conn, task_id, outcome="blocked", status="blocked", summary=reason,
+            metadata=metadata, synthesize=bool(reason or metadata),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)

@@ -370,6 +370,48 @@ def _merge_artifacts(metadata: Any, artifacts: list[str]) -> dict:
     return metadata
 
 
+def _prepare_handoff_metadata(task_id: str, args: dict) -> Optional[dict]:
+    """Redact and normalize complete/block metadata without mutating caller input."""
+    raw_metadata = args.get("metadata")
+    _require_dict_metadata(raw_metadata)
+
+    metadata_source = dict(raw_metadata or {})
+    existing_artifacts = metadata_source.pop("artifacts", None)
+    # Artifact staging is internal state and must not be caller-controlled.
+    metadata_source.pop("_staged_artifacts", None)
+    try:
+        metadata = _redact_metadata(metadata_source)
+    except (TypeError, ValueError):
+        metadata = None
+    if metadata is None:
+        raise _Reject("metadata could not be safely serialized")
+
+    artifact_inputs: list[Any] = []
+    if existing_artifacts is not None:
+        artifact_inputs.extend(
+            _coerce_str_list(existing_artifacts, "metadata.artifacts", "file paths") or []
+        )
+    artifact_inputs.extend(
+        _coerce_str_list(args.get("artifacts"), "artifacts", "file paths") or []
+    )
+
+    artifacts: list[str] = []
+    for item in artifact_inputs:
+        path = str(item).strip()
+        if not path or path in artifacts:
+            continue
+        _check(
+            redact_sensitive_text(path, force=True) == path,
+            "artifact paths must not contain secrets; rename the file or move it to a safe "
+            "path before retrying the handoff",
+        )
+        artifacts.append(path)
+    if artifacts:
+        metadata["artifacts"] = artifacts
+
+    return _stamp_worker_session_metadata(task_id, metadata or None)
+
+
 def _require_text(args: dict, name: str, message: Optional[str] = None) -> Any:
     """``args[name]``; rejects when missing or blank."""
     value = args.get(name)
@@ -674,18 +716,10 @@ def _handle_complete(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_complete", args)
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
-    metadata = args.get("metadata")
-    if isinstance(metadata, dict):
-        # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
-        metadata = _redact_metadata(metadata) or metadata
     created_cards = _coerce_str_list(
         args.get("created_cards"), "created_cards", "task ids", strip=True)
-    artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
-    if artifacts:
-        metadata = _merge_artifacts(metadata, artifacts)
     _check(summary or result, "provide at least one of: summary (preferred), result")
-    _require_dict_metadata(metadata)
-    metadata = _stamp_worker_session_metadata(tid, metadata)
+    metadata = _prepare_handoff_metadata(tid, args)
     with _board(args.get("board")) as (kb, conn):
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
@@ -760,6 +794,7 @@ def _handle_block(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_block", args)
     reason = _redact(
         _require_text(args, "reason", "reason is required — explain what input you need"))
+    metadata = _prepare_handoff_metadata(tid, args)
     kind = args.get("kind")
     with _board(args.get("board")) as (kb, conn):
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
@@ -780,7 +815,17 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        try:
+            ok = kb.block_task(
+                conn, tid, reason=reason, kind=kind, metadata=metadata,
+                expected_run_id=_worker_run_id(tid),
+            )
+        except kb.ArtifactPreservationError as artifact_err:
+            return tool_error(
+                f"kanban_block could not preserve the declared artifacts: {artifact_err}. "
+                f"Your task is still in-flight and its scratch workspace was kept. Fix the "
+                f"artifact path or storage error, then retry kanban_block with the same handoff."
+            )
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
@@ -792,7 +837,8 @@ def _handle_block(args: dict, **kw) -> str:
                 "so this was recorded as needs_input (sticky until a human unblocks) "
                 "instead of parking in todo where the dispatcher would respawn it."
             )
-        return _ok_landed(kb, conn, tid, "blocked", **extra)
+        attachments = [_fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]
+        return _ok_landed(kb, conn, tid, "blocked", attachments=attachments, **extra)
 
 
 @_kanban_handler("kanban_request_review")

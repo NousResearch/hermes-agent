@@ -14,12 +14,14 @@ from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_targets import _parse_target_ref
 
 
-def _make_adapter() -> WeixinAdapter:
+def _make_adapter(**extra_override) -> WeixinAdapter:
+    extra = {"account_id": "test-account"}
+    extra.update(extra_override)
     return WeixinAdapter(
         PlatformConfig(
             enabled=True,
             token="test-token",
-            extra={"account_id": "test-account"},
+            extra=extra,
         )
     )
 
@@ -74,7 +76,8 @@ class TestWeixinChunking:
 
 
     def test_split_text_keeps_complete_code_block_together_when_possible(self):
-        adapter = _make_adapter()
+        # Markdown bulk stays addressable when plain-text flattening is off (the opt-out path).
+        adapter = _make_adapter(plain_text=False)
         adapter.MAX_MESSAGE_LENGTH = 80
 
         content = adapter.format_message(
@@ -106,6 +109,80 @@ class TestWeixinChunking:
         chunks = adapter._split_text(content)
 
         assert chunks == ["第一行", "第二行", "第三行"]
+
+
+class TestWeixinPlainTextOutput:
+    """WeChat/iLink renders no markdown, so delivery flattens it by default.
+
+    Raw ``**``, backticks, ``##`` and ``---`` reach the user as literal characters and make
+    multi-section reports look garbled (reported 2026-09-23: a long report arrived unreadable).
+    """
+
+    SAMPLE = """## 复盘
+
+**结论：今日零逾期。**
+
+`next-action`: 无
+
+---
+
+普通段落。"""
+
+
+    def test_split_text_strips_markdown_by_default(self):
+        adapter = _make_adapter()
+
+        joined = "\n".join(adapter._split_text(adapter.format_message(self.SAMPLE)))
+
+        assert "**" not in joined
+        assert "`" not in joined
+        assert "##" not in joined
+        assert "---" not in joined
+        # The prose itself must survive the flattening.
+        assert "结论：今日零逾期。" in joined
+        assert "next-action" in joined
+        assert "普通段落。" in joined
+
+
+    def test_bubble_boundaries_are_decided_before_flattening(self):
+        adapter = _make_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 200
+
+        plain = adapter._split_text(adapter.format_message(self.SAMPLE))
+        adapter._plain_text_output = False
+        with_markdown = adapter._split_text(adapter.format_message(self.SAMPLE))
+
+        assert len(plain) == len(with_markdown)
+
+
+    def test_split_text_keeps_markdown_when_plain_text_disabled(self):
+        adapter = _make_adapter(plain_text=False)
+
+        joined = "\n".join(adapter._split_text(adapter.format_message("**加粗** 与 `代码`")))
+
+        assert "**加粗**" in joined
+        assert "`代码`" in joined
+
+
+    def test_plain_text_can_be_disabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("WEIXIN_PLAIN_TEXT", "0")
+        adapter = _make_adapter()
+
+        assert adapter._split_text("**加粗**") == ["**加粗**"]
+
+
+    def test_rule_only_chunks_do_not_become_empty_bubbles(self):
+        adapter = _make_adapter()
+        content = """前一段
+
+---
+
+后一段"""
+
+        chunks = adapter._split_text(content)
+
+        assert chunks
+        assert all(chunk.strip() for chunk in chunks)
 
 
 class TestWeixinConfig:

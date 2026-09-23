@@ -1,0 +1,35 @@
+name: nox_v3
+version: 3.0.0
+description: |
+  NOX V3 - Neural Operational eXpression
+  Combines token optimization (V1) with verification (V2)
+  Balances 30-50% token savings with strong verification guarantees
+  Adaptive latency based on task complexity and context
+
+author: Hermes Agent Community
+license: MIT
+
+hooks:
+  - name: pre_llm_call
+    handler: nox_v3.hooks.pre_llm_call
+    priority: 100
+  - name: post_llm_call
+    handler: nox_v3.hooks.post_llm_call
+    priority: 100
+
+commands:
+  - name: nox
+    handler: nox_v3.commands.handle_nox_command
+    description: "NOX V3 management - status, enable, disable, config"
+
+config:
+  enabled: false
+  mode: balanced  # conservative | balanced | aggressive
+  max_daily_tokens: 10000
+  latency_budget_ms: 50
+  fast_path_threshold: 100  # tokens - below this, skip verification
+
+state:
+  daily_token_usage: 0
+  session_count: 0
+  verification_success_rate: 1.0

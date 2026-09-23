@@ -158,11 +158,18 @@ uses:
    npm i -g @openai/codex
    codex --version   # 0.130.0 or newer
    ```
-2. **Codex OAuth login.** The codex subprocess reads `~/.codex/auth.json`. Two ways to populate it:
+2. **Codex authentication.** The subprocess can use `~/.codex/auth.json` or a non-interactive access token:
    ```bash
    codex login                  # writes tokens to ~/.codex/auth.json
+   export CODEX_ACCESS_TOKEN=... # Business/Enterprise automation path
    ```
-   Hermes' own `hermes auth add openai-codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** if you haven't.
+   Hermes' own `hermes auth add openai-codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** if you rely on OAuth.
+
+   For headless deployments, store the token in 1Password and resolve it only for this runtime:
+   ```bash
+   HERMES_CODEX_ACCESS_TOKEN_OP_REF="op://Vault/Item/credential"
+   ```
+   The resolved token is passed only to `codex app-server`; it does not shadow Hermes' direct Codex OAuth fallback.
 
    <a id="named-custom-providers"></a>**Or: a named custom provider.** A `providers.<name>` entry in Hermes config can use this runtime when the **same name** is defined as a Codex provider. Hermes config:
 

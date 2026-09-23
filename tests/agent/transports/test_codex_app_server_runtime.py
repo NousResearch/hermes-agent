@@ -113,6 +113,46 @@ class TestCodexAppServerModule:
         assert "boom" in str(err)
         assert "-32600" in str(err)
 
+    def test_1password_secret_ref_resolves_only_when_token_missing(self, monkeypatch) -> None:
+        from agent.transports import codex_app_server as cas
+
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = "secret-token\n"
+            stderr = ""
+
+        def fake_fetch(**kwargs):
+            calls.append(kwargs)
+            return ({"CODEX_ACCESS_TOKEN": "secret-token"}, [])
+
+        monkeypatch.setattr(cas, "fetch_onepassword_secrets", fake_fetch)
+
+        env = {"HERMES_CODEX_ACCESS_TOKEN_OP_REF": "op://Petra/Codex/credential"}
+        assert cas._resolve_codex_access_token_from_1password(env) == "secret-token"
+        assert calls[0]["references"] == {
+            "CODEX_ACCESS_TOKEN": "op://Petra/Codex/credential"
+        }
+        assert calls[0]["use_cache"] is False
+
+        env_with_token = {
+            "CODEX_ACCESS_TOKEN": "already-present",
+            "HERMES_CODEX_ACCESS_TOKEN_OP_REF": "op://Petra/Codex/credential",
+        }
+        assert cas._resolve_codex_access_token_from_1password(env_with_token) is None
+        assert len(calls) == 1
+
+    def test_1password_secret_ref_ignores_non_op_refs(self, monkeypatch) -> None:
+        from agent.transports import codex_app_server as cas
+
+        def fake_fetch(*args, **kwargs):  # pragma: no cover - should not execute
+            raise AssertionError("op should not be called for non-op refs")
+
+        monkeypatch.setattr(cas, "fetch_onepassword_secrets", fake_fetch)
+        env = {"HERMES_CODEX_ACCESS_TOKEN_OP_REF": "plain-secret"}
+        assert cas._resolve_codex_access_token_from_1password(env) is None
+
 
 class TestCodexAppServerClose:
     """Lifecycle tests for retiring the optional Codex app-server transport."""
@@ -447,4 +487,29 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
+
+    def test_scoped_1password_token_reaches_app_server_spawn(self, monkeypatch):
+        from agent.transports import codex_app_server as cas
+
+        calls = []
+
+        def fake_fetch(**kwargs):
+            calls.append(kwargs)
+            return ({"CODEX_ACCESS_TOKEN": "app-server-token"}, [])
+
+        monkeypatch.setattr(cas, "fetch_onepassword_secrets", fake_fetch)
+        monkeypatch.setenv(
+            "HERMES_CODEX_ACCESS_TOKEN_OP_REF",
+            "op://Petra/Codex/credential",
+        )
+
+        env = self._capture_spawn_env(monkeypatch)
+
+        assert env["CODEX_ACCESS_TOKEN"] == "app-server-token"
+        assert calls == [{
+            "references": {
+                "CODEX_ACCESS_TOKEN": "op://Petra/Codex/credential",
+            },
+            "use_cache": False,
+        }]
 

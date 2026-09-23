@@ -85,6 +85,12 @@ class FakeTerminal {
 const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
+  getSessionDetail: vi.fn(async (id: string) => ({ title: `title of ${id}` })),
+  getSessionLatestDescendant: vi.fn(async () => ({ session_id: null })),
+}));
+const chromeProps = vi.hoisted(() => ({
+  sidebar: null as null | { onLiveSessionChange?: (id: string) => void },
+  sessionList: null as null | { activeSessionId?: string | null },
 }));
 const uploadChatImage = vi.hoisted(() =>
   vi.fn(async () => ({ path: "/tmp/pasted.png" })),
@@ -101,10 +107,16 @@ vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
 vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: FakeWebglAddon }));
 vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
 vi.mock("@/components/ChatSidebar", () => ({
-  ChatSidebar: () => null,
+  ChatSidebar: (props: { onLiveSessionChange?: (id: string) => void }) => {
+    chromeProps.sidebar = props;
+    return null;
+  },
 }));
 vi.mock("@/components/ChatSessionList", () => ({
-  ChatSessionList: () => null,
+  ChatSessionList: (props: { activeSessionId?: string | null }) => {
+    chromeProps.sessionList = props;
+    return null;
+  },
 }));
 vi.mock("@/components/Backdrop", () => ({ Backdrop: () => null }));
 vi.mock("@/plugins", () => ({
@@ -523,6 +535,29 @@ describe("ChatPage", () => {
       "resize",
       "scroll",
     ]);
+  });
+});
+
+describe("ChatPage chrome follows the live session", () => {
+  it("header title and SESSIONS highlight follow the session the PTY is running, not the URL (#94716)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat?resume=sess-B"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(chromeProps.sessionList?.activeSessionId).toBe("sess-B");
+
+    // The TUI inside the PTY moved to another session (/resume, /new, /branch, or the
+    // server's active-session fallback): its session.info names it.
+    expect(typeof chromeProps.sidebar?.onLiveSessionChange).toBe("function");
+    await act(async () => chromeProps.sidebar?.onLiveSessionChange?.("sess-A"));
+
+    expect(chromeProps.sessionList?.activeSessionId).toBe("sess-A");
+    await vi.waitFor(() =>
+      expect(apiMocks.getSessionDetail).toHaveBeenCalledWith("sess-A", expect.anything()),
+    );
   });
 });
 

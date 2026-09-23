@@ -450,6 +450,31 @@ describe('ChatSidebar event socket reconnect', () => {
     expect(container.textContent).not.toContain('Live tool activity paused')
   })
 
+  it('reports the PTY session id from the events feed, never the sidecar session id (#94716)', async () => {
+    const { EventsFeedClient } = await import('@/lib/eventsFeedClient')
+    const onSpy = vi.spyOn(EventsFeedClient.prototype, 'on')
+    const onLiveSessionChange = vi.fn()
+    const { ChatSidebar } = await import('./ChatSidebar')
+    await render(<ChatSidebar channel="chat-1" onLiveSessionChange={onLiveSessionChange} />)
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+
+    // The sidecar is the sidebar's own throwaway session: its id is not the chat on screen.
+    await act(async () => {
+      gatewayMocks.handlers.get('session.info')?.({ payload: { stored_session_id: 'sidecar-1' } })
+    })
+    expect(onLiveSessionChange).not.toHaveBeenCalled()
+
+    const feedSessionInfo = onSpy.mock.calls.find(([type]) => type === 'session.info')?.[1] as
+      | ((ev: { payload: unknown }) => void)
+      | undefined
+    expect(feedSessionInfo).toBeDefined()
+    await act(async () => {
+      feedSessionInfo?.({ payload: { stored_session_id: 'sess-A', title: 'LocusLegis' } })
+    })
+    expect(onLiveSessionChange).toHaveBeenCalledWith('sess-A')
+    onSpy.mockRestore()
+  })
+
   it('offers Add key and Switch model when the gateway reports a missing key', async () => {
     await renderSidebar()
 

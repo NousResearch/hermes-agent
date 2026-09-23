@@ -5,7 +5,7 @@ const mocks = await vi.hoisted(async () => {
   const { atom } = await import('nanostores')
   const messages = atom<unknown[]>([])
 
-  const useVoiceConversation = vi.fn(() => ({
+  const useVoiceConversation = vi.fn((_options: { onSubmit: (text: string) => Promise<void> | void }) => ({
     end: vi.fn(async () => undefined),
     level: 0,
     muted: false,
@@ -123,7 +123,7 @@ test('wake transcription stays a draft until a human sends it, unlike manual voi
 
   act(() => requestVoiceConversationStart())
   await waitFor(() => expect(result.current.voiceConversationActive).toBe(true))
-  const wakeSubmit = mocks.useVoiceConversation.mock.lastCall?.[0].onSubmit
+  const wakeSubmit = mocks.useVoiceConversation.mock.lastCall![0].onSubmit
   await act(async () => wakeSubmit('untrusted transcript'))
   expect(insertText).toHaveBeenCalledWith('untrusted transcript')
   expect(onSubmit).not.toHaveBeenCalled()
@@ -132,7 +132,7 @@ test('wake transcription stays a draft until a human sends it, unlike manual voi
   await waitFor(() => expect(result.current.voiceConversationActive).toBe(false))
 
   act(() => result.current.startConversation())
-  const manualSubmit = mocks.useVoiceConversation.mock.lastCall?.[0].onSubmit
+  const manualSubmit = mocks.useVoiceConversation.mock.lastCall![0].onSubmit
   await act(async () => manualSubmit('deliberate turn'))
   expect(onSubmit).toHaveBeenCalledWith('deliberate turn')
 })

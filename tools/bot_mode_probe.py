@@ -326,9 +326,91 @@ _EPOCH_PREFIX = "Capability epoch: "
 _EPOCH_RE_TEXT = r"Capability epoch: ([0-9a-f]{12})"
 
 
+def _vision_surface(cfg: dict) -> dict:
+    """Vision-routing inputs that change Bot Chat image behavior.
+
+    ``decide_image_input_mode`` routes attachments to ``native`` vs ``text``
+    (via ``vision_analyze``) from exactly these config leaves: the top-level
+    ``model.supports_vision`` escape hatch, per-model
+    ``providers.<p>.models.<m>.supports_vision`` (``vision`` alias) entries,
+    the legacy ``custom_providers`` list, ``agent.image_input_mode``, and an
+    explicit ``auxiliary.vision`` backend (which forces ``text`` in ``auto``
+    mode). Values are coerced to the same tri-state the router uses so
+    spelling-only edits (``true`` vs ``True`` vs ``1``) do not rebuild prompts.
+    """
+    def _coerce(raw):
+        try:
+            from agent.image_routing import _coerce_capability_bool
+
+            return _coerce_capability_bool(raw)
+        except Exception:
+            if isinstance(raw, bool):
+                return raw
+            if isinstance(raw, int):
+                return bool(raw) if raw in (0, 1) else None
+            if isinstance(raw, str):
+                return {"true": True, "yes": True, "on": True, "1": True,
+                        "false": False, "no": False, "off": False, "0": False}.get(raw.strip().lower())
+            return None
+
+    def _per_model(models: object) -> list[str]:
+        if not isinstance(models, dict):
+            return []
+        found = []
+        for model_id, entry in models.items():
+            if not isinstance(entry, dict):
+                continue
+            for key in ("supports_vision", "vision"):
+                if key in entry:
+                    value = _coerce(entry.get(key))
+                    if value is not None:
+                        found.append(f"{model_id}={value!r}")
+                    break
+        return sorted(found)
+
+    try:
+        cfg = cfg if isinstance(cfg, dict) else {}
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        aux_cfg = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+        mode = agent_cfg.get("image_input_mode")
+        mode = mode.strip().lower() if isinstance(mode, str) else ""
+        providers_cfg = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        provider_models: list[str] = []
+        for provider_name in sorted(providers_cfg):
+            provider = providers_cfg[provider_name]
+            models = provider.get("models") if isinstance(provider, dict) else None
+            for item in _per_model(models):
+                provider_models.append(f"{provider_name}\x00{item}")
+        custom_models: list[str] = []
+        raw_custom = cfg.get("custom_providers")
+        if isinstance(raw_custom, list):
+            for entry in sorted(
+                (e for e in raw_custom if isinstance(e, dict)),
+                key=lambda e: str(e.get("name") or ""),
+            ):
+                for item in _per_model(entry.get("models")):
+                    custom_models.append(f"{entry.get('name')}\x00{item}")
+        import json as _json
+
+        vision_aux = aux_cfg.get("vision")
+        return {
+            "model_supports_vision": _coerce(model_cfg.get("supports_vision")),
+            "image_input_mode": mode if mode in ("auto", "native", "text") else "auto",
+            "auxiliary_vision": _json.dumps(vision_aux, sort_keys=True, default=str)
+            if isinstance(vision_aux, dict) else "",
+            "provider_models": sorted(provider_models),
+            "custom_providers": sorted(custom_models),
+        }
+    except Exception:
+        return {}
+
+
 def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile: disabled skills +
-    enabled toolsets + MCP config, SOUL.md bytes, installed skill names, the Bot-Mode roster
+    enabled toolsets + MCP config, vision-routing inputs (``model.supports_vision``,
+    per-model vision overrides, ``agent.image_input_mode``, ``auxiliary.vision``),
+    SOUL.md bytes, installed skill names, the Bot-Mode roster
     (+ roles), peers and the relay roster. Deliberately NOT cached — the point is detecting
     on-disk drift against a stored prompt's epoch. Never raises ("unavailable" on failure)."""
     import hashlib
@@ -354,8 +436,10 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
         mcp = cfg.get("mcp_servers")
         surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
+        surface["vision"] = _vision_surface(cfg)
     except Exception:
         pass
+    surface.setdefault("vision", _vision_surface({}))
 
     def _soul() -> str:
         soul = resolved / "SOUL.md"

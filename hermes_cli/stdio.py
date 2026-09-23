@@ -7,6 +7,7 @@ subprocesses and child Python ``print()`` calls agree on encoding.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import sys
 
@@ -114,7 +115,12 @@ def _augment_path_with_known_tools() -> None:
         os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
         os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
     existing = os.environ.get("PATH", "")
-    existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
-    prepend = [d for d in candidate_dirs if os.path.isdir(d) and d.lower() not in existing_lower]
+    existing_normalized = {
+        ntpath.normcase(p).rstrip("\\/") for p in existing.split(os.pathsep) if p
+    }
+    prepend = [
+        d for d in candidate_dirs
+        if os.path.isdir(d) and ntpath.normcase(d).rstrip("\\/") not in existing_normalized
+    ]
     if prepend:
         os.environ["PATH"] = os.pathsep.join([*prepend, existing])

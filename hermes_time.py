@@ -5,6 +5,7 @@
 time. Invalid timezone values log a warning and fall back — never crash.
 """
 
+import locale
 import logging
 import os
 import re
@@ -13,9 +14,6 @@ from datetime import datetime
 from typing import Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from hermes_constants import get_config_path
-
-from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_config_path
 
 logger = logging.getLogger(__name__)
@@ -29,98 +27,41 @@ logger = logging.getLogger(__name__)
 _cache_lock = threading.Lock()
 _tz_cache: Dict[Tuple[str, str], Tuple[str, Optional[ZoneInfo]]] = {}
 
-_WEEKDAY_NAMES = (
-    ("Monday", "Mon"),
-    ("Tuesday", "Tue"),
-    ("Wednesday", "Wed"),
-    ("Thursday", "Thu"),
-    ("Friday", "Fri"),
-    ("Saturday", "Sat"),
-    ("Sunday", "Sun"),
-)
-_MONTH_NAMES = (
-    ("January", "Jan"),
-    ("February", "Feb"),
-    ("March", "Mar"),
-    ("April", "Apr"),
-    ("May", "May"),
-    ("June", "Jun"),
-    ("July", "Jul"),
-    ("August", "Aug"),
-    ("September", "Sep"),
-    ("October", "Oct"),
-    ("November", "Nov"),
-    ("December", "Dec"),
-)
-_LOCALE_DIRECTIVE_RE = re.compile(r"(?<!%)%(?:[EO])?([aAbBchpXxZz])")
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+# ASCII plus surrogateescape'd bytes only: the shape of native text decoded with the wrong codec.
+_ESCAPED_BYTES_RE = re.compile(r"[\x00-\x7f\udc80-\udcff]*")
 
 
-def _numeric_utc_offset(value: datetime) -> str:
-    offset = value.utcoffset()
-    if offset is None:
-        return ""
-    total_seconds = int(offset.total_seconds())
-    sign = "+" if total_seconds >= 0 else "-"
-    total_seconds = abs(total_seconds)
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    suffix = f"{seconds:02d}" if seconds else ""
-    return f"{sign}{hours:02d}{minutes:02d}{suffix}"
+def _repair_surrogates(text: str, encoding: Optional[str] = None) -> str:
+    """Make locale text JSON/UTF-8 safe; a no-op (same object) on valid text.
 
-
-def _portable_directive(value: datetime, directive: str) -> str:
-    weekday_long, weekday_short = _WEEKDAY_NAMES[value.weekday()]
-    month_long, month_short = _MONTH_NAMES[value.month - 1]
-    hour = getattr(value, "hour", 0)
-    minute = getattr(value, "minute", 0)
-    second = getattr(value, "second", 0)
-    replacements = {
-        "a": weekday_short,
-        "A": weekday_long,
-        "b": month_short,
-        "h": month_short,
-        "B": month_long,
-        "c": (
-            f"{weekday_short} {month_short} {value.day:02d} "
-            f"{hour:02d}:{minute:02d}:{second:02d} {value.year:04d}"
-        ),
-        "p": "AM" if hour < 12 else "PM",
-        "X": f"{hour:02d}:{minute:02d}:{second:02d}",
-        "x": f"{value.year:04d}-{value.month:02d}-{value.day:02d}",
-        "z": _numeric_utc_offset(value),
-    }
-    if directive == "Z":
+    Windows hands back zone names in the ANSI code page (``heure d'\\xe9t\\xe9``) but a UTF-8
+    ``LC_CTYPE`` (UTF-8 mode, or a library flipping the process locale mid-run) decodes those
+    bytes with ``surrogateescape`` into lone surrogates. Recover the bytes and decode them with
+    the ANSI code page; when that is not possible, replace each surrogate with U+FFFD."""
+    if text.isascii() or not _SURROGATE_RE.search(text):
+        return text
+    if _ESCAPED_BYTES_RE.fullmatch(text):
         try:
-            return value.tzname() or ""
-        except UnicodeEncodeError:
-            return ""
-    return replacements[directive]
+            return text.encode("ascii", "surrogateescape").decode(encoding or locale.getencoding())
+        except (LookupError, UnicodeError):
+            pass
+    return _SURROGATE_RE.sub("\ufffd", text)
 
 
 def safe_strftime(value: datetime, fmt: str) -> str:
-    """Format a datetime without leaking invalid locale surrogates.
+    """``value.strftime(fmt)`` that never raises or returns lone surrogates over locale text.
 
-    Some Windows locale/code-page combinations raise ``UnicodeEncodeError``
-    inside ``strftime`` before Python receives a string. Retry with portable
-    replacements for locale-sensitive directives, then scrub any surrogate
-    code points returned by the platform or ``tzname()``.
-    """
+    ``datetime.strftime`` splices ``tzname()`` into the format as UTF-8, so a zone name carrying
+    surrogates (see ``_repair_surrogates``) raises ``UnicodeEncodeError`` before any string exists
+    (#102910). On that failure ``%Z`` is rendered from the repaired name instead. Output for valid
+    locale text is byte-identical to ``strftime`` (the system prompt must stay cache-stable)."""
     try:
-        rendered = value.strftime(fmt)
+        return _repair_surrogates(value.strftime(fmt))
     except UnicodeEncodeError:
-        replacements: Dict[str, str] = {}
-
-        def replace_directive(match: re.Match[str]) -> str:
-            token = f"__HERMES_TIME_{len(replacements)}__"
-            replacements[token] = _sanitize_surrogates(
-                _portable_directive(value, match.group(1))
-            )
-            return token
-
-        rendered = value.strftime(_LOCALE_DIRECTIVE_RE.sub(replace_directive, fmt))
-        for token, replacement in replacements.items():
-            rendered = rendered.replace(token, replacement)
-    return _sanitize_surrogates(rendered)
+        zone = _repair_surrogates(value.tzname() or "").replace("%", "%%")
+        return _repair_surrogates(value.strftime(
+            re.sub(r"%([%Z])", lambda m: zone if m.group(1) == "Z" else "%%", fmt)))
 
 
 def _env_timezone() -> str:

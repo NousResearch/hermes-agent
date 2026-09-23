@@ -47,41 +47,31 @@ class TestHermesTimeNow:
         assert offset == timedelta(hours=5, minutes=30)
 
 
-
-
-class _UnicodeFailingDateTime(datetime):
-    """Model Windows strftime failing before it can return locale text."""
-
-    def strftime(self, fmt):
-        if any(code in fmt for code in ("%A", "%B", "%Z", "%z")):
-            raise UnicodeEncodeError("utf-8", "\udce9", 0, 1, "surrogates not allowed")
-        return super().strftime(fmt)
-
-    def tzname(self):
-        return "Paris \udce9"
+# Windows zone name in cp1252 bytes, decoded under a UTF-8 LC_CTYPE with surrogateescape (#102910).
+_ESCAPED_ZONE = "Paris, Madrid (heure d'\udce9t\udce9)"
 
 
 class TestSafeStrftime:
-    def test_sanitizes_surrogates_returned_by_platform(self):
-        class _ReturningSurrogate:
-            def strftime(self, _fmt):
-                return "Paris \udce9"
+    def test_valid_locale_text_is_byte_identical_to_strftime(self):
+        """The system prompt embeds this output, so healthy locales must not change a byte."""
+        from zoneinfo import ZoneInfo
+        fmt = "%a %A %b %B %d %Y %H:%M:%S %Z %z %%Z"
+        for value in (
+            datetime(2026, 7, 14, 13, 5),
+            datetime(2026, 7, 14, 13, 5, tzinfo=ZoneInfo("Europe/Paris")),
+            datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=-3), "Hora estándar de Argentina")),
+        ):
+            assert hermes_time.safe_strftime(value, fmt) == value.strftime(fmt)
 
-        assert hermes_time.safe_strftime(_ReturningSurrogate(), "%Z") == "Paris �"
-
-    def test_recovers_when_windows_locale_formatting_raises(self):
-        value = _UnicodeFailingDateTime(
-            2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2))
-        )
-
-        rendered = hermes_time.safe_strftime(value, "%A, %B %d, %Y %H:%M %Z %z")
-
-        assert rendered == "Tuesday, July 14, 2026 13:05 Paris � +0200"
-        rendered.encode("utf-8")
-
-
-
-
+    def test_surrogate_zone_name_renders_json_safe(self):
+        import json
+        value = datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2), _ESCAPED_ZONE))
+        rendered = hermes_time.safe_strftime(value, "%a %Y-%m-%d %H:%M %Z %z %%Z")
+        json.dumps(rendered, ensure_ascii=False).encode("utf-8")
+        assert rendered.startswith("Tue 2026-07-14 13:05 Paris, Madrid (heure d'")
+        assert rendered.endswith(") +0200 %Z")
+        # The escaped bytes decode back through the Windows ANSI code page.
+        assert hermes_time._repair_surrogates(_ESCAPED_ZONE, "cp1252") == "Paris, Madrid (heure d'été)"
 
 
 class TestGetTimezone:

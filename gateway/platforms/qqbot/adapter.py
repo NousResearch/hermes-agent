@@ -308,12 +308,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _open_ws(self, gateway_url: str) -> None:
         await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
+        # Let aiohttp resolve proxy environment variables so it also honors NO_PROXY.
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
-        proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-        ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
         self._ws = await self._session.ws_connect(
-            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
+            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS,
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 

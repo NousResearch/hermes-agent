@@ -1230,6 +1230,21 @@ export const ja = defineLocale({
       deepLinkErrorTooLarge: '設定ペイロードが 32KB の上限を超えています。'
     },
     model: {
+      moaTitle: 'エージェント混合（Mixture of Agents）',
+      moaPreset: 'プリセット',
+      moaDescription:
+        '「Mixture of Agents」プロバイダーのモデルとして表示される名前付きプリセットを設定します。集約モデルが実行を担当し、ツールループのすべての処理を行うため、実行費用のほぼ全額がそのプロバイダーに請求されます。参照モデルは既定でユーザーの各ターンに一度だけ助言します。',
+      moaAggregator: '集約モデル',
+      moaAggregatorBilled: '実行モデル · 実行費用の請求先',
+      moaReferenceHint: '既定では各ターンに一度だけ助言',
+      moaEnabled: '有効',
+      moaSetDefault: 'デフォルトに設定',
+      moaNewPresetPlaceholder: '新しいプリセット',
+      moaAddPreset: 'プリセットを追加',
+      moaDefault: 'デフォルト:',
+      moaReferenceToggle: (enabled, index) => `参照 ${index} を${enabled ? '無効化' : '有効化'}`,
+      moaReferenceTitle: index => `参照 ${index}`,
+      moaAddReference: '参照モデルを追加',
       loading: 'モデル設定を読み込み中...',
       appliesDesc:
         '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',

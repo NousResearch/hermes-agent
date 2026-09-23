@@ -1632,6 +1632,14 @@ export const en: Translations = {
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
     model: {
+      moaEnabled: 'Enabled',
+      moaSetDefault: 'Set default',
+      moaNewPresetPlaceholder: 'new preset',
+      moaAddPreset: 'Add preset',
+      moaDefault: 'Default:',
+      moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
+      moaReferenceTitle: index => `Reference ${index}`,
+      moaAddReference: 'Add reference model',
       loading: 'Loading model configuration...',
       appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
       provider: 'Provider',

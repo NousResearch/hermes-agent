@@ -1196,7 +1196,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               </SelectContent>
             </Select>
             <label className="flex items-center gap-2 rounded-sm border border-border px-2 py-1 text-xs">
-              Enabled
+              {m.moaEnabled}
               <Switch
                 checked={currentMoaPreset.enabled !== false}
                 disabled={applying}
@@ -1217,7 +1217,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               size="sm"
               variant="text"
             >
-              Set default
+              {m.moaSetDefault}
             </Button>
             <Button
               disabled={Object.keys(moa.presets).length <= 1 || applying}
@@ -1243,12 +1243,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               size="sm"
               variant="ghost"
             >
-              Delete
+              {t.common.delete}
             </Button>
             <Input
               className={cn('w-40', CONTROL_TEXT)}
               onChange={event => setNewMoaPresetName(event.target.value)}
-              placeholder="new preset"
+              placeholder={m.moaNewPresetPlaceholder}
               value={newMoaPresetName}
             />
             <Button
@@ -1271,18 +1271,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               size="sm"
               variant="textStrong"
             >
-              Add preset
+              {m.moaAddPreset}
             </Button>
           </div>
           <div className="mb-2 text-xs text-muted-foreground">
-            Default: <span className="font-mono">{moa.default_preset}</span>
+            {m.moaDefault} <span className="font-mono">{moa.default_preset}</span>
           </div>
           <div className="grid gap-1">
             {currentMoaPreset.reference_models.map((slot, index) => (
               <ListRow
                 action={
                   <Switch
-                    aria-label={`${slot.enabled !== false ? 'Disable' : 'Enable'} reference ${index + 1}`}
+                    aria-label={m.moaReferenceToggle(slot.enabled !== false, index + 1)}
                     checked={slot.enabled !== false}
                     disabled={applying}
                     onCheckedChange={checked =>
@@ -1359,7 +1359,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                       size="sm"
                       variant="ghost"
                     >
-                      Remove
+                      {t.common.remove}
                     </Button>
                   </div>
                 }
@@ -1372,7 +1372,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 key={`${selectedMoaPreset}-${index}`}
                 title={
                   <span className="flex items-baseline gap-2">
-                    {`Reference ${index + 1}`}
+                    {m.moaReferenceTitle(index + 1)}
                     <Pill>{m.moaReferenceHint}</Pill>
                   </span>
                 }
@@ -1389,7 +1389,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               size="sm"
               variant="textStrong"
             >
-              Add reference model
+              {m.moaAddReference}
             </Button>
             <ListRow
               below={

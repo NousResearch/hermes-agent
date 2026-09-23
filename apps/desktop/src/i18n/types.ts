@@ -1388,6 +1388,14 @@ export interface Translations {
       deepLinkErrorTooLarge: string
     }
     model: {
+      moaEnabled: string
+      moaSetDefault: string
+      moaNewPresetPlaceholder: string
+      moaAddPreset: string
+      moaDefault: string
+      moaReferenceToggle: (enabled: boolean, index: number) => string
+      moaReferenceTitle: (index: number) => string
+      moaAddReference: string
       loading: string
       appliesDesc: string
       provider: string

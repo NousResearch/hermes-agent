@@ -1584,6 +1584,14 @@ export const zh = defineLocale({
       deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
     },
     model: {
+      moaEnabled: '启用',
+      moaSetDefault: '设为默认',
+      moaNewPresetPlaceholder: '新预设',
+      moaAddPreset: '添加预设',
+      moaDefault: '默认：',
+      moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
+      moaReferenceTitle: index => `参考 ${index}`,
+      moaAddReference: '添加参考模型',
       loading: '正在加载模型配置...',
       appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
       provider: '提供方',

@@ -1070,6 +1070,21 @@ export const ar = defineLocale({
       deepLinkErrorTooLarge: 'حجم الإعدادات يتجاوز الحد الأقصى 32KB.'
     },
     model: {
+      moaTitle: 'مزيج الوكلاء (Mixture of Agents)',
+      moaPreset: 'إعداد مسبق',
+      moaDescription:
+        'اضبط إعدادات مسبقة مسماة تظهر كنماذج ضمن موفّر Mixture of Agents. نموذج التجميع هو المنفّذ؛ ينفّذ كل خطوة في حلقة الأدوات وتُحتسب غالبية تكلفة التشغيل على موفّره. تقدّم النماذج المرجعية المشورة مرة واحدة لكل رسالة مستخدم افتراضياً.',
+      moaAggregator: 'نموذج التجميع',
+      moaAggregatorBilled: 'النموذج المنفّذ · تُحتسب عليه تكلفة التشغيل',
+      moaReferenceHint: 'يقدّم المشورة مرة واحدة لكل رسالة افتراضياً',
+      moaEnabled: 'مُفعّل',
+      moaSetDefault: 'تعيين الافتراضي',
+      moaNewPresetPlaceholder: 'إعداد جديد',
+      moaAddPreset: 'إضافة إعداد',
+      moaDefault: 'الافتراضي:',
+      moaReferenceToggle: (enabled, index) => `${enabled ? 'تعطيل' : 'تفعيل'} المرجع ${index}`,
+      moaReferenceTitle: index => `المرجع ${index}`,
+      moaAddReference: 'إضافة نموذج مرجعي',
       loading: 'جار تحميل إعدادات النموذج...',
       appliesDesc: 'ينطبق على الجلسات الجديدة. استخدم منتقي النموذج في صندوق الإنشاء لتبديل المحادثة النشطة فورا.',
       provider: 'المزوّد',

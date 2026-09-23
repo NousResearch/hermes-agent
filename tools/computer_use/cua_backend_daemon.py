@@ -194,7 +194,8 @@ class _EmbeddedCuaDaemon:
     def proxy_invocation(self) -> Tuple[str, List[str]]:
         if not self._running:
             raise RuntimeError("embedded cua-driver daemon is not running")
-        return self._command, [*self._mcp_args, "--embedded", "--socket", self.socket_path]
+        args, _ = _driver._split_mcp_socket(self._mcp_args)
+        return self._command, [*args, "--embedded", "--socket", self.socket_path]
 
     def stop(self) -> None:
         process, self._process = self._process, None

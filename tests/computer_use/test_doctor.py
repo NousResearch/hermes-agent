@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import sys
 from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -332,7 +332,10 @@ class TestDriverCmdResolution:
              patch("sys.stdout", new_callable=StringIO):
             assert doctor.run_doctor() == 0
 
-        health.assert_called_once_with(str(driver), include=(), skip=(), timeout=12.0)
+        health.assert_called_once_with(
+            str(driver), include=(), skip=(), timeout=12.0,
+            invocation=(str(driver), ("mcp",), ANY),
+        )
 
 
 # ── cua-driver 0.10 unclassified health_report fallback ────────────────────

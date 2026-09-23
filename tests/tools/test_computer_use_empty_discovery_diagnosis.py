@@ -84,6 +84,8 @@ def test_cli_fallback_fails_fast_on_daemon_not_running(monkeypatch):
     sleeps = []
 
     def _fake_run(cmd, **kw):
+        if cmd[1] != "call":
+            return _Proc()
         calls["n"] += 1
         return _Proc(stdout="Cua Driver daemon is not running on /x.sock.\nStart it first with: cua-driver serve")
 
@@ -106,6 +108,8 @@ def test_cli_fallback_still_retries_transient_empty(monkeypatch):
     calls = {"n": 0}
 
     def _fake_run(cmd, **kw):
+        if cmd[1] != "call":
+            return _Proc()
         calls["n"] += 1
         if calls["n"] < 3:
             return _Proc(stdout="")

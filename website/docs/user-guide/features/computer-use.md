@@ -113,6 +113,35 @@ Browser work — including pages in a signed-in profile — goes through the
 `computer_use.grant_existing_profile` opt-in was removed along with the typed
 browser route; a leftover key in config.yaml is ignored.
 
+### Sharing an existing daemon
+
+To reuse an already-running cua-driver daemon across standard-mode Hermes
+sessions, set its endpoint in the active profile's `config.yaml`:
+
+```yaml
+computer_use:
+  daemon_socket: /run/user/1000/cua.sock
+  # Windows example: '\\.\pipe\cua-shared'
+```
+
+Use an absolute socket path (`~` is expanded), or a Windows named pipe on
+Windows. Empty/unset keeps the driver's default runtime. Invalid values and
+competing socket selectors in the driver's MCP launch manifest fail loudly;
+Hermes does not silently connect to a different endpoint. Paths containing
+spaces are passed as a single argument, without a shell.
+
+Hermes starts only the MCP proxy for this endpoint. It does not start, stop,
+restart, or change the shared daemon's permission mode or grants. **Only select
+a trusted daemon with the intended startup policy**: sharing its endpoint also
+shares its desktop runtime, not an isolated desktop. This can preserve a
+process-owned Wayland portal/EIS session across Hermes conversations.
+
+The selected command and endpoint stay fixed for that Hermes session's MCP
+reconnections and replay-safe CLI fallback. Start a new Hermes session to pick
+up a changed setting. `hermes computer-use doctor` uses the same selector for
+its MCP probes. Bounded and YOLO/unrestricted sessions still use their own
+private daemon; `daemon_socket` never redirects them to the shared runtime.
+
 ### Bounded mode for repeatable automation
 
 For recurring browser automation (cron jobs, scheduled research against an

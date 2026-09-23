@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -94,8 +95,8 @@ _CLI_ATTEMPTS = 4  # CLI fallback transport retries (backoff 0.5s doubling)
 
 def _cli_run_json(cmd: List[str], env: Dict[str, str], name: str, timeout: float) -> Any:
     """Run ``cua-driver call`` with backoff until it prints JSON; return the parsed value. "daemon is not running"
-    is PERMANENT for this invocation (the CLI needs the machine-wide daemon socket, which Linux installs typically
-    never start) -> fail fast, no ~3.5s backoff."""
+    is PERMANENT for this invocation (the selected daemon, or the driver default, must already be running)
+    -> fail fast, no ~3.5s backoff."""
     import subprocess as _subprocess
     import time as _time
 
@@ -111,8 +112,8 @@ def _cli_run_json(cmd: List[str], env: Dict[str, str], name: str, timeout: float
         last_err = out[:200] or err[:200]
         if "daemon is not running" in out or "daemon is not running" in err:
             raise RuntimeError(f"cua-driver CLI fallback for {name} unavailable: the "
-                               "machine-wide cua-driver daemon is not running (the "
-                               "CLI transport requires it; the MCP runtime does not).")
+                               "selected cua-driver daemon is not running. Start that daemon "
+                               "or check computer_use.daemon_socket; Hermes will not choose another endpoint.")
         start = min((i for i in (out.find("{"), out.find("[")) if i != -1), default=-1)
         with contextlib.suppress(json.JSONDecodeError):
             if start != -1:
@@ -167,6 +168,14 @@ def _is_ended_session_result(result: Any) -> bool:
             and ("has ended" in message or "session ended" in message))
 
 
+@dataclass(frozen=True)
+class _CuaTransport:
+    command: str
+    args: tuple[str, ...]
+    env: Dict[str, str]
+    socket: Optional[str]
+
+
 class _CuaDriverSession:
     """Holds the mcp ClientSession. Spawned lazily; re-entered on drop. Lifecycle ownership: one long-running
     coroutine (`_lifecycle_coro`) opens the stdio_client + ClientSession contexts, populates capabilities, sets
@@ -188,6 +197,7 @@ class _CuaDriverSession:
     def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None) -> None:
         self._bridge, self._embedded_daemon, self._session = bridge, embedded_daemon, None
         self._lock, self._started = threading.Lock(), False
+        self._transport: Optional[_CuaTransport] = None
         # Per-tool capability-token sets from `tools/list` (read via supports_capability). Raw input schemas are
         # the source of truth for action properties: 0.9-era drivers advertise delivery_mode in inputSchema
         # without the ``input.delivery_mode`` token.
@@ -207,13 +217,35 @@ class _CuaDriverSession:
         self._declared_session_id: Optional[str] = None
         self._transport_generation, self._transport_reset_callback = 0, None
 
+    def _prepare_transport(self) -> _CuaTransport:
+        """Bind once in the caller's profile scope; reconnects and CLI reads cannot switch endpoints."""
+        transport = getattr(self, "_transport", None)
+        if transport is None:
+            from tools.computer_use import cua_backend as _cb
+            from tools.environments.local import _sanitize_subprocess_env
+
+            daemon = getattr(self, "_embedded_daemon", None)
+            self._startup_phase = "binary-check"
+            if daemon is not None:
+                command, args = daemon.proxy_invocation()
+                env = daemon.child_env()
+            else:
+                driver_cmd = _driver.resolve_cua_driver_cmd()
+                if not driver_cmd:
+                    raise RuntimeError(_driver.cua_driver_install_hint())
+                self._startup_phase = "manifest-discovery"
+                command, args = _driver._resolve_standard_mcp_invocation(driver_cmd)
+                env = _cb.cua_driver_child_env()
+            _, socket = _driver._split_mcp_socket(args)
+            transport = _CuaTransport(command, tuple(args), _sanitize_subprocess_env(env), socket)
+            self._transport = transport
+        return transport
+
     async def _lifecycle_coro(self) -> None:
         """Owns the stdio MCP contexts: open, signal ready, block on shutdown, clean up — all in one task."""
         import time as _time
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
-        from tools.computer_use import cua_backend as _cb
-        from tools.environments.local import _sanitize_subprocess_env
 
         self._shutdown_event = asyncio.Event()  # built on the loop's own thread
         _t0 = _time.monotonic()
@@ -222,17 +254,9 @@ class _CuaDriverSession:
         # reports HOW FAR it got instead of an opaque "never reached ready".
         self._startup_phase = "binary-check"
         try:
-            driver_cmd = _driver.resolve_cua_driver_cmd()
-            if not driver_cmd:
-                raise RuntimeError(_driver.cua_driver_install_hint())
-            self._startup_phase = "manifest-discovery"
-            daemon = self._embedded_daemon
-            (command, args), child_env = (
-                (daemon.proxy_invocation(), daemon.child_env()) if daemon is not None
-                else (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
+            transport = self._prepare_transport()
             _t_manifest = _time.monotonic()
-            # Telemetry policy first (default: disabled), then strip Hermes secrets.
-            params = StdioServerParameters(command=command, args=args, env=_sanitize_subprocess_env(child_env))
+            params = StdioServerParameters(command=transport.command, args=list(transport.args), env=transport.env)
             async with stdio_client(params) as (read, write):
                 self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
@@ -286,6 +310,7 @@ class _CuaDriverSession:
     def start(self) -> None:
         with self._lock:
             if not self._started:
+                self._prepare_transport()
                 self._bridge.start()
                 self._start_lifecycle_locked()
                 self._started = True
@@ -436,30 +461,22 @@ class _CuaDriverSession:
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         """Fallback transport: ``cua-driver call <tool> <json>`` subprocess. The MCP stdio bridge can persistently
-        fail heavy calls (``get_window_state``) with EAGAIN while the plain CLI, on its own daemon socket, keeps
+        fail heavy calls (``get_window_state``) with EAGAIN while a fresh CLI connection to the same daemon keeps
         working. Output is remapped to the ``_extract_tool_result`` shape. ``get_window_state`` routes its
         screenshot to a temp file (``screenshot_out_file``) so the daemon returns a tiny JSON body, not the
         multi-megabyte base64 blob that congests the socket; ``_cli_result`` reads it back."""
         import tempfile as _tempfile
-        from tools.computer_use import cua_backend as _cb
-        from tools.environments.local import _sanitize_subprocess_env
 
+        transport = self._prepare_transport()
         call_args, shot_file = dict(args), None
         if name == "get_window_state" and "screenshot_out_file" not in call_args:
             fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
             os.close(fd)
             call_args["screenshot_out_file"] = shot_file
-        driver_command = _driver.resolve_cua_driver_cmd()
-        if not driver_command:
-            raise RuntimeError(_driver.cua_driver_install_hint())
-        child_env, socket_args = _cb.cua_driver_child_env(), []
-        daemon = getattr(self, "_embedded_daemon", None)
-        if daemon is not None:
-            driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
-            socket_args = ["--socket", daemon.socket_path]
-        cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
+        socket_args = ["--socket", transport.socket] if transport.socket is not None else []
+        cmd = [transport.command, "call", name, json.dumps(call_args), *socket_args]
         try:
-            return _cli_result(_cli_run_json(cmd, _sanitize_subprocess_env(child_env), name, timeout), shot_file)
+            return _cli_result(_cli_run_json(cmd, transport.env, name, timeout), shot_file)
         finally:
             if shot_file and os.path.exists(shot_file):
                 with contextlib.suppress(OSError):

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time as _time
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 from hermes_constants import venv_python_path
 
 from hermes_cli.update_cmd_common import _best_effort
@@ -716,14 +716,14 @@ def _run_quick_snapshots() -> Optional[str]:
     return snapshot_id
 
 
-def _run_full_backup() -> None:
-    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises."""
+def _run_full_backup() -> Optional[Path]:
+    """Zip HERMES_HOME under ``backups/`` and return the saved path, or None."""
     try:
         from hermes_cli.backup import create_pre_update_backup
     except Exception as exc:
         print(f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update.")
         print()
-        return
+        return None
 
     try:
         _keep = _load_updates_cfg().get("backup_keep", 5)
@@ -738,18 +738,24 @@ def _run_full_backup() -> None:
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
         print()
-        return
+        return None
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
         print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
         print()
-        return
+        return None
 
     try:
         size_bytes = out_path.stat().st_size
     except OSError:
-        size_bytes = 0
+        print("  ⚠ Backup output could not be verified; continuing update.")
+        print()
+        return None
+    if size_bytes == 0:
+        print("  ⚠ Backup output is empty; continuing update.")
+        print()
+        return None
 
     from hermes_cli.sizefmt import format_bytes
     # display_hermes_home so the user sees ~/.hermes/...
@@ -763,9 +769,17 @@ def _run_full_backup() -> None:
     print(f"  Restore:  hermes import {out_path}")
     print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()
+    return out_path
 
 
-def _run_pre_update_backup(args) -> Optional[str]:
+class PreUpdateBackupOutcome(NamedTuple):
+    snapshot_id: Optional[str]
+    full_backup_path: Optional[Path]
+
+
+def _run_pre_update_backup(
+    args, *, report_full: bool = False,
+) -> Optional[str] | PreUpdateBackupOutcome:
     """Run the pre-update backup; return the quick-snapshot id (None when off/failed). Never raises.
 
     ``off`` — nothing. ``quick`` (default) — snapshot of critical small files under
@@ -781,7 +795,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
             print("◆ Pre-update backup: skipped (--no-backup)")
             print()
         # Config-level off is silent: the user opted out.
-        return None
+        return PreUpdateBackupOutcome(None, None) if report_full else None
 
     snapshot_id = None
     try:
@@ -803,10 +817,10 @@ def _run_pre_update_backup(args) -> Optional[str]:
     if mode != "full":
         if snapshot_id:
             print()
-        return snapshot_id
+        return PreUpdateBackupOutcome(snapshot_id, None) if report_full else snapshot_id
 
-    _run_full_backup()
-    return snapshot_id
+    full_backup_path = _run_full_backup()
+    return PreUpdateBackupOutcome(snapshot_id, full_backup_path) if report_full else snapshot_id
 
 
 def _sweep_bytecode_after_update(branch: str) -> None:

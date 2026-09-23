@@ -57,9 +57,7 @@ def receipt_home(tmp_path, monkeypatch):
     """Hermetic HERMES_HOME so receipts never touch the real profile."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
-    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     ur._current = None
     yield home
     ur._current = None
@@ -70,6 +68,125 @@ def _receipt_files(home):
     if not directory.is_dir():
         return []
     return sorted(directory.glob("*.json"))
+
+
+def _pinned_intent(target="a" * 40, prior="b" * 40, branch="main"):
+    return {
+        "target": target,
+        "install_id": "1" * 32,
+        "correlation_id": "c" * 32,
+        "prior_sha": prior,
+        "branch": branch,
+        "source": {
+            "repositoryRoot": "C:/reviewed/hermes-agent",
+            "originUrl": "https://example.test/hermes.git",
+            "resolvedRef": f"refs/remotes/origin/{branch}",
+            "targetSha": target,
+            "assuranceProfile": "fixture",
+            "assuranceEvidenceSha256": "d" * 64,
+            "assuranceGeneration": 1,
+        },
+    }
+
+
+def test_ack_requires_matching_durable_terminal_receipt(receipt_home):
+    ack = receipt_home / "logs" / "update_receipts" / "post_swap_42.ack"
+    ack.parent.mkdir(parents=True)
+    ack.write_text(json.dumps({
+        "schema": 1,
+        "correlation_id": "c" * 32,
+        "outcome": "success",
+        "receipt_path": str(ack.parent / "missing.json"),
+    }), encoding="utf-8")
+
+    assert ur.read_handoff_ack(ack, correlation_id="c" * 32) is None
+
+
+def test_corrupt_unrelated_receipt_does_not_hide_correlated_terminal_receipt(receipt_home):
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+    )
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    malformed = path.parent / "update_zzzz.json"
+    malformed.write_text("{broken", encoding="utf-8")
+
+    found = ur.read_finalized_receipt(intent["correlation_id"])
+    assert found is not None
+    assert found["requested_sha"] == intent["target"]
+
+
+def test_terminal_receipt_without_local_ack_still_settles_exact_intent(receipt_home):
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+    )
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    assert ur.read_finalized_receipt(
+        intent["correlation_id"], expected_intent=intent,
+    ) == json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_same_correlation_receipt_with_other_reviewed_source_cannot_settle(receipt_home):
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+    )
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    other = json.loads(json.dumps(intent))
+    other["source"]["originUrl"] = "https://other.example.test/hermes.git"
+    assert ur.read_finalized_receipt(
+        intent["correlation_id"], expected_intent=other,
+    ) is None
+
+
+@pytest.mark.parametrize("outcome", ["success", "partial"])
+def test_pinned_terminal_success_requires_exact_post_swap_proof(receipt_home, outcome):
+    """Pinned terminal success is impossible without target/install proof."""
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+
+    path = ur.finalize_update_receipt(outcome)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["outcome"] == "failed"
+    assert "post-swap-proof-missing" in payload["failure_reasons"]
+
+
+def test_pinned_post_swap_proof_must_match_immutable_intent(receipt_home):
+    """Caller-supplied proof cannot certify a different target or install."""
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha="d" * 40, post_install_id="2" * 32, verified=True
+    )
+
+    path = ur.finalize_update_receipt("success")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["outcome"] == "failed"
+    assert payload["pinned_post_verified"] is False
+    assert "post-swap-proof-mismatch" in payload["failure_reasons"]
+
+
+def test_receipt_home_is_production_persistence_target(receipt_home):
+    """An empty-directory assertion must inspect the writer's actual target."""
+    assert ur._receipt_dir().resolve() == (
+        receipt_home / "logs" / "update_receipts"
+    ).resolve()
+    ur.begin_update_receipt()
+    assert _receipt_files(receipt_home) == []
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    assert path in _receipt_files(receipt_home)
+    assert path.parent == receipt_home / "logs" / "update_receipts"
+    assert ur.read_latest_receipt() == json.loads(path.read_text(encoding="utf-8"))
 
 
 def _plan_with_runtimes(records):
@@ -273,3 +390,84 @@ class TestRefusalIsNotFailure:
         assert payload["steps"][0]["name"] == "windows_preflight"
         assert payload["steps"][0]["ok"] is False
         assert payload["outcome"] == "refused"
+
+
+class TestPinnedIntentTruthfulness:
+    """T4: correlation and exact post-swap evidence gate the receipt."""
+
+    _INTENT = {
+        "target": "a" * 40,
+        "install_id": "0" * 32,
+        "correlation_id": "r" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+
+    def test_dependency_failure_cannot_be_rewritten_as_success(self, receipt_home):
+        ur.begin_update_receipt(intent=self._INTENT)
+        ur.record_failure("dependency-failure: pip")
+        path = ur.finalize_update_receipt("success")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "failed"
+        assert payload["update_intent"] == self._INTENT
+        assert payload["requested_sha"] == self._INTENT["target"]
+        assert payload["prior_sha"] == self._INTENT["prior_sha"]
+        assert payload["correlation_id"] == self._INTENT["correlation_id"]
+
+    def test_post_swap_identity_is_correlated_to_requested_target(self, receipt_home):
+        ur.begin_update_receipt(intent=self._INTENT)
+        ur.record_pinned_post_swap(
+            post_sha=self._INTENT["target"],
+            post_install_id=self._INTENT["install_id"],
+            verified=True,
+        )
+        path = ur.finalize_update_receipt("success")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "success"
+        assert payload["post_sha"] == payload["requested_sha"]
+        assert payload["post_install_id"] == payload["install_id"]
+        assert payload["correlation_id"] == self._INTENT["correlation_id"]
+
+
+
+def test_pinned_intent_is_correlated_and_immutable_through_resume(receipt_home):
+    intent = {
+        "target": "a" * 40,
+        "install_id": "0123456789abcdef0123456789abcdef",
+        "correlation_id": "c" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+    ur.begin_update_receipt(intent=intent)
+    detached = ur.detach_update_receipt()
+    intent["target"] = "d" * 40
+    ur.resume_update_receipt(detached)
+    path = ur.finalize_update_receipt("success")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["update_intent"]["target"] == "a" * 40
+    assert payload["requested_sha"] == "a" * 40
+    assert payload["pre_sha"] == "b" * 40
+    assert payload["correlation_id"] == "c" * 32
+
+
+@pytest.mark.parametrize("reason", ["refusal", "dependency", "restart", "import"])
+def test_recorded_pinned_failure_cannot_be_reported_success(receipt_home, reason):
+    intent = {
+        "target": "a" * 40,
+        "install_id": "0123456789abcdef0123456789abcdef",
+        "correlation_id": "d" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+    ur.begin_update_receipt(intent=intent)
+    if reason == "refusal":
+        ur.record_refusal("target refused")
+    else:
+        ur.record_failure(reason + " failure")
+
+    path = ur.finalize_update_receipt("success")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["outcome"] == ("refused" if reason == "refusal" else "failed")

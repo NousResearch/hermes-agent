@@ -228,6 +228,37 @@ def test_ledger_entries_filters_dead_reused_and_foreign(tmp_path):
     assert [e["pid"] for e in live] == [100]
 
 
+def test_required_ledger_read_fails_without_quarantining(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    ledger.write_text("{ broken", encoding="utf-8")
+    with patch.object(pi, "_ledger_path", return_value=ledger):
+        with pytest.raises(RuntimeError, match="spawn ledger unreadable"):
+            pi.ledger_entries(project_root=tmp_path, require_complete=True)
+        assert ledger.read_text(encoding="utf-8") == "{ broken"
+        assert not ledger.with_suffix(".json.corrupt").exists()
+        assert pi.ledger_entries(project_root=tmp_path) == []
+        assert ledger.with_suffix(".json.corrupt").exists()
+
+
+def test_required_ledger_rejects_unverified_process_identity(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    ledger.write_text(json.dumps([_entry(100, 10.0)]), encoding="utf-8")
+    with patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi, "_pid_alive_matches", return_value=None):
+        with pytest.raises(RuntimeError, match="spawn ledger process identity unverified"):
+            pi.ledger_entries(project_root=Path("/x/install"), require_complete=True)
+
+
+@pytest.mark.parametrize("contents", ["", '[{"pid": 100}, null]'])
+def test_required_ledger_rejects_partial_serialization(tmp_path, contents):
+    ledger = tmp_path / "spawn-ledger.json"
+    ledger.write_text(contents, encoding="utf-8")
+    with patch.object(pi, "_ledger_path", return_value=ledger):
+        with pytest.raises(RuntimeError, match="spawn ledger unreadable"):
+            pi.ledger_entries(project_root=tmp_path, require_complete=True)
+        assert ledger.read_text(encoding="utf-8") == contents
+
+
 def test_spawner_is_dead_tristate():
     fake = _fake_psutil({500: 5.0})
     with patch.dict(sys.modules, {"psutil": fake}):

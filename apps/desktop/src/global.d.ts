@@ -6,6 +6,7 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 
+import type { RolloutSnapshot } from './lib/managed-rollout-contract'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -223,6 +224,7 @@ declare global {
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections: {
+        managedRollouts?: DesktopManagedRolloutsBridge
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput
@@ -1017,6 +1019,33 @@ export interface DesktopRegistryConnection {
   // connections sharing it are one physical backend registered under two
   // addresses (display-only "Same backend as …" hint in Settings).
   installId?: string
+}
+
+export type DesktopManagedRolloutSnapshot = RolloutSnapshot
+
+export interface DesktopManagedRolloutReadResponse {
+  revision: number
+  snapshot: DesktopManagedRolloutSnapshot | null
+}
+
+export interface DesktopManagedRolloutsBridge {
+  capabilities: () => Promise<{
+    protocol: 1
+    available: boolean
+    reason: string | null
+    maxConcurrency: number
+    maxInstallations: number
+  }>
+  inventory: () => Promise<unknown>
+  resolveTarget: (payload: { connectionIds: string[]; inventoryRevision: string; retryOf: string | null }) => Promise<unknown>
+  preflight: (draft: unknown) => Promise<unknown>
+  start: (payload: { token: string; requestId: string }) => Promise<unknown>
+  activeRevision: () => Promise<number | null>
+  read: (sinceRevision: number | null) => Promise<DesktopManagedRolloutReadResponse>
+  get: (id: string) => Promise<unknown | null>
+  command: (payload: Record<string, unknown>) => Promise<unknown>
+  history: (page: { cursor?: string; limit: number }) => Promise<unknown>
+  events: (page: { id: string; cursor?: string; limit: number }) => Promise<unknown>
 }
 
 export interface DesktopConnectionsRegistry {

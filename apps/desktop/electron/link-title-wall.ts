@@ -106,8 +106,8 @@ export function needsRendererFallback(input: { authWall: boolean; title: string;
 
 /**
  * Tier 1 → tier 2, with the sign-in wall never reaching the renderer. Both tiers
- * are injected so the ladder is provable without booting Electron: main.ts owns
- * the I/O, this owns the decision.
+ * are injected so the ladder is provable without booting Electron. The link
+ * metadata runtime owns I/O; this module owns the decision.
  */
 export async function resolveLinkTitle(input: {
   curl: () => Promise<{ authWall: boolean; title: string }>

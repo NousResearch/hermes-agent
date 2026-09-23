@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 import shlex
+import stat
 import sys
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from typing import Any, Callable, Optional
 
@@ -43,6 +44,7 @@ class UpdatePlan:
     expected_version: Optional[str] = None
     profiles: list = field(default_factory=list)
     runtimes: list = field(default_factory=list)  # list[RuntimeRecord]
+    probe_failures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
@@ -60,7 +62,14 @@ class UpdatePlan:
         return plan
 
 
-def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids: set | None = None) -> str:
+class InventoryIncompleteError(RuntimeError):
+    """A required pre-update observation failed; the runtime worklist is incomplete."""
+
+
+def _detect_supervisor_for_pid(
+    pid: int, service_pids: set, windows_service_pids: set | None = None,
+    probe_failures: list[str] | None = None,
+) -> str:
     """Classify how a live gateway PID is supervised."""
     if windows_service_pids and pid in windows_service_pids:
         # SCM-supervised Windows gateway: the update pause machinery stops the SERVICE via sc.exe
@@ -69,7 +78,7 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
         return "windows-service"
     if pid not in service_pids:
         return "manual"
-    with suppress(Exception):
+    with _probe("Gateway supervisor classification", probe_failures):
         from hermes_cli.gateway import is_macos, supports_systemd_services
 
         if supports_systemd_services():
@@ -129,16 +138,18 @@ def _runtime(
 
 
 @contextmanager
-def _probe(label: str):
-    """Run one inventory collector; a failure is logged at debug and yields fewer rows, never an exception."""
+def _probe(label: str, failures: list[str] | None = None):
+    """Keep legacy best-effort probes, while recording incomplete observations."""
     try:
         yield
     except Exception as exc:
+        if failures is not None:
+            failures.append(label)
         logger.debug("%s failed: %s", label, exc)
 
 
 def _collect_install_shape(plan: UpdatePlan) -> None:
-    with _probe("Install-method probe"):
+    with _probe("Install-method probe", plan.probe_failures):
         from hermes_cli.config import detect_install_method, get_managed_system, recommended_update_command_for_method
 
         method = detect_install_method()
@@ -148,7 +159,7 @@ def _collect_install_shape(plan: UpdatePlan) -> None:
         # Baked image provenance is authoritative when present: a bind-mounted checkout inside a
         # container can look like `git` while the running filesystem is an immutable image.
         # Fail-closed: an invalid marker still flips the plan to not-updatable.
-        with _probe("Image provenance probe"):
+        with _probe("Image provenance probe", plan.probe_failures):
             # See #91277.
             from hermes_cli.image_provenance import read_image_provenance
 
@@ -160,37 +171,43 @@ def _collect_install_shape(plan: UpdatePlan) -> None:
         plan.update_mechanism = recommended_update_command_for_method(method)
 
 
-def _supervisor_classifier() -> Callable[[int], str]:
-    """``pid -> supervisor`` over the service-PID sets; each probe degrades to an empty set."""
+def _supervisor_classifier(
+    probe_failures: list[str] | None = None, *, require_complete: bool = False,
+) -> Callable[[int], str]:
+    """``pid -> supervisor`` over service-PID sets; failed probes enter the plan's failure list."""
     service_pids: set = set()
-    with _probe("Service-PID probe"):
+    with _probe("Service-PID probe", probe_failures):
         from hermes_cli.gateway import _get_service_pids
 
-        service_pids = _get_service_pids(all_profiles=True) or set()
+        service_pids = (_get_service_pids(all_profiles=True, require_complete=True)
+                        if require_complete else _get_service_pids(all_profiles=True)) or set()
     # Windows SCM services (no-op off Windows): the update's pause phase stops these via `sc.exe
     # stop` / restarts via `sc.exe start`, so the plan must carry the matching mechanism id.
     # --- SCM-supervised gateway PIDs (Windows) ------------------------------
     # find_windows_gateway_services() maps validated gateway PIDs through process ancestry to running SCM
     # service PIDs (no-op off Windows). See #91277.
     windows_service_pids: set = set()
-    with _probe("Windows SCM service-ownership probe"):
+    with _probe("Windows SCM service-ownership probe", probe_failures):
         from hermes_cli.gateway import find_windows_gateway_services
 
         windows_service_pids = {int(service.gateway_pid) for service in find_windows_gateway_services()}
-    return lambda pid: _detect_supervisor_for_pid(pid, service_pids, windows_service_pids)
+    return lambda pid: _detect_supervisor_for_pid(pid, service_pids, windows_service_pids, probe_failures)
 
 
-def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[int]) -> None:
+def _collect_gateway_runtimes(
+    plan: UpdatePlan, profile_homes: list, seen: set[int], *, require_complete: bool = False,
+) -> None:
     """Per-profile gateways: control-socket identity first (declared by the process itself, including
     supervisor provenance — no argv/PID inference), ``gateway_state.json`` fallback, then PID-file
     mapped gateways no status record covers."""
-    supervisor = _supervisor_classifier()
-    with _probe("Gateway-state inventory"):
+    supervisor = _supervisor_classifier(plan.probe_failures, require_complete=require_complete)
+    with _probe("Gateway-state inventory", plan.probe_failures):
         from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
-            sock = _socket_identity(home)
+            sock = (_socket_identity(home, require_complete=True)
+                    if require_complete else _socket_identity(home))
             if sock is not None:
                 pid, record = sock
                 if pid in seen:
@@ -209,36 +226,40 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 seen.add(pid)
                 sup = supervisor(pid)
             plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
-    with _probe("PID-file gateway inventory"):
+    with _probe("PID-file gateway inventory", plan.probe_failures):
         from hermes_cli.gateway import find_profile_gateway_processes
 
-        for proc in find_profile_gateway_processes():
+        processes = (find_profile_gateway_processes(strict=True) if require_complete
+                     else find_profile_gateway_processes())
+        for proc in processes:
             if proc.pid not in seen:
                 seen.add(proc.pid)
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
 
 
-def _loaded_backend_launchd_jobs() -> list:
+def _loaded_backend_launchd_jobs(probe_failures: list[str] | None = None) -> list:
     """Loaded launchd dashboard/serve jobs for supervisor classification.
 
     The probe itself is darwin-gated (``[]`` on every other host); here any failure also degrades
     to ``[]`` — classification falls back to the spawner probe and never aborts the inventory.
     See #116503."""
-    with suppress(Exception):
+    with _probe("Loaded launchd backend jobs", probe_failures):
         from hermes_cli import main_dashboard as _dash
 
         return _dash._loaded_launchd_backend_jobs()
     return []
 
 
-def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> "tuple[str, str, int | None] | None":
+def _launchd_owner_for_ledger_entry(
+    entry: dict, pid: int, jobs: list, probe_failures: list[str] | None = None,
+) -> "tuple[str, str, int | None] | None":
     """``(domain, label, live_pid)`` of the loaded launchd job owning this ledger row, if any.
 
     A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead, so the
     spawner probe alone misreads the row as ``manual-serve`` — and a respawn-argv restart then
     fights the job's own KeepAlive respawn. The loaded-job match (live PID, an ancestor, or the
     normalized ``ProgramArguments``) is the authoritative classification. See #116503."""
-    with suppress(Exception):
+    with _probe("Launchd backend ownership", probe_failures):
         from hermes_cli import main_dashboard as _dash
         from hermes_cli.dashboard_procs import _process_ancestors
 
@@ -250,18 +271,21 @@ def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> "tuple
     return None
 
 
-def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
+def _collect_ledger_runtimes(
+    plan: UpdatePlan, seen: set[int], *, require_complete: bool = False,
+) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
     detached argv respawn) — the spawner probe cannot see that (#116503)."""
-    with _probe("Serve/dashboard ledger inventory"):
+    with _probe("Serve/dashboard ledger inventory", plan.probe_failures):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
-        launchd_jobs = _loaded_backend_launchd_jobs()
-        for entry in ledger_entries():
+        launchd_jobs = _loaded_backend_launchd_jobs(plan.probe_failures)
+        entries = ledger_entries(require_complete=True) if require_complete else ledger_entries()
+        for entry in entries:
             purpose, pid = entry.get("purpose"), entry.get("pid")
             if purpose not in _SERVE_KINDS or not isinstance(pid, int) or pid in seen:
                 continue
@@ -272,7 +296,7 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
                 "argv": entry.get("argv") or "", "host": entry.get("host") or "",
                 "port": entry.get("port"), "create_time": entry.get("create_time"),
             }
-            job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs) if launchd_jobs else None
+            job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs, plan.probe_failures) if launchd_jobs else None
             if job:
                 supervisor, detail["launchd_domain"], detail["launchd_label"] = "launchd", job[0], job[1]
             else:
@@ -282,34 +306,63 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             ))
 
 
-def collect_runtime_inventory() -> UpdatePlan:
-    """Build the pre-update plan. Read-only; never raises — every collector degrades independently.
+def _required_profile_homes() -> list:
+    """Enumerate profiles without treating unreadable directories as absent."""
+    from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root, _PROFILE_ID_RE
+
+    def is_directory(path):
+        try:
+            return stat.S_ISDIR(path.stat().st_mode)
+        except FileNotFoundError:
+            return False
+
+    homes = []
+    default_home = _get_default_hermes_home()
+    if is_directory(default_home):
+        homes.append(("default", default_home))
+    root = _get_profiles_root()
+    if is_directory(root):
+        homes.extend((entry.name, entry) for entry in sorted(root.iterdir())
+                     if entry.name != "default" and _PROFILE_ID_RE.match(entry.name)
+                     and is_directory(entry))
+    return homes
+
+
+def collect_runtime_inventory(*, require_complete: bool = False) -> UpdatePlan:
+    """Build the pre-update plan. Legacy reads remain best-effort; required reads fail closed.
 
     The result is embeddable in the update receipt and printable via :func:`print_update_plan`.
     """
     plan = UpdatePlan()
     _collect_install_shape(plan)
-    with _probe("Code-identity probe"):
+    with _probe("Code-identity probe", plan.probe_failures):
         from hermes_cli.build_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         plan.expected_sha = identity.get("sha")
         plan.expected_version = identity.get("version")
     profile_homes: list = []
-    with _probe("Profile enumeration"):
-        from hermes_cli.update_receipt import _profile_homes
+    with _probe("Profile enumeration", plan.probe_failures):
+        if require_complete:
+            profile_homes = _required_profile_homes()
+        else:
+            from hermes_cli.update_receipt import _profile_homes
 
-        profile_homes = _profile_homes()
+            profile_homes = _profile_homes()
         plan.profiles = [name for name, _ in profile_homes]
     seen: set[int] = set()
-    _collect_gateway_runtimes(plan, profile_homes, seen)
-    _collect_ledger_runtimes(plan, seen)
+    _collect_gateway_runtimes(plan, profile_homes, seen, require_complete=require_complete)
+    _collect_ledger_runtimes(plan, seen, require_complete=require_complete)
+    if require_complete and plan.probe_failures:
+        raise InventoryIncompleteError(", ".join(plan.probe_failures))
     return plan
 
 
 def print_update_plan(plan: UpdatePlan) -> None:
     """Human-readable plan — what the update will touch and how."""
     print("Update plan:")
+    if plan.probe_failures:
+        print(f"  ⚠ Inventory incomplete: {', '.join(plan.probe_failures)}")
     install = f"  Install: {plan.install_method}"
     if plan.expected_version:
         install += f" (v{plan.expected_version}" + (f" @ {plan.expected_sha[:8]}" if plan.expected_sha else "") + ")"

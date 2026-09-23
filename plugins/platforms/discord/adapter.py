@@ -88,6 +88,13 @@ _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
+# A full app costs at most two paced mutations per command (re-register, or delete + create), so a
+# run's budget is derived from that work instead of being a fixed number: the fixed 600s cap was
+# smaller than one honest sync (2 x 68 commands x 4.5s = 612s of sleeps alone), so every connect
+# was killed mid-run and could not report what it had done.
+_DISCORD_COMMAND_SYNC_BUDGET_SLACK_SECONDS = 60.0
+# Backstop for a wedged HTTP call, NOT a work budget (the run stops itself on the budget above).
+_DISCORD_COMMAND_SYNC_HANG_TIMEOUT_SECONDS = 1800.0
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
 #   (discord name, description, [(arg, type, default-or-_REQUIRED, arg description,
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
@@ -2102,6 +2109,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _command_sync_mutation_interval_seconds(self) -> float:
         return _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS
 
+    def _command_sync_budget_seconds(self) -> float:
+        """Seconds one sync run may spend, derived from the mutations a full app can queue.
+
+        Discord allows at most ``_DISCORD_MAX_APP_COMMANDS`` global commands and each costs at most
+        two paced mutations (a re-registration is one upsert; a delete plus a create is two), so the
+        worst case is ``2 x max + 2`` sleeps. A fixed cap smaller than that (600s vs 612s for a
+        68-command app) guarantees the run is killed mid-flight, which is how a false diff turned
+        into "slash command sync timed out" on every single connect.
+        """
+        mutations = 2 * _DISCORD_MAX_APP_COMMANDS + 2
+        return mutations * self._command_sync_mutation_interval_seconds() + _DISCORD_COMMAND_SYNC_BUDGET_SLACK_SECONDS
+
     async def _sleep_between_command_sync_mutations(self) -> None:
         interval = self._command_sync_mutation_interval_seconds()
         if interval > 0:
@@ -2133,8 +2152,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if has_ratelimit_timeout:
                 http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
             try:
-                # The command-management bucket is small and discord.py may sleep long on a 429: bound it.
-                summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
+                # The command-management bucket is small and discord.py may sleep long on a 429:
+                # bound its 429 sleeps, and use the hang backstop only for a wedged call — the sync
+                # budgets its own work and stops cleanly between mutations, so a cancelled run can
+                # no longer swallow the summary of what it did (issue: timed out on every connect).
+                summary = await asyncio.wait_for(
+                    self._safe_sync_slash_commands(),
+                    timeout=_DISCORD_COMMAND_SYNC_HANG_TIMEOUT_SECONDS,
+                )
             except Exception as e:
                 if not self._is_discord_rate_limit(e):
                     raise
@@ -2151,6 +2176,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             finally:
                 if has_ratelimit_timeout:
                     http.max_ratelimit_timeout = previous_ratelimit_timeout
+            if summary["failed"] or summary["deferred_mutations"]:
+                logger.warning(
+                    "[%s] Slash command sync did not finish: unchanged=%d updated=%d recreated=%d "
+                    "created=%d deleted=%d failed=%d deferred_mutations=%d (budget %.0fs, %d registered "
+                    "command(s)); deferred_mutations counts mutation opportunities the budget could not "
+                    "fit — one per refused call, not a count of commands left — failed mutations are "
+                    "logged above and the rest resumes on the next connect",
+                    self.name, summary["unchanged"], summary["updated"], summary["recreated"],
+                    summary["created"], summary["deleted"], summary["failed"],
+                    summary["deferred_mutations"],
+                    self._command_sync_budget_seconds(), summary["total"],
+                )
+                return
             self._record_command_sync_success(app_id, fingerprint, summary)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
@@ -2159,9 +2197,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "[%s] Slash command sync timed out — Discord rate-limit bucket "
-                "may be saturated; will retry on next reconnect",
-                self.name,
+                "[%s] Slash command sync stalled for %.0fs (budget %.0fs for %d registered "
+                "command(s)); mutations already applied stay applied and the rest resumes on the "
+                "next connect",
+                self.name, _DISCORD_COMMAND_SYNC_HANG_TIMEOUT_SECONDS,
+                self._command_sync_budget_seconds(),
+                len(self._client.tree.get_commands()) if self._client else 0,
             )
         except asyncio.CancelledError:
             raise
@@ -2796,6 +2837,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return None
         return str(value)
 
+    def _app_command_payloads_differ(self, existing_payload: Dict[str, Any], desired_payload: Dict[str, Any]) -> bool:
+        """Whether a stored command differs from the desired one in a field Hermes manages.
+
+        Installation contexts are compared only when BOTH sides declare them: Discord fills in the
+        app's own default for a command created without them (GUILD_INSTALL, or both contexts once
+        the app offers user install), where discord.py always reports ``None``. An unset side means
+        "Discord's default", not a difference Hermes can act on — comparing the raw shapes made
+        every command on the app look modified, so each connect re-registered the whole app.
+        """
+        existing = self._canonicalize_app_command_payload(existing_payload)
+        desired = self._canonicalize_app_command_payload(desired_payload)
+        if existing.get("integration_types") is None or desired.get("integration_types") is None:
+            existing.pop("integration_types", None)
+            desired.pop("integration_types", None)
+        return existing != desired
+
     def _existing_command_to_payload(self, command: Any) -> Dict[str, Any]:
         """Build a canonical-ready dict from an AppCommand; ``to_dict()`` omits nsfw/dm_permission/
         default_member_permissions, so pull them from attributes or every startup diffs."""
@@ -2848,8 +2905,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         }
 
     async def _safe_sync_slash_commands(self) -> Dict[str, int]:
-        """Diff existing global commands and only mutate the commands that changed."""
-        summary = {"total": 0, "unchanged": 0, "updated": 0, "recreated": 0, "created": 0, "deleted": 0}
+        """Diff existing global commands and only mutate the commands that changed.
+
+        The run budgets itself (``_command_sync_budget_seconds``) and stops between mutations once
+        the budget cannot fit another one, so a slow or rate-limited connect reports what it did
+        instead of being cancelled mid-flight with nothing to show. Each mutation is a single
+        idempotent call, so a stopped run has no half-applied state to lose.
+
+        ``deferred_mutations`` in the returned summary counts refused **mutation opportunities** —
+        one per ``mutate`` call the budget could not fit — not the commands still to reconcile: the
+        same command counts again on the next connect. That is the semantics an operator reading the
+        warning line (or a caller reading this summary) may rely on.
+        """
+        summary = {
+            "total": 0, "unchanged": 0, "updated": 0, "recreated": 0, "created": 0,
+            "deleted": 0, "failed": 0, "deferred_mutations": 0,
+        }
         if not self._client:
             return summary
         tree = self._client.tree
@@ -2870,41 +2941,62 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             for command in existing_commands
         }
         http = self._client.http
+        loop = asyncio.get_running_loop()
+        interval = self._command_sync_mutation_interval_seconds()
+        deadline = loop.time() + self._command_sync_budget_seconds()
         mutation_count = 0
 
-        async def mutate(call, *args):
+        async def mutate(call, *args, name: str = "") -> bool:
+            """Apply one paced mutation, returning ``False`` when it was not applied: the budget can
+            no longer fit it, or Discord refused this one command. Neither aborts the run — one bad
+            command must not throw away the mutations already applied. One call is one mutation
+            opportunity: a refusal is counted once in ``deferred_mutations``, never as a count of
+            commands or of HTTP requests the operation would have needed."""
             nonlocal mutation_count
+            if loop.time() + interval >= deadline:
+                summary["deferred_mutations"] += 1
+                return False
             if mutation_count:
                 await self._sleep_between_command_sync_mutations()
-            result = await call(*args)
             mutation_count += 1
-            return result
+            try:
+                await call(*args)
+            except Exception as e:
+                if self._is_discord_rate_limit(e):
+                    raise  # the caller records Discord's retry-after; retrying now deepens the 429
+                summary["failed"] += 1
+                logger.warning("[%s] Slash command sync could not apply /%s: %s", self.name, name, e)
+                return False
+            return True
+
         # Delete obsolete commands FIRST: an upsert pushing the live total over 100 fails with
         # 30032 (breaks ALL slash commands), so an app at the cap must shrink before creating.
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
-            summary["deleted"] += 1
+            if await mutate(http.delete_global_command, app_id, current.id, name=current.name):
+                summary["deleted"] += 1
         for key, desired in desired_by_key.items():
+            name = str(desired.get("name", "") or "")
             current = existing_by_key.pop(key, None)
             if current is None:
-                await mutate(http.upsert_global_command, app_id, desired)
-                summary["created"] += 1
+                if await mutate(http.upsert_global_command, app_id, desired, name=name):
+                    summary["created"] += 1
                 continue
             current_existing_payload = self._existing_command_to_payload(current)
-            current_payload = self._canonicalize_app_command_payload(current_existing_payload)
-            desired_payload = self._canonicalize_app_command_payload(desired)
-            if current_payload == desired_payload:
+            if not self._app_command_payloads_differ(current_existing_payload, desired):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
-                await mutate(http.upsert_global_command, app_id, desired)
-                summary["recreated"] += 1
+                # Fields discord.py's edit route cannot carry: re-register the command. POST
+                # /commands upserts by name, so this one call replaces the live command — the
+                # delete it used to run first left the command missing from the app whenever a
+                # connect was cut between the two calls, and doubled the paced mutations.
+                if await mutate(http.upsert_global_command, app_id, desired, name=name):
+                    summary["recreated"] += 1
                 continue
-            await mutate(http.edit_global_command, app_id, current.id, desired)
-            summary["updated"] += 1
+            if await mutate(http.edit_global_command, app_id, current.id, desired, name=name):
+                summary["updated"] += 1
         summary["total"] = len(desired_payloads)
         return summary
 

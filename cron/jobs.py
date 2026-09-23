@@ -875,6 +875,12 @@ def _instant_before(left: datetime, right: datetime) -> bool:
     return left.astimezone(timezone.utc) < right.astimezone(timezone.utc)
 
 
+def _seconds_after(dt: datetime, seconds: float) -> datetime:
+    """*dt* plus real *seconds*, in *dt*'s zone. Aware ``+ timedelta`` is wall-clock arithmetic
+    that drops ``fold``, so inside a fall-back hour it lands an hour off."""
+    return (dt.astimezone(timezone.utc) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
+
+
 def _parse_aware(value: Any) -> Optional[datetime]:
     """``_ensure_aware(datetime.fromisoformat(value))``, or None when *value* is not a parseable ISO
     string."""
@@ -2088,7 +2094,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     if (
         job["schedule"].get("kind") in {"cron", "interval"}
         and stored_dt is not None
-        and stored_dt <= _hermes_now()
+        and _instant_at_or_before(stored_dt, _hermes_now())
     ):
         next_run_at = stored_next
         logger.info(

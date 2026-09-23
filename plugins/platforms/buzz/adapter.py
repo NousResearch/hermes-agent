@@ -1760,6 +1760,58 @@ class BuzzAdapter(BasePlatformAdapter):
             cleaned_text = "(attachment)" if media_urls else "(Buzz media attachment unavailable)"
         return cleaned_text, media_urls, media_types, message_type
 
+    _THREAD_CONTEXT_MSG_CAP = 20
+    _THREAD_CONTEXT_CHAR_CAP = 4000
+
+    async def _fetch_thread_context(
+        self, chat_id: str, thread_root: str, current_message_id: str,
+    ) -> Optional[str]:
+        """Prior messages of ``thread_root`` rendered for ``MessageEvent.channel_context``.
+
+        A reply in a Buzz thread can open a NEW gateway session (first reply under that root,
+        or the first after a restart). Without this the turn arrives with only the reply's own
+        text — a bare "Please continue." then has no referent and the model must guess which
+        task was meant. Discord and Slack already backfill thread history this way; this is the
+        Buzz equivalent. Best-effort: any failure returns None and the turn proceeds as before.
+        """
+        if not thread_root:
+            return None
+        from gateway.session import neutralize_untrusted_inline_text
+        events = await self._cli_json(
+            ["messages", "thread", "--channel", chat_id, "--event", thread_root,
+             "--limit", str(self._THREAD_CONTEXT_MSG_CAP)],
+            default=None,
+        )
+        if not isinstance(events, list):
+            return None
+        lines: List[str] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_id = str(event.get("id") or "")
+            # The triggering message is delivered as the turn text; don't duplicate it here.
+            if event_id and event_id == str(current_message_id or ""):
+                continue
+            if int(event.get("kind") or 0) != _CHAT_KIND:
+                continue
+            content = event.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            pubkey = str(event.get("pubkey") or "")
+            if pubkey and pubkey == (self._self_pubkey or ""):
+                speaker = "You"
+            else:
+                speaker = await self._profile_display_name(pubkey) if pubkey else ""
+                speaker = speaker or (pubkey[:12] + "…" if pubkey else "unknown")
+            # Display names are relay-supplied: neutralize so a hostile name can't forge a section.
+            lines.append(f"[{neutralize_untrusted_inline_text(speaker)}] {content.strip()}")
+        if not lines:
+            return None
+        body = "\n".join(lines)
+        if len(body) > self._THREAD_CONTEXT_CHAR_CAP:
+            body = "…" + body[-self._THREAD_CONTEXT_CHAR_CAP:]
+        return f"[Buzz thread context — earlier messages in this thread]\n{body}"
+
     async def _dispatch_message(
         self, text: str, chat_id: str, chat_type: str, user_id: str, user_name: str,
         message_id: str, created_at: int, thread_id: Optional[str] = None,
@@ -1789,12 +1841,22 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_id=chat_id, chat_name=self._channel_names.get(chat_id, chat_id), chat_type=chat_type,
             user_id=user_id, user_name=user_name, thread_id=thread_id, message_id=message_id,
         )
+        # Thread replies can open a NEW session (first reply under this root, or first after a
+        # restart); without the thread's prior messages a bare "please continue" has no referent.
+        channel_context = None
+        if thread_id:
+            try:
+                channel_context = await self._fetch_thread_context(
+                    chat_id=chat_id, thread_root=thread_id, current_message_id=message_id)
+            except Exception:
+                logger.debug("Buzz: thread context backfill failed for %s", thread_id[:12], exc_info=True)
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message, message_id=message_id,
             media_urls=list(media_urls), media_types=list(media_types), media_text_inlined=[False] * len(media_urls),
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             reply_to_author_id=reply_to_author_id, reply_to_is_own_message=reply_to_is_own_message,
+            channel_context=channel_context,
         )
         await self.handle_message(event)
         # "Seen" reaction: signals the message was received and is being processed.

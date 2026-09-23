@@ -226,6 +226,30 @@ def _infer_type(value: Any) -> str:
     return next((ui for py, ui in _UI_TYPES if isinstance(value, py)), "string")
 
 
+_JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+
+def _json_safe_config_value(value: Any) -> Any:
+    """Return a config value that can survive a JavaScript JSON round-trip.
+
+    The Desktop config editor receives `/api/config` as JSON and keeps a local
+    JavaScript object draft before autosaving it back. JSON itself permits
+    arbitrary-size integers, but JavaScript `Number` does not: Discord
+    snowflakes and similar IDs are rounded as soon as `JSON.parse()` sees them.
+    Stringify only integers outside JS's safe range so unchanged config values
+    preserve their exact scalar text across GET → PUT.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and abs(value) > _JS_MAX_SAFE_INTEGER:
+        return str(value)
+    if isinstance(value, list):
+        return [_json_safe_config_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_safe_config_value(item) for key, item in value.items()}
+    return value
+
+
 def _build_schema_from_config(config: Dict[str, Any], prefix: str = "") -> Dict[str, Dict[str, Any]]:
     """Walk DEFAULT_CONFIG and produce a flat dot-path → field schema dict."""
     schema: Dict[str, Dict[str, Any]] = {}
@@ -527,7 +551,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
     else:
         config["model_context_length"] = 0
-    return config
+    return _json_safe_config_value(config)
 
 
 # ---------------------------------------------------------------------------

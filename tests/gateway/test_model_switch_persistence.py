@@ -266,6 +266,7 @@ class TestOneTurnNeverPersisted:
         self, tmp_path, monkeypatch
     ):
         runner = self._runner_with_store(tmp_path, monkeypatch)
+        runner._commit_session_runtime_options = AsyncMock()
         sk = build_session_key(_make_source())
 
         result = await runner._handle_model_command(
@@ -279,8 +280,8 @@ class TestOneTurnNeverPersisted:
             "openai_native_compaction": True
         }
         assert sk in runner._pending_one_turn_model_restores
-        # ...but NEVER written through to the persistent session store.
-        runner.async_session_store.set_model_override.assert_not_awaited()
+        # ...but NEVER committed to the persistent session store.
+        runner._commit_session_runtime_options.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_repeated_once_keeps_the_earliest_restore_target(self, tmp_path, monkeypatch):

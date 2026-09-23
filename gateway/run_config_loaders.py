@@ -183,41 +183,49 @@ class GatewayConfigLoadersMixin:
         """
         resolved_session_key = self._resolve_session_key_or_none(source, session_key)
         if resolved_session_key:
+            self._rehydrate_session_runtime_options(resolved_session_key)
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
         return self._load_reasoning_config(model)
 
-    def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
-        """Set or clear the session-scoped reasoning override."""
+    async def _set_session_reasoning_override(
+        self, session_key: str, reasoning_config: Optional[dict], *, source=None,
+    ) -> None:
+        """Durably set or clear the session-scoped reasoning override (store first, then memory;
+        raises with memory untouched when the write fails, ``SessionBusy`` mid-turn)."""
         if not session_key:
             return
-        # Per-session field write: a lazy ``_session_reasoning_overrides = {}`` init replaced the
-        # WHOLE dict, racing concurrent sessions; a SessionState field reset cannot cross sessions.
-        self._session_state(session_key).conversation.reasoning_override = (
-            None if reasoning_config is None else dict(reasoning_config)
+        await self._commit_session_runtime_options(
+            source, {"reasoning_override": None if reasoning_config is None else dict(reasoning_config)},
+            session_key=session_key,
         )
 
     def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
         """Effective service tier: a session-scoped /fast override beats the config default.
 
-        The override stores "priority" or None (explicit normal), so presence — not truthiness — decides.
+        The override stores a tier or None (explicit normal), so presence — not truthiness — decides.
         """
         resolved_session_key = self._resolve_session_key_or_none(source, session_key)
         if resolved_session_key:
+            self._rehydrate_session_runtime_options(resolved_session_key)
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
         return self._load_service_tier()
 
-    def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
-        """Set ("priority" / None = explicit normal) or ``clear`` the session-scoped /fast override."""
+    async def _set_session_service_tier_override(
+        self, session_key: str, service_tier, clear: bool = False, *, source=None,
+    ) -> None:
+        """Durably set (a tier / None = explicit normal) or ``clear`` the session /fast override
+        (store first, then memory; raises with memory untouched when the write fails)."""
         if not session_key:
             return
-        # Presence-sensitive: "priority" or None (explicit normal) both count as an override; the
-        # sentinel means "no override". Per-session field write: a lazy dict replace races sessions.
-        self._session_state(session_key).conversation.service_tier_override = (
-            _SERVICE_TIER_UNSET if clear else service_tier
+        # Presence-sensitive: a tier or None (explicit normal) both count as an override; the
+        # sentinel means "no override" (inherit).
+        await self._commit_session_runtime_options(
+            source, {"service_tier_override": _SERVICE_TIER_UNSET if clear else service_tier},
+            session_key=session_key,
         )
 
     @classmethod

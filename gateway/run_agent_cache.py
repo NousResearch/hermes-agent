@@ -193,15 +193,39 @@ class GatewayAgentCacheMixin:
             session_key, override.get("model"), provider or "",
         )
 
-    def _rehydrate_session_reasoning_override(self, session_entry) -> None:
-        """Copy a durable override from an already-loaded routing entry."""
-        session_key = str(getattr(session_entry, "session_key", "") or "")
-        persisted = getattr(session_entry, "reasoning_override", None)
-        if not session_key or persisted is None:
+    def _rehydrate_session_runtime_options(self, session_key: str, *, include_model: bool = True) -> None:
+        """Restore the durable /model, /reasoning and /fast overrides after a restart. The model
+        goes through ``_rehydrate_session_model_override``; reasoning and tier are read once per
+        process and fill a field only while it is still at its default (live wins). The flag is
+        set only after a good read, so a failed read is retried on the next call.
+        ``include_model=False`` skips the model, whose credential re-resolution stays where the
+        turn resolves its runtime."""
+        from gateway.session_state import SERVICE_TIER_UNSET
+        if not session_key:
             return
+        if include_model:
+            self._rehydrate_session_model_override(session_key)
+        store = getattr(self, "session_store", None)
         state = self._session_state(session_key)
-        if state.conversation.reasoning_override is None:
-            state.conversation.reasoning_override = dict(persisted)
+        if store is None or state.persistent.runtime_options_rehydrated:
+            return
+        try:
+            persisted = store.get_runtime_options(session_key)
+        except Exception:
+            logger.debug("Failed to read persisted session runtime options", exc_info=True)
+            return
+        state.persistent.runtime_options_rehydrated = True
+        if not isinstance(persisted, dict):
+            return
+        conversation = state.conversation
+        reasoning = persisted.get("reasoning_override")
+        if isinstance(reasoning, dict) and conversation.reasoning_override is None:
+            conversation.reasoning_override = dict(reasoning)
+        tier = persisted.get("service_tier_override")
+        if tier in ("normal", "priority", "auto", "cold") and (
+            conversation.service_tier_override is SERVICE_TIER_UNSET
+        ):
+            conversation.service_tier_override = None if tier == "normal" else tier
 
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
         """Apply /model session overrides (precedence over config.yaml defaults; ``None`` fields skipped
@@ -377,6 +401,7 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.clear()
+            state.persistent.conversation_epoch += 1
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
         # views (not dict), so the isinstance(dict) guard skips them — already handled above.

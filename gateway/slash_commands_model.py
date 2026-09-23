@@ -71,6 +71,10 @@ class _ModelSwitchContext:
     persist_global: bool
     one_turn: bool = False
     reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
+    # Parsed `--reasoning` level the record step may commit together with a session-scoped model
+    # (one store write); ``reasoning_committed`` says it did.
+    session_reasoning: Optional[dict] = None
+    reasoning_committed: bool = False
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
     current_provider: str = "openrouter"
@@ -196,31 +200,62 @@ class GatewayModelCommandsMixin:
     async def _record_model_switch(
         self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
     ) -> Optional[str]:
-        """Persist a committed switch: session DB, next-turn note, config write-through, override map.
+        """Persist a committed switch: override (durable first), next-turn note, session DB, config.
 
         Returns the warning for a ``--global`` switch whose ``config.yaml`` write or stale-override
         cleanup failed (the switch then stays a session override), else ``None``.
-        """
-        from hermes_cli.model_switch import format_model_for_display
 
-        # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
-        _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None:  # so the dashboard shows the updated model
+        A session-scoped switch (and the ``--global`` fallback) commits the override to the store
+        FIRST; only then are the one-turn restore popped (typed and picker alike), the note queued
+        and the dashboard updated. A failed commit evicts the cached agent (it may already have
+        switched in place) and re-raises with no note queued and the restore intact.
+        """
+        new_override = {
+            "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
+            "base_url": result.base_url, "api_mode": result.api_mode,
+            "request_overrides": dict(result.request_overrides or {}),
+            "capabilities": dict(result.runtime_capabilities or {}),
+        }
+        global_error: Optional[str] = None
+        if not one_turn and ctx.persist_global:
             try:
-                _sess_entry = await self.async_session_store.get_or_create_session(source)
-                # Typed path: consume the auto-reset flag so the next message's cleanup does not
-                # wipe the override stored below.
-                if not picker and getattr(_sess_entry, "was_auto_reset", False):
-                    # See #48031.
-                    _sess_entry.was_auto_reset = False
-                await _sess_db.update_session_model(
-                    _sess_entry.session_id, result.new_model, provider=result.target_provider,
-                    base_url=result.base_url, api_mode=result.api_mode,
-                )
-            except Exception as exc:
-                logger.debug("Failed to persist model switch to DB: %s", exc)
-        # Prepended to the next user message (no system messages mid-history). Display form strips
-        # opaque Palantir RID prefixes; the override map keeps the full ID for the wire.
+                await _persist_model_switch_to_config(result, ctx.config_path)
+            except Exception as e:
+                logger.warning("Failed to persist model switch: %s", e)
+                global_error = f"config.yaml not updated ({str(e) or type(e).__name__})"
+        # A --once switch and a clean --global switch keep upstream's path: neither leaves a
+        # session override on disk (the one-turn restore reverts memory; config.yaml is the one
+        # durable authority for --global, #100314).
+        global_clean = (
+            ctx.persist_global and global_error is None and self._channel_override_for(source) is None
+        )
+        if one_turn or global_clean:
+            return await self._record_model_switch_memory_first(
+                result, ctx, new_override, source=source, one_turn=one_turn, picker=picker,
+                global_clean=global_clean,
+            )
+        # Session scope, or the --global fallback (config write failed / a channel_overrides model
+        # would otherwise win): the session override is the durable authority. Durable first.
+        patch: dict = {"model_override": new_override}
+        session_reasoning = getattr(ctx, "session_reasoning", None)
+        if session_reasoning is not None and not (ctx.persist_global and global_error is None):
+            # `/model X --reasoning L` at session scope: one store write for both.
+            patch["reasoning_override"] = dict(session_reasoning)
+        try:
+            await self._commit_session_runtime_options(source, patch, session_key=ctx.session_key)
+        except BaseException:
+            self._evict_cached_agent(ctx.session_key)
+            raise
+        ctx.reasoning_committed = "reasoning_override" in patch
+        self._queue_model_switch_note(result, ctx, one_turn=False)
+        await self._mirror_model_switch_to_session_db(result, source, consume_auto_reset=False)
+        self._evict_cached_agent(ctx.session_key)  # next turn builds fresh from the override
+        return global_error
+
+    def _queue_model_switch_note(self, result, ctx: _ModelSwitchContext, *, one_turn: bool) -> None:
+        """Prepend a one-shot note to the next user message (no system messages mid-history).
+        Display form strips opaque Palantir RID prefixes; the override keeps the full ID."""
+        from hermes_cli.model_switch import format_model_for_display
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
         self._pending_model_notes[ctx.session_key] = (
@@ -230,32 +265,47 @@ class GatewayModelCommandsMixin:
             f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
         )
-        self._session_model_overrides[ctx.session_key] = {
-            "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
-            "base_url": result.base_url, "api_mode": result.api_mode,
-            "request_overrides": dict(result.request_overrides or {}),
-            "capabilities": dict(result.runtime_capabilities or {}),
-        }
+
+    async def _mirror_model_switch_to_session_db(self, result, source, *, consume_auto_reset: bool) -> None:
+        """Best-effort: record the new model on the session row so the dashboard shows it (#34850)."""
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is None:
+            return
+        try:
+            _sess_entry = await self.async_session_store.get_or_create_session(source)
+            # Typed path: consume the auto-reset flag so the next message's cleanup does not
+            # wipe the override stored below.
+            if consume_auto_reset and getattr(_sess_entry, "was_auto_reset", False):
+                # See #48031.
+                _sess_entry.was_auto_reset = False
+            await _sess_db.update_session_model(
+                _sess_entry.session_id, result.new_model, provider=result.target_provider,
+                base_url=result.base_url, api_mode=result.api_mode,
+            )
+        except Exception as exc:
+            logger.debug("Failed to persist model switch to DB: %s", exc)
+
+    async def _record_model_switch_memory_first(
+        self, result, ctx: _ModelSwitchContext, new_override: dict, *, source, one_turn: bool,
+        picker: bool, global_clean: bool,
+    ) -> Optional[str]:
+        """Upstream's path for ``--once`` and a clean ``--global``: no session override persists."""
+        await self._mirror_model_switch_to_session_db(result, source, consume_auto_reset=not picker)
+        self._queue_model_switch_note(result, ctx, one_turn=one_turn)
+        self._session_model_overrides[ctx.session_key] = new_override
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
-        # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
-        # the session override (memory + store) — a redundant copy would shadow every later global
-        # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
-        # 272K model). On failure keep the override so the switch truthfully survives as session-only.
         global_error: Optional[str] = None
-        if ctx.persist_global:
-            try:
-                await _persist_model_switch_to_config(result, ctx.config_path)
-            except Exception as e:
-                logger.warning("Failed to persist model switch: %s", e)
-                global_error = f"config.yaml not updated ({str(e) or type(e).__name__})"
-        # Precedence is session > channel_overrides > config.yaml: in a chat with a channel_overrides
-        # model/provider the session override must stay, or the next turn runs the channel model.
-        if ctx.persist_global and global_error is None and self._channel_override_for(source) is None:
+        # A --global switch has ONE durable authority: config.yaml (already written). Drop the
+        # session override (memory + store) — a redundant copy would shadow every later global
+        # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
+        # 272K model). Precedence is session > channel_overrides > config.yaml, so a chat with a
+        # channel_overrides model/provider never takes this branch (the override must stay).
+        if global_clean:
             try:
                 await self.async_session_store.set_model_override(ctx.session_key, None)
             except Exception as e:
@@ -264,22 +314,11 @@ class GatewayModelCommandsMixin:
                 global_error = f"saved to config.yaml, but the stale session override was not cleared ({e})"
             else:
                 self._session_model_overrides.pop(ctx.session_key, None)
-        # Non-secret write-through so the override survives a restart (api_key/api_mode are
-        # re-resolved on rehydration); a --once override must NOT outlive a restart.
-        # Write-through the non-secret parts (model/provider/base_url) to the session store so the override
-        # survives a gateway restart. api_key/api_mode are never persisted — they are re-resolved via
-        # runtime provider resolution on rehydration. /model --once is intentionally EXCLUDED from the
-        # write-through: a one-turn override must never survive a restart. The persisted value stays at the
-        # pre-once state (the prior session override, or nothing), which is exactly what the finally-restore
-        # reverts the in-memory dict to. (#29923 review defect: the original implementation wrote through,
-        # so a crash before the restore rehydrated the once-model permanently.)
-        elif not one_turn:
-            try:
-                await self.async_session_store.set_model_override(
-                    ctx.session_key, self._session_model_overrides[ctx.session_key]
-                )
-            except Exception:
-                logger.debug("Failed to persist session model override", exc_info=True)
+        # /model --once is EXCLUDED from any write-through: a one-turn override must never survive a
+        # restart. The persisted value stays at the pre-once state (the prior session override, or
+        # nothing), which is exactly what the finally-restore reverts the in-memory dict to. (#29923
+        # review defect: the original implementation wrote through, so a crash before the restore
+        # rehydrated the once-model permanently.)
         self._evict_cached_agent(ctx.session_key)  # next turn builds fresh from the override
         return global_error
 
@@ -374,21 +413,37 @@ class GatewayModelCommandsMixin:
         return lock
 
     async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
+        from gateway.run_session_options import SessionBusy, session_busy_reply
+
         one_turn = False if picker else ctx.one_turn
+        if self._is_session_running(ctx.session_key):
+            # A picker or confirm tap has no busy gate of its own; typed /model is rejected mid-run
+            # by the busy dispatcher before it gets here.
+            return session_busy_reply("model")
+        if ctx.reasoning_effort and not one_turn:
+            from hermes_constants import parse_reasoning_effort
+            ctx.session_reasoning = parse_reasoning_effort(ctx.reasoning_effort)
         error = self._switch_cached_agent_model(result, ctx, picker)
         if error is not None:
             return error
-        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        try:
+            global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        except SessionBusy:
+            return session_busy_reply("model")
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
-        if ctx.reasoning_effort and not one_turn:
+        if ctx.reasoning_committed:
+            # Committed with the model in one store write; the runner-wide copy follows it.
+            self._reasoning_config = ctx.session_reasoning
+            reply += "\n" + t("gateway.reasoning.set_session", effort=ctx.reasoning_effort.strip().lower())
+        elif ctx.reasoning_effort and not one_turn:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
             reply += "\n" + await self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
-                persist_global=ctx.persist_global and global_error is None)
+                persist_global=ctx.persist_global and global_error is None, source=source)
         return reply
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
@@ -521,6 +576,9 @@ class GatewayModelCommandsMixin:
         # Check for session override. See #30479.
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
+        # After a restart the durable overrides are read back before the current route, the
+        # --once snapshot and the picker's "current" marker are taken from them.
+        self._rehydrate_session_runtime_options(session_key)
         ctx = _ModelSwitchContext(
             # Gateway routing columns — forward ALL of them at CREATE time, same fix as the
             # compression-rotation bug in agent/conversation_compression.py. Without these, the branched
@@ -639,32 +697,22 @@ class GatewayModelCommandsMixin:
             logger.error("Failed to save config key %s: %s", key_path, e)
             return False
 
-    def _set_reasoning_override(self, session_key: str, value) -> None:
-        """Store (or clear with None) the session reasoning override and drop the cached agent."""
-        self._set_session_reasoning_override(session_key, value)
+    async def _set_reasoning_override(self, session_key: str, value, *, source=None) -> None:
+        """Durably store (or clear with None) the session reasoning override, then drop the cached
+        agent. Raises with nothing changed when the write fails."""
+        await self._set_session_reasoning_override(session_key, value, source=source)
         self._evict_cached_agent(session_key)
-
-    async def _persist_session_reasoning_override(
-        self, session_key: str, reasoning_config: Optional[dict]
-    ) -> None:
-        """Write through via AsyncSessionStore when the runner owns a store."""
-        if getattr(self, "session_store", None) is None:
-            return
-        try:
-            await self.async_session_store.set_runtime_options(
-                session_key, reasoning_override=reasoning_config
-            )
-        except Exception:
-            logger.debug(
-                "Failed to persist session reasoning override",
-                exc_info=True,
-            )
 
     async def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
+        *, source=None,
     ) -> str:
-        """Apply a /reasoning argument (typed or picked) and return the reply."""
-        from hermes_constants import parse_reasoning_effort
+        """Apply a /reasoning argument (typed or picked) and return the reply.
+
+        Session writes are durable-first: a failed save raises (the adapter reports the error)
+        with the live override and the runner-wide config untouched. A tap that lands while a
+        turn runs gets the busy reply, same as the typed command."""
+        from gateway.run_session_options import SessionBusy, session_busy_reply
 
         value = (value or "").strip().lower()
         show = _REASONING_DISPLAY_TOGGLES.get(value)
@@ -673,29 +721,39 @@ class GatewayModelCommandsMixin:
             self._save_gateway_config_key(f"display.platforms.{platform_key}.show_reasoning", show)
             key = "gateway.reasoning.display_set_on" if show else "gateway.reasoning.display_set_off"
             return t(key, platform=platform_key)
+        if self._is_session_running(session_key):
+            return session_busy_reply("reasoning")
+        try:
+            return await self._apply_reasoning_value(session_key, value, persist_global, source)
+        except SessionBusy:
+            return session_busy_reply("reasoning")
+
+    async def _apply_reasoning_value(
+        self, session_key: str, value: str, persist_global: bool, source,
+    ) -> str:
+        """The mutating half of ``_apply_reasoning_selection`` (reset / level / --global)."""
+        from hermes_constants import parse_reasoning_effort
+
         if value == "reset":
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
-            self._set_session_reasoning_override(session_key, None)
-            await self._persist_session_reasoning_override(session_key, None)
+            await self._set_reasoning_override(session_key, None, source=source)
             self._reasoning_config = self._load_reasoning_config()
-            self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
 
         parsed = parse_reasoning_effort(value)
         if parsed is None:
             return t("gateway.reasoning.unknown_arg", arg=value)
-        self._reasoning_config = parsed
         if persist_global:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
-                self._set_reasoning_override(session_key, None)
-                await self._persist_session_reasoning_override(session_key, None)
+                await self._set_reasoning_override(session_key, None, source=source)
+                self._reasoning_config = parsed
                 return t("gateway.reasoning.set_global", effort=value)
-            self._set_reasoning_override(session_key, parsed)
-            await self._persist_session_reasoning_override(session_key, parsed)
+            await self._set_reasoning_override(session_key, parsed, source=source)
+            self._reasoning_config = parsed
             return t("gateway.reasoning.set_global_save_failed", effort=value)
-        self._set_reasoning_override(session_key, parsed)
-        await self._persist_session_reasoning_override(session_key, parsed)
+        await self._set_reasoning_override(session_key, parsed, source=source)
+        self._reasoning_config = parsed
         return t("gateway.reasoning.set_session", effort=value)
 
     async def _try_send_choice_picker(
@@ -737,7 +795,8 @@ class GatewayModelCommandsMixin:
         )
         platform_key = _platform_config_key(event.source.platform)
         if raw_args:  # typed path — same applier the picker uses
-            return await self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+            return await self._apply_reasoning_selection(
+                session_key, platform_key, args, persist_global=persist_global, source=_reasoning_source)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
@@ -763,7 +822,8 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return await self._apply_reasoning_selection(session_key, platform_key, value)
+            return await self._apply_reasoning_selection(
+                session_key, platform_key, value, source=_reasoning_source)
 
         picker_sent = await self._try_send_choice_picker(
             event,
@@ -782,20 +842,33 @@ class GatewayModelCommandsMixin:
             return None  # Picker sent — adapter handles the response
         return t("gateway.reasoning.status", level=level, scope=scope, display=display_state)
 
-    def _apply_fast_selection(self, session_key: str, value: str, persist: bool = False) -> str:
-        """Apply a /fast argument (typed or picked) and return the reply."""
+    async def _apply_fast_selection(
+        self, session_key: str, value: str, persist: bool = False, *, source=None,
+    ) -> str:
+        """Apply a /fast argument (typed or picked) and return the reply.
+
+        Durable-first like /reasoning: a failed save raises with the live tier and the runner-wide
+        tier untouched; a tap while a turn runs gets the busy reply."""
+        from gateway.run_session_options import SessionBusy, session_busy_reply
+
         selection = _FAST_SELECTIONS.get(value)
         if selection is None:
             return t("gateway.fast.unknown_arg", arg=value)
         tier, saved_value, label_key = selection
         label = t(label_key) if label_key else value.upper()
+        if self._is_session_running(session_key):
+            return session_busy_reply("fast")
+        try:
+            if persist and self._save_gateway_config_key("agent.service_tier", saved_value):
+                await self._set_session_service_tier_override(session_key, None, clear=True, source=source)  # global wins
+                self._service_tier = tier
+                self._evict_cached_agent(session_key)
+                return t("gateway.fast.saved", label=label)
+            # Session override — also the fallback after a failed config write (as /reasoning --global).
+            await self._set_session_service_tier_override(session_key, tier, source=source)
+        except SessionBusy:
+            return session_busy_reply("fast")
         self._service_tier = tier
-        if persist and self._save_gateway_config_key("agent.service_tier", saved_value):
-            self._set_session_service_tier_override(session_key, None, clear=True)  # global wins
-            self._evict_cached_agent(session_key)
-            return t("gateway.fast.saved", label=label)
-        # Session override — also the fallback after a failed config write (as /reasoning --global).
-        self._set_session_service_tier_override(session_key, tier)
         self._evict_cached_agent(session_key)
         return t("gateway.fast.session_only", label=label)
 
@@ -812,12 +885,12 @@ class GatewayModelCommandsMixin:
         if not model_supports_fast_mode(_resolve_gateway_model(_load_gateway_config())):
             return t("gateway.fast.not_supported")
         if args and args != "status":
-            return self._apply_fast_selection(session_key, args, persist=persist_global)
+            return await self._apply_fast_selection(session_key, args, persist=persist_global, source=event.source)
         mode = "fast" if self._service_tier == "priority" else (self._service_tier or "normal")
         status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
 
         async def _on_fast_choice(_chat_id: str, value: str) -> str:
-            return self._apply_fast_selection(session_key, value, persist=persist_global)
+            return await self._apply_fast_selection(session_key, value, persist=persist_global, source=event.source)
 
         picker_sent = await self._try_send_choice_picker(
             event,

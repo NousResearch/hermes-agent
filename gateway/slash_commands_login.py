@@ -187,22 +187,26 @@ class GatewayLoginCommandsMixin:
         ]
         failed = 0
         for key in keys:
-            overrides = self._session_model_overrides
-            override = overrides.get(key) or {}
-            if str(override.get("model") or "") == anon_auth.GUEST_MODEL:
-                for attempt in range(2):
-                    try:
-                        await self.async_session_store.set_model_override(key, None)
-                        break
-                    except Exception:
-                        if attempt == 1:
-                            logger.warning(
-                                "/login: failed to clear free-tier override for %s", key, exc_info=True)
-                else:
-                    # Retain the live route while disk still pins it, including on a rebuild.
-                    failed += 1
-                    continue
-                overrides.pop(key, None)
+            # Read, clear and pop under the session admission lock: a runtime-options commit
+            # interleaving with the awaited clear could otherwise leave disk on its model while
+            # memory is popped to None.
+            async with self._session_admission(key):
+                overrides = self._session_model_overrides
+                override = overrides.get(key) or {}
+                if str(override.get("model") or "") == anon_auth.GUEST_MODEL:
+                    for attempt in range(2):
+                        try:
+                            await self.async_session_store.set_model_override(key, None)
+                            break
+                        except Exception:
+                            if attempt == 1:
+                                logger.warning(
+                                    "/login: failed to clear free-tier override for %s", key, exc_info=True)
+                    else:
+                        # Retain the live route while disk still pins it, including on a rebuild.
+                        failed += 1
+                        continue
+                    overrides.pop(key, None)
             try:
                 self._evict_cached_agent(key)
             except Exception:

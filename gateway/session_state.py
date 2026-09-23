@@ -83,6 +83,11 @@ class PersistentState:
     # not). gateway.run mirrors this value to the DB keyed by session_key so the same semantics also survive
     # gateway restarts.
     hygiene_failure_streak: int = 0
+    # Durable reasoning/tier were read back from the store once (after a good read only).
+    runtime_options_rehydrated: bool = False
+    # Bumped by every conversation boundary (_clear_conversation_scope); a runtime-options write
+    # that lands after a bump belongs to the old conversation and is not assigned live.
+    conversation_epoch: int = 0
 
 
 @dataclass

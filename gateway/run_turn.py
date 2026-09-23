@@ -443,13 +443,12 @@ class GatewayTurnMixin:
                 source, touch_activity=not bool(getattr(event, "internal", False)),
             )
         session_key = session_entry.session_key
-        self._rehydrate_session_reasoning_override(session_entry)
+        self._rehydrate_session_runtime_options(session_key, include_model=False)
         if not strict_session and pinned_session_id:
             resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id)
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
-            self._rehydrate_session_reasoning_override(session_entry)
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)

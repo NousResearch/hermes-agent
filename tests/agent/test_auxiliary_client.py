@@ -265,6 +265,52 @@ class TestResolveTaskProviderModel:
 
 
 
+    @pytest.mark.parametrize("field", ["provider", "model", "base_url", "api_key", "api_mode"])
+    @pytest.mark.parametrize("null_value", [None, "", "   ", "null", "None", "NULL"])
+    def test_null_config_values_are_not_stringified(self, field, null_value):
+        """YAML null (None) and null-ish strings must resolve to None, never
+        the literal "None" string (#100835).
+
+        Previous implementation: str(task_config.get(field, "")).strip() or None
+        stringified the YAML ``null`` token into "None" and forwarded it to the
+        provider as a literal model/base_url value.
+        """
+        task_config = {"provider": "auto", field: null_value}
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="compression",
+            )
+
+        # The whole-point invariant: the null-ish field must NOT appear in the
+        # resolution as the literal string "None"/"null" — it either resolves
+        # to None (unset) or, for provider, falls through to auto-resolution.
+        field_outputs = {
+            "provider": resolved_provider,
+            "model": model,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_mode": api_mode,
+        }
+        for name, value in field_outputs.items():
+            if name == field:
+                assert value != "None" and value != "null", (
+                    f"{field}={null_value!r} resolved to {value!r} "
+                    f"(null must not stringify)"
+                )
+            # And specifically: the null-ish field must itself be None or 'auto'
+            if name == field and field != "provider":
+                assert value is None, (
+                    f"{field}={null_value!r} resolved to {value!r} "
+                    f"(expected None — null must not be forwarded)"
+                )
+        # Provider, when null-ish, is normalized away and falls through to the
+        # auto-resolution path — the only legal outcome in this configuration
+        # is the literal "auto" sentinel (neither a user deny nor a hardline
+        # fires for a null provider).
+        if field == "provider":
+            assert resolved_provider == "auto"
+
+
 class TestMoaAggregatorSharedResolution:
     """The shared MoA→aggregator helper and the layers that consume it.
 

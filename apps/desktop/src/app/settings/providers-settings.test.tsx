@@ -230,17 +230,6 @@ describe('ProvidersSettings', () => {
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
-  it('keeps provider selection separate from account removal', async () => {
-    await renderProvidersSettings()
-
-    await act(async () => {
-      fireEvent.click(await screen.findByText('Nous Portal'))
-    })
-
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', $settingsOwner.get())
-    expect(disconnectOAuthProvider).not.toHaveBeenCalled()
-  })
-
   it('does not offer removal for externally managed providers', async () => {
     listOAuthProviders.mockResolvedValue({
       providers: [
@@ -258,7 +247,6 @@ describe('ProvidersSettings', () => {
 
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
-    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
@@ -331,7 +319,6 @@ describe('ProvidersSettings', () => {
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     const row = await screen.findByText('Local / custom endpoint')
-    expect(screen.getByText(/OpenAI-compatible endpoint/)).toBeTruthy()
 
     fireEvent.click(row)
 

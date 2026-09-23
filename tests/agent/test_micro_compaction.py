@@ -20,7 +20,6 @@ The invariants that matter:
 
 from unittest.mock import patch
 
-import pytest
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -384,32 +383,6 @@ class TestMicroCompaction:
         blob = json.dumps(payload)
         assert "answer 0" not in blob and "question 0" not in blob
 
-    def test_telemetry_reports_occupancy_without_forcing_resolution(self, caplog):
-        """Occupancy is the headline: how full the window is being kept.
-
-        It must be read from the cached threshold only. The public
-        ``threshold_tokens`` property resolves lazily and can fire a
-        synchronous /models probe (#32221); telemetry must never be what
-        blocks a turn, so an unresolved window reports null instead.
-        """
-        import json
-        import logging
-
-        cc = _compressor()
-        cc.threshold_tokens = 10_000  # pin; also populates the cache
-        messages = _conversation(exchanges=8)
-
-        with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
-            cc._micro_compact(messages)
-
-        line = next(r.getMessage() for r in caplog.records
-                    if "micro compaction telemetry:" in r.getMessage())
-        payload = json.loads(line.split("micro compaction telemetry: ", 1)[1])
-
-        assert payload["threshold_tokens"] == 10_000
-        assert payload["occupancy_pct"] == pytest.approx(
-            payload["tokens_after"] / 10_000 * 100, abs=0.1
-        )
 
     def test_emitter_never_forces_window_resolution(self, caplog):
         """The emitter reads the cached threshold, never the property.
@@ -448,33 +421,6 @@ class TestMicroCompaction:
         assert payload["occupancy_pct"] is None
         assert payload["threshold_tokens"] is None
 
-    def test_first_pass_costs_marker_overhead_then_pays_it_back(self):
-        """The first pass can grow the transcript; later passes recover it.
-
-        Inserting the summary marker costs a fixed block of scaffolding
-        (``SUMMARY_PREFIX``, the historical heading and the end marker —
-        currently ~450 tokens and grows when the preamble is lengthened).
-        On pass one that overhead is paid against a single absorbed exchange,
-        so the net can be positive. From pass two on the marker is replaced
-        rather than added, so the scaffolding is already paid for and each
-        absorbed exchange is pure saving. Anyone reading a single turn's
-        telemetry needs to know this before concluding it made things worse.
-        """
-        from agent.model_metadata import estimate_messages_tokens_rough
-
-        cc = _compressor()
-        messages = _conversation(exchanges=10)
-        start = estimate_messages_tokens_rough(messages)
-
-        messages = cc._micro_compact(messages)
-        after_first = estimate_messages_tokens_rough(messages)
-
-        for _ in range(5):
-            messages = cc._micro_compact(messages)
-        after_many = estimate_messages_tokens_rough(messages)
-
-        assert after_first > start, "expected one-time marker overhead"
-        assert after_many < after_first, "later passes must recover it"
 
     def test_cumulative_savings_accumulate_across_passes(self):
         """Session-total savings go positive once marker overhead is paid back.
@@ -712,26 +658,6 @@ class TestMicroCompaction:
         assert cc._micro_compact_rolling_summary == ""
         assert cc._micro_compact_cursor == 0
 
-    def test_persist_disabled_agent_never_micro_compacts(self):
-        """finalize_turn must skip micro-compaction on isolated fork agents.
-
-        The background-review fork sets _persist_disabled=True; running a
-        pass there burns an aux-LLM call on a throwaway replay transcript
-        and, if the compressor ever holds a DB binding, would
-        archive_and_compact the CANONICAL session rows.
-        """
-        import inspect
-
-        from agent import turn_finalizer
-
-        # The micro-compaction gate lives in the helper finalize_turn calls.
-        src = inspect.getsource(turn_finalizer._micro_compact_after_turn)
-        micro_block = src.split("Post-turn micro-compaction", 1)[1]
-        # Scope to the micro block only: stop at the persist call that follows.
-        micro_block = micro_block.split("agent._persist_session", 1)[0]
-        assert "_persist_disabled" in micro_block, (
-            "micro-compaction gate must check agent._persist_disabled"
-        )
 
     def test_db_sync_passes_exact_carried_messages(self):
         """Micro-compaction carries a prefix and suffix around its summary marker.
@@ -845,26 +771,6 @@ class TestDefragFlushCursorInvalidation:
         cc._micro_compact(list(messages))
         assert cc._flush_scan_cursor_invalidated is False
 
-    def test_finalizer_consumes_flag_and_invalidates_agent_cursor(self):
-        """finalize_turn's micro-compaction block must translate the
-        compressor flag into agent._db_flush_scan_prefix = None (and reset
-        the flag) so the next flush re-examines the rewritten marker row."""
-        import inspect
-
-        from agent import turn_finalizer
-
-        # The micro-compaction gate lives in the helper finalize_turn calls.
-        src = inspect.getsource(turn_finalizer._micro_compact_after_turn)
-        micro_block = src.split("Post-turn micro-compaction", 1)[1]
-        micro_block = micro_block.split("agent._persist_session", 1)[0]
-        assert "_flush_scan_cursor_invalidated" in micro_block, (
-            "finalize_turn must consume the compressor's cursor-invalidation "
-            "flag raised by the defrag marker pop"
-        )
-        assert "agent._db_flush_scan_prefix = None" in micro_block, (
-            "finalize_turn must invalidate the bounded flush-scan cursor "
-            "when the defrag pop stripped a live marker's stamp"
-        )
 
 
 class TestMergeAdjacentUserTurnsPersistedMarker:

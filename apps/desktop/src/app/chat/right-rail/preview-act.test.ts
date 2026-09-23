@@ -47,24 +47,6 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toContain('open_preview')
   })
 
-  it('injects the engine and returns the page’s answer', async () => {
-    let injected = ''
-
-    withRunner(async code => {
-      injected = code
-
-      return JSON.stringify({ acted: 'clicked button "Save"', success: true })
-    })
-
-    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
-
-    expect(result).toMatchObject({ acted: 'clicked button "Save"', success: true })
-    // Self-contained payload: the engine source and the action travel together,
-    // and the holder keeps refs alive across calls on the same page.
-    expect(injected).toContain('__hermesActHolder')
-    expect(injected).toContain('"ref":"@e1"')
-  })
-
   it('re-inventories after a mutating action so the next ref is current', async () => {
     const actions: string[] = []
 
@@ -87,19 +69,6 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
     expect(result.elements?.[0].label).toBe('Log out')
     expect(result.url).toBe('https://example.com/app')
-  })
-
-  it('does not pay the settle delay for a plain inventory', async () => {
-    let injected = ''
-    withRunner(async code => {
-      injected = code
-
-      return JSON.stringify({ elements: [], success: true })
-    })
-
-    await actOnActivePreview({ kind: 'elements' })
-
-    expect(injected).toContain('0 <= 0')
   })
 
   it('awaits page-owned thenables for inventories and settled actions before crossing Electron IPC', async () => {

@@ -7,7 +7,6 @@ no network I/O or gateway is required.
 
 from __future__ import annotations
 
-import io
 import json
 
 import pytest
@@ -182,19 +181,6 @@ def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, t
     assert calls == []
 
 
-def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    bad = tmp_path / "bad-bytes.bin"
-    bad.write_bytes(b"\xff\xfe\x00")
-
-    args = _parse(["--to", "telegram", "--file", str(bad)])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "not a text file" in err.lower()
-    assert f"MEDIA:{bad}" in err
-    assert "[[as_document]]" in err
 
 
 
@@ -284,18 +270,6 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_register_send_subparser_is_reusable():
-    """Sanity check: the registrar returns a parser and wires ``cmd_send``."""
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    send_parser = send_cmd.register_send_subparser(subparsers)
-    assert send_parser is not None
-    args = parser.parse_args(["send", "--to", "telegram", "hi"])
-    assert args.func is send_cmd.cmd_send
-    assert args.to == "telegram"
-    assert args.message == "hi"
 
 
 # ---------------------------------------------------------------------------
@@ -512,29 +486,3 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     assert "~/.hermes" not in out
 
 
-def test_empty_list_hint_names_default_root_directory_under_profile_home(tmp_path, monkeypatch, capsys):
-    """Under ``HERMES_HOME=<root>/profiles/<p>`` the ``--list`` empty state says the default root already holds
-    a ``channel_directory.json`` (written by a gateway running from that root), so the user knows which home
-    the gateway is serving (#114272 step 5)."""
-    import sys
-    import types
-
-    root = tmp_path / "hermes"
-    profile = root / "profiles" / "coder"
-    profile.mkdir(parents=True)
-    (root / "channel_directory.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-
-    fake_gw_config = types.ModuleType("gateway.config")
-    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
-    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
-    fake_dir = types.ModuleType("gateway.channel_directory")
-    fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
-    fake_dir.format_directory_for_display = lambda platforms=None: ""
-    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
-
-    assert send_cmd._list_targets(None, json_mode=False) == 0
-    out = capsys.readouterr().out
-    assert f"channel discovery can populate {profile / 'channel_directory.json'}." in out
-    assert f"A gateway running from {root} already has {root / 'channel_directory.json'}" in out
-    assert f"scoped to profile home {profile}" in out

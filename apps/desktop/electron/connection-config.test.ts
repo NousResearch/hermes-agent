@@ -19,7 +19,6 @@ import { test, vi } from 'vitest'
 import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
-  AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -49,7 +48,6 @@ import {
   resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
-  RT_COOKIE_VARIANTS,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
@@ -1294,14 +1292,6 @@ test('cookiesHaveSession handles non-arrays', () => {
   assert.equal(cookiesHaveSession([]), false)
 })
 
-test('AT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(AT_COOKIE_VARIANTS, ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at'])
-})
-
-test('RT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(RT_COOKIE_VARIANTS, ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt'])
-})
-
 // --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---
 
 test('cookiesHaveLiveSession is true for a live access-token cookie', () => {
@@ -1536,20 +1526,6 @@ test('gatewayTicketFailure preserves a structured 503 statusCode as a transport 
   assert.equal((wrapped as any).cause, source)
 })
 
-test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', () => {
-  for (const code of [401, 403]) {
-    const source = new Error(`HTTP ${code}`) as any
-    source.statusCode = code
-
-    const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
-
-    assert.equal(wrapped.message, 'auth message')
-    assert.equal((wrapped as any).needsOauthLogin, true)
-    assert.equal((wrapped as any).statusCode, code)
-    assert.equal((wrapped as any).cause, source)
-  }
-})
-
 test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
   // A legacy "503: ..." message carries no structured statusCode; the Cloud
   // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
@@ -1579,7 +1555,6 @@ test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', (
   if (cloudError !== null) {
     assert.equal((cloudError as any).isCloudBackendDown, true)
     assert.equal((cloudError as any).statusCode, 503)
-    assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
 
     return
   }

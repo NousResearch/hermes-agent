@@ -62,7 +62,7 @@ class TestGatewayConnectionErrorReply:
         for text in samples:
             assert _looks_like_gateway_provider_error(text), text
             reply = _gateway_provider_error_reply(text)
-            assert "not running or is unreachable" in reply, text
+            assert reply == _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
             assert "/retry" in reply, text
 
         assert _looks_like_gateway_provider_error("openai.APIConnectionError")
@@ -74,7 +74,7 @@ class TestGatewayConnectionErrorReply:
             "failed to establish a new connection",
         ):
             reply = _gateway_provider_error_reply(text)
-            assert "not running or is unreachable" in reply, text
+            assert reply == _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
 
     def test_prose_cannot_connect_is_not_a_provider_error(self):
         text = (
@@ -91,7 +91,7 @@ class TestGatewayConnectionErrorReply:
         ):
             if _looks_like_gateway_provider_error(text):
                 reply = _gateway_provider_error_reply(text)
-                assert "not running or is unreachable" not in reply, text
+                assert reply != _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
 
     def test_connection_regex_does_not_match_non_connection_error(self):
         assert not _GATEWAY_CONNECTION_ERROR_RE.search("Rate limited after 3 retries")

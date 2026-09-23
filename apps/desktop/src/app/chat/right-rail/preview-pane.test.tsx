@@ -445,6 +445,31 @@ describe('PreviewPane console state', () => {
     expect(rendered.queryByRole('textbox', { name: 'Address' })).not.toBeNull()
   })
 
+  it('workspace edits reload a loopback dev page, never a site the tab browsed to', async () => {
+    const target = {
+      kind: 'url',
+      label: 'Preview',
+      source: 'http://localhost:5174',
+      url: 'http://localhost:5174'
+    } as const
+    const rendered = render(<PreviewPane reloadRequest={0} tabId="browser" target={target} />)
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+    const reloadIgnoringCache = vi.fn()
+
+    Object.assign(webview, { reloadIgnoringCache })
+
+    await act(async () => rendered.rerender(<PreviewPane reloadRequest={1} tabId="browser" target={target} />))
+    expect(reloadIgnoringCache).toHaveBeenCalledOnce()
+
+    // The live page decides, not the tab's original address: once the user
+    // browses elsewhere an agent's file edit can't change what they're reading.
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: 'https://x.com/home' }))
+    })
+    await act(async () => rendered.rerender(<PreviewPane reloadRequest={2} tabId="browser" target={target} />))
+    expect(reloadIgnoringCache).toHaveBeenCalledOnce()
+  })
+
   it('renders authenticated remote HTML safely and honors source mode', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
 

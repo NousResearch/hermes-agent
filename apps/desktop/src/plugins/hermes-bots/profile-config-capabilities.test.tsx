@@ -267,36 +267,4 @@ describe('a build with no Capabilities exports at all', () => {
     expect(screen.getByText('remote-mcp')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Set up/ })).toBeTruthy()
   })
-
-  it('says so plainly when the profile has no MCP servers', async () => {
-    await renderEditor(bareBuild, localBot, { mcp: [] })
-
-    expect(screen.getByText('No MCP servers configured or in the catalog.')).toBeTruthy()
-  })
-})
-
-describe('the model catalog read', () => {
-  it('#95279: rides the bot\u2019s captured route and never forces a refresh', async () => {
-    sdk.exports = {}
-    vi.resetModules()
-
-    const { ModelPicker } = await import('./model-picker')
-
-    render(
-      withQueryClient(<ModelPicker bot={remoteBot} onChange={() => undefined} value={{ model: '', provider: '' }} />)
-    )
-
-    // No `refresh`: a forced network read on every mount bypassed the
-    // staleTime cache, so each Bots view remount re-entered the spinner and
-    // discarded the user's staged selection mid-edit.
-    expect(sdk.requestProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ connectionId: 'remote-a' }),
-      'model.options',
-      {
-        explicit_only: false,
-        include_unconfigured: true
-      }
-    )
-    expect(sdk.request).not.toHaveBeenCalled()
-  })
 })

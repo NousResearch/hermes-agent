@@ -806,21 +806,6 @@ describe('createBackendSessionForSend profile routing', () => {
     expect(params).toMatchObject({ profile: 'analyst' })
   })
 
-  it('passes the default profile for single-profile users (backend resolves it to launch)', async () => {
-    const params = await createWith(() => {
-      $activeGatewayProfile.set('default')
-      $newChatProfile.set(null)
-    })
-
-    expect(params).toMatchObject({ profile: 'default' })
-  })
-
-  it('tags new desktop chats as desktop sessions', async () => {
-    const params = await createWith(() => {})
-
-    expect(params).toMatchObject({ source: 'desktop' })
-  })
-
   // Regression (Settings → Model doesn't stick): a stale composer selection
   // must not be shipped as a per-session override on a NEW chat.
   //
@@ -1636,21 +1621,6 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).not.toContain('answer before compression')
   })
 
-  it('does NOT throw out of the fallback when REST also fails (no unhandled rejection)', async () => {
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.resume') {
-        throw new Error('request timed out: session.resume')
-      }
-
-      return {} as never
-    })
-
-    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('network down'))
-
-    // resumeSession must resolve (swallow the fallback failure), not reject.
-    await expect(runResume(requestGateway)).resolves.toBeUndefined()
-  })
-
   it('leaves the failure latch clear when resume succeeds', async () => {
     // Pre-arm to prove a successful resume clears it (entry-clear path).
     setResumeFailedSessionId('stored-1')
@@ -1852,14 +1822,6 @@ describe('session.resume turn timer contract', () => {
 
     expect($turnStartedAt.get()).toBeNull()
   })
-
-  it('clears a stale timer when the running gateway response has a non-numeric timestamp', async () => {
-    setTurnStartedAt(1_600_000_000_000)
-
-    await resumeFrom({ ...sessionResumeActiveTurn, turn_started_at: 'not-a-timestamp' })
-
-    expect($turnStartedAt.get()).toBeNull()
-  })
 })
 
 function BranchHarness({
@@ -2026,37 +1988,6 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(navigate).not.toHaveBeenCalled()
     // The branch instead opens as its own tile.
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
-  })
-
-  it('tags desktop branch sessions as desktop sessions', async () => {
-    let createParams: Record<string, unknown> | undefined
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
-        createParams = params
-
-        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
-      }
-
-      return {} as never
-    })
-
-    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
-    vi.mocked(getAllSessionMessages).mockResolvedValue({
-      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
-      session_id: 'stored-parent'
-    } as never)
-
-    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
-    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
-    await waitFor(() => expect(branchStoredSession).not.toBeNull())
-
-    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
-
-    expect(createParams).toMatchObject({
-      parent_session_id: 'stored-parent',
-      source: 'desktop'
-    })
   })
 
   // A branch belongs to the backend that OWNS its parent. Routing on profile

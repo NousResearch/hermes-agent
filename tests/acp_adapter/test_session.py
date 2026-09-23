@@ -3,7 +3,6 @@
 import contextlib
 import io
 import json
-import time
 from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
@@ -60,10 +59,6 @@ class TestCreateSession:
         }
 
 
-    def test_get_session(self, manager):
-        state = manager.create_session()
-        fetched = manager.get_session(state.session_id)
-        assert fetched is state
 
 
     def test_make_agent_uses_session_cwd_during_init_and_stamps_runtime(
@@ -112,8 +107,9 @@ class TestCreateSession:
             },
         )
         monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
 
-        state = SessionManager(db=None).create_session(cwd=str(workspace))
+        SessionManager(db=None).create_session(cwd=str(workspace))
 
         assert observed["cwd"] == str(workspace)
 

@@ -262,6 +262,14 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     HERMES_HOME: sandbox.hermesHome,
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
+    // One `hermes serve` per host, and profile roots are HOME-anchored
+    // (`~/.hermes/profiles`, the default profile's own home): without both of
+    // these a local e2e run attaches to the developer's running backend or
+    // lists and writes their real profiles, and chats through their real
+    // model and state.db instead of the sandbox + mock provider. CI never has
+    // either, so only local runs ever took that path.
+    HERMES_DESKTOP_ISOLATED_BACKEND: '1',
+    HOME: sandbox.root,
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
     HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
     // `app.close()` in teardown must exit even when a spec leaves a turn

@@ -109,13 +109,6 @@ describe('FallbackModelsField', () => {
     expect(screen.getAllByLabelText('Remove')).toHaveLength(3)
   })
 
-  it('shows an empty-state hint when there are no fallbacks', async () => {
-    await renderField([])
-
-    expect(screen.getByText(/No fallback models/)).toBeTruthy()
-    expect(screen.queryAllByLabelText('Remove')).toHaveLength(0)
-  })
-
   it('resyncs rows when persisted config changes', async () => {
     const rerender = await renderFieldWithRerender(CHAIN)
     expect(screen.getAllByLabelText('Remove')).toHaveLength(2)

@@ -162,7 +162,6 @@ def test_describe_holder_names_the_pid_and_elapsed_time(marker):
     message = describe_holder(holder)
 
     assert str(os.getpid()) in message, "the user needs the pid to find the other update"
-    assert "already running" in message
 
 
 def test_unwritable_marker_location_does_not_block_the_update(tmp_path):

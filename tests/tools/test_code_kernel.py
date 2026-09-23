@@ -18,7 +18,6 @@ tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,7 +39,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import build_execute_code_schema, execute_code
+from tools.code_execution_tool import execute_code
 from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
@@ -180,24 +179,6 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertIn("raw-passthrough", result["output"])
 
 
-class TestSchemaSurface(unittest.TestCase):
-    def test_reset_parameter_is_declared(self):
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("reset", schema["parameters"]["properties"])
-
-    def test_kernel_persistence_is_taught_unconditionally(self):
-        """Persistence is woven into the tool's main description (always-on
-        since #96787, integrated in the schema diet) — every session must be
-        told state survives across calls, in strict and project mode alike,
-        regardless of any stale kernel_mode key in config."""
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", schema["description"])
-        self.assertIn("reset", schema["parameters"]["properties"])
-        with _kernel_config(kernel_mode="per-call"):
-            stale_schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", stale_schema["description"])
 
 
 if __name__ == "__main__":

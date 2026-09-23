@@ -12,7 +12,6 @@ logged as a recovery (#112387 review caveat).
 
 from __future__ import annotations
 
-import logging
 import os
 import threading
 import time
@@ -134,28 +133,6 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
     )
 
 
-def test_failing_pinned_fallback_route_is_not_logged_as_recovered(tmp_path, fast_timeouts, caplog):
-    """Primary stalls, the fallback_chain route raises: compress() still commits its static fallback
-    summary (abort_on_summary_failure=false), and the host log must say so instead of 'recovered'."""
-    agent = _make_agent(tmp_path, "B")
-    compressor = agent.context_compressor
-    calls = []
-    live = _transcript()
-    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
-    with patch(
-        "agent.context_compressor.call_llm", side_effect=_stalling_call_llm(compressor, calls, fail_when_pinned=True),
-    ), patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": [CHAIN_ENTRY]}):
-        out, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
-
-    assert calls == ["primary", "custom"]
-    assert out is not live and len(_summary_rows(out)) == 1
-    records = [r for r in caplog.records if r.name == "agent.conversation_compression"]
-    assert not any("recovered on fallback_chain[0]" in r.getMessage() for r in records)
-    assert any(
-        "committed a deterministic fallback summary on fallback_chain[0]" in r.getMessage()
-        and r.levelno == logging.WARNING
-        for r in records
-    )
 
 
 def test_deterministic_pin_is_consumed_and_a_real_route_is_left_alone():

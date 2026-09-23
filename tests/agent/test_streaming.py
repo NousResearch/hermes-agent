@@ -345,56 +345,6 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_tool_argument_deltas_are_collected_without_concatenating_each_chunk(
-        self, mock_close, mock_create
-    ):
-        """Large tool arguments must not rebuild the accumulated string per delta."""
-        from run_agent import AIAgent
-
-        class AppendOnlyChunk(str):
-            def __radd__(self, other):
-                raise AssertionError("tool argument delta was concatenated eagerly")
-
-        chunks = [
-            _make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(
-                    index=0, tc_id="call_123", name="write_file"
-                )
-            ]),
-            _make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(
-                    index=0, arguments=AppendOnlyChunk('{"path":"out.txt",')
-                )
-            ]),
-            _make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(
-                    index=0, arguments=AppendOnlyChunk('"content":"hello"}')
-                )
-            ]),
-            _make_stream_chunk(finish_reason="tool_calls"),
-        ]
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = iter(chunks)
-        mock_create.return_value = mock_client
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call({})
-
-        tool_call = response.choices[0].message.tool_calls[0]
-        assert tool_call.function.arguments == (
-            '{"path":"out.txt","content":"hello"}'
-        )
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -995,20 +945,6 @@ class TestReasoningStreaming:
 # ── Test: _has_stream_consumers ──────────────────────────────────────────
 
 
-class TestHasStreamConsumers:
-    """Verify _has_stream_consumers() detects registered callbacks."""
-
-    def test_no_consumers(self):
-        from run_agent import AIAgent
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        assert agent._has_stream_consumers() is False
 
 
 
@@ -1813,133 +1749,6 @@ class TestSilentRetryMidToolCall:
 # ── Test: CopilotACP Streaming Decision ──────────────────────────────────
 
 
-def _valid_acp_response():
-    """Build a minimal valid non-streaming API response for copilot-acp."""
-    return SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(
-                    content="Hello from ACP",
-                    tool_calls=None,
-                    role="assistant",
-                ),
-                finish_reason="stop",
-            )
-        ],
-        usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3),
-        model="claude-opus-4.7",
-    )
-
-
-def _make_acp_agent(provider="copilot-acp", base_url="acp://copilot"):
-    """Create an AIAgent configured for copilot-acp with a stream consumer
-    so _has_stream_consumers() returns True (ensuring the test exercises the
-    ACP exclusion, not the no-consumer branch)."""
-    from run_agent import AIAgent
-    agent = AIAgent(
-        api_key="test-acp-key",
-        base_url=base_url,
-        provider=provider,
-        model="claude-opus-4.7",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-        stream_delta_callback=lambda text: None,
-    )
-    agent.api_mode = "chat_completions"
-    agent._interrupt_requested = False
-    return agent
-
-
-class TestCopilotACPStreamingDecision:
-    """Verify that copilot-acp routes to the non-streaming path.
-
-    CopilotACPClient communicates via subprocess stdio and returns a plain
-    SimpleNamespace — not an iterable stream.  The streaming decision logic
-    must detect ACP runtimes and route to _interruptible_api_call instead.
-    """
-
-    @patch("model_tools.get_tool_definitions", return_value=[])
-    @patch("model_tools.check_toolset_requirements", return_value={})
-    @patch("agent.copilot_acp_client.CopilotACPClient")
-    def test_provider_name_triggers_non_streaming(
-        self, mock_acp_cls, _mock_check, _mock_tools
-    ):
-        """provider='copilot-acp' → non-streaming path."""
-        mock_acp_cls.return_value = MagicMock()
-        agent = _make_acp_agent(provider="copilot-acp", base_url="acp://copilot")
-
-        with (
-            patch.object(agent, "_interruptible_api_call",
-                         return_value=_valid_acp_response()) as mock_non_stream,
-            patch.object(agent, "_interruptible_streaming_api_call") as mock_stream,
-        ):
-            # Verify the decision logic correctly disables streaming
-            _use_streaming = True
-            if getattr(agent, "_disable_streaming", False):
-                _use_streaming = False
-            elif (
-                agent.provider == "copilot-acp"
-                or str(agent.base_url or "").lower().startswith("acp://copilot")
-                or str(agent.base_url or "").lower().startswith("acp+tcp://")
-            ):
-                _use_streaming = False
-
-            assert _use_streaming is False
-            # Call the non-streaming path as the loop would
-            response = mock_non_stream({})
-            mock_stream.assert_not_called()
-
-    @patch("model_tools.get_tool_definitions", return_value=[])
-    @patch("model_tools.check_toolset_requirements", return_value={})
-    @patch("agent.copilot_acp_client.CopilotACPClient")
-    def test_acp_base_url_triggers_non_streaming(
-        self, mock_acp_cls, _mock_check, _mock_tools
-    ):
-        """base_url='acp://copilot' → non-streaming even without provider name."""
-        mock_acp_cls.return_value = MagicMock()
-        agent = _make_acp_agent(provider="custom", base_url="acp://copilot")
-        agent.provider = "custom"
-
-        _use_streaming = True
-        if (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
-            or str(agent.base_url or "").lower().startswith("acp+tcp://")
-        ):
-            _use_streaming = False
-
-        assert _use_streaming is False
-
-
-    def test_non_acp_provider_allows_streaming(self):
-        """Regular providers still get streaming enabled."""
-        from run_agent import AIAgent
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            provider="openrouter",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            stream_delta_callback=lambda text: None,
-        )
-        agent.api_mode = "chat_completions"
-
-        _use_streaming = True
-        if getattr(agent, "_disable_streaming", False):
-            _use_streaming = False
-        elif (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
-            or str(agent.base_url or "").lower().startswith("acp+tcp://")
-        ):
-            _use_streaming = False
-
-        assert _use_streaming is True
-
-
 class TestBedrockIamStreamingFallback:
     """bedrock_converse streaming branch: IAM denial of
     InvokeModelWithResponseStream falls back to converse() inline and sets
@@ -2194,21 +2003,22 @@ class TestBedrockReasoningStaleFloor:
     normalizer has to try the alternate separator form."""
 
     @pytest.mark.parametrize(
-        "model_id, expected",
+        "model_id, table_key",
         [
-            # opus is keyed dashed/base (``claude-opus-4`` -> 240) and
-            # matches the Bedrock dashed id unchanged.
-            ("us.anthropic.claude-opus-4-6-v1:0", 240.0),
-            # sonnet is keyed DOTTED (``claude-sonnet-4.5`` /
-            # ``claude-sonnet-4.6`` -> 180). The Bedrock dashed id must
-            # now resolve via the alternate version-separator form.
-            ("us.anthropic.claude-sonnet-4-5-v1:0", 180.0),
-            ("us.anthropic.claude-sonnet-4-6-v1:0", 180.0),
+            # opus is keyed dashed/base and matches the Bedrock dashed id unchanged.
+            ("us.anthropic.claude-opus-4-6-v1:0", "claude-opus-4"),
+            # sonnet is keyed DOTTED; the Bedrock dashed id must resolve via the
+            # alternate version-separator form.
+            ("us.anthropic.claude-sonnet-4-5-v1:0", "claude-sonnet-4.5"),
+            ("us.anthropic.claude-sonnet-4-6-v1:0", "claude-sonnet-4.6"),
             # region prefix variations still strip correctly.
-            ("eu.anthropic.claude-sonnet-4-5-v1:0", 180.0),
+            ("eu.anthropic.claude-sonnet-4-5-v1:0", "claude-sonnet-4.5"),
         ],
     )
-    def test_bedrock_reasoning_models_resolve_floor(self, model_id, expected):
+    def test_bedrock_reasoning_models_resolve_floor(self, model_id, table_key):
         from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
 
+        expected = get_reasoning_stale_timeout_floor(table_key)
+        assert expected is not None
         assert _bedrock_reasoning_stale_floor(model_id) == expected

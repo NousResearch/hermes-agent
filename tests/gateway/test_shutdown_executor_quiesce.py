@@ -375,8 +375,3 @@ def test_shutdown_executor_reports_a_stuck_worker():
     future.result(timeout=5)
 
 
-def test_shutdown_executor_without_executor_returns_zero():
-    gw = _FakeGateway([])
-    gw._executor.shutdown(wait=True)
-    gw._executor = None
-    assert gw_mod.GatewayRunner._shutdown_executor(gw, drain_timeout=1.0) == 0

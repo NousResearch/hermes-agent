@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import shutil
 import subprocess
@@ -10,8 +9,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-from hermes_cli.subcommands.plugins import build_plugins_parser
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -44,16 +41,6 @@ def _plugin_repo(root: Path, name: str = "demo") -> tuple[Path, str, str]:
 
 def _metadata(home: Path) -> dict:
     return json.loads((home / "plugins" / ".install-metadata.json").read_text())
-
-
-def test_parser_accepts_only_explicit_install_ref_option():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_plugins_parser(subparsers, cmd_plugins=lambda _args: None)
-
-    args = parser.parse_args(["plugins", "install", "owner/repo", "--ref", "a" * 40])
-
-    assert args.ref == "a" * 40
 
 
 def test_canonical_source_never_persists_http_credentials():

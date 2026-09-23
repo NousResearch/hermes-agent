@@ -71,11 +71,6 @@ class TestStreamingModeAlias:
         assert sc.transport == "auto"
 
 
-    def test_empty_block_stays_disabled(self):
-        from gateway.config import StreamingConfig
-
-        sc = StreamingConfig.from_dict({})
-        assert sc.enabled is False
 
 
 

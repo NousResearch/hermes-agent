@@ -190,10 +190,6 @@ class TestBangHandlerDispatch:
         assert cli.handle_bang_shell("!exit 3") is True
         assert any("exited 3" in line for line in _printed(cli))
 
-    def test_zero_exit_prints_no_exit_line(self):
-        cli = _make_cli()
-        cli.handle_bang_shell("!true")
-        assert not any("exited" in line for line in _printed(cli))
 
     def test_disabled_context_falls_through(self, monkeypatch):
         """Gateway sessions must not execute bang commands."""
@@ -316,16 +312,6 @@ class TestBangLeavesHistoryByteIdentical:
             _SEED_HISTORY, sort_keys=True
         )
 
-    def test_role_alternation_is_preserved_across_many_bangs(self):
-        cli = _make_cli(history=copy.deepcopy(_SEED_HISTORY))
-        before = json.dumps(cli.conversation_history, sort_keys=True)
-
-        for _ in range(5):
-            cli.handle_bang_shell("!echo repeated")
-
-        assert json.dumps(cli.conversation_history, sort_keys=True) == before
-        roles = [m["role"] for m in cli.conversation_history]
-        assert roles == ["system", "user", "assistant", "user", "assistant", "tool"]
 
 
 

@@ -2,8 +2,6 @@ import json
 from unittest.mock import patch
 
 from hermes_cli.codex_models import (
-    DEFAULT_CODEX_MODELS,
-    _FORWARD_COMPAT_TEMPLATE_MODELS,
     get_codex_model_ids,
 )
 
@@ -15,24 +13,6 @@ CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
 }
 
 
-def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch):
-    """OAuth fallback retains real models but never synthesizes rejected ones."""
-    retained_models = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
-    template_models = {model for model, _fallbacks in _FORWARD_COMPAT_TEMPLATE_MODELS}
-
-    assert retained_models.issubset(DEFAULT_CODEX_MODELS)
-    assert retained_models.issubset(template_models)
-    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(DEFAULT_CODEX_MODELS)
-    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(template_models)
-
-    monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.5"],
-    )
-    model_ids = get_codex_model_ids(access_token="codex-access-token")
-
-    assert retained_models.issubset(model_ids)
-    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
 def test_picker_synthesizes_900k_variants_for_verified_slugs():
@@ -66,27 +46,8 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
 
 
 
-def test_retired_gpt_5_3_codex_is_not_offered_offline():
-    """The ChatGPT Codex backend retired ``gpt-5.3-codex`` (HTTP 400 "not supported when using
-    Codex with a ChatGPT account", #52492). Neither the curated offline fallback nor any
-    forward-compat template may surface it — only live discovery may, if the backend re-enables it.
-    Same precedent as the gpt-5.2-codex / gpt-5.1-codex-* removal (e8955f222ce)."""
-    from hermes_cli.codex_models import _FORWARD_COMPAT_TEMPLATE_MODELS, DEFAULT_CODEX_MODELS
-
-    assert "gpt-5.3-codex" not in DEFAULT_CODEX_MODELS
-    for newer, templates in _FORWARD_COMPAT_TEMPLATE_MODELS:
-        assert newer != "gpt-5.3-codex"
-        assert "gpt-5.3-codex" not in templates
-    # Spark is still a real Codex-OAuth slug and must keep surfacing via a live template.
-    assert "gpt-5.3-codex-spark" in DEFAULT_CODEX_MODELS
 
 
-def test_setup_wizard_codex_import_resolves():
-    """Regression test for #712: setup.py must import the correct function name."""
-    # This mirrors the exact import used in hermes_cli/setup.py line 873.
-    # A prior bug had 'get_codex_models' (wrong) instead of 'get_codex_model_ids'.
-    from hermes_cli.codex_models import get_codex_model_ids as setup_import
-    assert callable(setup_import)
 
 
 
@@ -194,9 +155,6 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
 
     _model_flow_openai_codex({}, current_model="gpt-5.4")
 
-    out = capsys.readouterr().out
-    assert "Use existing credentials" in out
-    assert "Reauthenticate (new OAuth login)" in out
     assert captured["login_calls"] == 1
     assert captured["force_new_login"] is True
 

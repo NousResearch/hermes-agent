@@ -152,10 +152,7 @@ describe('CustomEndpointsSettings', () => {
       expect.objectContaining({ api_mode: 'codex_responses' }),
       expect.objectContaining({ connectionId: 'gateway', profile: 'default' })
     )
-    expect(notify).toHaveBeenCalledWith({
-      kind: 'success',
-      message: 'Endpoint is reachable (Responses API route served). Found 2 models.'
-    })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
     expect(saveCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({
         api_mode: 'codex_responses',

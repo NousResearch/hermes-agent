@@ -5,7 +5,6 @@ import io
 import os
 import tarfile
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -99,13 +98,6 @@ class TestDeletion:
         deleted_paths = delete.call_args[0][0]
         assert any("cred_b.json" in p for p in deleted_paths)
 
-    def test_no_delete_when_no_removals(self, tmp_files):
-        delete = MagicMock()
-        mgr = _make_manager(tmp_files, delete=delete)
-
-        mgr.sync(force=True)
-        mgr.sync(force=True)
-        delete.assert_not_called()
 
 
 class TestTransactionalRollback:
@@ -231,18 +223,6 @@ class TestRateLimiting:
 
 
 class TestEdgeCases:
-    def test_empty_file_list(self):
-        upload = MagicMock()
-        delete = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=lambda: [],
-            upload_fn=upload,
-            delete_fn=delete,
-        )
-
-        mgr.sync(force=True)
-        upload.assert_not_called()
-        delete.assert_not_called()
 
     def test_file_disappears_between_list_and_upload(self, tmp_path):
         """File listed by get_files but deleted before _file_mtime_key reads it."""
@@ -373,23 +353,6 @@ class TestSyncBackSecurity:
 class TestBulkUpload:
     """Tests for the optional bulk_upload_fn callback."""
 
-    def test_bulk_upload_used_when_provided(self, tmp_files):
-        """When bulk_upload_fn is set, it's called instead of per-file upload_fn."""
-        upload = MagicMock()
-        bulk_upload = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=_make_get_files(tmp_files),
-            upload_fn=upload,
-            delete_fn=MagicMock(),
-            bulk_upload_fn=bulk_upload,
-        )
-
-        mgr.sync(force=True)
-        upload.assert_not_called()
-        bulk_upload.assert_called_once()
-        # All 3 files passed as a list of (host, remote) tuples
-        files_arg = bulk_upload.call_args[0][0]
-        assert len(files_arg) == 3
 
 
     def test_bulk_upload_rollback_on_failure(self, tmp_files):

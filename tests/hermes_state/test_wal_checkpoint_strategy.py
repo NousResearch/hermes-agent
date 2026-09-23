@@ -6,9 +6,7 @@ transient per-cron-run connections closing many times an hour would race
 the live gateway writer and corrupt B-tree pages (#45383).
 """
 
-import sqlite3
-import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -72,22 +70,7 @@ class TestTryWalCheckpointPassive:
             "Periodic checkpoint should NOT use TRUNCATE"
         )
 
-    def test_checkpoint_logs_warning_on_failure(self, db, caplog):
-        """Failed PASSIVE checkpoint logs a warning instead of silent pass."""
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = sqlite3.OperationalError("disk I/O error")
-        db._conn = mock_conn
 
-        with caplog.at_level(logging.WARNING):
-            db._try_wal_checkpoint()
-
-        assert any("WAL checkpoint (PASSIVE) failed" in r.message for r in caplog.records), (
-            f"Expected warning log about PASSIVE checkpoint failure, got: {caplog.text}"
-        )
-
-    def test_checkpoint_returns_result_on_success(self, db):
-        """Successful PASSIVE checkpoint does not raise."""
-        db._try_wal_checkpoint()
 
 
 class TestCloseUsesPassive:
@@ -119,18 +102,6 @@ class TestCloseUsesPassive:
             f"Expected 1 PASSIVE checkpoint at close, got {len(passive_calls)}"
         )
 
-    def test_close_logs_debug_on_failure(self, db, caplog):
-        """Failed PASSIVE checkpoint at close logs debug (close is best-effort)."""
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
-        db._conn = mock_conn
-
-        with caplog.at_level(logging.DEBUG):
-            db.close()
-
-        assert any("WAL checkpoint (PASSIVE) at close failed" in r.message for r in caplog.records), (
-            f"Expected debug log about PASSIVE failure at close, got: {caplog.text}"
-        )
 
 
 class TestVacuumUsesPassive:

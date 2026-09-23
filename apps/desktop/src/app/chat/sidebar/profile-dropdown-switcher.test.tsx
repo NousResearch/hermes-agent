@@ -59,7 +59,9 @@ vi.mock('@/store/connections', () => ({
 }))
 
 vi.mock('@/store/profile-share', () => ({ runImportProfileFlow: vi.fn() }))
-vi.mock('./use-profile-prewarm', () => ({ useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() }) }))
+vi.mock('./use-profile-prewarm', () => ({
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+}))
 vi.mock('./use-fleet-roster', () => ({ useFleetRoster: () => undefined }))
 vi.mock('../../profiles/create-profile-dialog', () => ({ CreateProfileDialog: () => null }))
 

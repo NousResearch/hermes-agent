@@ -21,7 +21,7 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
 
   // The first run swaps profiles twice — into the setup profile, then into the
   // task profile — and neither is a thing the user asked for or has a name for.
-  // "Waking up hermes-setup…" over a greeting that is already on screen reads
+  // "Waking up <setup profile>…" over a greeting that is already on screen reads
   // as a stall in the one moment that has to feel instant. The flow narrates
   // its own handoff (the handoff card) and the greeting is banked, so there
   // is nothing here to cover.

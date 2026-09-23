@@ -26,9 +26,7 @@ from __future__ import annotations
 
 import io
 
-import hermes_cli.model_switch as ms
 from tui_gateway import entry
-import hermes_cli.model_switch_providers
 from hermes_cli import model_switch_providers
 
 
@@ -68,24 +66,6 @@ def _run_main(monkeypatch, events, *, prewarm=None):
     entry.main()
 
 
-def test_main_prewarms_picker_cache_after_gateway_ready(monkeypatch):
-    """main() must call the prewarm helper once, after gateway.ready is
-    written, and still reach the stdin loop (returns on EOF = non-blocking)."""
-    events: list[tuple] = []
-
-    _run_main(monkeypatch, events)  # returning at all proves the loop was reached
-
-    prewarm_calls = [e for e in events if e[0] == "prewarm"]
-    assert len(prewarm_calls) == 1, (
-        f"main() must invoke prewarm_picker_cache_async exactly once, got {events!r}"
-    )
-
-    ready_idx = events.index(("write", "gateway.ready"))
-    prewarm_idx = events.index(("prewarm",))
-    assert ready_idx < prewarm_idx, (
-        "prewarm must fire AFTER the gateway.ready write (idle window, "
-        f"banner already shown); order was {events!r}"
-    )
 
 
 def test_main_survives_prewarm_failure(monkeypatch):

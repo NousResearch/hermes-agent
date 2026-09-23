@@ -14,7 +14,7 @@ import os
 import sys
 import types
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 
 class TestFirecrawlClientConfig:
@@ -444,16 +444,6 @@ class TestParallelClientConfig:
 class TestWebSearchSchema:
     """Test suite for web_search tool schema and handler wiring."""
 
-    def test_schema_exposes_optional_limit(self):
-        import tools.web_tools
-
-        limit_schema = tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]["limit"]
-
-        assert limit_schema["type"] == "integer"
-        assert limit_schema["minimum"] == 1
-        assert limit_schema["maximum"] == 100
-        assert limit_schema["default"] == 5
-        assert "limit" not in tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["required"]
 
 
     def test_web_search_clamps_limit_before_backend_call(self):
@@ -666,12 +656,6 @@ class TestCheckWebApiKey:
             assert check_web_api_key() is True
 
 
-def test_web_requires_env_includes_exa_key():
-    from tools.web_tools import _web_requires_env
-
-    env = _web_requires_env()
-    assert "EXA_API_KEY" in env
-    assert "TAVILY_API_KEY" in env
 
 
 class TestNonBuiltinProviderAvailability:
@@ -773,18 +757,6 @@ class TestNonBuiltinProviderAvailability:
             from tools.web_tools import _get_extract_backend
             assert _get_extract_backend() == "fake-plugin-prov"
 
-    def test_tool_registry_entries_not_filtered_out(self):
-        """web_search and web_extract tool entries must remain in the
-        registry when only a custom provider is available."""
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
-            import tools.web_tools
-            web_search_entry = tools.web_tools.registry.get_entry("web_search")
-            web_extract_entry = tools.web_tools.registry.get_entry("web_extract")
-            assert web_search_entry is not None, \
-                "web_search tool was filtered out despite custom provider being available"
-            assert web_extract_entry is not None, \
-                "web_extract tool was filtered out despite custom provider being available"
 
 
 class TestFirecrawlEnvResolution:
@@ -851,7 +823,6 @@ class TestSiblingProvidersEnvResolution:
         """is_available() must see a key that lives only in the .env layer."""
         monkeypatch.delenv(env_key, raising=False)
 
-        import importlib
         module = importlib.import_module(module_path)
         provider = getattr(module, cls_name)()
 

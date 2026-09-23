@@ -13,8 +13,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
-import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -38,11 +36,9 @@ import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
-import { getLatestSessionMessages } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
-import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
@@ -52,6 +48,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
+import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
@@ -91,7 +88,6 @@ import {
   setMessages
 } from '@/store/session'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -155,6 +151,7 @@ import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
 import {
+  hydrateStoredSessionTranscript,
   profileScopeForTranscriptSession,
   reconcileActiveTranscript,
   resolveActiveTranscriptSession,
@@ -253,9 +250,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      void window.hermesDesktop?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get())).catch(err =>
-        notifyError(err, translateNow('notifications.errors.restartHermesFailed'))
-      )
+      void window.hermesDesktop
+        ?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get()))
+        .catch(err => notifyError(err, translateNow('notifications.errors.restartHermesFailed')))
     }
   }, [backendRestartRequest])
 
@@ -377,7 +374,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
 
   // The guide remains selected while handoff creates on another profile.
-  // Without this pin, the owner ladder sends session.create to hermes-setup
+  // Without this pin, the owner ladder sends session.create to the setup profile
   // despite the gateway switch (#89206). Scope it to the create leg so
   // concurrent session traffic keeps its recorded owner.
   const handoffCreateProfileRef = useRef<null | string>(null)
@@ -492,48 +489,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         resolveActiveTranscriptSession(storedSessionId, runtimeSessionId)
       )
 
-      for (let index = 0; index < Math.max(1, attempts); index += 1) {
-        try {
-          const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
-          const messages = toChatMessages(latest.messages)
-          updateSessionState(
-            runtimeSessionId,
-            state => ({
-              ...state,
-              // Post-turn rehydrate reads only the newest tail page — graft it
-              // onto any backfilled older pages instead of dropping them, and
-              // keep any un-acked optimistic `user-*` row, which lives nowhere
-              // else (a reconnect-triggered rehydrate would otherwise lose a
-              // message the user then has to retype). Same composition order
-              // as reconcileAuthoritativeChatMessages.
-              messages: preserveLocalAssistantErrors(
-                preserveLocalPendingTurnMessages(
-                  graftRefreshedTailOntoBackfill(messages, state.messages),
-                  state.messages
-                ),
-                state.messages
-              )
-            }),
-            storedSessionId
-          )
-
-          const restored = todosForHydration(latestSessionTodos(messages))
-
-          if (restored) {
-            setSessionTodos(runtimeSessionId, restored)
-          } else {
-            clearSessionTodos(runtimeSessionId)
-          }
-
-          return
-        } catch {
-          // Best-effort fallback when live stream payloads are empty.
-        }
-
-        if (index < attempts - 1) {
-          await new Promise(resolve => window.setTimeout(resolve, 250))
-        }
-      }
+      await hydrateStoredSessionTranscript({
+        attempts,
+        storedSessionId,
+        runtimeSessionId,
+        storedProfile,
+        updateSessionState
+      })
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
@@ -1285,9 +1247,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // renderer paints its own min/max/close (main decides via customWindowControls).
   const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
   const appActionsSide = useStore($titlebarAppActionsSide)
-  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
-  const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0)
+  const interfaceMode = useStore($interfaceMode)
+  const shownTool = shownInMode(interfaceMode)
+  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
+  const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
+  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode)
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 
   const titlebarToolsWidth =
@@ -1327,7 +1291,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           />
         )}
         {!isHudWindow() && customWindowControls && (
-          <WslgWindowControls isFullscreen={Boolean(connection?.isFullscreen)} isMaximized={Boolean(connection?.isMaximized)} />
+          <WslgWindowControls
+            isFullscreen={Boolean(connection?.isFullscreen)}
+            isMaximized={Boolean(connection?.isMaximized)}
+          />
         )}
         {children}
       </div>

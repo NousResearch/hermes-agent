@@ -127,7 +127,7 @@ class GatewaySessionCommandsMixin:
             return
         try:
             await asyncio.wait_for(
-                self._run_in_executor_with_context(self._cleanup_agent_resources, _old_agent),
+                self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),
                 timeout=_RESET_CLEANUP_TIMEOUT_S)
         except asyncio.TimeoutError:
             logger.warning(
@@ -1095,5 +1095,5 @@ class GatewaySessionCommandsMixin:
         # Discord only answers un-mentioned follow-ups in threads it has participated in.
         threads = getattr(adapter, "_threads", None)
         if threads is not None:
-            threads.mark(str(thread_id))
+            await threads.mark_async(str(thread_id))
         return branch_dest_source(source, parent_id=parent_id, thread_id=str(thread_id), title=title)

@@ -48,6 +48,7 @@ class GatewayProfileReconcileMixin:
     _served_profile_homes: Optional[Dict[str, "Path"]] = None
     _served_profile_signatures: Optional[Dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
+    _profile_own_gateway_warned: Optional[set[str]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -105,6 +106,20 @@ class GatewayProfileReconcileMixin:
             active = getattr(self, "_primary_profile_name", None) or "default"
             current = {str(name): Path(home) for name, home in _multiplex_profile_homes(self.config)}
             known = dict(self._served_profile_homes or {})
+            from gateway.status import live_gateway_pid_for_home
+
+            blocked = set()
+            warned = self._profile_own_gateway_warned or set()
+            for name in list(current):
+                if name == active or name in known:
+                    continue
+                if live_gateway_pid_for_home(current[name]) is not None:
+                    blocked.add(name)
+                    if name not in warned:
+                        logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
+                                       "stop it before the host can serve this profile", name)
+                    del current[name]
+            self._profile_own_gateway_warned = blocked
             sigs = self._served_profile_signatures or {}
             added = [n for n in current if n not in known and n != active]
             removed = [n for n in known if n not in current and n != active]
@@ -156,6 +171,11 @@ class GatewayProfileReconcileMixin:
             for name in transient_failed:
                 if isinstance(self._served_profile_signatures, dict):
                     self._served_profile_signatures.pop(name, None)
+                # A cached config with no live adapters is owed a home-channel notice nothing can
+                # deliver, and the planned-restart marker then never clears.
+                configs = getattr(self, "_profile_configs", None)
+                if isinstance(configs, dict):
+                    configs.pop(name, None)
             if added:
                 await self._after_profiles_added([(n, current[n]) for n in added])
             result["served_profiles"] = self.served_profile_names()
@@ -215,7 +235,7 @@ class GatewayProfileReconcileMixin:
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
-                         "_busy_text_timing_by_profile", "_human_delay_by_profile"):
+                         "_busy_text_timing_by_profile", "_human_delay_by_profile", "_profile_configs"):
                 store = getattr(self, attr, None)
                 if isinstance(store, dict):
                     store.pop(name, None)

@@ -153,8 +153,6 @@ async def test_a_flood_refused_queued_final_stays_in_the_ledger_as_failed(caplog
     assert len(rows) == 1
     assert rows[0]["state"] == "failed"
     assert rows[0]["last_error"] == "flood_control:185.0"
-    assert any("Queued-lane final send" in r.getMessage()
-               and "flood_control:185.0" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio

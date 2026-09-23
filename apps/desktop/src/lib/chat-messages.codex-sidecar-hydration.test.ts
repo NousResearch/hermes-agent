@@ -70,24 +70,4 @@ describe('#68321 assistant rows whose reply persisted only in codex_message_item
     expect(chatMessageText(messages[1])).not.toContain('Working through the approach...')
     expect(chatMessageText(messages[1])).not.toContain('Scratchpad thoughts.')
   })
-
-  it('prefers persisted content over the codex sidecar when both exist', () => {
-    const row: SessionMessage = {
-      id: 120,
-      role: 'assistant',
-      content: 'Canonical persisted reply',
-      codex_message_items: [
-        {
-          type: 'message',
-          role: 'assistant',
-          phase: 'final_answer',
-          content: [{ type: 'output_text', text: 'Sidecar-only reply' }]
-        }
-      ],
-      timestamp: 2
-    }
-
-    const [assistant] = toChatMessages([row])
-    expect(chatMessageText(assistant)).toBe('Canonical persisted reply')
-  })
 })

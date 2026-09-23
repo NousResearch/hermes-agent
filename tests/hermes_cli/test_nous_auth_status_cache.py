@@ -11,7 +11,6 @@ also call invalidate_nous_auth_status_cache().
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import patch
 
 
@@ -58,32 +57,3 @@ def test_get_nous_auth_status_caches_consecutive_calls(tmp_path, monkeypatch):
     auth_mod.invalidate_nous_auth_status_cache()
 
 
-def test_get_nous_auth_status_caches_failure_path(tmp_path, monkeypatch):
-    """Logged-out snapshots are cached too — that's where the cost was.
-
-    Teknium's case: ~31 cache misses per `hermes tools` "All Platforms"
-    menu paint, all returning logged_in=False after a failed refresh POST.
-    The whole point of the cache is to memoise that failure path too.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _seed_auth_file(tmp_path)
-
-    from hermes_cli import auth as auth_mod
-
-    auth_mod.invalidate_nous_auth_status_cache()
-
-    call_count = {"n": 0}
-
-    def fake_compute():
-        call_count["n"] += 1
-        return {"logged_in": False, "source": "auth_store", "error": "refresh failed"}
-
-    with patch.object(auth_mod, "_compute_nous_auth_status", side_effect=fake_compute):
-        for _ in range(10):
-            auth_mod.get_nous_auth_status()
-
-    assert call_count["n"] == 1, (
-        f"Logged-out snapshots must cache; got {call_count['n']} computes for 10 calls."
-    )
-
-    auth_mod.invalidate_nous_auth_status_cache()

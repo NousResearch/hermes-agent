@@ -74,6 +74,14 @@ WATCH_STRIKE_LIMIT = 3
 # delivered this many matches over its whole life we disable it and fall back to notify_on_complete, same as
 # the strike-limit path.
 WATCH_LIFETIME_MAX_HITS = 8
+# Heartbeat: an opt-in periodic "still running, here is the output since last time" event for
+# long bounded jobs (merge trains, full test suites, deploys). Unlike watch patterns it is
+# time-driven, so it is bounded by construction (≤ 3600/HEARTBEAT_MIN_SECONDS events per hour
+# per process) and needs no strike/lifetime breaker. The floor exists so a model cannot turn
+# it into a 5-second poll; the output slice is capped like a completion notice.
+HEARTBEAT_MIN_SECONDS = 60
+HEARTBEAT_OUTPUT_CHARS = 2000
+HEARTBEAT_TICK_SECONDS = 5
 # Global circuit breaker across all sessions so concurrent siblings can't collectively
 # flood the user even when each is under its own cap.
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
@@ -536,6 +544,11 @@ class ProcessSession:
     notify_on_complete: bool = False            # Queue agent notification on exit
     completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: List[str] = field(default_factory=list)
+    heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
+    total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
+    _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
+    _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
+    _heartbeat_seq: int = field(default=0, repr=False)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
     _watch_disabled: bool = field(default=False, repr=False) # permanently killed after strike limit
@@ -552,6 +565,7 @@ class ProcessSession:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
         with self._lock:
             self.output_buffer += text
+            self.total_output_chars += len(text)
             if len(self.output_buffer) > self.max_output_chars:
                 self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
@@ -574,7 +588,8 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
+    "heartbeat_seconds")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -626,6 +641,60 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # a read-only terminal tab without killing the process.
         self.on_output = None
         self.on_close = None
+        self._heartbeat_thread: Optional[threading.Thread] = None
+
+    # ── heartbeat ───────────────────────────────────────────────────────────
+    def arm_heartbeat(self, session: ProcessSession, seconds: int) -> int:
+        """Enable periodic heartbeat events for ``session``; returns the effective interval."""
+        seconds = max(int(seconds), HEARTBEAT_MIN_SECONDS)
+        session.heartbeat_seconds = seconds
+        session._heartbeat_last = time.time()
+        session._heartbeat_total_at_last = session.total_output_chars
+        self._ensure_heartbeat_thread()
+        return seconds
+
+    def _ensure_heartbeat_thread(self) -> None:
+        with self._lock:
+            if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+                return
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop, name="process-heartbeat", daemon=True)
+            self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        """One daemon thread for every heartbeat session: reader threads block on the pipe and
+        cannot keep time, and a per-process timer would leak one thread per job."""
+        while True:
+            time.sleep(HEARTBEAT_TICK_SECONDS)
+            now = time.time()
+            with self._lock:
+                due = [s for s in self._running.values()
+                       if s.heartbeat_seconds > 0 and not s.exited
+                       and now - s._heartbeat_last >= s.heartbeat_seconds]
+            for session in due:
+                self._emit_heartbeat(session, now)
+
+    def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
+        with session._lock:
+            delta = session.total_output_chars - session._heartbeat_total_at_last
+            output = session.output_buffer[-delta:] if delta > 0 else ""
+            session._heartbeat_total_at_last = session.total_output_chars
+        if len(output) > HEARTBEAT_OUTPUT_CHARS:
+            cut = len(output) - HEARTBEAT_OUTPUT_CHARS
+            output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
+        session._heartbeat_last = now
+        session._heartbeat_seq += 1
+        notification = {
+            **self._watch_event_base(session),
+            "type": "heartbeat",
+            "seq": session._heartbeat_seq,
+            "interval": session.heartbeat_seconds,
+            "elapsed": int(now - session.started_at) if session.started_at else 0,
+            "output": output,
+            "started_at": session.started_at,
+        }
+        _redact_process_result(notification)
+        self.completion_queue.put(notification)
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -2419,11 +2488,22 @@ PROCESS_SCHEMA = {
 }
 
 
+def transform_process_output(output: str, *, command: str, returncode: Optional[int], task_id: str = "") -> str:
+    """``transform_terminal_output`` seam for background-process output — the poll/wait/log/kill
+    results and the completion/heartbeat/watch notifications — so a plugin that rewrites terminal
+    output sees the same command output whether it ran in the foreground or not (#70760).
+    Same helper as the foreground path; callers redact AFTER it, never before, so a replacement
+    the plugin returns is still masked. ``returncode`` is None while the process is running and
+    ``env_type`` is not recorded per process, so it is passed empty."""
+    from tools.terminal_tool_result import _apply_output_transform_hook
+    return _apply_output_transform_hook(command, output, returncode, task_id or "", "")
+
+
 def _redact_process_result(result: dict) -> dict:
-    """Redact secrets from background-process output before it reaches the model,
-    session.db and CLI, mirroring the foreground ``terminal`` redaction so the two
-    surfaces can't diverge. Respects ``security.redact_secrets``; ``redact_terminal_output``
-    picks ``code_file`` from the recorded command. The command itself is redacted too.
+    """Transform, then redact secrets from background-process output before it reaches the
+    model, session.db and CLI, mirroring the foreground ``terminal`` pipeline (hook first,
+    redaction after) so the two surfaces can't diverge. Respects ``security.redact_secrets``;
+    ``redact_terminal_output`` picks ``code_file`` from the recorded command.
 
     The command string itself is also redacted in case it carried an inline credential. See #43025.
     """
@@ -2432,8 +2512,13 @@ def _redact_process_result(result: dict) -> dict:
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
+    # The hook's task_id is the process OWNER's (poll/log/wait results carry only session_id).
+    task_id = str(result.get("task_id") or "")
+    if not task_id and (session := process_registry.get(str(result.get("session_id") or ""))) is not None:
+        task_id = str(getattr(session, "task_id", "") or "")
     for key in ("output", "output_preview"):
         if isinstance(value := result.get(key), str) and value:
+            value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
             result[key] = redact_terminal_output(value, command)
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)

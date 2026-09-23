@@ -25,10 +25,18 @@ import pytest
 
 from hermes_cli import main as cli_main
 from hermes_cli import main_desktop
+from hermes_platform.host import facts
 
 PE_AMD64 = 0x8664
 PE_ARM64 = 0xAA64
 PE_I386 = 0x014C
+
+
+@pytest.fixture(autouse=True)
+def _clear_host_fact_caches():
+    facts.clear_caches()
+    yield
+    facts.clear_caches()
 
 
 def make_pe(path: Path, machine: int = PE_AMD64, *, truncate_to: int | None = None) -> Path:

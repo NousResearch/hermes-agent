@@ -1,12 +1,3 @@
-"""MCP targets of ``manage_connections``: the backend installs, enables and authorizes; the card is
-a projection of the operation and may only say approved, skipped or continue.
-
-An MCP target runs the same ``run.py`` lifecycle a managed connector runs. ``prepare`` starts an
-OAuth flow, or records the credentials an install still needs; the card's approval starts the
-install or the enable; ``observe`` reads the outcome on every tick. A session that attaches no
-connection callback runs every action at once and receives the authorization URL in the result.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -20,8 +11,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.gateway.config import operation_session_key
-from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
+from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
+from tools.connectors.targets import hosted_names, misrouted_to_mcp_error
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -31,20 +23,22 @@ logger = logging.getLogger(__name__)
 PREPARE_WAIT_SECONDS = 30.0
 
 NOTE = (
-    "Settled once; do not re-ask for any target the user skipped or that timed out. Connected "
+    "Settled once; do not re-ask on your own for any target the user skipped or that timed out, but "
+    "a later request from the USER for that same app is not a re-ask — run it. Connected "
     "targets' tools are available now through tool_describe/tool_call and are named under "
     "tools_listing. A target with discovery_error is authorized but its tools are unavailable; "
     "retry discovery with manage_connections using that target's authorize or install action "
     "without asking for consent again."
 )
 
-OFF_DESKTOP_NOTE = (
-    "No connection callback is attached in this session. Show any connect_url to the user so they "
+NO_CARD_NOTE = (
+    "No connection card is drawn for this turn. Show any connect_url to the user so they "
     "open it in a browser, then ask them to say when they are done. Connected targets' tools are "
     "available now through tool_describe/tool_call and are named under tools_listing. A target with "
     "discovery_error is authorized but its tools are unavailable; retry discovery with "
     "manage_connections using that target's authorize or install action without asking for consent "
-    "again. Do not re-ask for skipped or timed-out targets."
+    "again. Do not re-ask on your own for skipped or timed-out targets, but a later request from "
+    "the USER for that same app is not a re-ask — run it."
 )
 
 
@@ -70,6 +64,12 @@ def validate_mcp_names(action: str, names: List[str]) -> Optional[str]:
     unknown = [n for n in names if n not in allowed]
     if not unknown:
         return None
+    foreign = [n for n in unknown if n not in catalog and n not in configured]
+    if foreign:
+        hosted = hosted_names() or set()
+        misrouted = [n for n in foreign if n in hosted]
+        if misrouted:
+            return " ".join(misrouted_to_mcp_error(action, name) for name in misrouted)
     if action == "install":
         return (
             f"unknown MCP server(s) for install: {', '.join(unknown)}. Install works for "
@@ -136,12 +136,18 @@ class _CatalogBackend:
         after the server answered. A failure writes nothing, so a failed reinstall keeps the
         previous configuration."""
         from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
-        from hermes_cli.mcp_catalog import card_install_config
+        from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
         from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
 
         entry = _catalog_entry(name)
         _check_declared(name, entry, env)
         cfg = card_install_config(entry)
+        # `.env` is secrets-only: non-secret values (hostnames, client ids, workspace names) are
+        # inlined into the server block, the same split `install_entry` makes for the terminal path.
+        secret_names = {spec.name for spec in (entry.auth.env or []) if spec.secret}
+        for key, value in env.items():
+            if key not in secret_names and value:
+                cfg = _inline_non_secret_value(cfg, key, value)
         token = set_secret_scope({**dict(current_secret_scope() or {}), **env})
         try:
             tools = [str(tool[0]) for tool in (_probe_single_server(name, cfg) or [])]
@@ -149,7 +155,7 @@ class _CatalogBackend:
             reset_secret_scope(token)
         if not _save_mcp_server(name, cfg):
             raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
-        _save_env(env)
+        _save_env({k: v for k, v in env.items() if k in secret_names})
         return tools
 
     def enable(self, name: str) -> None:
@@ -668,7 +674,7 @@ _PREPARE = {"authorize": _start_oauth, "install": _declare_env, "enable": _nothi
 _APPROVE = {"authorize": _nothing, "install": _start_install, "enable": _do_enable}
 _RETRY = {"authorize": _start_oauth, "install": _start_install, "enable": _do_enable}
 _OBSERVE = {"authorize": _observe_oauth, "install": _observe_install, "enable": _observe_worker}
-_OFF_DESKTOP = {"authorize": _start_oauth, "install": _install_now, "enable": _do_enable}
+_NO_CARD = {"authorize": _start_oauth, "install": _install_now, "enable": _do_enable}
 
 
 # ---------------------------------------------------------------------------
@@ -757,21 +763,13 @@ def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-class _DetachedOperation(ConnectionOperation):
-    """The operation behind an off-desktop call. It is never registered in ``live`` and no card
-    renders it, so it publishes no ``connection.update``: a frame would reach a session whose
-    renderer knows nothing about the operation."""
-
-    on_change = None
-
-
-def _off_desktop_result(runner: _Runner, names: List[str], action: str, session_key: str) -> str:
-    operation = _DetachedOperation([Target(n, "mcp", action) for n in names], session_key=session_key)
+def _no_card_result(runner: _Runner, names: List[str], action: str, session_key: str) -> str:
+    operation = DetachedOperation([Target(n, "mcp", action) for n in names], session_key=session_key)
     for target in operation.targets:
-        runner.run(_OFF_DESKTOP, operation, target)
+        runner.run(_NO_CARD, operation, target)
     payload = operation.result(with_urls=True)
     payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
-    payload["note"] = OFF_DESKTOP_NOTE
+    payload["note"] = NO_CARD_NOTE
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -792,7 +790,7 @@ def run_mcp_operation(
     # Every interactive surface that renders the card attaches this callback. Registry dispatch and
     # messaging sessions attach none, so they receive the link instead of opening an unanswerable op.
     if connection_callback is None:
-        return _off_desktop_result(runner, names, action, session_key)
+        return _no_card_result(runner, names, action, session_key)
     try:
         return run_operation(
             [Target(n, "mcp", action) for n in names],

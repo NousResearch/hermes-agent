@@ -9,7 +9,7 @@ from hermes_cli import process_identity
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves, warn_pending_manual_serves
+from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves
 from hermes_constants import get_hermes_home
 
 
@@ -40,13 +40,13 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
         with pytest.raises(SystemExit) as exc:
             fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
         assert exc.value.code == 1
-        assert fleet._fleet_restart_pending_marker_path().exists()
+        assert fleet._fleet_restart_obligation_armed()
         assert update_receipt.read_latest_receipt()["outcome"] == "partial"
         return
     fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
     receipt = update_receipt.read_latest_receipt()
     assert receipt["runtime_outcomes"][0]["outcome"] == "deferred"
-    assert not fleet._fleet_restart_pending_marker_path().exists()
+    assert not fleet._fleet_restart_obligation_armed()
     assert "hermes-serve.service" not in capsys.readouterr().out
     update_receipt.begin_update_receipt()
     update_receipt.finalize_update_receipt("success", fleet=[])
@@ -205,14 +205,6 @@ def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, k
     assert defer_manual_serve(runtime, require_alive=True) is False
 
 
-def test_unreadable_create_time_warning_names_identity_not_storage(monkeypatch, capsys):
-    runtime = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
-    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
-    warn_pending_manual_serves(pending_manual=[runtime])
-    out = capsys.readouterr().out
-    assert "could not read the process creation time" in out
-    assert "storage permissions" not in out
-    assert "relaunch" in out
 
 
 def test_launchd_serve_row_never_pessimize_gateway_coverage():

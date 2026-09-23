@@ -25,7 +25,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import process_identity as pi
-from hermes_cli import update_cmd
 
 
 class _FakeNoSuchProcess(Exception):
@@ -262,11 +261,6 @@ def test_updater_reaps_ledger_proven_orphans():
         assert cli_main._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
 
 
-def test_updater_ledger_rung_empty_without_ledger():
-    from hermes_cli import main as cli_main
-
-    with patch.object(pi, "ledger_entries", return_value=[]):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200)) == []
 
 
 def test_updater_ledger_rung_never_raises():

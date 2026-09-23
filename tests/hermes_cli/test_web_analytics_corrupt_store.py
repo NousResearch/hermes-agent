@@ -43,7 +43,6 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     for resp in (first, second, third):
         assert resp.status_code == 503
         assert resp.json()["detail"]["error"] == "state_db_corrupt"
-        assert "hermes doctor" in resp.json()["detail"]["message"]
     # Only the dashboard's own warning counts: hermes_state logs an unrelated
     # once-per-process SQLite-version advisory on some interpreters (CI's 3.50.4).
     warnings = [

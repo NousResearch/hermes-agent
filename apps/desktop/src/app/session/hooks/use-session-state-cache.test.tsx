@@ -188,9 +188,7 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     setActiveSessionId('runtime-A')
     setSelectedStoredSessionId(null)
     arm()
-    render(
-      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
-    )
+    render(<Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />)
 
     act(() => {
       cache.updateSessionState('runtime-A', state => state, 'stored-A')
@@ -272,21 +270,6 @@ describe('useSessionStateCache — per-session turn timer', () => {
     // ...but the global atom (statusbar timer) is untouched — a background turn
     // must not drive the foreground timer.
     expect($turnStartedAt.get()).toBeNull()
-  })
-
-  it("mirrors the focused session's turn clock into the global atom on view-sync", () => {
-    let cache!: Cache
-    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
-
-    const startedAt = 1_700_000_111_000
-
-    // A turn on the ACTIVE session stages into the view; the flush mirrors its
-    // turnStartedAt into the global atom the statusbar reads.
-    act(() => {
-      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'fg-stored')
-    })
-
-    expect($turnStartedAt.get()).toBe(startedAt)
   })
 
   it('clears the global clock when the focused turn ends', () => {

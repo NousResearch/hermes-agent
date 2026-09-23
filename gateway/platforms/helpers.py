@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, MutableMapping, Optional
@@ -60,6 +61,12 @@ class MessageDeduplicator:
         self._seen.clear()
 
 
+# Worker-thread handoff used by the off-loop persist paths.  A module attribute
+# so tests can replace THIS seam instead of patching ``asyncio.to_thread``
+# globally.
+_to_thread = asyncio.to_thread
+
+
 async def cancel_task(task: Optional[asyncio.Task]) -> None:
     """Cancel *task* and wait for it to unwind. ``None``/finished tasks are no-ops; awaiting the
     current task would deadlock, so a self-cancel only requests cancellation. Exceptions the task
@@ -81,8 +88,9 @@ def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int)
         del store[next(iter(store))]
 
 
-# Markdown-stripping rules, applied in order: bold, italic, bold/italic underscore,
-# code fence markers, inline code, headings, links, then newline squeeze.
+# Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
+# underscore, code fence markers, inline code, headings. Links and the newline
+# squeeze run after these, in that order (see ``strip_markdown``).
 _STRIP_RULES = (
     (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), r"\1"),
     (re.compile(r"\*(.+?)\*", re.DOTALL), r"\1"),
@@ -91,16 +99,36 @@ _STRIP_RULES = (
     (re.compile(r"```[a-zA-Z0-9_+-]*\n?"), ""),
     (re.compile(r"`(.+?)`"), r"\1"),
     (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),
-    (re.compile(r"\[([^\]]+)\]\([^\)]+\)"), r"\1"),
-    (re.compile(r"\n{3,}"), "\n\n"),
 )
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
+_HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
+_NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
 
 
-def strip_markdown(text: str) -> str:
-    """Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.)."""
+def _keep_link_target(match: "re.Match[str]") -> str:
+    r"""``[label](https://url)`` -> ``label\nurl``.
+
+    The bare URL is the only thing a platform with its own data detection
+    (iMessage) can turn back into a tap target, so dropping it makes the link
+    unreachable rather than merely unformatted. Non-http targets (``mailto:``,
+    relative paths) are not auto-linked, so they keep the label-only behaviour.
+    """
+    label, target = match.group(1).strip(), match.group(2).strip()
+    if not _HTTP_TARGET_RE.match(target):
+        return match.group(1)
+    return target if label == target else f"{label}\n{target}"
+
+
+def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
+    r"""Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.).
+
+    ``keep_link_targets`` rewrites ``[label](https://url)`` as ``label\nurl``
+    instead of discarding the URL; pass it on platforms that auto-link bare URLs.
+    """
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
-    return text.strip()
+    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
+    return _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
 
 
 class ThreadParticipationTracker:
@@ -112,6 +140,19 @@ class ThreadParticipationTracker:
     def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
+        # ``mark_async`` runs the persist on a worker thread, which removes the
+        # accidental serialization the event loop used to provide.  Two locks,
+        # never nested the other way round:
+        #   ``_lock``    guards ONLY the in-memory set (``_remember``,
+        #                ``__contains__``, ``clear`` and the snapshot in
+        #                ``_save``); held for microseconds, safe on the loop.
+        #   ``_io_lock`` worker-only; serializes snapshot+write in ``_save`` so
+        #                two persists cannot interleave and lose an entry.
+        # ``_save`` must NOT hold ``_lock`` across ``os.replace``: the adapters'
+        # ``thread_id in tracker`` gate runs on the loop thread and would stall
+        # for the whole rename.
+        self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._threads: dict[str, None] = dict.fromkeys(str(t) for t in self._load())
 
     def _state_path(self) -> Path:
@@ -126,23 +167,56 @@ class ThreadParticipationTracker:
         return [str(thread_id) for thread_id in data] if isinstance(data, list) else []
 
     def _save(self) -> None:
-        thread_list = list(self._threads)
-        if len(thread_list) > self._max_tracked:
-            thread_list = thread_list[-self._max_tracked:]
-            self._threads = dict.fromkeys(thread_list)
-        atomic_json_write(self._state_path(), thread_list, indent=None)
+        with self._io_lock:
+            with self._lock:
+                thread_list = list(self._threads)
+                if len(thread_list) > self._max_tracked:
+                    thread_list = thread_list[-self._max_tracked:]
+                    self._threads = dict.fromkeys(thread_list)
+            atomic_json_write(self._state_path(), thread_list, indent=None)
+
+    def _remember(self, thread_id: str) -> bool:
+        """Record *thread_id* in memory; ``True`` when a persist is still owed.
+
+        The in-memory half stays synchronous even for :meth:`mark_async` so that
+        a ``thread_id in tracker`` check immediately after marking is correct --
+        the mention-gating logic in the adapters depends on that.
+        """
+        with self._lock:
+            if thread_id in self._threads:
+                return False
+            self._threads[thread_id] = None
+            return True
 
     def mark(self, thread_id: str) -> None:
-        """Mark *thread_id* as participated and persist."""
-        if thread_id not in self._threads:
-            self._threads[thread_id] = None
+        """Mark *thread_id* as participated and persist.
+
+        Blocking: ends in ``atomic_json_write`` -> ``os.replace``.  Coroutines
+        must use :meth:`mark_async` instead.
+        """
+        if self._remember(thread_id):
             self._save()
 
+    async def mark_async(self, thread_id: str) -> None:
+        """Off-loop form of :meth:`mark`.
+
+        ``_save`` ends in ``atomic_json_write`` -> ``os.replace``, whose
+        duration is unbounded under filesystem pressure.  Every caller of this
+        tracker sits on an inbound-message coroutine in the Discord and Matrix
+        adapters, so the rename must not be paid inline on the event loop -- it
+        stalls every other adapter's polling and every in-flight turn for as
+        long as it runs.
+        """
+        if self._remember(thread_id):
+            await _to_thread(self._save)
+
     def __contains__(self, thread_id: str) -> bool:
-        return thread_id in self._threads
+        with self._lock:
+            return thread_id in self._threads
 
     def clear(self) -> None:
-        self._threads.clear()
+        with self._lock:
+            self._threads.clear()
 
 
 def redact_phone(phone: str) -> str:

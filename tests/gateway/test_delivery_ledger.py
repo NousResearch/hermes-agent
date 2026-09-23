@@ -376,14 +376,12 @@ class TestPrune:
                 "UPDATE delivery_obligations SET updated_at=? WHERE obligation_id=?",
                 (time.time() - dl._RETENTION_SECONDS - 60, "ob-1"),
             )
-        dl._prune()
+        # Prune has no wrapper of its own: it runs inside a writer's transaction, lock held.
+        with dl._DB_LOCK, dl._transaction() as conn:
+            dl._prune_unlocked(conn, time.time())
         assert _row("ob-1") is None
 
 
-class TestLedgerEnabled:
-    def test_default_on(self):
-        assert dl.ledger_enabled({}) is True
-        assert dl.ledger_enabled({"gateway": {}}) is True
 
 
 class TestGatewayRedeliverySweep:

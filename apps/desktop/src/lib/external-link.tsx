@@ -269,7 +269,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
   // link helper drag that whole tree into anything that renders a link. The
   // tab lands a microtask later, which is invisible.
   void import('@/store/preview').then(({ openPreview }) =>
-    openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target }, 'explicit-link')
+    openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target })
   )
 }
 

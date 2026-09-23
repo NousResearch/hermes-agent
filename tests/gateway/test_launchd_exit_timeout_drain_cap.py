@@ -17,7 +17,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import gateway.restart as restart_mod
 from gateway.restart import (
     LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout,
@@ -28,27 +27,35 @@ from gateway.restart import (
 from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
 
-@pytest.mark.parametrize(
-    "platform, label, expected",
-    [
-        ("darwin", "ai.hermes.gateway", 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S),
-        # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged.
-        ("darwin", "application.com.example.ide.123", 180.0),
-        # launchd is darwin-only (same predicate as control_socket): a leaked label elsewhere is ignored.
-        ("linux", "ai.hermes.gateway", 180.0),
-    ],
-)
-def test_capped_drain_fits_inside_launchd_budget_minus_reserve(monkeypatch, platform, label, expected):
-    monkeypatch.setattr(restart_mod.sys, "platform", platform)
+def test_capped_drain_fits_inside_launchd_budget_minus_reserve():
     # The incident shape: configured 180s, launchd clamps to 60s.
     assert resolve_launchd_capped_drain(180.0, 60.0) == 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
     # Never extends a short drain; no launchd budget leaves the configured drain alone.
     assert resolve_launchd_capped_drain(20.0, 60.0) == 20.0
     assert resolve_launchd_capped_drain(180.0, None) == 180.0
-    # End to end through the reader: only ai.hermes jobs yield a budget.
+
+
+def _read_budget(label):
     fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
-    budget = read_launchd_exit_timeout_s(environ={"XPC_SERVICE_NAME": label}, uid=501, run=fake_run)
-    assert resolve_launchd_capped_drain(180.0, budget) == expected
+    return read_launchd_exit_timeout_s(environ={"XPC_SERVICE_NAME": label}, uid=501, run=fake_run)
+
+
+@pytest.mark.macos_only
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        ("ai.hermes.gateway", 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S),
+        # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged.
+        ("application.com.example.ide.123", 180.0),
+    ],
+)
+def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(label, expected):
+    assert resolve_launchd_capped_drain(180.0, _read_budget(label)) == expected
+
+
+@pytest.mark.linux_only
+def test_launchd_label_leaked_onto_linux_is_ignored():
+    assert _read_budget("ai.hermes.gateway") is None
 
 
 def _runner(*, drain: float, launchd: float | None, by_signal: bool):

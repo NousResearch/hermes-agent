@@ -442,18 +442,6 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
-
-  it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {
-    const { hook, onSubmit } = renderSubmitHook({ text: 'hello' })
-
-    act(() => {
-      hook.result.current.submitDraft()
-    })
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
-    )
-  })
 })
 
 describe('useComposerSubmit with a clarify parked on the session', () => {

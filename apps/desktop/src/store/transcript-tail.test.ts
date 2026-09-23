@@ -4,13 +4,15 @@ import {
   $transcriptTailBySessionId,
   clearTranscriptTailPaging,
   recordTranscriptTail,
-  rewindTranscriptTail
+  rewindTranscriptTail,
+  transcriptTailState
 } from './transcript-tail'
 
-const page = (count: number, limit = 10) => ({
-  messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
-  pagination: { limit, offset: 0 }
-}) as never
+const page = (count: number, limit = 10) =>
+  ({
+    messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
+    pagination: { limit, offset: 0 }
+  }) as never
 
 describe('recordTranscriptTail no-op suppression', () => {
   beforeEach(() => {
@@ -83,7 +85,12 @@ describe('rewindTranscriptTail', () => {
   })
 
   it('keeps a rewind on the same route the tail was hydrated with', () => {
-    recordTranscriptTail('s1', page(10), { connectionId: 'c1', profile: 'work' }, { connectionId: 'c1', profile: 'work' })
+    recordTranscriptTail(
+      's1',
+      page(10),
+      { connectionId: 'c1', profile: 'work' },
+      { connectionId: 'c1', profile: 'work' }
+    )
 
     expect(rewindTranscriptTail('s1', 4, { connectionId: 'c1', profile: 'work' })).toBe(true)
 
@@ -115,9 +122,36 @@ describe('rewindTranscriptTail', () => {
   })
 
   it('refuses an ambiguous rewind when the session has several owner scopes', () => {
-    recordTranscriptTail('s1', page(10), { connectionId: 'c1', profile: 'work' }, { connectionId: 'c1', profile: 'work' })
-    recordTranscriptTail('s1', page(10), { connectionId: 'c2', profile: 'work' }, { connectionId: 'c2', profile: 'work' })
+    recordTranscriptTail(
+      's1',
+      page(10),
+      { connectionId: 'c1', profile: 'work' },
+      { connectionId: 'c1', profile: 'work' }
+    )
+    recordTranscriptTail(
+      's1',
+      page(10),
+      { connectionId: 'c2', profile: 'work' },
+      { connectionId: 'c2', profile: 'work' }
+    )
 
     expect(rewindTranscriptTail('s1', 4)).toBe(false)
+  })
+})
+
+describe('recordTranscriptTail with an empty page', () => {
+  beforeEach(() => {
+    clearTranscriptTailPaging()
+  })
+
+  // The REST helper records the tail before the active refresh decides whether
+  // the page is authoritative. A transient zero-row read must not turn a
+  // known-truncated tail into "nothing earlier to show".
+  it('keeps an existing truncated entry so "Show earlier" stays armed', () => {
+    recordTranscriptTail('s1', page(10))
+
+    recordTranscriptTail('s1', page(0))
+
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
   })
 })

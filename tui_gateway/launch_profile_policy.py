@@ -51,28 +51,6 @@ def activate_multi_profile_hosting() -> None:
     set_multiplex_active(True)
 
 
-def _multiplex_disabled_explicitly() -> bool:
-    """True when this host has deliberately turned multiplexing OFF.
-
-    ``profiles_to_serve(multiplex=True)`` takes the flag as an argument and never reads config, so
-    the eager gate must consult the operator's setting itself or it arms the fail-closed guard on
-    hosts that pinned ``gateway.multiplex_profiles: false`` to keep per-profile gateways. Same
-    precedence the gateway boot uses: ``GATEWAY_MULTIPLEX_PROFILES`` over config.yaml; unset means
-    "not disabled" (the default is on, and the lazy backstop still fires either way).
-    """
-    from gateway.config import _coerce_bool, _env_multiplex_profiles_override
-    env_override = _env_multiplex_profiles_override()
-    if env_override is not None:
-        return not env_override
-    from hermes_cli.config import load_config
-    cfg = load_config() or {}
-    value = cfg.get("multiplex_profiles")
-    gateway_cfg = cfg.get("gateway")
-    if value is None and isinstance(gateway_cfg, dict):
-        value = gateway_cfg.get("multiplex_profiles")
-    return value is not None and not _coerce_bool(value, True)
-
-
 def _servable_profile_homes() -> set:
     """Resolved homes this host could be asked to serve: the launch home plus every profile dir
     carrying a real servability marker.
@@ -84,7 +62,7 @@ def _servable_profile_homes() -> set:
     from hermes_constants import named_profile_has_servable_identity
     from hermes_cli.profiles import profiles_to_serve
 
-    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True)
+    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True, include_standalone=True)
              if name == "default" or named_profile_has_servable_identity(home)}
     homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
     return homes
@@ -102,21 +80,19 @@ def activate_multi_profile_hosting_eagerly() -> bool:
     boot step: the frozen snapshot is the only source for launch keys with no ``.env`` to rebuild
     from, so every credential the boot still injects must already be in ``os.environ``.
 
+    ``gateway.multiplex_profiles: false`` is deliberately NOT consulted: it is retired as a
+    topology opt-out, and a multi-home host that skipped activation because of a stale ``false``
+    would serve a second profile with the LAUNCH profile's credentials — the exact fail-open this
+    guard exists to prevent.
+
     A genuinely single-profile host still never activates (byte-identical behaviour, ``os.environ``
-    precedence preserved), and so does one that pinned ``gateway.multiplex_profiles: false``. An
-    unreadable profiles directory fails CLOSED: we cannot prove the host is single-profile, and the
-    lazy backstop only fires once a request has already been answered. Returns True when this call
-    activated hosting.
+    precedence preserved). An unreadable profiles directory fails CLOSED: we cannot prove the host
+    is single-profile, and the lazy backstop only fires once a request has already been answered.
+    Returns True when this call activated hosting.
     """
     from agent.secret_scope import is_multiplex_active
     if is_multiplex_active():
         return False
-    try:
-        if _multiplex_disabled_explicitly():
-            return False
-    except Exception:
-        logger.warning("Could not read gateway.multiplex_profiles; continuing with the profile probe",
-                       exc_info=True)
     try:
         homes = _servable_profile_homes()
     except Exception:
@@ -174,14 +150,23 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
 
 @contextlib.contextmanager
 def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
-    """Bind the launch profile's own runtime scope for one body: ``launch_secret_scope`` plus its
-    terminal policy over the frozen launch ``TERMINAL_*`` overlay. No HERMES_HOME override — the
-    launch home IS the process home. For hosts whose launch-profile bodies are not RPC sessions
-    (the standalone messaging gateway after a hosted room activated multiplexing, #112878)."""
+    """Bind the launch profile's own runtime scope for one body: HERMES_HOME override naming the
+    launch home, ``launch_secret_scope``, and its terminal policy over the frozen launch
+    ``TERMINAL_*`` overlay. For hosts whose launch-profile bodies are not RPC sessions (the
+    standalone messaging gateway after a hosted room activated multiplexing, #112878).
+
+    The home override is bound even though the launch home IS the process home: under multiplexing
+    "override unset" is the fail-closed signal for an UNBOUND context (``serves_routed_profile``,
+    plugin runtime bindings such as OMH's ``pre_tool_call`` gate, per-home slots keyed on the
+    override), so a launch-profile turn without it was indistinguishable from no turn at all and
+    every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
+    (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
     home = Path(launch_home)
+    home_token = set_hermes_home_override(str(home))
     secret_token = set_secret_scope(launch_secret_scope(home))
     terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
     try:
@@ -189,6 +174,7 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
     finally:
         reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
 
 
 def launch_profile_scope_if_multiplexed():

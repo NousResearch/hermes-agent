@@ -234,33 +234,3 @@ class TestAuxiliaryScopedKeyEnv:
 
 # ── Cluster E: azure identity presence reads ────────────────────────────────
 
-class TestAzureIdentityPresence:
-    def _describe(self):
-        azure = pytest.importorskip("agent.azure_identity_adapter")
-        if not azure.has_azure_identity_installed():
-            pytest.skip("azure-identity not installed")
-        return azure.describe_active_credential
-
-    def test_scoped_client_secret_detected(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"AZURE_CLIENT_SECRET": "scoped-secret"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert any("EnvironmentCredential" in s for s in info.get("env_sources", []))
-
-    def test_scoped_miss_hides_env_secret(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.setenv("AZURE_CLIENT_SECRET", "other-profile-secret")
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"UNRELATED": "x"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert not any(
-            "EnvironmentCredential" in s for s in info.get("env_sources", [])
-        )

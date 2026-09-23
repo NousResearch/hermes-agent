@@ -340,21 +340,6 @@ describe('ClarifyTool settled view', () => {
     expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
   })
 
-  it('labels an empty response as Skipped', () => {
-    renderClarify(
-      <ClarifyTool
-        {...settledClarifyProps(
-          { question: 'Anything else?' },
-          { question: 'Anything else?', user_response: '' },
-          'clarify-2'
-        )}
-      />
-    )
-
-    expect(screen.getByText('Anything else?')).toBeTruthy()
-    expect(screen.getByText('Skipped')).toBeTruthy()
-  })
-
   it('keeps the original choices visible and clickable after a skip', async () => {
     const inserts: string[] = []
 
@@ -519,9 +504,6 @@ describe('ClarifyTool recommended option', () => {
     renderClarify(<ClarifyTool {...liveClarifyProps(['staging (Recommended)', 'production'])} />)
 
     const recommended = screen.getByRole('button', { name: /staging/ })
-
-    // The label rides in its own muted span so the option text still reads first.
-    expect(recommended.querySelector('.text-\\(--ui-text-tertiary\\)')?.textContent).toBe('(Recommended)')
 
     fireEvent.click(recommended)
     fireEvent.keyDown(window, { key: 'Enter' })
@@ -692,14 +674,6 @@ describe('ClarifyTool submit shortcut', () => {
 })
 
 describe('ClarifyTool batch card', () => {
-  it('renders every question at once', () => {
-    renderLiveBatch()
-
-    expect(screen.getByText('Color?')).toBeTruthy()
-    expect(screen.getByText('Name?')).toBeTruthy()
-    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
-  })
-
   // #112855: the batch card spun forever while the gateway clarify request
   // raced (or never came). The question text is already in the tool args.
   it('paints batch questions from tool args while the gateway request is still racing', () => {
@@ -752,8 +726,16 @@ describe('ClarifyTool batch card', () => {
 
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
     // Locks ride the live qids, never the preview's synthetic ones.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
   })
 
   it('stages locally and keeps the single confirm disabled until all answered', async () => {

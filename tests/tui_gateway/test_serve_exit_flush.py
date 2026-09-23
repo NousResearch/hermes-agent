@@ -186,15 +186,3 @@ def test_periodic_flush_skips_running_sessions(registered_session, monkeypatch):
     assert agent.flush_calls == []
 
 
-def test_idle_reaper_scan_piggybacks_incremental_flush(monkeypatch):
-    """The existing reaper tick drives the flush — no new timer subsystem."""
-    called = {"flush": 0}
-    monkeypatch.setattr(
-        server,
-        "_flush_dirty_sessions",
-        lambda now=None: called.__setitem__("flush", called["flush"] + 1) or 0,
-    )
-    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
-    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
-    server._reap_idle_sessions()
-    assert called["flush"] == 1

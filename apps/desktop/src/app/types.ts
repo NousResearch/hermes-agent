@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { Tiered } from '@/store/interface-mode'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
@@ -123,15 +124,9 @@ export interface HandoffFailResponse {
 }
 
 export type SidebarNavId =
-  | 'artifacts'
-  | 'capabilities'
-  | 'command-center'
-  | 'cron'
-  | 'messaging'
-  | 'new-session'
-  | 'settings'
+  'artifacts' | 'capabilities' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings'
 
-export interface SidebarNavItem {
+export interface SidebarNavItem extends Tiered {
   /** Built-in view id, or a contributed row's namespaced contribution id. */
   id: SidebarNavId | (string & {})
   label: string

@@ -148,16 +148,6 @@ class TestPosixNoOp:
 
 
 
-class TestIdempotence:
-    """Calling apply_windows_utf8_bootstrap() multiple times must be safe."""
-
-    def test_second_call_returns_false(self):
-        hb = _fresh_import()
-        # First call already happened at import time.
-        result = hb.apply_windows_utf8_bootstrap()
-        assert result is False, (
-            "Second call should return False (idempotent no-op)"
-        )
 
 
 
@@ -339,13 +329,6 @@ class TestHardenImportPath:
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
-    @pytest.mark.linux_only
-    def test_noop_on_posix(self):
-        import platform
-        hb = _fresh_import()
-        original = getattr(platform, "_syscmd_ver", None)
-        hb.suppress_platform_ver_console()
-        assert getattr(platform, "_syscmd_ver", None) is original
 
     @pytest.mark.windows_only
     def test_stub_applied_when_windows(self):

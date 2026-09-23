@@ -136,7 +136,6 @@ import { createDesktopShellOverlayRuntime } from './desktop-shell-overlay-runtim
 import { createDesktopShellRuntime } from './desktop-shell-runtime'
 import { createDesktopSshBootstrapRuntime } from './desktop-ssh-bootstrap-runtime'
 import { createDesktopSshSessionRuntime } from './desktop-ssh-session-runtime'
-import { resolveRemovableAppPath } from './desktop-uninstall'
 import { createDesktopUpdateCheckRuntime } from './desktop-update-check-runtime'
 import { createDesktopWindowEventsRuntime } from './desktop-window-events-runtime'
 import { registerDesktopWindowIpcRuntime } from './desktop-window-ipc-runtime'

@@ -89,7 +89,7 @@ def _resolve_spec(
     *,
     registry: Any | None,
 ) -> MutationSpec | None:
-    active_registry = registry
+    active_registry: Any | None = registry
     if active_registry is None:
         try:
             from tools.registry import registry as active_registry
@@ -224,7 +224,7 @@ def record_tool_mutation(
     event = MutationEvent(
         source_event_key=key,
         status=final_status,
-        action_type=spec.action_type,
+        action_type=MutationType(spec.action_type),
         title=title,
         description=description,
         provider=spec.provider,

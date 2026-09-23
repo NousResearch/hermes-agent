@@ -111,7 +111,7 @@ def action_capabilities() -> dict[str, object]:
     return ActionCapabilities(
         schema_version="1",
         policy_version="1",
-        methods=list(ACTION_METHODS),
+        methods=["execute_one_shot", "list_mutations", "start_loop"],
     ).model_dump(mode="json")
 
 

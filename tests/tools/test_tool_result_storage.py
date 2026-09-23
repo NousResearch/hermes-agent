@@ -586,10 +586,10 @@ def test_cold_spill_preserves_task_and_returns_readable_path(monkeypatch, backen
         result = storage.maybe_persist_tool_result(payload, "mcp_test", "cold", threshold=100, task_id="cold-task")
     path = storage.extract_persisted_path(result)
     assert path is not None
-    assert (storage.get_spillover_dir() / "cold.txt").read_text() == payload
+    assert (storage.get_spillover_dir() / "cold.txt").read_text(encoding="utf-8") == payload
     if backend == "local":
         initialize.assert_not_called()
-        assert Path(path).read_text() == payload
+        assert Path(path).read_text(encoding="utf-8") == payload
     else:
         initialize.assert_called_once_with("cold-task")
         assert sandbox.execute.call_args.args[0].startswith("test -r ")

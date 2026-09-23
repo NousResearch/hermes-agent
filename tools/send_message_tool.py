@@ -8,6 +8,7 @@ import os
 from functools import partial
 
 from agent.secret_scope import get_secret
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -233,11 +234,27 @@ def _handle_send(args):
     media_dropped: list = []
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, dropped=media_dropped)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
-    used_home_channel = not chat_id
-    if used_home_channel:
-        chat_id, err = _home_chat_id(config, platform, platform_name)
-        if err:
-            return tool_error(err)
+    used_home_channel = False
+    if not chat_id:
+        # A2A confirmations return to the originating gateway session when
+        # the current session is an A2A context with a recorded origin.
+        try:
+            from plugins.platforms.a2a.tools import _current_a2a_origin_target
+            origin_target = _current_a2a_origin_target(platform_name)
+        except Exception:
+            origin_target = {}
+        if origin_target:
+            chat_id = origin_target["chat_id"]
+            thread_id = origin_target.get("thread_id") or thread_id
+            logger.info(
+                "send_message: A2A session confirmation routed to origin %s chat %s (thread %s)",
+                platform_name, chat_id, thread_id,
+            )
+        else:
+            used_home_channel = True
+            chat_id, err = _home_chat_id(config, platform, platform_name)
+            if err:
+                return tool_error(err)
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal

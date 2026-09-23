@@ -603,7 +603,19 @@ def _fetch_anthropic_account_usage(
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
     if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
-        details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
+        # Policy: assume two-decimal minor units when precision is absent or invalid.
+        decimal_places = extra.get("decimal_places", 2)
+        if (
+            isinstance(decimal_places, bool)
+            or not isinstance(decimal_places, int)
+            or not 0 <= decimal_places <= 6
+        ):
+            decimal_places = 2
+        scale = 10 ** decimal_places
+        details.append(
+            f"Extra usage: {used_credits / scale:.{decimal_places}f} / "
+            f"{monthly_limit / scale:.{decimal_places}f} {extra.get('currency') or 'USD'}"
+        )
     return _snapshot("anthropic", "oauth_usage_api", windows, details)
 
 

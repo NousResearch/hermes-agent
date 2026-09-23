@@ -17597,6 +17597,21 @@
             ],
             "default": null,
             "title": "Connectors"
+          },
+          "plugins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plugins"
           }
         },
         "title": "OnboardingAnswers",

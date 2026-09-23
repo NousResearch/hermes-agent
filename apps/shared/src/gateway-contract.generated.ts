@@ -1824,6 +1824,7 @@ export interface OnboardingAnswers {
   layout?: string | null
   focus?: string[] | null
   connectors?: string[] | null
+  plugins?: string[] | null
   [key: string]: unknown
 }
 export interface ProfilesRememberOnboardingResult {

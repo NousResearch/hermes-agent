@@ -11,8 +11,19 @@ export interface OnboardingAnswers {
   committed: string[]
   connectors: string[]
   context: string
+  /** Catalog plugin names picked on the connectors card. A pick is a wish, not an install. */
+  plugins: string[]
+  /** The settled install card's result per plugin, written when the guide's manage_catalog card settles. A
+   *  picked plugin with no entry was not offered for install (the chosen task did not need it). */
+  pluginOutcomes: Record<string, PluginOutcome>
   name: string
   layout: string
+}
+
+export interface PluginOutcome {
+  state: 'failed' | 'installed' | 'skipped'
+  detail: string
+  tools: string[]
 }
 
 // Keep existing fork users' answers when they move to upstream.
@@ -24,7 +35,9 @@ export const DEFAULT_ANSWERS: OnboardingAnswers = {
   connectors: [],
   context: '',
   name: '',
-  layout: 'basic'
+  layout: 'basic',
+  plugins: [],
+  pluginOutcomes: {}
 }
 
 export function loadAnswers(): OnboardingAnswers {
@@ -38,7 +51,9 @@ export function loadAnswers(): OnboardingAnswers {
     connectors: raw?.connectors ?? [...DEFAULT_ANSWERS.connectors],
     context: raw?.context ?? DEFAULT_ANSWERS.context,
     name: raw?.name ?? DEFAULT_ANSWERS.name,
-    layout: raw?.layout ?? DEFAULT_ANSWERS.layout
+    layout: raw?.layout ?? DEFAULT_ANSWERS.layout,
+    plugins: raw?.plugins ?? [],
+    pluginOutcomes: raw?.pluginOutcomes ?? {}
   }
 }
 

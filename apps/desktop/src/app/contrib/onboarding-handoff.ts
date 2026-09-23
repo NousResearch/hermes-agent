@@ -27,6 +27,7 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $onboardingAnswers } from '@/store/onboarding-answers'
 import { beginOnboardingHandoff, completeOnboardingFlow } from '@/store/onboarding-gate'
+import { watchPluginOutcomes } from '@/store/onboarding-plugin-outcomes'
 import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayAgent } from '@/store/profile'
 import {
   $activeSessionId,
@@ -66,6 +67,10 @@ export function useOnboardingHandoff({
   // session confirms its start.
   const setupHandoff = useStore($setupHandoff)
   const selectedStoredId = useStore($selectedStoredSessionId)
+
+  // The guide's install card settles before its handoff card; its per-plugin result rides the answers into the
+  // build session's runbook.
+  useEffect(() => watchPluginOutcomes(() => $setupSession.get()?.runtimeId), [])
 
   // Resume an existing receipt when the welcome chat is reopened after a relaunch. Recovery reads the saved
   // receipt only; it never creates a new build session.
@@ -163,7 +168,7 @@ export function useOnboardingHandoff({
               const result = await request<{ saved?: boolean; profile?: string; target?: string }>(
                 owner,
                 'profiles.remember_onboarding',
-                { answers: { ...answers, connectors: answers.connectors.map(connectorTitle) } }
+                { answers: { ...answers, connectors: answers.connectors.map(connectorTitle), plugins: answers.plugins } }
               )
 
               if (!result.saved || result.profile !== BUILD_PROFILE || result.target !== 'user') {

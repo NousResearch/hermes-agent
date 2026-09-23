@@ -792,12 +792,12 @@ from hermes_cli.main_platform_setup import (
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
+from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 from hermes_cli.main_dashboard import (
     _attach_to_host_backend,
     _finalize_update_output,
     _find_stale_dashboard_pids,
     _install_hangup_protection,
-    _is_desktop_owned_backend,
     _is_electron_packaged_web_dist,
     _maybe_setup_dashboard_auth_interactively,
     _read_ssh_session_token_file,

@@ -3180,6 +3180,7 @@ class TestDesktopHostRendezvousIsolation:
         import hermes_cli.web_server as web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
         claimed = []
         monkeypatch.setattr(hr, "claim_host_lock", lambda role: claimed.append(role))
 
@@ -3188,11 +3189,13 @@ class TestDesktopHostRendezvousIsolation:
         assert claimed == []
 
     def test_standalone_backend_still_claims_the_host_serve_record(self, monkeypatch):
-        """The Desktop exclusion must not alter standalone dashboard discovery."""
+        """The Desktop exclusion must not alter standalone dashboard discovery — including a
+        supervised service whose shell merely inherited HERMES_DESKTOP=1 without the token."""
         from gateway import host_rendezvous as hr
         import hermes_cli.web_server as web_server
 
-        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
         claimed = []
         published = []
         monkeypatch.setattr(

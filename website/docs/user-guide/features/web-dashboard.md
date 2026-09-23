@@ -182,7 +182,17 @@ Set a username and password, then run the dashboard bound to a reachable address
 EnvironmentFile=%h/.hermes/.env
 ExecStart=/path/to/venv/bin/python -m hermes_cli.main dashboard \
     --host 0.0.0.0 --port 9119 --no-open
+Restart=always
+RestartSec=10
+# Exit 78 (EX_CONFIG) is a deliberate refusal ("this host is already served by PID … on
+# another port"); parking on it beats an infinite restart loop with nothing listening.
+RestartPreventExitStatus=78
 ```
+
+One backend serves a whole host, so when `hermes dashboard` finds a live backend it cannot
+serve your typed `--host`/`--port` with, it refuses with exit 78 and names the owner. Stop that
+backend, or give the service its own dedicated server with `--isolated`. The Desktop app's own
+loopback backends never claim host ownership, so the two can coexist without either flag.
 
 with `~/.hermes/.env` containing:
 

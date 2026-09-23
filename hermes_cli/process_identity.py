@@ -218,6 +218,20 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     return _append_entry(entry)
 
 
+def is_desktop_owned_backend() -> bool:
+    """Whether this process is the backend Desktop spawned and owns.
+
+    ``HERMES_DESKTOP=1`` is inherited by every shell and agent child the app launches, so the
+    flag alone is not ownership proof (same class as #116107). Desktop mints a per-spawn
+    ``HERMES_DASHBOARD_SESSION_TOKEN`` only for its backend; the terminal pane never receives
+    it and the terminal tool's env policy strips it from agent children.
+    """
+    return (
+        os.environ.get("HERMES_DESKTOP") == "1"
+        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"))
+    )
+
+
 def _desktop_spawner_identity() -> tuple[Optional[int], Optional[float]]:
     """Spawner ``(pid, create_time)`` from the Electron app's HERMES_PARENT_PID (+ optional
     ``winms:<ms>`` start marker) parent-death watchdog vars, so ledger lineage works with every

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import host_rendezvous as hr
+from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 from hermes_cli.main_dashboard import _attach_to_host_backend
 
 
@@ -164,7 +165,9 @@ def test_an_explicit_endpoint_the_owner_cannot_serve_is_refused(host_dir, owner,
     with pytest.raises(SystemExit) as exc:
         _attach_to_host_backend(_args(**over), headless_backend=True)
 
-    assert exc.value.code == 1
+    # 78 (EX_CONFIG) is the deliberate refusal a supervisor parks on; exit 1 under
+    # Restart=always was an infinite loop with nothing listening (#119824).
+    assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
     assert f"PID {os.getpid()}" in capsys.readouterr().out
 
 
@@ -177,5 +180,5 @@ def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys
     with pytest.raises(SystemExit) as exc:
         _attach_to_host_backend(_args(), headless_backend=False)
 
-    assert exc.value.code == 1
+    assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
     assert "no dashboard UI" in capsys.readouterr().out

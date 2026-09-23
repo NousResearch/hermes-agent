@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
+from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
@@ -751,20 +752,6 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
-def _is_desktop_owned_backend() -> bool:
-    """Whether this process is the backend that Desktop spawned and owns.
-
-    ``HERMES_DESKTOP`` is a marker inherited by shells launched from Desktop;
-    it is not ownership proof. Desktop gives only its backend a fresh session
-    credential, so requiring both values keeps inherited terminal commands on
-    the normal one-host-backend path.
-    """
-    return (
-        os.environ.get("HERMES_DESKTOP") == "1"
-        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"))
-    )
-
-
 def _host_backend_attachment():
     """Live host serve/dashboard record to attach to, or ``None``.
 
@@ -834,8 +821,10 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
       graceful-shutdown window or a foreign listener that inherited the port) — a supervisor or
       `hermes update` relaunch landing in that window would otherwise exit 0 with NOTHING
       listening, reporting success for a dead service;
-    * an explicitly typed ``--port``/``--host`` the owner cannot serve is a non-zero REFUSAL
-      naming the owner, never a silent redirect;
+    * an explicitly typed ``--port``/``--host`` the owner cannot serve is a REFUSAL naming the
+      owner, never a silent redirect. It exits 78 (EX_CONFIG), the deliberate-refusal code
+      ``RestartPreventExitStatus=78`` parks on: exit 1 under ``Restart=always`` was an infinite
+      restart loop with nothing listening on the ingress port (#119824);
     * a `hermes dashboard` user is never handed a headless backend's URL (no SPA behind it).
 
     Returns normally — leaving the caller to BIND — when no owner answers.
@@ -847,6 +836,7 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         return
 
     from gateway import host_rendezvous as hr
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
     identity = hr.probe_owner(record)
     if identity is None:
@@ -860,13 +850,13 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         print(f"Refusing to start: this host is already served by {hr.describe(record)}.")
         print(f"  You asked for {conflict}.")
         print("  Stop that backend, or drop the flag to use the running one.")
-        sys.exit(1)
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     if not headless_backend and not identity.get("servesSpa"):
         print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
               "which is a headless `hermes serve` backend with no dashboard UI.")
         print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
-        sys.exit(1)
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     try:
         from hermes_cli.profiles import get_active_profile_name

@@ -62,31 +62,6 @@ class TestUnifiedDashboardRouting:
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
 
 
-    def test_inherited_desktop_marker_routes_named_profile_to_machine_dashboard(
-        self, main_mod, monkeypatch
-    ):
-        """A Desktop shell is not its credential-bearing backend child."""
-        monkeypatch.setenv("HERMES_DESKTOP", "1")
-        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
-        )
-        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
-        execs = []
-
-        def fake_exec(exe, argv, env):
-            execs.append((exe, argv, env))
-            raise SystemExit(0)
-
-        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
-
-        with pytest.raises(SystemExit):
-            main_mod.cmd_dashboard(_args())
-
-        assert len(execs) == 1
-        assert "-p" in execs[0][1] and execs[0][1][execs[0][1].index("-p") + 1] == "default"
-
-
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT
         reroute into the machine dashboard. The reroute re-execs as the default

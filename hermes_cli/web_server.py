@@ -1212,11 +1212,15 @@ def _best_effort(what: str, fn) -> None:
 
 
 def _publish_host_rendezvous(host: str, port: int) -> None:
-    """Publish the machine-level serve owner unless this is a Desktop pool child."""
-    # Desktop-spawned backends have a per-profile lifecycle. Publishing one as
-    # the host owner makes a later independently supervised dashboard attach to
-    # (or refuse behind) the private loopback child instead of its public bind.
-    if os.getenv("HERMES_DESKTOP") == "1":
+    """Publish the machine-level serve owner unless this is a Desktop-owned pool child."""
+    # Desktop-spawned backends (flag + per-spawn token; the bare flag is inherited by every
+    # Desktop shell) are loopback, random-port and per-profile. Recording one as the host owner
+    # made a later independently supervised `dashboard --host 0.0.0.0 --port N` refuse behind
+    # the private child on every restart (#119824). Desktop discovers its own backends through
+    # spawn-ledger.json, never through this record.
+    from hermes_cli.process_identity import is_desktop_owned_backend
+
+    if is_desktop_owned_backend():
         return
 
     from gateway import host_rendezvous as hr

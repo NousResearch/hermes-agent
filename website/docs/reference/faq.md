@@ -17,7 +17,7 @@ Quick answers and fixes for the most common questions and issues.
 Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 - **[OpenRouter](https://openrouter.ai/)** — access hundreds of models through one API key (recommended for flexibility)
-- **[Nous Portal](/integrations/nous-portal)** — Nous Research's subscription gateway — 300+ models plus web/image/TTS/browser through one OAuth login (recommended for newcomers)
+- **[Nous Portal](../integrations/nous-portal.md)** — Nous Research's subscription gateway — 300+ models plus web/image/TTS/browser through one OAuth login (recommended for newcomers)
 - **OpenAI** — GPT-5.4, GPT-5-codex, GPT-4.1, GPT-4o, etc.
 - **Anthropic** — Claude models (direct API, OAuth via `hermes auth add anthropic`, OpenRouter, or any compatible proxy)
 - **Google** — Gemini models (direct API via `gemini` provider, OpenRouter, or compatible proxy)
@@ -179,6 +179,8 @@ terminal:
 
 Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
 
+Independently of the init files, every terminal command's `PATH` is completed with the standard system directories (`/usr/local/bin`, `/opt/homebrew/bin`, …), the Hermes-managed runtime dirs, and `~/.local/bin` when it exists (the `pip --user` / `pipx` / `uv tool` install target) — appended after your own entries, so precedence is unchanged. This covers backends started with a thin non-interactive PATH (systemd, GUI launchers, the Desktop SSH remote backend) without any configuration.
+
 To disable the auto-source behaviour (strict login-shell semantics only):
 
 ```yaml
@@ -212,6 +214,37 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ---
 
 ### Provider & Model Issues
+
+#### The agent says "Hermes policy" or "Hermes guardrails" refused my request
+
+A model cannot reliably identify why it refused a request. If the refusal appears only in the assistant's prose, its claim that a hidden Hermes runtime policy caused it may be a hallucinated explanation or a restriction applied by the selected model or provider.
+
+Hermes enforcement is explicit: a blocked tool action returns a tool error naming the denied command or path, and an approval-required action shows an approval prompt. Hermes does not silently turn those execution controls into a general content-refusal layer. Provider-level controls can still apply when configured, such as Amazon Bedrock Guardrails.
+
+To isolate the source:
+
+1. Run `/status` to confirm the active model and provider.
+2. Check whether the refusal includes an actual Hermes tool error or approval prompt. If it is prose only, do not treat the model's attribution as runtime evidence.
+3. Retry in a fresh session with another configured model or provider. A refusal that changes with the model is model/provider behavior, not a Hermes execution control.
+4. If an explicit tool error appears, use its exact text when reporting the problem.
+
+See [Security](../user-guide/security.md) for Hermes' documented execution controls and [Providers](../integrations/providers.md) for provider configuration.
+
+#### "Could not open a stream to `<host>` after N attempts (request X KB)"
+
+**Meaning:** every connect attempt to that endpoint failed before a single stream event arrived, so nothing was billed; the normal retry/fallback chain still runs afterwards. The line names the host actually contacted, how many attempts were made, and the serialized request size — the three things that separate an outage from a request-size limit.
+
+**Solution:** if the request is large (hundreds of KB — long coding sessions reach this once the context grows) and short new chats work, the endpoint or a proxy in front of it is likely rejecting bodies that size: raise its body limit, or run `/compress` to shrink the context. If the request is small, the endpoint is unreachable — check the `base_url`, then retry with `/retry`. `logs/agent.log` records the exception chain for each attempt.
+
+#### Messaging replies: "interrupted mid-request" vs "not running or is unreachable" vs "could not reach"
+
+Chat surfaces (Telegram, Discord, Slack, …) never show the raw transport exception; the gateway maps it to one of three short replies, and the difference tells you where to look:
+
+| Reply | What happened | What to do |
+|---|---|---|
+| "The connection to the AI model service was **interrupted mid-request** — usually transient." | An established connection was cut (`Connection reset by peer`, EOF, `RemoteProtocolError`). The endpoint answered the connect, so it is running. | `/retry`. If it recurs on large requests, see the "stream" entry above. |
+| "The AI model service isn't reachable right now — the configured model endpoint is **not running or is unreachable**." | Nothing accepted the connection (`Connection refused`, no route to host, DNS failure). | Start the model server / check `base_url`, then `/retry`; `hermes doctor` on the host. |
+| "Hermes **could not reach** the AI model service (no further detail from the SDK)." | The SDK reported a generic `APIConnectionError` and kept no cause; neither of the above is certain. | `/retry`; `hermes doctor` if it persists. The raw exception is in `hermes logs`. |
 
 #### `/model` only shows one provider / can't switch providers
 
@@ -269,7 +302,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 hermes model
 
 # Set a valid model
-hermes config set HERMES_MODEL anthropic/claude-opus-4.7
+hermes config set model.default anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
@@ -303,6 +336,10 @@ hermes chat --model openrouter/google/gemini-3-flash-preview
 If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
 
 Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
+
+**Local servers (llama.cpp, Ollama) that go silent instead of erroring:** when a provider rejects a request as too large, Hermes compacts the conversation and rebuilds the request. Hermes re-measures the *complete* rebuilt request (system prompt + tool schemas + messages) before retrying, and runs further bounded compaction passes if it is still over the threshold. If the request still cannot fit, the turn ends with `Context length exceeded: compression could not reduce the rebuilt request below the safe threshold` rather than sending an oversized request that llama.cpp would silently truncate (`stop processing: n_tokens = 65535, truncated = 1` in the server log). If you hit that message, the fix is almost always the configured `context_length` above: make it match the server's actual `-c` / `--ctx-size`.
+
+**"The model server rejected this request as too large, but this conversation is only about N tokens…":** the server said "context exceeded" without quoting any measurement, while Hermes's own estimate of the request is far below the window it knows for the model — so it does **not** compress or blame the conversation, and the turn stays retryable. On single-slot local servers (LM Studio, Ollama) this is almost always another request holding the server's context at that moment — typically a background memory review from an earlier session (`thread=bg-review` in `logs/agent.log`). Wait a moment and `/retry`. If it recurs with no other Hermes process running, the server is loading the model with a smaller window than Hermes assumes: raise the server's context setting or lower `model.context_length` to match it.
 
 To fix context detection, set it explicitly:
 
@@ -513,7 +550,7 @@ hermes prompt-size
 /usage
 ```
 
-If the baseline looks high before you've typed anything, that's the fixed prompt budget — the system prompt plus tool schemas sent on every call. Run [`hermes prompt-size`](/reference/cli-commands#hermes-prompt-size) to measure it, then trim: disable toolsets you don't use (`hermes tools`) and uninstall or disable skills you don't need (`hermes skills`).
+If the baseline looks high before you've typed anything, that's the fixed prompt budget — the system prompt plus tool schemas sent on every call. Run [`hermes prompt-size`](./cli-commands.md#hermes-prompt-size) to measure it, then trim: disable toolsets you don't use (`hermes tools`) and uninstall or disable skills you don't need (`hermes skills`).
 
 :::tip
 Use `/compress` regularly during long sessions. It summarizes the conversation history and reduces token usage significantly while preserving context.
@@ -553,7 +590,7 @@ node --version
 npx --version
 
 # Test the server manually
-npx -y @modelcontextprotocol/server-filesystem /tmp
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/dir
 ```
 
 Verify your `~/.hermes/config.yaml` MCP configuration:
@@ -584,9 +621,9 @@ hermes chat
 ```
 
 See also:
-- [MCP (Model Context Protocol)](/user-guide/features/mcp)
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
-- [MCP Config Reference](/reference/mcp-config-reference)
+- [MCP (Model Context Protocol)](../user-guide/features/mcp.md)
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md)
+- [MCP Config Reference](./mcp-config-reference.md)
 
 #### MCP timeout errors
 
@@ -617,7 +654,7 @@ No. Each messaging platform (Telegram, Discord, etc.) requires exclusive access 
 
 No. Each profile has its own memory store, session database, and skills directory. They are completely isolated. If you want to start a new profile with existing memories and sessions, use `hermes profile create newname --clone-all` to copy everything from the current profile, or add `--clone-from <profile>` to copy from a specific source profile.
 
-This isolation is also the reason to never run two agents against the *same* profile or Hermes home: both write memory automatically and each loads the other's writes at session start, so their stored state degrades with every session. One agent per profile; for genuinely shared memory across agents, use an [external memory provider](/user-guide/features/memory-providers).
+This isolation is also the reason to never run two agents against the *same* profile or Hermes home: both write memory automatically and each loads the other's writes at session start, so their stored state degrades with every session. One agent per profile; for genuinely shared memory across agents, use an [external memory provider](../user-guide/features/memory-providers.md).
 
 ### What happens when I run `hermes update`?
 
@@ -626,7 +663,7 @@ This isolation is also the reason to never run two agents against the *same* pro
 
 ### How many profiles can I run?
 
-There is no hard limit. Each profile is just a directory under `~/.hermes/profiles/`. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
+There is no hard limit. Each profile is a directory under `~/.hermes/profiles/` that carries at least one identity file (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json` or `state.db`); a bare directory without one (a leftover from a log rotation or cron tick) is not a profile — it is not listed or served, `-p <name>` reports it as missing, and `hermes profile create <name>` refuses to overwrite it until you move or remove it. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
 
 ---
 

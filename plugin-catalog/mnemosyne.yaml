@@ -1,0 +1,57 @@
+name: mnemosyne
+repo: https://github.com/mnemosyne-oss/mnemosyne
+sha: 95ef3be20d28bd9ee1d517bcb25ed00000eab577
+subdir: integrations/hermes-catalog
+requires_hermes: ">=0.21.4"
+version: "0.7.0"
+description: Local-first memory layer for Hermes Agent — SQLite with vector + FTS5 hybrid recall, episodic consolidation, temporal knowledge graph. Zero cloud.
+maintainer: mnemosyne-oss
+tier: community
+category: memory
+docs_url: https://github.com/mnemosyne-oss/mnemosyne
+capabilities:
+  provides_tools:
+  - mnemosyne_apply_pending
+  - mnemosyne_batch
+  - mnemosyne_diagnose
+  - mnemosyne_export
+  - mnemosyne_forget
+  - mnemosyne_forget_canonical
+  - mnemosyne_get
+  - mnemosyne_graph_link
+  - mnemosyne_graph_query
+  - mnemosyne_import
+  - mnemosyne_invalidate
+  - mnemosyne_model_card
+  - mnemosyne_model_refresh
+  - mnemosyne_persona_demote
+  - mnemosyne_persona_list
+  - mnemosyne_persona_promote
+  - mnemosyne_persona_reinforce
+  - mnemosyne_recall
+  - mnemosyne_recall_canonical
+  - mnemosyne_recall_diagnostics
+  - mnemosyne_remember
+  - mnemosyne_remember_canonical
+  - mnemosyne_scratchpad_clear
+  - mnemosyne_scratchpad_read
+  - mnemosyne_scratchpad_write
+  - mnemosyne_shared_forget
+  - mnemosyne_shared_recall
+  - mnemosyne_shared_remember
+  - mnemosyne_shared_stats
+  - mnemosyne_sleep
+  - mnemosyne_stats
+  - mnemosyne_sync_pull
+  - mnemosyne_sync_push
+  - mnemosyne_sync_status
+  - mnemosyne_task_progress
+  - mnemosyne_triple_add
+  - mnemosyne_triple_end
+  - mnemosyne_triple_query
+  - mnemosyne_update
+  - mnemosyne_validate
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

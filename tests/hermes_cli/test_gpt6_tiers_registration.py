@@ -1,0 +1,68 @@
+"""Behavior contracts for the GPT-6 Sol/Terra/Luna registration (the 5.6 tier successors).
+
+Invariant tests only, no list snapshots. They pin what would silently regress:
+
+1. `/model gpt` still lands on the flagship: Astra outranks Sol, Sol outranks
+   Terra/Luna, and every GPT-6 tier outranks its 5.6 predecessor.
+2. The Codex OAuth `-900k` opt-in machinery treats the gpt-6 tiers exactly like
+   the 5.6 ones: picker synthesis, dated snapshots, wire stripping, the
+   compaction auto-raise on the base slug (and not on the variant), and the
+   gpt-5.6 effort ladder (``max`` allowed).
+"""
+
+from decimal import Decimal
+
+from agent.auxiliary_client import _compression_threshold_for_model
+from agent.model_metadata import (
+    _verified_codex_ctx_for_slug,
+    is_codex_900k_base,
+    strip_codex_context_variant_suffix,
+)
+from agent.reasoning_effort import CODEX_GPT56_EFFORTS, codex_supported_efforts
+from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+from hermes_cli.codex_models import _finalize_codex_models
+from hermes_cli.model_switch import _model_sort_key
+from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+
+GPT6_TIERS = ("gpt-6-sol", "gpt-6-luna")  # terra: never published by OpenAI, not on OpenRouter/Codex (2026-09-22)
+
+
+def test_model_gpt_resolves_flagship_across_gpt6_tiers():
+    models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra"]
+    models.sort(key=lambda m: _model_sort_key(m, "gpt"))
+    assert models[:2] == ["gpt-6-astra", "gpt-6-sol"]
+    assert models.index("gpt-6-luna") < models.index("gpt-5.6-sol")
+
+
+def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
+    ids = _finalize_codex_models(["gpt-5.5"])  # forward-compat synthesizes the tiers from 5.5
+    for base in GPT6_TIERS:
+        assert ids.index(f"{base}-900k") == ids.index(base) + 1, base
+        assert f"{base}-pro-900k" not in ids
+        assert is_codex_900k_base(f"{base}-2026-09-22"), base  # dated snapshots inherit eligibility
+        assert strip_codex_context_variant_suffix(f"openai/{base}-900k") == f"openai/{base}"
+        assert _verified_codex_ctx_for_slug(f"{base}-900k") == _verified_codex_ctx_for_slug("gpt-5.6-sol-900k")
+        assert _compression_threshold_for_model(base, provider="openai-codex") == \
+            _compression_threshold_for_model("gpt-5.6-sol", provider="openai-codex")
+        assert _compression_threshold_for_model(f"{base}-900k", provider="openai-codex") is None
+        assert codex_supported_efforts(f"openai/{base}") == CODEX_GPT56_EFFORTS
+
+
+def test_gpt6_tiers_replace_56_in_aggregator_catalogs_with_pricing_aliases():
+    for provider, listed in (("nous", set(_PROVIDER_MODELS["nous"])), ("openrouter", {m for m, _ in OPENROUTER_MODELS})):
+        assert {f"openai/{t}" for t in GPT6_TIERS} <= listed, provider
+        assert not {m for m in listed if "gpt-5.6" in m}, provider
+    for base in ("gpt-6-sol", "gpt-6-luna"):  # Terra has no published pricing page yet
+        entry = _OFFICIAL_DOCS_PRICING[("openai", base)]
+        assert entry.input_cost_per_million is not None, base
+        assert entry.cache_write_cost_per_million == entry.input_cost_per_million * Decimal("1.25"), base
+        for suffix in ("pro", "900k"):
+            assert _OFFICIAL_DOCS_PRICING[("openai", f"{base}-{suffix}")] is entry, (base, suffix)
+
+
+def test_codex_forward_compat_only_synthesizes_published_gpt6_tiers():
+    """Forward-compat synthesis puts names in the picker before the account catalog lists them, so it
+    must stay within tiers OpenAI has actually published (sol, luna; astra is discovery-only). A guessed
+    name such as gpt-6-terra shipped as a live picker choice once."""
+    synthesized = {m for m in _finalize_codex_models(["gpt-5.5"]) if m.startswith("gpt-6-")}
+    assert synthesized == {f"{base}{suffix}" for base in GPT6_TIERS for suffix in ("", "-900k")}

@@ -18,7 +18,7 @@ import type { GroupSetter } from '@/app/shell/group-setter'
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
 import type { TitlebarTool } from '@/app/shell/titlebar-controls'
 import { DecodeText } from '@/components/ui/decode-text'
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
@@ -129,7 +129,7 @@ export function useStatusbarContributions(side: 'left' | 'right'): StatusbarItem
             id: c.id,
             render: () => (
               <ContribBoundary id={c.id} variant="chip">
-                {c.render!()}
+                <ContribRender render={c.render!} />
               </ContribBoundary>
             )
           } satisfies StatusbarItem)
@@ -146,7 +146,7 @@ export function useTitlebarToolContributions(side: 'left' | 'right'): TitlebarTo
 }
 
 /**
- * Bridge a page's `GroupSetter` extension point (SkillsView, MessagingView,
+ * Bridge a page's `GroupSetter` extension point (CapabilitiesView, MessagingView,
  * ChatPreviewRail, …) into the registry: each call replaces the group's items
  * as DATA contributions in `<prefix>.<side>`, so page-owned items flow through
  * the same pipe plugins use. Setting an empty list clears the group.

@@ -2,17 +2,21 @@
  * Runtime plugin loader — plugins as CODE, not registry edits, loaded after
  * build time. The pipeline every non-bundled plugin takes:
  *
- *   source (plain ESM js) -> [integrity check] -> bare-specifier rewrite
- *   (`@hermes/plugin-sdk` / `react*` -> live shim blobs, see sdk/runtime.ts)
+ *   source (plain ESM js) -> import allowlist (`@hermes/plugin-sdk` / `react*`
+ *   only) -> bare-specifier rewrite to live shim blobs (see sdk/runtime.ts)
  *   -> blob `import()` -> validate default HermesPlugin -> register(ctx)
  *
  * Loading the same plugin id again disposes the previous registrations first
- * (agent rewrites a plugin file -> clean reload). Failures toast + log; a
- * broken plugin can never take the app down.
+ * (agent rewrites a plugin file -> clean reload) — everything taken out
+ * through `ctx` (contributions, events, sockets, `ctx.setInterval`/
+ * `ctx.addEventListener`); bare globals and module-scope state are the
+ * plugin's own. Failures toast + log; a broken plugin can never take the app
+ * down, and a module whose evaluation never settles times out on its own row.
  *
  * Sources today: the in-repo runtime example (`?raw`, proves the pipeline)
- * and `<hermes home>/desktop-plugins/<name>/plugin.js` on disk — the door the
- * agent writes through.
+ * and the two on-disk doors — `<hermes home>/desktop-plugins/<name>/plugin.js`
+ * and the unified agent-plugin half `<hermes home>/plugins/<name>/desktop/
+ * plugin.js` — the doors the agent writes through.
  *
  * SECURITY — this is NOT a capability boundary. A loaded plugin is evaluated
  * as ESM in the renderer realm with FULL app authority: the React singleton,
@@ -20,77 +24,227 @@
  * The isolation here is *error* isolation only (ContribBoundary, isolated
  * listeners) — a plugin can't crash the app, but it can do anything the app
  * can. That's acceptable for local sources (disk files can already run code),
- * and `integrity` only proves the bytes match a hash — it does NOT sandbox.
- * A remote source (https + allowlist) must NOT reuse this pipeline as-is:
- * it needs a real boundary (iframe/worker + CSP + capability gating) before
- * it can land. The `{ integrity }` option is the transport seam, not the
- * trust seam.
+ * and for catalog installs the trust comes from admission (human review of
+ * an exact pinned SHA + the static lint in hermes_cli/plugin_validate_desktop.py),
+ * not from this loader. The import allowlist below is the one runtime tripwire:
+ * a plugin cannot pull a second stage from a URL. A remote source (https +
+ * allowlist) must NOT reuse this pipeline as-is: it needs a real boundary
+ * (iframe/worker + CSP + capability gating) before it can land.
  */
+
+import { atom } from 'nanostores'
 
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
+import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, type HermesPlugin } from './plugin'
-import { dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
+import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
+  /** Root-level default-enable CAP: `false` ships the plugin opt-in (inventory
+   *  row, off until the user toggles) even if the plugin says otherwise. The
+   *  unified agent-plugin root sets this so `~/.hermes/plugins` keeps its
+   *  installed-but-inert posture (GHSA-mcfc-hp25-cjv7) on the desktop side too. */
+  defaultEnabled?: boolean
   /** Absolute plugin.js path (disk plugins) — recorded for reveal/inventory. */
   file?: string
-  /** `sha256-<base64>` — verified against the source before evaluation. */
-  integrity?: string
   /** Inventory bucket; the disk door is the default runtime source. */
   kind?: PluginKind
+  /** Agent package whose desktop half this is (unified packages). */
+  packageName?: string
+  packageOrigin?: PackageMarker['origin']
 }
 
 /** Live runtime plugins: id -> disposers (unload/reload support). */
 const loaded = new Map<string, (() => void)[]>()
 
+/** Module evaluation deadline. A top-level `await` that never settles (a dead
+ *  host, a gateway that is not up) would otherwise hang `import()` forever —
+ *  and, through the disk scan's sequential loop, every plugin listed after it. */
+const IMPORT_TIMEOUT_MS = 10_000
+
 // Matches the specifier of a static `from '…'`, a side-effect `import '…'`, or
-// a dynamic `import('…')` — anchored to import/export syntax so a bare string
-// literal or comment (e.g. `notify('react')`) is never touched.
+// a dynamic `import('…')`. Deliberately loose — a sentence ending in `from`, a
+// quoted example, a commented-out import all match it — so a match is honoured
+// only when it sits in CODE (see `codeRanges`), never in a string or comment.
 const importSpecifierRe = () => /(from\s*|import\s*\(\s*|import\s+)(['"])([^'"]+)\2/g
+
+/** Character ranges of *source* that are code — string, template-literal and
+ *  comment text excluded (template `${…}` interpolations ARE code). The
+ *  specifier regex is not syntax-aware, so this is what keeps a plugin's own
+ *  copy and comments — `const label = 'Copy keys from'`, `// import 'x'` —
+ *  from being read as import syntax (rejected as "unsupported import") or
+ *  rewritten in place (a mapped specifier inside a string must stay verbatim). */
+function codeRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  const stack: Array<'expr' | 'template'> = []
+  let state: 'block-comment' | 'code' | 'double' | 'line-comment' | 'single' | 'template' = 'code'
+  let codeStart = 0
+  let i = 0
+
+  const closeCode = (end: number) => {
+    if (end > codeStart) {
+      ranges.push([codeStart, end])
+    }
+  }
+
+  while (i < source.length) {
+    const ch = source[i]
+    const next = i + 1 < source.length ? source[i + 1] : ''
+
+    if (state === 'code') {
+      if (ch === '/' && next === '/') {
+        closeCode(i)
+        state = 'line-comment'
+        i += 2
+      } else if (ch === '/' && next === '*') {
+        closeCode(i)
+        state = 'block-comment'
+        i += 2
+      } else if (ch === "'") {
+        closeCode(i)
+        state = 'single'
+        i += 1
+      } else if (ch === '"') {
+        closeCode(i)
+        state = 'double'
+        i += 1
+      } else if (ch === '`') {
+        closeCode(i)
+        stack.push('template')
+        state = 'template'
+        i += 1
+      } else if (ch === '}' && stack[stack.length - 1] === 'expr') {
+        closeCode(i)
+        stack.pop()
+        state = 'template'
+        i += 1
+      } else {
+        i += 1
+      }
+
+      continue
+    }
+
+    if (state === 'line-comment') {
+      if (ch === '\n') {
+        state = 'code'
+        codeStart = i
+      }
+
+      i += 1
+
+      continue
+    }
+
+    if (state === 'block-comment') {
+      if (ch === '*' && next === '/') {
+        i += 2
+        state = 'code'
+        codeStart = i
+      } else {
+        i += 1
+      }
+
+      continue
+    }
+
+    if (state === 'single' || state === 'double') {
+      if (ch === '\\') {
+        i += 2
+      } else if (ch === (state === 'single' ? "'" : '"')) {
+        i += 1
+        state = 'code'
+        codeStart = i
+      } else if (ch === '\n') {
+        // Unterminated literal — recover as code so one stray quote cannot
+        // swallow the rest of the file.
+        i += 1
+        state = 'code'
+        codeStart = i
+      } else {
+        i += 1
+      }
+
+      continue
+    }
+
+    // Template-literal text.
+    if (ch === '\\') {
+      i += 2
+    } else if (ch === '$' && next === '{') {
+      stack.push('expr')
+      state = 'code'
+      i += 2
+      codeStart = i
+    } else if (ch === '`') {
+      stack.pop()
+      state = 'code'
+      i += 1
+      codeStart = i
+    } else {
+      i += 1
+    }
+  }
+
+  closeCode(source.length)
+
+  return ranges
+}
+
+/** True when *at* sits inside a code range (ordered, non-overlapping). */
+function inCode(ranges: Array<[number, number]>, at: number): boolean {
+  for (const [start, end] of ranges) {
+    if (at < start) {
+      return false
+    }
+
+    if (at < end) {
+      return true
+    }
+  }
+
+  return false
+}
 
 /** Rewrite ONLY mapped import specifiers (@hermes/plugin-sdk, react*) to their
  *  live shim blob URLs — never occurrences inside strings/comments. */
 function rewriteSpecifiers(source: string): string {
   const map = sdkImportMap()
+  const ranges = codeRanges(source)
 
-  return source.replace(importSpecifierRe(), (whole, pre, quote, spec) =>
-    map[spec] ? `${pre}${quote}${map[spec]}${quote}` : whole
+  return source.replace(importSpecifierRe(), (whole, pre, quote, spec, offset) =>
+    map[spec] && inCode(ranges, Number(offset)) ? `${pre}${quote}${map[spec]}${quote}` : whole
   )
 }
 
-/** Bare import specifiers the loader can't resolve (not relative/URL, not in
- *  the SDK map). Surfaced up-front so they don't fail as a cryptic native
- *  "Failed to resolve module specifier" from the blob import. */
+/** Import specifiers outside the SDK map. Everything that is not
+ *  `@hermes/plugin-sdk` / `react*` is refused up-front: a bare package would
+ *  only fail later as a cryptic native "Failed to resolve module specifier",
+ *  a relative path cannot resolve against the blob: base the module is
+ *  evaluated from, and a URL scheme (`import 'https://…'`) is a second stage
+ *  the admission lint must never be able to wave through — the loader is the
+ *  last tripwire for catalog installs. */
 function unsupportedImports(source: string): string[] {
   const map = sdkImportMap()
-  const bare = new Set<string>()
+  const unsupported = new Set<string>()
+  const ranges = codeRanges(source)
 
   for (const m of source.matchAll(importSpecifierRe())) {
     const spec = m[3]
 
-    // Skip relative/absolute (./ ../ /) and any URL scheme (blob: http(s):).
-    if (spec && !/^[./]/.test(spec) && !/^[a-z][a-z0-9+.-]*:/i.test(spec) && !map[spec]) {
-      bare.add(spec)
+    // Strings and comments can quote any text; only real code counts.
+    if (!spec || !inCode(ranges, m.index ?? 0)) {
+      continue
+    }
+
+    if (!map[spec]) {
+      unsupported.add(spec)
     }
   }
 
-  return [...bare]
-}
-
-async function verifyIntegrity(source: string, integrity: string): Promise<boolean> {
-  const [algo, expected] = integrity.split('-', 2)
-
-  if (algo !== 'sha256' || !expected) {
-    return false
-  }
-
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source))
-  // Standard SRI base64 (`sha256-<base64>`) — a base64url-encoded hash won't match.
-  const actual = btoa(String.fromCharCode(...new Uint8Array(digest)))
-
-  return actual === expected
+  return [...unsupported]
 }
 
 export function unloadRuntimePlugin(id: string): void {
@@ -107,10 +261,6 @@ export async function loadRuntimePlugin(
   installPluginSdk()
 
   try {
-    if (options.integrity && !(await verifyIntegrity(source, options.integrity))) {
-      throw new Error(`integrity check failed for ${origin}`)
-    }
-
     const unsupported = unsupportedImports(source)
 
     if (unsupported.length > 0) {
@@ -123,10 +273,23 @@ export async function loadRuntimePlugin(
     const url = URL.createObjectURL(new Blob([rewriteSpecifiers(source)], { type: 'text/javascript' }))
 
     let mod: { default?: HermesPlugin }
+    let deadline: ReturnType<typeof setTimeout> | undefined
 
     try {
-      mod = await import(/* @vite-ignore */ url)
+      mod = await Promise.race([
+        import(/* @vite-ignore */ url) as Promise<{ default?: HermesPlugin }>,
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(
+            () =>
+              reject(
+                new Error(`import timed out after ${IMPORT_TIMEOUT_MS / 1000}s — module evaluation never settled`)
+              ),
+            IMPORT_TIMEOUT_MS
+          )
+        })
+      ])
     } finally {
+      clearTimeout(deadline)
       URL.revokeObjectURL(url)
     }
 
@@ -136,27 +299,100 @@ export async function loadRuntimePlugin(
       throw new Error(`${origin} has no valid default HermesPlugin export`)
     }
 
+    // A disk/runtime copy of a plugin that now ships BUNDLED (e.g. a
+    // standalone install of hermes-bots predating its adoption in-tree) must
+    // not register a second time: contributions would double up and the two
+    // copies would fight over storage. The bundled copy wins; the disk copy
+    // is skipped — but VISIBLY: a silent skip left the stale folder
+    // undiscoverable while (on shells without the bundled twin) the same
+    // folder actively breaks the feature it shadows. The inventory row
+    // carries the file path so Capabilities → Plugins can reveal it for deletion.
+    if ($pluginRecords.get()[plugin.id]?.kind === 'bundled') {
+      console.info(`[plugins] ${origin} skipped — "${plugin.id}" already ships bundled with the app`)
+      publishPlugin({
+        id: `${plugin.id}:disk-shadowed`,
+        name: `${plugin.name ?? plugin.id} (stale disk copy)`,
+        description: `Shadowed by the bundled "${plugin.id}" plugin — this folder is no longer used and can be deleted.`,
+        kind: options.kind ?? 'disk',
+        file: options.file,
+        status: 'disabled'
+      })
+
+      return null
+    }
+
+    // Two files claiming one id (a standalone install beside a unified-package
+    // copy): the FIRST loaded owns the id. Silently letting the second win
+    // disposed the first's registrations and made each file's hot-reload flip
+    // ownership; instead the later file errors on its own folder row.
+    const owner = $pluginRecords.get()[plugin.id]
+
+    if (owner && owner.file !== options.file) {
+      throw new Error(`duplicate id "${plugin.id}", already loaded from ${owner.file ?? owner.kind}`)
+    }
+
     const record = {
       id: plugin.id,
       name: plugin.name ?? plugin.id,
+      description: plugin.description,
       kind: options.kind ?? 'disk',
-      file: options.file
+      file: options.file,
+      packageName: options.packageName,
+      packageOrigin: options.packageOrigin
+    }
+
+    const failRegistration = (disposers: (() => void)[], error: unknown) => {
+      // Roll back everything register() managed before it failed — a
+      // half-registered plugin must not leave live contributions/listeners
+      // nobody can ever dispose — and land the failure on the plugin's OWN
+      // row so Capabilities → Plugins shows it (the toggle stays usable).
+      disposers.forEach(dispose => dispose())
+      loaded.delete(plugin.id)
+      console.error(`[plugins] ${plugin.id} failed to register (${origin})`, error)
+      notifyError(error, `Plugin "${record.name}" failed to register`)
+      publishPlugin({ ...record, status: 'error', error: error instanceof Error ? error.message : String(error) })
     }
 
     const activate = () => {
       // Reload = dispose the previous incarnation, then register fresh.
       unloadRuntimePlugin(plugin.id)
       const disposers: (() => void)[] = []
-      plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+      // Registered BEFORE register() runs so a throw mid-way is disposable.
       loaded.set(plugin.id, disposers)
+
+      let result: unknown
+
+      try {
+        result = trackGatewayEventDisposers(
+          dispose => disposers.push(dispose),
+          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+        )
+      } catch (error) {
+        failRegistration(disposers, error)
+
+        return
+      }
+
       publishPlugin({ ...record, status: 'loaded' })
+
+      // An `async register()` that rejects would otherwise be an unhandled
+      // rejection beside a row that says "loaded".
+      if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+        void Promise.resolve(result).catch((error: unknown) => {
+          if (loaded.get(plugin.id) === disposers) {
+            failRegistration(disposers, error)
+          }
+        })
+      }
     }
 
     publishPlugin({ ...record, status: 'disabled' }, { activate, deactivate: () => unloadRuntimePlugin(plugin.id) })
 
     // A disabled plugin still inventories (settings shows it, toggle
-    // reactivates via the handle above) — it just never registers.
-    if (pluginActive(plugin.id, plugin.defaultEnabled ?? true)) {
+    // reactivates via the handle above) — it just never registers. A root-level
+    // `defaultEnabled: false` caps the plugin's own default: the user's explicit
+    // enable still wins, a plugin can't self-enable past its root's posture.
+    if (pluginActive(plugin.id, (plugin.defaultEnabled ?? true) && (options.defaultEnabled ?? true))) {
       activate()
     }
 
@@ -169,6 +405,8 @@ export async function loadRuntimePlugin(
       name: origin,
       kind: options.kind ?? 'disk',
       file: options.file,
+      packageName: options.packageName,
+      packageOrigin: options.packageOrigin,
       status: 'error',
       error: error instanceof Error ? error.message : String(error)
     })
@@ -178,13 +416,19 @@ export async function loadRuntimePlugin(
 }
 
 // ---------------------------------------------------------------------------
-// The on-disk plugin door: `<hermes home>/desktop-plugins/<name>/plugin.js`
-// (agent- or user-written). SELF-MAINTAINING — no reload ceremony:
+// The on-disk plugin door — ONE app-level root, `<hermes home>/desktop-plugins/`:
+//  - `<id>/plugin.js` — a standalone desktop plugin (agent- or user-written);
+//  - `<package>/plugin.js` + `.hermes-package.json` — the desktop HALF of a
+//    unified agent+desktop package, COPIED here by Electron from the package's
+//    `plugins/<package>/desktop/` folder (electron/desktop-plugins-root.ts).
+//    The agent half stays in its profile; the desktop half lives with the app,
+//    so it neither appears nor disappears when the active profile changes.
+// SELF-MAINTAINING — no reload ceremony:
 //  - each plugin.js is fs-watched (the preview watcher IPC, debounced in
 //    main): saving the file hot-reloads the plugin in place;
-//  - the directory itself is fs-watched too (watchDirectory IPC), so new
-//    folders load + removed ones unload on the change tick; older Electron
-//    shells without watchDirectory fall back to the slow visible-tab poll.
+//  - each root is fs-watched too (watchDirectory IPC), so new folders load +
+//    removed ones unload on the change tick; older Electron shells without
+//    watchDirectory fall back to the slow visible-tab poll.
 // Panes land via placement adoption and STAY where the user drags them —
 // the tree treats not-yet-loaded pane ids as hidden, so boot and reload are
 // collapse -> appear, never a placeholder flash.
@@ -192,49 +436,236 @@ export async function loadRuntimePlugin(
 
 const DISK_POLL_MS = 5_000
 
+interface DiskRoot {
+  dir: string
+  /** Path segments below each scanned folder to the entry file. */
+  entrySegments: readonly string[]
+}
+
+/** The app-level root, resolved fresh each pass (Electron-local, never the
+ *  backend's hermes_home — #66899). Resolving it also runs Electron's
+ *  reconcile, so unified packages' desktop halves are current before we scan. */
+async function diskRoots(): Promise<DiskRoot[]> {
+  const root = await window.hermesDesktop?.desktopPluginsRoot?.()
+
+  return root ? [{ dir: root, entrySegments: ['plugin.js'] }] : []
+}
+
+/** Marker Electron writes beside a materialized unified-package half. Its
+ *  presence means: opt-in posture (the Python half is installed-but-inert
+ *  until allowlisted — GHSA-mcfc-hp25-cjv7 — so the desktop half matches), and
+ *  the record carries the package name so the Plugins page pairs it with the
+ *  agent row. */
+const PACKAGE_MARKER = '.hermes-package.json'
+
+interface PackageMarker {
+  origin?: { catalogName?: string; repo?: string; sha?: string }
+  package: string
+}
+
+async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {
+  try {
+    const { entries } = await desktop.readDir(folder)
+    const marker = entries.find(entry => entry.name === PACKAGE_MARKER && !entry.isDirectory)
+
+    if (!marker) {
+      return null
+    }
+
+    const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
+      catalogName?: string
+      package?: string
+      repo?: string
+      sha?: string
+    }
+
+    if (!parsed.package) {
+      return null
+    }
+
+    return {
+      origin: parsed.repo ? { catalogName: parsed.catalogName, repo: parsed.repo, sha: parsed.sha } : undefined,
+      package: parsed.package
+    }
+  } catch {
+    return null
+  }
+}
+
 interface DiskPlugin {
+  /** Root posture, forwarded on every (re)load of this entry. */
+  defaultEnabled?: boolean
   file: string
+  /** Agent package this folder is the desktop half of (unified packages). */
+  packageName?: string
+  packageOrigin?: PackageMarker['origin']
   /** Loaded plugin id (null while broken — kept so a fixing save reloads). */
   id: null | string
+  /** Origin label (folder name) — the toast/inventory name for load errors. */
+  origin: string
   watchId: null | string
 }
 
+/** Live disk plugins keyed by ENTRY FILE path — unique across both roots
+ *  (folder names alone can collide between them). */
 const disk = new Map<string, DiskPlugin>()
 let watching = false
 let scanning = false
 
-async function loadDiskPlugin(name: string, file: string): Promise<void> {
+/** Drop a folder-named error record — unless that name is the live plugin id
+ *  of ANOTHER disk entry (two roots can carry same-named folders; a broken one
+ *  must not clobber its healthy namesake's inventory row). */
+function dropOriginRecord(origin: string, except: DiskPlugin): void {
+  for (const other of disk.values()) {
+    if (other !== except && other.id === origin) {
+      return
+    }
+  }
+
+  dropPlugin(origin)
+}
+
+/** A plugin source that could not be read in FULL. Evaluating a truncated
+ *  file is never acceptable — half a module can still parse. */
+class PluginSourceOversizeError extends Error {}
+
+/** Read a plugin entry file in full. Prefers the dedicated readPluginSource
+ *  IPC (16 MiB cap, no truncation). Older shells predate it and only offer
+ *  the preview read, which silently truncates at 512 KiB — there the read
+ *  fails loudly instead of handing a partial file to the evaluator. */
+async function readPluginSourceText(file: string): Promise<string> {
   const desktop = window.hermesDesktop!
-  const entry = disk.get(name)
-  const prevId = entry?.id
+
+  if (desktop.readPluginSource) {
+    return (await desktop.readPluginSource(file)).text
+  }
+
+  const result = await desktop.readFileText(file)
+
+  if (result.truncated) {
+    throw new PluginSourceOversizeError(
+      "plugin.js exceeds this shell's 512 KiB read limit — update Hermes Desktop to load larger plugins"
+    )
+  }
+
+  return result.text
+}
+
+/** Returns false when the entry file could not be read (vanished mid-read) so
+ *  the caller can reconcile/unload the registration instead of retaining a
+ *  live ghost for a missing entry. */
+async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
+  const prevId = entry.id
 
   try {
-    const { text } = await desktop.readFileText(file)
-    const id = await loadRuntimePlugin(text, name, { file })
+    const text = await readPluginSourceText(entry.file)
 
-    // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
-    // NEW id, so unload the previous incarnation here or its contributions +
-    // inventory row orphan.
-    if (id && prevId && prevId !== id) {
+    const id = await loadRuntimePlugin(text, entry.origin, {
+      defaultEnabled: entry.defaultEnabled,
+      file: entry.file,
+      packageName: entry.packageName,
+      packageOrigin: entry.packageOrigin
+    })
+
+    // loadRuntimePlugin only disposes the NEW id, so the previous incarnation
+    // is unloaded here when the file no longer yields it: a hot-edit that
+    // changes `plugin.id`, or a save that no longer loads at all (syntax
+    // error, timeout, duplicate). Otherwise the old module's contributions and
+    // its activate handle stay live beside the error row — the Plugins tab
+    // would show a broken file as "loaded" and re-enable stale code.
+    if (prevId && prevId !== id) {
       unloadRuntimePlugin(prevId)
       dropPlugin(prevId)
     }
 
-    if (entry) {
-      entry.id = id ?? entry.id
-    }
+    entry.id = id
 
     // A fixing save under a different plugin id — drop the folder-named
     // error record so the inventory shows one row, not a ghost.
-    if (id && id !== name) {
-      dropPlugin(name)
+    if (id && id !== entry.origin) {
+      dropOriginRecord(entry.origin, entry)
     }
-  } catch {
-    // File vanished mid-read — the next scan reconciles.
+
+    return true
+  } catch (error) {
+    // An oversize source is a REAL failure the user must see (the silent
+    // shape was the bug: a truncated file evaluated as a syntax error, or
+    // worse, as half a plugin). It is a completed read of an existing file,
+    // so report it and keep the registration (true) — everything else is a
+    // file vanishing mid-read, where false lets the caller reconcile/unload.
+    if (error instanceof PluginSourceOversizeError) {
+      console.error(`[plugins] ${entry.origin}: ${error.message}`)
+      notifyError(error, `Plugin "${entry.origin}" failed to load`)
+      publishPlugin({
+        id: entry.origin,
+        name: entry.origin,
+        kind: 'disk',
+        file: entry.file,
+        status: 'error',
+        error: error.message
+      })
+
+      return true
+    }
+
+    return false
   }
 }
 
-async function scanDiskPlugins(): Promise<void> {
+async function resolveDiskPluginEntry(
+  desktop: Window['hermesDesktop'],
+  folderPath: string,
+  segments: readonly string[]
+): Promise<string | null> {
+  let currentDir = folderPath
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const { entries } = await desktop.readDir(currentDir)
+    const entry = entries.find(candidate => candidate.name === segments[index])
+
+    if (!entry) {
+      return null
+    }
+
+    const last = index === segments.length - 1
+
+    if (last) {
+      return entry.isDirectory ? null : entry.path
+    }
+
+    if (!entry.isDirectory) {
+      return null
+    }
+
+    currentDir = entry.path
+  }
+
+  return null
+}
+
+/** Bind (or, on a manual reload, re-bind) the hot-reload watch for one entry.
+ *  An atomic directory replacement leaves the old watch attached to the
+ *  unlinked inode, so a forced reload must drop it and watch the current file. */
+async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>, record: DiskPlugin): Promise<void> {
+  if (record.watchId) {
+    void desktop.stopPreviewFileWatch(record.watchId)
+    record.watchId = null
+  }
+
+  try {
+    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+  } catch {
+    // Unwatchable — the poll still reconciles new folders; edits need a
+    // manual "Reload desktop plugins".
+  }
+}
+
+/** Reconcile the disk root with the inventory. `reloadKnown` (the manual
+ *  "Reload desktop plugins" command) also re-reads every already-known entry
+ *  file: an installer that atomically replaces a plugin folder keeps the
+ *  same path, so the fs watch on the old inode never fires and the stale
+ *  module would otherwise stay live until restart (#91503). */
+async function scanDiskPlugins(reloadKnown = false): Promise<void> {
   const desktop = window.hermesDesktop
 
   // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
@@ -246,73 +677,147 @@ async function scanDiskPlugins(): Promise<void> {
   scanning = true
 
   try {
-    // The plugin root is a LOCAL Electron path, resolved independently of the
-    // connected backend — a remote backend's hermes_home is a remote path and
-    // yields `undefined/desktop-plugins` here (#66899).
-    const root = await desktop.desktopPluginsRoot?.()
+    const roots = await diskRoots()
 
-    if (!root) {
+    if (roots.length === 0) {
       return
     }
 
-    const { entries } = await desktop.readDir(root)
     const seen = new Set<string>()
 
-    for (const dir of entries.filter(e => e.isDirectory)) {
-      seen.add(dir.name)
-
-      if (disk.has(dir.name)) {
-        continue
-      }
-
-      const file = `${dir.path}/plugin.js`
+    for (const root of roots) {
+      let entries
 
       try {
-        await desktop.readFileText(file)
+        ;({ entries } = await desktop.readDir(root.dir))
       } catch {
-        continue // No plugin.js (yet) — not a plugin folder.
+        continue // Root missing (no plugins yet) — the poll/watch reconciles.
       }
 
-      const record: DiskPlugin = { file, id: null, watchId: null }
-      disk.set(dir.name, record)
-      await loadDiskPlugin(dir.name, file)
+      // Listing order is filesystem order; sorted so duplicate-id ownership
+      // (first loaded wins) is the same on every launch.
+      const folders = entries.filter(e => e.isDirectory).sort((a, b) => a.name.localeCompare(b.name))
 
-      try {
-        record.watchId = (await desktop.watchPreviewFile(file)).id
-      } catch {
-        // Unwatchable — the poll still reconciles new folders; edits need a
-        // manual "Reload desktop plugins".
+      for (const dir of folders) {
+        let file: string | null
+
+        try {
+          file = await resolveDiskPluginEntry(desktop, dir.path, root.entrySegments)
+        } catch {
+          continue // Folder changed during the metadata walk; the next tick reconciles.
+        }
+
+        if (!file) {
+          continue // Ordinary agent package with no Desktop half — not an error.
+        }
+
+        seen.add(file)
+
+        const known = disk.get(file)
+
+        if (known) {
+          if (reloadKnown && (await loadDiskPlugin(known))) {
+            await watchDiskPluginFile(desktop, known)
+          }
+
+          continue
+        }
+
+        const marker = await readPackageMarker(desktop, dir.path)
+
+        const record: DiskPlugin = {
+          // A unified package's desktop half ships opt-in, like its agent half.
+          defaultEnabled: marker ? false : undefined,
+          file,
+          id: null,
+          origin: dir.name,
+          packageName: marker?.package,
+          packageOrigin: marker?.origin,
+          watchId: null
+        }
+
+        disk.set(file, record)
+
+        if (!(await loadDiskPlugin(record))) {
+          disk.delete(file)
+
+          continue
+        }
+
+        await watchDiskPluginFile(desktop, record)
       }
     }
 
     // Folder deleted -> plugin gone, cleanly (inventory row included).
-    for (const [name, record] of disk) {
-      if (seen.has(name)) {
+    for (const [file, record] of disk) {
+      if (seen.has(file)) {
         continue
       }
 
-      if (record.id) {
-        unloadRuntimePlugin(record.id)
-        dropPlugin(record.id)
-      }
-
-      dropPlugin(name)
-
-      if (record.watchId) {
-        void desktop.stopPreviewFileWatch(record.watchId)
-      }
-
-      disk.delete(name)
+      retireDiskPlugin(file, record)
     }
   } catch {
-    // No desktop-plugins dir (or no gateway yet) — nothing to reconcile.
+    // No plugin roots (or no gateway yet) — nothing to reconcile.
   } finally {
     scanning = false
   }
 }
 
-/** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */
-export const discoverRuntimePlugins = scanDiskPlugins
+/** Forget a disk entry whose folder is gone: unload its registration, drop
+ *  its inventory rows, stop its file watch. */
+function retireDiskPlugin(file: string, record: DiskPlugin): void {
+  if (record.id) {
+    unloadRuntimePlugin(record.id)
+    dropPlugin(record.id)
+  }
+
+  dropOriginRecord(record.origin, record)
+
+  if (record.watchId) {
+    void window.hermesDesktop?.stopPreviewFileWatch(record.watchId)
+  }
+
+  disk.delete(file)
+}
+
+/** Uninstall a STANDALONE disk plugin (Capabilities → Plugins trash button):
+ *  Electron deletes `<root>/<folder>` (containment enforced there), then the
+ *  entry is retired here so the pane/commands vanish without waiting for the
+ *  next scan. Unified-package halves are not addressable this way — the agent
+ *  uninstall prunes them. Resolves with the failure reason instead of throwing. */
+export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boolean; error?: string }> {
+  const found = [...disk.entries()].find(([, record]) => record.id === pluginId || record.origin === pluginId)
+
+  if (!found) {
+    return { ok: false, error: 'not an installed desktop plugin' }
+  }
+
+  const [file, record] = found
+  const remove = window.hermesDesktop?.removeDesktopPlugin
+
+  if (!remove) {
+    return { ok: false, error: 'this Hermes Desktop build cannot remove desktop plugins — delete the folder by hand' }
+  }
+
+  const result = await remove({ name: record.origin })
+
+  if (!result?.ok) {
+    return { ok: false, error: result?.error ?? 'unknown error' }
+  }
+
+  retireDiskPlugin(file, record)
+
+  return { ok: true }
+}
+
+/** Manual rescan (the ⌘K "Reload desktop plugins" fallback) — re-reads
+ *  known entries too, unlike the fs-watch/poll reconcile. */
+export const discoverRuntimePlugins = (): Promise<void> => scanDiskPlugins(true)
+
+/** True while the disk door's FIRST scan is in flight. Boot code that must
+ *  not mistake a not-yet-registered plugin route for a stale one
+ *  (remembered-route restore) waits on this instead of on timing. */
+export const $diskPluginsScanPending = atom(false)
 
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
  *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */
@@ -324,52 +829,66 @@ export function watchRuntimePlugins(): void {
   }
 
   watching = true
+  $diskPluginsScanPending.set(true)
 
-  let dirWatchId: null | string = null
+  const dirWatchIds = new Set<string>()
+  const watchedDirs = new Set<string>()
 
   desktop.onPreviewFileChanged(({ id }) => {
     // Directory tick: a plugin folder appeared or vanished — reconcile.
-    if (dirWatchId && id === dirWatchId) {
+    if (dirWatchIds.has(id)) {
       void scanDiskPlugins()
 
       return
     }
 
-    for (const [name, record] of disk) {
+    for (const record of disk.values()) {
       if (record.watchId === id) {
-        void loadDiskPlugin(name, record.file)
+        void loadDiskPlugin(record).then(readable => {
+          if (!readable) {
+            void scanDiskPlugins()
+          }
+        })
 
         return
       }
     }
   })
 
-  const startDirWatch = async (): Promise<boolean> => {
+  // True only when EVERY root is fs-watched — a partially watched set keeps
+  // the poll alive so unwatched roots still reconcile new/removed folders.
+  const startDirWatches = async (): Promise<boolean> => {
     if (!desktop.watchDirectory) {
       return false
     }
 
-    try {
-      // Same Electron-local root as the scanner — never the backend's
-      // hermes_home, which is a remote path in remote mode (#66899).
-      const root = await desktop.desktopPluginsRoot?.()
+    const roots = await diskRoots()
 
-      if (!root) {
-        return false
-      }
-
-      dirWatchId = (await desktop.watchDirectory(root)).id
-
-      return true
-    } catch {
-      // Dir missing (no plugins yet) or unwatchable — fall back to the poll,
-      // which also handles the dir being created later.
+    if (roots.length === 0) {
       return false
     }
+
+    let all = true
+
+    for (const root of roots) {
+      if (watchedDirs.has(root.dir)) {
+        continue
+      }
+
+      try {
+        dirWatchIds.add((await desktop.watchDirectory(root.dir)).id)
+        watchedDirs.add(root.dir)
+      } catch {
+        // Dir missing or unwatchable — the poll covers it and retries here.
+        all = false
+      }
+    }
+
+    return all
   }
 
-  void scanDiskPlugins()
-  void startDirWatch().then(watched => {
+  void scanDiskPlugins().then(() => $diskPluginsScanPending.set(false))
+  void startDirWatches().then(watched => {
     if (watched) {
       return
     }
@@ -381,15 +900,13 @@ export function watchRuntimePlugins(): void {
 
       void scanDiskPlugins()
 
-      // The dir may have been created since — upgrade to the watch and retire
-      // this poll once it lands.
-      if (dirWatchId === null) {
-        void startDirWatch().then(upgraded => {
-          if (upgraded) {
-            window.clearInterval(timer)
-          }
-        })
-      }
+      // A root may have appeared since — upgrade to the watches and retire
+      // this poll once every root is covered.
+      void startDirWatches().then(upgraded => {
+        if (upgraded) {
+          window.clearInterval(timer)
+        }
+      })
     }, DISK_POLL_MS)
   })
 }

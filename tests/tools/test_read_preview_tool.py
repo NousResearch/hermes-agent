@@ -1,17 +1,22 @@
-"""Tests for the desktop-gated ``read_preview`` tool."""
+"""Tests for the GUI-surface ``read_preview`` tool."""
 
 import json
 
 from tools import read_preview_tool as rp
+from tools.registry import registry
 
 
-def test_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal)."""
+def test_lives_in_the_gui_surface_toolset(monkeypatch):
+    import tools.preview_tool  # noqa: F401 — registers desktop_preview
+    """Consolidated (#95681): this module's tool became an action of the
+    single `desktop_preview` tool in desktop_ui; the old registration is gone and
+    `preview` reaches a desktop client on ANY backend (no env gate)."""
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert rp.check_read_preview_requirements() is False
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert rp.check_read_preview_requirements() is True
+    assert registry.get_entry("read_preview") is None
+    entry = registry.get_entry("desktop_preview")
+    assert entry is not None
+    assert entry.toolset == "desktop_ui"
+    assert entry.check_fn is None
 
 
 def test_requires_callback():

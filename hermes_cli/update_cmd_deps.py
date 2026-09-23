@@ -1183,6 +1183,10 @@ def _sync_python_dependencies_after_pull(
     _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
 
+    # Keep the pip dependency behind the in-use web provider plugin current: the post_setup hook
+    # installs it only when missing, so it never moved after the first install (#108711).
+    _m()._refresh_active_web_provider_dependencies()
+
     # Remaining import failures are real breakage. Warn only — never roll back: `cannot import
     # name X` is also the stale-bytecode signature, which self-heals next launch.
     import_ok, failing_module, import_error = _validate_critical_modules_import(_m().PROJECT_ROOT)

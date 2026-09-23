@@ -426,6 +426,10 @@ class MicroCompactionMixin:
             if _plain_user(msg) and _plain_user(prev):
                 prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
                 drop_stale_api_content(prev)  # merged content invalidates the api_content sidecar
+                # The originals stay in display history as compacted rows; showing the join too
+                # would paint every merged input twice on resume.
+                prev["display_metadata"] = {**(prev.get("display_metadata") or {}),
+                                            _cc().MODEL_ONLY_DISPLAY_METADATA_KEY: True}
                 # The merge rewrites a live dict that may carry _db_persisted: pop the stamp
                 # and flag the finalizer to invalidate the bounded flush-scan cursor, or the
                 # merged text is identity-skipped and never reaches state.db. Same contract

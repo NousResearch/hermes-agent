@@ -11,9 +11,12 @@ Five outcomes, in order:
 * ``RESCAN``→ATTACH — it does not serve it yet: ask it to reconcile ``profiles/`` now (control
   socket ``rescan-profiles``) and attach once the answer includes us.
 * ``REPLACE_HOST`` — ``--replace`` names the host process as the target when it serves this
-  profile (or has not published its served set yet), whichever home launched it. An owner known
-  not to serve us is another profile's gateway and falls through to REFUSE/START below;
-  ``--force`` is the explicit takeover-anything switch.
+  profile, whichever home launched it. An owner that has not published its served set yet is
+  also targeted, but the ownership guard (``run._replace_target_belongs_to_other_profile``) can
+  then only prove it from THIS home's pid record, so a served-unknown owner launched from another
+  home is refused (exit 1, one supervisor retry). An owner known not to serve us is another
+  profile's gateway and falls through to REFUSE/START below; ``--force`` is the explicit
+  takeover-anything switch.
 * ``REFUSE``       — a live MULTIPLEXING gateway exists and cannot be made to serve this profile.
   Never start a second one silently.
 * ``START``        — no live owner, or the owner answers ``multiplex: False``: it is another
@@ -260,19 +263,21 @@ def _unknown_served_message(gateway: HostGateway, profile: str) -> str:
         f"   Whether it will serve profile '{profile}' is unknown, so starting a second gateway\n"
         f"   now could double-bind this profile's platforms. Nothing was started; this is a\n"
         f"   transient state and a service supervisor will retry.\n"
-        f"   Take the host over:  hermes gateway run --replace\n"
-        f"   Start anyway:        hermes gateway run --force")
+        f"   Take the host over (only from the home that launched it):  hermes gateway run --replace\n"
+        f"   Start anyway:  hermes gateway run --force")
 
 
 def _refuse_message(gateway: HostGateway, profile: str) -> str:
+    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+
     return (
         f"❌ A gateway already owns this host and will not serve profile '{profile}'.\n"
         f"   {gateway.describe()}\n"
         f"   Exactly one gateway per host serves every profile, so starting a second one\n"
         f"   would double-bind this profile's platforms.\n"
-        f"   Fold this profile into it:   hermes gateway migrate --multiplex\n"
-        f"   Or take the host over:       hermes gateway run --replace\n"
-        f"   Or start one anyway:         hermes gateway run --force")
+        f"   Fold this profile into it:   {MIGRATE_COMMAND}\n"
+        f"   Or start one anyway:         hermes gateway run --force\n"
+        f"   (--replace only replaces an owner that serves this profile, so it would not take this one over.)")
 
 
 def standalone_rescan_message(profile: str) -> str:
@@ -341,8 +346,9 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     if gateway is None or gateway.pid == os.getpid():
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
     if replace and (gateway.serves(profile) or not gateway.served_known):
-        # --replace is authority over the process SERVING THIS PROFILE, whichever home launched it.
-        # An owner known not to serve us is another profile's gateway: replacing it is always refused
+        # --replace is authority over the process SERVING THIS PROFILE (whichever home launched it;
+        # a served-unknown owner is provable only from this home's pid record). An owner known not
+        # to serve us is another profile's gateway: replacing it is always refused
         # (_replace_target_belongs_to_other_profile fails closed) and the gateway exits, so on a
         # one-process-per-profile fleet, whose generated units all carry --replace, every unit but
         # the lock holder respawn-storms. Such an owner takes the non-replace path below instead.

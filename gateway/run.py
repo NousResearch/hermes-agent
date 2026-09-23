@@ -5581,8 +5581,8 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
         print(decision.message)
         return False
     if decision.outcome == REPLACE_HOST and decision.owner is not None:
-        # --replace names the HOST process, whichever home launched it, but only when it serves
-        # this profile or has not published its served set yet (decide() already filtered).
+        # decide() already filtered: the owner serves this profile (whichever home launched it) or
+        # has not published its served set yet (then only this home's pid record can prove it).
         if not await _start_gateway_replace_existing_instance(decision.owner.pid, True):
             return False
     return None

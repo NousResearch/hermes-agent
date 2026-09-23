@@ -1,38 +1,91 @@
-"""Regression for #120165: isolated backends must not own the shared host record."""
+"""Regression for #120165: isolated serve must not steal dashboard rendezvous."""
 
-import asyncio
-from types import SimpleNamespace
+import os
+import socket
+import subprocess
+import sys
+import time
+
+import psutil
+import pytest
 
 from gateway import host_rendezvous as hr
-from hermes_cli import web_server
+from hermes_cli import process_identity
 
 
-def test_isolated_start_leaves_host_rendezvous_for_dashboard(tmp_path, monkeypatch):
+def _free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _await_bind(proc, port, log, *, timeout=45):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return
+        except OSError:
+            time.sleep(0.1)
+    pytest.fail(f"backend did not bind port {port} (exit={proc.poll()}): "
+                f"{log.read_text(encoding='utf-8', errors='replace')}")
+
+
+@pytest.mark.parametrize("first", ["serve", "dashboard"])
+def test_isolated_serve_and_dashboard_share_host_without_conflict(tmp_path, monkeypatch, first):
+    home = tmp_path / "home"
+    home.mkdir()
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>ready</html>", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.setattr(web_server, "_read_bound_port", lambda server, fallback: fallback)
-    monkeypatch.setattr(web_server, "_start_parent_death_watchdog", lambda: None)
-    monkeypatch.setattr(web_server, "_write_dashboard_ready_file", lambda port: None)
-    monkeypatch.setattr(web_server, "_write_machine_sentinel_line", lambda line: None)
-    monkeypatch.setattr(web_server, "_maybe_open_browser", lambda *args: None)
-    monkeypatch.setattr(web_server, "_best_effort",
-                        lambda what, fn: fn() if what == "host rendezvous publish" else None)
+    env = {**os.environ, "HERMES_WEB_DIST": str(dist)}
+    for key in ("HERMES_DESKTOP", "HERMES_PARENT_PID", "HERMES_PARENT_START_MARKER"):
+        env.pop(key, None)
 
-    async def started(isolated, port):
-        web_server._on_server_started(
-            SimpleNamespace(), host="127.0.0.1", port=port, headless=isolated,
-            isolated=isolated, open_browser=False, initial_profile="",
-            start_mcp_discovery_after_bind=False,
-        )
+    serve_port, dashboard_port = _free_port(), _free_port()
+    assert serve_port != dashboard_port
+    commands = {
+        "serve": [sys.executable, "-m", "hermes_cli.main", "serve", "--isolated",
+                  "--host", "127.0.0.1", "--port", str(serve_port)],
+        "dashboard": [sys.executable, "-m", "hermes_cli.main", "dashboard",
+                      "--host", "127.0.0.1", "--port", str(dashboard_port), "--no-open"],
+    }
+    ports = {"serve": serve_port, "dashboard": dashboard_port}
+    processes = {}
+    try:
+        for purpose in (first, "dashboard" if first == "serve" else "serve"):
+            log = tmp_path / f"{purpose}.log"
+            with log.open("w", encoding="utf-8") as output:
+                processes[purpose] = subprocess.Popen(
+                    commands[purpose], env=env, stdout=output, stderr=subprocess.STDOUT,
+                )
+            _await_bind(processes[purpose], ports[purpose], log)
 
-    asyncio.run(started(True, 9120))
-    assert hr.read_record(hr.ROLE_SERVE) is None
-    assert not hr.owns_host_lock(hr.ROLE_SERVE)
-
-    asyncio.run(started(False, 9119))
-    record = hr.read_record(hr.ROLE_SERVE)
-    assert record is not None
-    assert record.port == 9119
-    assert hr.owns_host_lock(hr.ROLE_SERVE)
-    hr.clear_record(hr.ROLE_SERVE)
-    hr.release_host_lock(hr.ROLE_SERVE)
+        record = hr.read_record(hr.ROLE_SERVE)
+        assert record is not None
+        assert record.port == dashboard_port
+        assert record.pid == processes["dashboard"].pid
+        entries = process_identity.ledger_entries()
+        assert {(e["pid"], e["purpose"]) for e in entries} >= {
+            (processes["serve"].pid, "serve"),
+            (processes["dashboard"].pid, "dashboard"),
+        }
+    finally:
+        for proc in processes.values():
+            try:
+                parent = psutil.Process(proc.pid) if proc.poll() is None else None
+            except psutil.NoSuchProcess:
+                parent = None
+            if parent is not None:
+                children = parent.children(recursive=True)
+                for child in children:
+                    child.terminate()
+                parent.terminate()
+                _, alive = psutil.wait_procs([*children, parent], timeout=5)
+                for survivor in alive:
+                    survivor.kill()
+            proc.wait(timeout=10)

@@ -156,6 +156,34 @@ describe('task modal dialog', () => {
     expect(await screen.findByText(path)).toBeTruthy()
     expect(screen.queryByText(/dir:/)).toBeNull()
   })
+
+  it('renders description and comments as markdown, not raw source', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: { ...legacyDetail.task, body: '**Goal:** ship it' },
+      comments: [{ id: 1, author: 'test', body: 'run `npm test`', created_at: 0 }]
+    }
+    openDrawer()
+
+    // Formatted runs become their own nodes; the raw markers are gone.
+    expect(await screen.findByText('Goal:')).toBeTruthy()
+    expect(screen.getByText('npm test')).toBeTruthy()
+    expect(screen.queryByText(/\*\*|`/)).toBeNull()
+  })
+
+  it('does not repeat the active feed tab as a heading above the tab strip', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      events: [{ id: 1, kind: 'created', payload: null, created_at: 0 }]
+    }
+    openDrawer()
+
+    const commentsLabel = en.comments(legacyDetail.comments.length)
+    expect(await screen.findByRole('button', { name: commentsLabel, pressed: true })).toBeTruthy()
+    expect(screen.getAllByText(commentsLabel)).toHaveLength(1)
+  })
 })
 
 describe('dependency chips resolve titles', () => {

@@ -25,6 +25,7 @@ import {
   isSubmitEnter,
   Loader,
   LogView,
+  MessageTextContent,
   SegmentedControl,
   Textarea,
   Tip,
@@ -178,6 +179,18 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
       return { label: event.kind.replace(/_/g, ' '), detail: detail || undefined }
     }
   }
+}
+
+// Task bodies, results, summaries and comments are agent-written markdown;
+// rendering them raw left `**Goal:**` and backticks literal. Same renderer as
+// chat. `media={false}`: kanban text is not session-scoped, so `MEDIA:` paths
+// must not be resolved against the active gateway.
+function TaskMarkdown({ text }: { text: string }) {
+  return (
+    <div className="min-w-0 [&_.aui-md>:first-child]:mt-0 [&_.aui-md>:last-child]:mb-0" data-selectable-text="true">
+      <MessageTextContent media={false} text={text} />
+    </div>
+  )
 }
 
 // Sidebar property row: a Section (so every sidebar label — these, Estimate,
@@ -435,7 +448,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
+        <TaskMarkdown text={body} />
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}
@@ -645,99 +658,117 @@ function FeedTabs({
       (t.id === 'activity' ? detail.events.length > 0 : t.id === 'runs' ? detail.runs.length > 0 : hasLog)
   )
 
-  return (
-    <Section
-      action={
-        <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
-          <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
-            <Codicon name="question" size="0.8rem" />
-          </span>
-        </Tip>
-      }
-      label={tabs.find(option => option.id === tab)?.label ?? k.comments(detail.comments.length)}
-    >
-      <div className="flex flex-col gap-3">
-        {switchable && <SegmentedControl onChange={setTab} options={tabs} value={tab} />}
-        {tab === 'comments' && (
-          <>
-            {detail.comments.length > 0 && (
-              <ul className="flex flex-col gap-2">
-                {detail.comments.map(comment => (
-                  <li className="text-[0.75rem]" key={comment.id}>
+  const help = (
+    <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
+      <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
+        <Codicon name="question" size="0.8rem" />
+      </span>
+    </Tip>
+  )
+
+  const body = (
+    <div className="flex flex-col gap-3">
+      {tab === 'comments' && (
+        <>
+          {detail.comments.length > 0 && (
+            <ul className="flex flex-col gap-2">
+              {detail.comments.map(comment => (
+                <li className="flex flex-col gap-0.5" key={comment.id}>
+                  <div className="flex items-baseline gap-2 text-[0.75rem]">
                     <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
-                    <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">{ago(comment.created_at)}</span>
-                    <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
-          </>
-        )}
-        {tab === 'activity' && (
-          <ScrollFade deps={detail.events.length} max="7rem">
-            <ul className="flex flex-col gap-1">
-              {detail.events.map(event => {
-                const { detail: extra, label } = eventText(event, k)
-
-                return (
-                  <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
-                    <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
-                    {extra && (
-                      <span className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)" title={extra}>
-                        {extra}
-                      </span>
-                    )}
-                    <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
-                  </li>
-                )
-              })}
+                    <span className="text-[0.625rem] text-(--ui-text-quaternary)">{ago(comment.created_at)}</span>
+                  </div>
+                  <TaskMarkdown text={comment.body} />
+                </li>
+              ))}
             </ul>
-          </ScrollFade>
-        )}
-        {tab === 'runs' && (
-          <ScrollFade max="11rem">
-            <ul className="flex flex-col gap-1.5">
-              {detail.runs.map(run => {
-                const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
+          )}
+          <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
+        </>
+      )}
+      {tab === 'activity' && (
+        <ScrollFade deps={detail.events.length} max="7rem">
+          <ul className="flex flex-col gap-1">
+            {detail.events.map(event => {
+              const { detail: extra, label } = eventText(event, k)
 
-                return (
-                  <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
-                    <div className="flex items-center gap-2">
-                      <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
-                        {run.outcome ?? run.status}
-                      </Badge>
-                      {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
-                      {duration(run.started_at, run.ended_at) && (
-                        <span className="text-(--ui-text-quaternary)">{duration(run.started_at, run.ended_at)}</span>
+              return (
+                <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
+                  <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
+                  {extra && (
+                    <span className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)" title={extra}>
+                      {extra}
+                    </span>
+                  )}
+                  <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </ScrollFade>
+      )}
+      {tab === 'runs' && (
+        <ScrollFade max="11rem">
+          <ul className="flex flex-col gap-1.5">
+            {detail.runs.map(run => {
+              const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
+
+              return (
+                <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
+                  <div className="flex items-center gap-2">
+                    <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
+                      {run.outcome ?? run.status}
+                    </Badge>
+                    {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
+                    {duration(run.started_at, run.ended_at) && (
+                      <span className="text-(--ui-text-quaternary)">{duration(run.started_at, run.ended_at)}</span>
+                    )}
+                    <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
+                      {ago(run.ended_at ?? run.started_at)}
+                    </span>
+                  </div>
+                  {(run.error || run.summary) && (
+                    <p
+                      className={cn(
+                        'line-clamp-2 whitespace-pre-wrap',
+                        run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
                       )}
-                      <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
-                        {ago(run.ended_at ?? run.started_at)}
-                      </span>
-                    </div>
-                    {(run.error || run.summary) && (
-                      <p
-                        className={cn(
-                          'line-clamp-2 whitespace-pre-wrap',
-                          run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
-                        )}
-                      >
-                        {run.error ?? run.summary}
-                      </p>
-                    )}
-                  </li>
-                )
-              })}
-            </ul>
-          </ScrollFade>
-        )}
-        {tab === 'log' && (
-          <ScrollFade deps={log?.content.length} max="12rem">
-            <LogView className="border-0 px-0">{log!.content}</LogView>
-          </ScrollFade>
-        )}
+                    >
+                      {run.error ?? run.summary}
+                    </p>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </ScrollFade>
+      )}
+      {tab === 'log' && (
+        <ScrollFade deps={log?.content.length} max="12rem">
+          <LogView className="border-0 px-0">{log!.content}</LogView>
+        </ScrollFade>
+      )}
+    </div>
+  )
+
+  // With something to switch to, the segmented control IS the heading — a
+  // label above it only repeated the active tab ("Comments · 2" twice).
+  if (!switchable) {
+    return (
+      <Section action={help} label={k.comments(detail.comments.length)}>
+        {body}
+      </Section>
+    )
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <SegmentedControl onChange={setTab} options={tabs} value={tab} />
+        {help}
       </div>
-    </Section>
+      {body}
+    </section>
   )
 }
 
@@ -983,15 +1014,13 @@ export function TaskDrawer({
 
                   {task.result && (
                     <Section label={k.result}>
-                      <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
+                      <TaskMarkdown text={task.result} />
                     </Section>
                   )}
 
                   {task.latest_summary && !isAdminSummary(task.latest_summary) && (
                     <Section label={k.latestSummary}>
-                      <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">
-                        {task.latest_summary}
-                      </p>
+                      <TaskMarkdown text={task.latest_summary} />
                     </Section>
                   )}
 

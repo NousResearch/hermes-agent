@@ -6,7 +6,7 @@ Telegram topics act as independent Hermes session lanes.
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -717,6 +717,33 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_retitle_respects_telegram_topic_auto_rename_kill_switch(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+    runner.config.platforms[Platform.TELEGRAM].extra["disable_topic_auto_rename"] = True
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "Retitle this managed Telegram topic"}
+    ]
+    runner._run_in_executor_with_context = AsyncMock(
+        side_effect=lambda function, *args: function(*args)
+    )
+
+    with patch(
+        "agent.session_retitle.generate_retitle", return_value="Protected topic title"
+    ):
+        reply = await runner._handle_retitle_command(
+            _make_event("/retitle", thread_id="42")
+        )
+
+    assert db.get_session_title("sess-topic") == "Protected topic title"
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+    assert "Telegram topic could not be renamed" in reply
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     """Unauthorized DMs cannot flip multi-session mode on."""
     import gateway.run as gateway_run
@@ -857,4 +884,3 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 # ---------------------------------------------------------------------------
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
-

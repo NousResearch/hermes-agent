@@ -415,11 +415,14 @@ class RelayAdapter(BasePlatformAdapter):
         structured connector decline (logged at ``decline_level``; None = silent).
         """
         op = action["op"]
-        if self._transport is None or not self.descriptor.supports_op(op):
+        target_platform = platform or self._platform_by_chat.get(str(chat_id))
+        descriptor = self._negotiated_descriptor(platform) if platform else None
+        descriptor = descriptor or self._descriptor_for_chat(str(chat_id))
+        if self._transport is None or not descriptor.supports_op(op):
             return None
         try:
             result = await self._transport.send_outbound(
-                action, platform=platform or self._platform_by_chat.get(str(chat_id))
+                action, platform=target_platform
             )
         except Exception:  # noqa: BLE001 - transport failure degrades to the caller's fallback
             logger.debug("relay %s transport failure", op, exc_info=True)
@@ -1164,15 +1167,23 @@ class RelayAdapter(BasePlatformAdapter):
         if not isinstance(user, dict):
             user = {}
         guild_id = payload.get("guild_id")
+        channel = payload.get("channel") or {}
+        if not isinstance(channel, dict):
+            channel = {}
+        channel_id = str(payload.get("channel_id") or "")
+        is_thread = bool(guild_id) and channel.get("type") in {10, 11, 12}
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
             # capability binding (platform="discord"), /sethome must file under the
             # logical platform, and _capture_scope skips the generic "relay".
             platform=Platform.DISCORD,
-            chat_id=str(payload.get("channel_id") or ""),
-            # "group", not "channel": both the connector's capability binding and the
-            # native Discord adapter key guild channels as "group".
-            chat_type="group" if guild_id else "dm",
+            chat_id=channel_id,
+            # Native Discord keys guild text channels as "group" and threads as
+            # "thread". Interaction payload channel types 10/11/12 are announcement,
+            # public, and private threads respectively.
+            chat_type="thread" if is_thread else ("group" if guild_id else "dm"),
+            thread_id=channel_id if is_thread else None,
+            parent_chat_id=(str(channel.get("parent_id")) if is_thread and channel.get("parent_id") else None),
             user_id=str(user["id"]) if user.get("id") else None,
             user_name=str(user["username"]) if user.get("username") else None,
             scope_id=str(guild_id) if guild_id else None,

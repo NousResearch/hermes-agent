@@ -1,5 +1,5 @@
 """Gateway slash commands that rotate, switch, fork or rewrite the session transcript:
-/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress.
+/new, /resume, /sessions, /branch, /title, /retitle, /save, /undo, /retry, /topic, /compress.
 Split out of ``gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
 ``GatewaySlashCommandsMixin``.  Origin internals are imported lazily inside the bodies to avoid
 the import cycle."""
@@ -113,7 +113,7 @@ def _strip_resume_name(parts: list[str]) -> str:
 
 
 class GatewaySessionCommandsMixin:
-    """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
+    """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /retitle, /save, /undo, /retry, /topic, /compress)."""
 
     # ------------------------------------------------------------------ /new, /reset
 
@@ -796,12 +796,73 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.title.not_found")
         except ValueError as e:
             return t("gateway.shared.warn_passthrough", error=e)
-        # Mirror the title onto the Telegram forum topic name (auto titles already do this).
+        # Mirror the title onto managed Telegram topics (auto titles already do this).
         try:
             await asyncio.to_thread(self._schedule_telegram_topic_title_rename, source, session_id, sanitized)
         except Exception:
             logger.debug("Failed to rename Telegram topic from /title", exc_info=True)
-        return t("gateway.title.set_to", title=sanitized)
+        reply = t("gateway.title.set_to", title=sanitized)
+        if source.platform == Platform.DISCORD and source.chat_type == "thread" and source.thread_id:
+            try:
+                renamed = await self._rename_current_discord_thread(source, sanitized)
+            except Exception:
+                logger.debug("Failed to rename Discord thread from /title", exc_info=True)
+                renamed = False
+            if not renamed:
+                reply += "\n\nThe Discord thread could not be renamed."
+        return reply
+
+    async def _handle_retitle_command(self, event: MessageEvent) -> str:
+        """Generate a fresh title from the current session's recent conversation."""
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+        source = event.source
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        try:
+            history = await self.async_session_store.load_transcript(session_entry.session_id)
+        except TranscriptReadError:
+            return HISTORY_UNREADABLE
+
+        from agent.session_retitle import (
+            RetitleGenerationError, RetitlePersistenceError, retitle_session,
+        )
+
+        session_db = getattr(self._session_db, "_db", self._session_db)
+        try:
+            title = await self._run_in_executor_with_context(
+                retitle_session, session_db, session_entry.session_id, history,
+            )
+        except RetitleGenerationError as exc:
+            logger.warning("Session retitle generation failed: %s", exc)
+            return f"Could not generate a new session title: {exc}"
+        except RetitlePersistenceError as exc:
+            logger.warning("Session retitle persistence failed: %s", exc)
+            return f"Generated a title, but could not save it: {exc}"
+        if not title:
+            return "Could not generate a title from this session's recent conversation."
+
+        rename_failure = None
+        if source.platform == Platform.TELEGRAM and source.chat_id and source.thread_id:
+            try:
+                renamed = await self._rename_telegram_topic_for_session_title(
+                    source, session_entry.session_id, title,
+                )
+            except Exception:
+                logger.debug("Failed to rename Telegram topic after /retitle", exc_info=True)
+                renamed = False
+            if not renamed:
+                rename_failure = "The Telegram topic could not be renamed."
+        elif source.platform == Platform.DISCORD and source.chat_type == "thread" and source.thread_id:
+            try:
+                renamed = await self._rename_current_discord_thread(source, title)
+            except Exception:
+                logger.debug("Failed to rename Discord thread after /retitle", exc_info=True)
+                renamed = False
+            if not renamed:
+                rename_failure = "The Discord thread could not be renamed."
+
+        reply = f"Session retitled to: {title}"
+        return f"{reply}\n\n{rename_failure}" if rename_failure else reply
 
     # -------------------------------------------------------------- /resume, /sessions
 

@@ -17,14 +17,20 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-KANBAN_POSTGRES_SCHEMA_VERSION = 1
+KANBAN_POSTGRES_SCHEMA_VERSION = 2
+
+KANBAN_WORKER_FINGERPRINT_SCHEMA_SQL = """
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_started_at TEXT;
+ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS worker_started_at TEXT;
+"""
 
 KANBAN_TABLE_COLUMNS = {
     "tasks": (
         "id", "title", "body", "assignee", "status", "priority", "created_by",
         "created_at", "started_at", "completed_at", "workspace_kind", "workspace_path",
         "branch_name", "project_id", "claim_lock", "claim_expires", "tenant", "result",
-        "idempotency_key", "consecutive_failures", "worker_pid", "last_failure_error",
+        "idempotency_key", "consecutive_failures", "worker_pid", "worker_started_at",
+        "last_failure_error",
         "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
         "current_step_key", "skills", "model_override", "provider_override", "reasoning_effort",
         "max_retries", "goal_mode", "goal_max_turns", "session_id", "block_kind",
@@ -35,7 +41,8 @@ KANBAN_TABLE_COLUMNS = {
     "task_events": ("id", "task_id", "run_id", "kind", "payload", "created_at"),
     "task_runs": (
         "id", "task_id", "profile", "step_key", "status", "claim_lock", "claim_expires",
-        "worker_pid", "max_runtime_seconds", "last_heartbeat_at", "started_at", "ended_at",
+        "worker_pid", "worker_started_at", "max_runtime_seconds", "last_heartbeat_at",
+        "started_at", "ended_at",
         "outcome", "summary", "metadata", "error",
     ),
     "task_attachments": (
@@ -74,6 +81,7 @@ CREATE TABLE tasks (
     idempotency_key      TEXT,
     consecutive_failures BIGINT NOT NULL DEFAULT 0,
     worker_pid           BIGINT,
+    worker_started_at    TEXT,
     last_failure_error   TEXT,
     max_runtime_seconds  BIGINT,
     last_heartbeat_at    BIGINT,
@@ -125,6 +133,7 @@ CREATE TABLE task_runs (
     claim_lock          TEXT,
     claim_expires       BIGINT,
     worker_pid          BIGINT,
+    worker_started_at   TEXT,
     max_runtime_seconds BIGINT,
     last_heartbeat_at   BIGINT,
     started_at          BIGINT NOT NULL,
@@ -179,7 +188,7 @@ CREATE INDEX idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX idx_notify_task           ON kanban_notify_subs(task_id);
 
 CREATE TABLE kanban_schema_version (version BIGINT PRIMARY KEY);
-INSERT INTO kanban_schema_version(version) VALUES (1);
+INSERT INTO kanban_schema_version(version) VALUES (2);
 """
 
 
@@ -295,6 +304,12 @@ def _initialize_schema(settings, schema: str, *, read_only: bool) -> None:
                 version = connection.execute(
                     "SELECT version FROM kanban_schema_version"
                 ).fetchone()[0]
+                if version == 1:
+                    connection.execute(KANBAN_WORKER_FINGERPRINT_SCHEMA_SQL)
+                    version = 2
+                    connection.execute(
+                        "UPDATE kanban_schema_version SET version = %s", (version,)
+                    )
                 if version != KANBAN_POSTGRES_SCHEMA_VERSION:
                     raise RuntimeError(
                         f"Unsupported PostgreSQL Kanban schema version {version}"

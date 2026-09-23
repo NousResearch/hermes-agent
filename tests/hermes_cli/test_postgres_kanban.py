@@ -243,6 +243,54 @@ def test_dependencies_review_handoff_blocking_and_health_check(postgres_kanban_h
         assert kb.get_task(connection, child_id).status == "ready"
 
 
+def test_writable_open_upgrades_worker_fingerprint_columns(postgres_kanban_home):
+    import psycopg
+    from psycopg import sql
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_postgres as pg
+
+    kb.create_board("upgrade")
+    schema = pg.initialize_board("upgrade")
+    settings = pg.database_settings()
+    pg.close_pools()
+
+    with psycopg.connect(settings.database_url, autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("SET search_path TO {}, pg_catalog").format(sql.Identifier(schema))
+        )
+        connection.execute("ALTER TABLE tasks DROP COLUMN worker_started_at")
+        connection.execute("ALTER TABLE task_runs DROP COLUMN worker_started_at")
+        connection.execute("UPDATE kanban_schema_version SET version = 1")
+
+    pg.initialize_board("upgrade")
+    with psycopg.connect(settings.database_url, autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("SET search_path TO {}, pg_catalog").format(sql.Identifier(schema))
+        )
+        assert connection.execute(
+            "SELECT version FROM kanban_schema_version"
+        ).fetchone()[0] == 2
+        task_columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = 'tasks'",
+                (schema,),
+            )
+        }
+        run_columns = {
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = 'task_runs'",
+                (schema,),
+            )
+        }
+        assert "worker_started_at" in task_columns
+        assert "worker_started_at" in run_columns
+
+
 def test_archived_board_and_reused_slug_do_not_share_schema(postgres_kanban_home):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

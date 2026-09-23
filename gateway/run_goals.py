@@ -159,6 +159,7 @@ class GatewayGoalsMixin:
             return
         event = self._synthetic_prompt_event(source, prompt)
         event.metadata["gateway_session_key"] = quick_key
+        event._trusted_scheduled_heartbeat = True
         event._heartbeat_execution_started = False
         # Provenance read by display_kind_for_event / the turn's quiet surfaces; the event stays
         # non-internal so authorization and the emergency stop still apply.

@@ -82,6 +82,7 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
         # the message that registered the watch (#112149).
         assert display_kind_for_event(received[0]) == INTERNAL_NOTIFICATION_DISPLAY_KIND
         assert received[0].source.message_id is None
+        assert received[0]._trusted_scheduled_heartbeat
         assert runner._queue_depth(key, adapter=adapter) == 0
         assert HeartbeatManager("heartbeat-session").state.fire_count == 1
     finally:

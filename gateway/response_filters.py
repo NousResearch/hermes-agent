@@ -102,13 +102,17 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
 
 
 def display_kind_for_event(event: Any) -> str | None:
-    """The persisted user-row kind for a gateway turn: only self-injected events are machinery.
+    """The persisted user-row kind for a gateway turn that may intentionally stay quiet.
 
-    A scheduled heartbeat prompt is self-injected too (``_heartbeat_session_id`` is stamped only
-    by the gateway poller, never inferred from inbound text), but it deliberately stays
-    non-internal so authorization and the emergency stop still apply to it.
+    A trusted scheduled heartbeat is admitted like a user message, rather than as an internal
+    event, so it retains authorization and control safeguards. Its provenance is assigned only by
+    the gateway scheduler and cannot be inferred from inbound text.
     """
-    if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
+    if (
+        getattr(event, "internal", False)
+        or getattr(event, "_trusted_scheduled_heartbeat", False)
+        or getattr(event, "_heartbeat_session_id", None)
+    ):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None
 

@@ -304,8 +304,12 @@ def _updater_pip_holder(cmdline: str) -> bool:
     scripts = venv / "Scripts"
     def _same(left, right):
         return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(str(right)))
+    if len(tokens) == 2 and tokens[1] == "--version":
+        return _same(tokens[0], scripts / "pip.exe")
     if len(tokens) == 3 and tokens[2] == "--version":
         return _same(tokens[1], scripts / "pip.exe")
+    if len(tokens) == 4 and tokens[1:] == ["-m", "pip", "--version"]:
+        return _same(tokens[0], scripts / "python.exe")
     if len(tokens) == 5 and tokens[1:] == ["-m", "ensurepip", "--upgrade", "--default-pip"]:
         return _same(tokens[0], scripts / "python.exe")
     return False

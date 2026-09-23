@@ -40,14 +40,21 @@ def test_pip_probe_and_bootstrap_are_bounded_and_fail_closed(tmp_path):
 
 def test_refusal_identifies_only_exact_pip_probe_from_this_venv(tmp_path):
     pip = tmp_path / "venv" / "Scripts" / "pip.exe"
-    own = f'C:\\runtime\\python.exe "{pip}" --version'
-    foreign = 'C:\\runtime\\python.exe C:\\other\\venv\\Scripts\\pip.exe --version'
-    extra = own + " --other"
+    python = tmp_path / "venv" / "Scripts" / "python.exe"
+    own = f'"{pip}" --version'
+    module = f'"{python}" -m pip --version'
+    bootstrap = f'"{python}" -m ensurepip --upgrade --default-pip'
+    foreign = f'"{tmp_path / "other" / "Scripts" / "pip.exe"}" --version'
+    foreign_module = f'"{tmp_path / "other" / "Scripts" / "python.exe"}" -m pip --version'
+    extra = module + " --other"
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path):
         message = update_cmd_windows._format_venv_python_holders_message([
-            (100, "python.exe", own), (101, "python.exe", foreign), (102, "python.exe", extra)
+            (100, "pip.exe", own), (101, "python.exe", module),
+            (102, "python.exe", bootstrap), (103, "pip.exe", foreign),
+            (104, "python.exe", foreign_module), (105, "python.exe", extra),
         ])
     lines = message.splitlines()
-    assert "leftover updater pip probe" in next(line for line in lines if "PID 100" in line)
-    assert "leftover updater pip probe" not in next(line for line in lines if "PID 101" in line)
-    assert "leftover updater pip probe" not in next(line for line in lines if "PID 102" in line)
+    for pid in (100, 101, 102):
+        assert "leftover updater pip probe" in next(line for line in lines if f"PID {pid}" in line)
+    for pid in (103, 104, 105):
+        assert "leftover updater pip probe" not in next(line for line in lines if f"PID {pid}" in line)

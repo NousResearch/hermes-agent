@@ -36,6 +36,8 @@ class SwarmWorkerSpec:
     skills: list[str] = field(default_factory=list)
     priority: int = 0
     max_runtime_seconds: Optional[int] = None
+    goal_mode: bool = False
+    goal_max_turns: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,8 @@ def _create_swarm_uncommitted(
             priority=spec.priority or priority,
             skills=spec.skills or None,
             max_runtime_seconds=spec.max_runtime_seconds,
+            goal_mode=spec.goal_mode,
+            goal_max_turns=spec.goal_max_turns,
             **common,
         )
         for spec in worker_specs

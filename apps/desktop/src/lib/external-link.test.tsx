@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
+import { $connection } from '@/store/session'
 
 import {
   __resetLinkTitleCache,
@@ -43,6 +44,7 @@ afterEach(() => {
   closeRightRail()
   vi.restoreAllMocks()
   cleanup()
+  $connection.set(null)
 
   if (initialHermesDesktop) {
     desktopWindow.hermesDesktop = initialHermesDesktop
@@ -120,6 +122,27 @@ describe('external link helpers', () => {
 
     expect(openExternal).not.toHaveBeenCalled()
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+  })
+
+  // A localhost link an agent surfaced (chat text, a linkified terminal URL)
+  // names the GATEWAY's loopback on a remote connection, not this machine's —
+  // clicking it must get the same reach resolution the address bar and the
+  // agent's own preview.open tool call already get.
+  it('resolves a clicked localhost link through loopback reach on a remote gateway', async () => {
+    const reachPreviewUrl = vi.fn(async () => 'http://127.0.0.1:45173/')
+
+    $connection.set({ mode: 'remote' } as never)
+    installDesktopBridge({ reachPreviewUrl: reachPreviewUrl as unknown as Window['hermesDesktop']['reachPreviewUrl'] })
+
+    render(<ExternalLink href="http://localhost:5173/">Dev server</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Dev server' }))
+
+    await waitFor(() => expect(reachPreviewUrl).toHaveBeenCalledWith('http://localhost:5173/'))
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('http://127.0.0.1:45173/'))
+    // The user still sees the address the link actually said, even though the
+    // pane loads the rewritten one.
+    expect($previewTabs.get().at(-1)?.target.source).toBe('http://localhost:5173/')
   })
 
   // Platform-specific on purpose (same rule as terminal links / middle-click):

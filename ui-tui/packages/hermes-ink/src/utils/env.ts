@@ -37,7 +37,11 @@ function detectTerminal(): TerminalName {
 }
 
 export const env = {
-  terminal: detectTerminal()
+  terminal: detectTerminal(),
+  // VTE-based terminals (GNOME Terminal, Tilix, Terminator, xfce4-terminal)
+  // export VTE_VERSION even when TERM is a generic xterm-256color, so it is
+  // the only reliable fingerprint for them.
+  vteVersion: process.env.VTE_VERSION ?? null
 }
 
 // Terminals known to correctly implement OSC 52 clipboard writes

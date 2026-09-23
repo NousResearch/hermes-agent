@@ -1351,7 +1351,7 @@ class SessionSessionsMixin:
         return sessions
 
     def session_lifecycle_statuses(self, session_ids: List[str]) -> Dict[str, str]:
-        """``{session_id: status}`` from each session's LAST message row (``'empty'`` when none); one
+        """``{session_id: status}`` from each session's last visible message row (``'empty'`` when none); one
         query, MAX(id) per session joined back — never scans transcripts."""
         ids = [sid for sid in (session_ids or []) if sid]
         if not ids:
@@ -1366,6 +1366,8 @@ class SessionSessionsMixin:
                 SELECT session_id, MAX(id) AS max_id
                 FROM messages
                 WHERE session_id IN ({_session_ids_placeholders(ids)})
+                  AND (active = 1 OR compacted = 1)
+                  AND COALESCE(display_kind, '') <> 'hidden'
                 GROUP BY session_id
             ) latest ON m.id = latest.max_id
         """, ids)

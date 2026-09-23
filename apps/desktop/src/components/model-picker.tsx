@@ -1,11 +1,17 @@
 import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  catalogProviderMatches,
+  isUndiscoveredConfiguredProvider,
+  modelOptionsQueryKey,
+  refreshModelOptions,
+  requestModelOptions
+} from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -65,6 +71,9 @@ export function ModelPickerDialog({
   // it: an empty query shows the curated list verbatim (like the `hermes
   // model` CLI picker) and a query ranks with the shared fuzzyRank.
   const [search, setSearch] = useState('')
+
+  const queryClient = useQueryClient()
+  const [refreshing, setRefreshing] = useState(false)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
@@ -176,6 +185,27 @@ export function ModelPickerDialog({
     onOpenChange(false)
   }
 
+  // Re-fetch the catalog with refresh:true so the backend busts its provider-
+  // model disk cache and re-pulls each provider's live list — the way out of
+  // the "no models discovered" empty state for a configured custom provider.
+  // The model.options RPC has no per-provider refresh parameter (verified), so
+  // this is a WHOLE-CATALOG action and belongs in the footer next to the other
+  // global action, mirroring the composer menu's footer row — not inside one
+  // provider's group, where it would read as provider-scoped.
+  const refreshModels = async () => {
+    if (refreshing) {
+      return
+    }
+
+    setRefreshing(true)
+
+    try {
+      await refreshModelOptions(queryClient, { gateway: gw, ownerConnectionId, profile, request, sessionId })
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
@@ -209,6 +239,9 @@ export function ModelPickerDialog({
         </Command>
 
         <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
+          <Button disabled={refreshing} onClick={() => void refreshModels()} variant="ghost">
+            {copy.refreshModels}
+          </Button>
           <Button onClick={addProvider} variant="ghost">
             {copy.addProvider}
           </Button>
@@ -285,7 +318,9 @@ function ModelResults({
   const localModelsShown = $localModelsEnabled.get()
 
   const configured = providers.filter(
-    p => (p.models ?? []).length > 0 && (localModelsShown || p.slug !== LOCAL_PROVIDER_SLUG)
+    p =>
+      ((p.models ?? []).length > 0 || isUndiscoveredConfiguredProvider(p)) &&
+      (localModelsShown || p.slug !== LOCAL_PROVIDER_SLUG)
   )
 
   // In-flight local downloads render as disabled progress rows: inside the
@@ -301,7 +336,17 @@ function ModelResults({
         const models = rankModels(provider, provider.models ?? [])
         const groupDownloads = provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
 
-        if (models.length === 0 && groupDownloads.length === 0) {
+        // A configured provider whose catalog hasn't been fetched yet stays
+        // visible as a heading plus one disabled hint row rather than
+        // vanishing from the picker (#49656). Built-in skeleton rows (not
+        // user-defined) stay hidden. A query means "show me matches" — like
+        // the composer menu, the hint group hides while searching.
+        const searching = search.trim().length > 0
+
+        const undiscovered =
+          !searching && models.length === 0 && groupDownloads.length === 0 && isUndiscoveredConfiguredProvider(provider)
+
+        if (models.length === 0 && groupDownloads.length === 0 && !undiscovered) {
           return null
         }
 
@@ -315,6 +360,11 @@ function ModelResults({
                   {provider.warning}
                 </InlineNotice>
               </div>
+            )}
+            {undiscovered && (
+              <CommandItem className="text-muted-foreground" disabled value={`${provider.slug}:no-models`}>
+                {copy.noModelsDiscovered}
+              </CommandItem>
             )}
             {models.map(model => {
               const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)

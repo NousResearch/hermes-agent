@@ -127,6 +127,66 @@ describe('the catalog owns model curation', () => {
   })
 })
 
+// A configured provider whose /v1/models catalog hasn't been fetched yet comes
+// back as a user-defined row with an empty model list (#49656). Silently
+// dropping it made the provider vanish from the composer menu until the user
+// found Refresh models. The web dashboard and TUI render such a row because they
+// request the full provider universe (include_unconfigured); this explicit-only
+// chat surface is the one that dropped it.
+describe('configured providers with an undiscovered catalog', () => {
+  const UNDISCOVERED = {
+    is_user_defined: true,
+    models: [],
+    name: 'my-provider',
+    slug: 'custom:my-provider'
+  }
+
+  it('keeps a configured provider visible with an honest hint row', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' }, UNDISCOVERED]
+    })
+
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    expect(screen.getByText('my-provider')).toBeTruthy()
+
+    const hint = screen.getByText('No models discovered yet')
+    expect(hint.closest('[role="menuitem"]')?.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('still drops empty rows the user never configured', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' },
+        { models: [], name: 'Some Canonical', slug: 'canonical' }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    expect(screen.queryByText('Some Canonical')).toBeNull()
+  })
+
+  it('hides the empty group while searching — a query means "show me matches"', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' }, UNDISCOVERED]
+    })
+
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.getByText('my-provider')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText('my-provider')).toBeNull()
+      expect(screen.queryByText('No models discovered yet')).toBeNull()
+    })
+  })
+})
+
 describe('in-flight local downloads', () => {
   const DOWNLOAD_JOB: LocalRuntimeJob = {
     job_id: 'dl1',

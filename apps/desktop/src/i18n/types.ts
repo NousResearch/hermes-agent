@@ -3400,6 +3400,8 @@ export interface Translations {
     freeTier: string
     priceTitle: string
     wasPrice: string
+    noModelsDiscovered: string
+    refreshModels: string
   }
 
   modelVisibility: {
@@ -3416,6 +3418,7 @@ export interface Translations {
     modelMenu: {
       search: string
       noModels: string
+      noModelsDiscovered: string
       editModels: string
       refreshModels: string
       fast: string

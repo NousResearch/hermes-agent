@@ -1,4 +1,5 @@
 import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import type { QueryClient } from '@tanstack/react-query'
 
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 
@@ -16,6 +17,13 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
     provider.name === currentProvider ||
     (provider.aliases?.includes(currentProvider) ?? false)
   )
+}
+
+/** A provider the user configured whose model catalog has not been discovered
+ *  yet: the backend emits a user-defined row with an empty model list. Pickers
+ *  keep it visible so a configured provider is never silently absent (#49656). */
+export function isUndiscoveredConfiguredProvider(provider: ModelOptionProvider): boolean {
+  return provider.is_user_defined === true && (provider.models?.length ?? 0) === 0
 }
 
 /** The catalog's option support for the current pick, or undefined while the
@@ -153,4 +161,40 @@ export async function requestModelOptions({
   }
 
   return restModelOptions(explicitOnly, refresh, profile)
+}
+
+/** Refresh the model catalog for one picker scope. Cancels an in-flight fetch for the
+ *  same key first (`revert: false` keeps the current state), so a slow response from
+ *  the open-time refetch can never land after the refreshed catalog and overwrite it. */
+export async function refreshModelOptions(
+  queryClient: QueryClient,
+  opts: {
+    gateway?: HermesGateway
+    ownerConnectionId?: null | string
+    profile?: null | string
+    request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+    sessionId?: null | string
+  }
+): Promise<void> {
+  const queryKey = modelOptionsQueryKey(opts.profile, opts.sessionId, opts.ownerConnectionId)
+
+  // `revert` is the SECOND argument (`cancelQueries(filters, cancelOptions)` —
+  // react-query defaults it to `{ revert: true }`); passing it inside the
+  // filters object would type-error AND silently revert.
+  await queryClient.cancelQueries({ queryKey }, { revert: false })
+
+  try {
+    const next = await requestModelOptions({
+      gateway: opts.gateway,
+      profile: opts.profile,
+      refresh: true,
+      request: opts.request,
+      sessionId: opts.sessionId
+    })
+
+    queryClient.setQueryData<ModelOptionsResult>(queryKey, next)
+  } catch {
+    // Network/backend hiccup — re-fetch just this scope, not every model-options query.
+    void queryClient.invalidateQueries({ queryKey })
+  }
 }

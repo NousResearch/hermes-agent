@@ -4044,7 +4044,9 @@ export const en: Translations = {
     free: 'Free',
     freeTier: 'Free tier',
     priceTitle: 'Input / Output price per million tokens',
-    wasPrice: 'was'
+    wasPrice: 'was',
+    noModelsDiscovered: 'No models discovered yet',
+    refreshModels: 'Refresh models'
   },
 
   modelVisibility: {
@@ -4061,6 +4063,7 @@ export const en: Translations = {
     modelMenu: {
       search: 'Search models',
       noModels: 'No models found',
+      noModelsDiscovered: 'No models discovered yet',
       editModels: 'Edit models…',
       refreshModels: 'Refresh models',
       fast: 'Fast'

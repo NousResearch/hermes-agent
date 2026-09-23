@@ -24,7 +24,12 @@ import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  catalogProviderMatches,
+  isUndiscoveredConfiguredProvider,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -485,6 +490,15 @@ export function ModelCatalogMenu({
                     size="0.625rem"
                   />
                 </DropdownMenuItem>
+                {!collapsed && group.families.length === 0 && (
+                  <DropdownMenuItem
+                    className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+                    disabled
+                    onSelect={event => event.preventDefault()}
+                  >
+                    {copy.noModelsDiscovered}
+                  </DropdownMenuItem>
+                )}
                 {!collapsed &&
                   group.families.map(family => {
                     // The active id may be the base or its -fast sibling; either
@@ -725,6 +739,14 @@ function groupModels(
     const allFamilies = collapseModelFamilies(provider.models ?? [])
 
     if (allFamilies.length === 0) {
+      // A configured provider whose catalog hasn't been fetched yet stays
+      // visible with an empty group so it's never silently absent (#49656).
+      // Only without a search: a query means "show me matches", and a hint row
+      // can't match one. Built-in skeleton rows (not user-defined) stay hidden.
+      if (!q && isUndiscoveredConfiguredProvider(provider)) {
+        groups.push({ families: [], provider })
+      }
+
       continue
     }
 

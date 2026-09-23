@@ -1,11 +1,10 @@
-import type { ModelOptionsResult } from '@hermes/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { refreshModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 
 import { ModelCatalogMenu } from './model-catalog-menu'
@@ -30,6 +29,8 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
   // backend busts its 1h provider-model disk cache and re-pulls each provider's
   // live list. Fixes live-only models (e.g. OpenCode Zen free tier) vanishing
   // when the cache expires and falls back to the curated static list.
+  // The shared helper cancels any in-flight fetch for this scope first, so the
+  // refreshed catalog can never be overwritten by a slower open-time refetch.
   const refreshModels = async () => {
     if (refreshing) {
       return
@@ -38,23 +39,15 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
     setRefreshing(true)
 
     try {
-      const queryKey = modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId)
-
-      const next = await requestModelOptions({
+      // The refreshed catalog is a hint list, never a reason to move the pick:
+      // a custom slug the row lacks is still what the user selected.
+      await refreshModelOptions(queryClient, {
         gateway,
+        ownerConnectionId,
         profile,
-        refresh: true,
         request: requestGateway,
         sessionId: activeSessionId
       })
-
-      // The refreshed catalog is a hint list, never a reason to move the pick:
-      // a custom slug the row lacks is still what the user selected.
-      queryClient.setQueryData<ModelOptionsResult>(queryKey, next)
-    } catch {
-      // Network/backend hiccup — fall back to a plain invalidate so the next
-      // open re-fetches (still cached, but no worse than before).
-      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
     } finally {
       setRefreshing(false)
     }

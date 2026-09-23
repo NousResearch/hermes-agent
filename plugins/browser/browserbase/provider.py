@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from agent.secret_scope import get_secret
 from plugins.browser._common import CloudBrowserProvider
@@ -21,6 +21,32 @@ _PAID_FEATURE_FALLBACKS = (
                   "Sessions may timeout during long operations."),
     ("proxies", "Proxies unavailable (402), retrying without proxies. "
                 "Bot detection may be less effective."))
+
+# Account-scoped paid keys learned from a confirmed HTTP 402 while the key was
+# still in the create payload. Keyed by (base_url, project_id) so different
+# accounts/endpoints do not share drops. Process-lifetime; miss is fail-open
+# (the per-call 402 loop below still runs).
+_PAID_FEATURE_DROP_CACHE: Dict[Tuple[str, str], set[str]] = {}
+
+
+def _paid_feature_scope(config: Dict[str, Any]) -> Tuple[str, str]:
+    return (config["base_url"], config["project_id"])
+
+
+def _apply_cached_paid_drops(session_config: Dict[str, object], scope: Tuple[str, str]) -> set[str]:
+    cached = _PAID_FEATURE_DROP_CACHE.get(scope)
+    if not cached:
+        return set()
+    dropped = {key for key in cached if key in session_config}
+    for key in dropped:
+        session_config.pop(key, None)
+    return dropped
+
+
+def _record_paid_drops(scope: Tuple[str, str], dropped: set[str]) -> None:
+    if not dropped:
+        return
+    _PAID_FEATURE_DROP_CACHE.setdefault(scope, set()).update(dropped)
 
 
 class BrowserbaseBrowserProvider(CloudBrowserProvider):
@@ -83,18 +109,23 @@ class BrowserbaseBrowserProvider(CloudBrowserProvider):
         if enable_advanced_stealth:
             session_config["browserSettings"] = {"advancedStealth": True}
 
+        scope = _paid_feature_scope(config)
+        dropped = _apply_cached_paid_drops(session_config, scope)
+
         url = f"{config['base_url']}/v1/sessions"
         headers = self._headers(config)
         response = self._post_create(url, headers, session_config)
 
         # 402 — paid features unavailable: drop keepAlive, then proxies, and retry.
-        dropped = set()
+        newly_dropped: set[str] = set()
         for key, warning in _PAID_FEATURE_FALLBACKS:
             if response.status_code == 402 and key in session_config:
-                dropped.add(key)
+                newly_dropped.add(key)
                 logger.warning(warning)
                 session_config.pop(key)
                 response = self._post_create(url, headers, session_config)
+        _record_paid_drops(scope, newly_dropped)
+        dropped.update(newly_dropped)
         self._check_created(response)
 
         session_data = response.json()

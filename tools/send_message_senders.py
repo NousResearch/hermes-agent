@@ -407,7 +407,8 @@ async def _resolve_slack_user_target(token, chat_id):
 
 async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, batch_message):
     """One Signal batch under the scheduler with rate-limit retries: None on success, False when
-    retries were exhausted (batch lost), error dict for a non-rate-limit RPC error."""
+    rate-limit retries were exhausted (batch lost), error dict for a non-rate-limit RPC error or
+    a transport failure that outlived its retries (daemon unreachable is not a rate limit)."""
     n, max_attempts = len(att_batch), rl.SIGNAL_RATE_LIMIT_MAX_ATTEMPTS
     for attempt in range(1, max_attempts + 1):
         try:
@@ -434,7 +435,8 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
             if attempt >= max_attempts:
                 logger.error("Signal: send error on batch %d/%d after %d attempts: %s",
                              idx + 1, n_batches, attempt, str(e))
-                return False
+                return _error(f"Signal send failed on batch {idx + 1}/{n_batches} "
+                              f"after {attempt} attempts: {e}")
             logger.warning("Signal: transient error on batch %d/%d (attempt %d/%d): %s; will retry",
                            idx + 1, n_batches, attempt, max_attempts, str(e))
 

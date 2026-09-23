@@ -396,7 +396,7 @@ class GatewayModelCommandsMixin:
         from hermes_cli.model_switch_providers import list_picker_providers
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
-                list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
+                list_picker_providers, max_models=50, include_moa=True, explicit_only=True, **listing_kwargs
             )
         except Exception:
             providers = []
@@ -416,6 +416,7 @@ class GatewayModelCommandsMixin:
     ) -> Optional[str]:
         """``/model`` with no args: interactive picker where supported, else the text list."""
         from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.model_switch_providers import filter_explicit_picker_rows
         from hermes_cli.providers import get_label
 
         listing_kwargs = dict(
@@ -449,6 +450,8 @@ class GatewayModelCommandsMixin:
         lines = [t("gateway.model.current_label", model=ctx.current_model or "unknown", provider=get_label(ctx.current_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(list_authenticated_providers, max_models=5, **listing_kwargs)
+            # Same explicit-provider filter as the picker: ambient credentials aren't "connected".
+            providers = filter_explicit_picker_rows(providers, current_provider=ctx.current_provider)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
             pass

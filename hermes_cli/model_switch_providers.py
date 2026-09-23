@@ -1304,19 +1304,33 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
         return providers
 
 
+def filter_explicit_picker_rows(providers: List[dict], current_provider: str = "") -> List[dict]:
+    """Keep only rows the user explicitly configured — the same filter the Desktop chat picker uses
+    (``inventory._filter_explicit_provider_rows``). Fails open: a filter error keeps every row."""
+    try:
+        from hermes_cli.inventory import ConfigContext, _filter_explicit_provider_rows
+        ctx = ConfigContext(current_provider=current_provider or "", current_model="", current_base_url="",
+                            user_providers={}, custom_providers=[])
+        return _filter_explicit_provider_rows(providers, ctx)
+    except Exception:
+        return providers
+
+
 def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
-    probe_current_custom_provider: bool = False) -> List[dict]:
+    probe_current_custom_provider: bool = False, explicit_only: bool = False) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
     snapshot filtered against the live catalog) and rows left with no models are dropped — except
     custom endpoints, where the user may supply their own model set through config.
     ``non_blocking_catalogs`` makes every catalog read cache-only: provider catalogs warm in the
-    background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
+    background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded.
+    ``explicit_only`` applies the Desktop picker's explicit-provider filter, so ambient credentials
+    (gh CLI -> Copilot, the DEFAULT_CONFIG MoA preset) don't pose as connected providers."""
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
@@ -1327,6 +1341,8 @@ def list_picker_providers(
         probe_current_custom_provider=probe_current_custom_provider)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
+    if explicit_only:
+        providers = filter_explicit_picker_rows(providers, current_provider=current_provider)
 
     filtered: List[dict] = []
     for p in providers:

@@ -94,3 +94,42 @@ async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_e
     flags = {k: seen[0].get(k) for k in ("non_blocking_catalogs", "probe_custom_providers", "probe_current_custom_provider")}
     assert flags == {"non_blocking_catalogs": True, "probe_custom_providers": False,
                      "probe_current_custom_provider": True}, flags
+
+
+@pytest.mark.asyncio
+async def test_picker_path_requests_explicit_providers_only(_isolated_config, monkeypatch):
+    """Chat pickers share the Desktop rule (#56974): ambient credentials (gh CLI -> Copilot) must not
+    be offered as connected providers, so the gateway asks for the explicit-only listing."""
+    seen: list[dict] = []
+
+    def _fake_list_picker_providers(**kwargs):
+        seen.append(kwargs)
+        return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+                 "models": ["gpt-x"], "total_models": 1}]
+
+    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
+
+    assert await runner._handle_model_command(_make_event()) is None
+    assert seen and seen[0].get("explicit_only") is True, seen
+
+
+@pytest.mark.asyncio
+async def test_text_listing_hides_ambient_providers(_isolated_config, monkeypatch):
+    """The text fallback (no picker support) applies the same explicit-provider filter."""
+    rows = [
+        {"slug": "openrouter", "name": "OpenRouter", "is_current": True, "is_user_defined": False,
+         "models": ["gpt-x"], "total_models": 1, "source": "built-in"},
+        {"slug": "copilot", "name": "GitHub Copilot", "is_current": False, "is_user_defined": False,
+         "models": ["gpt-5.4"], "total_models": 1, "source": "built-in"},
+    ]
+    monkeypatch.setattr("hermes_cli.model_switch.list_authenticated_providers", lambda **kw: [dict(r) for r in rows])
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda slug: False)
+    monkeypatch.setattr("hermes_cli.inventory._external_process_signed_in", lambda slug: False)
+
+    reply = await _make_runner()._handle_model_command(_make_event())
+    assert "OpenRouter" in reply
+    assert "Copilot" not in reply

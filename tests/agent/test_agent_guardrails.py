@@ -148,6 +148,24 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_cross_turn_duplicate_tool_call_ids_uniquified(self):
+        msgs = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_123", "content": "res1"},
+            {"role": "user", "content": "turn 2"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_123", "content": "res2"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Turn 1 keeps call_123
+        assert out[1]["tool_calls"][0]["id"] == "call_123"
+        assert out[2]["tool_call_id"] == "call_123"
+        # Turn 2 gets renamed to call_123_d2 for both call and response
+        assert out[4]["tool_calls"][0]["id"] == "call_123_d2"
+        assert out[5]["tool_call_id"] == "call_123_d2"
+
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

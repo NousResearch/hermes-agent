@@ -633,11 +633,41 @@ def _emit_unpark_task_events(
         _kb._log.debug("kanban dispatch: unpark event sweep failed", exc_info=True)
 
 
-def _clear_upstream_parks_for_task(conn: sqlite3.Connection, task_id: str) -> None:
+def _resolve_scoped_circuit_enabled() -> bool:
+    """Kill-switch for the scoped circuit on the completion path.
+
+    Mirrors the tick callers (CLI ``kanban_ops`` + gateway
+    ``kanban_watchers_dispatcher``): ``kanban.scoped_circuit_enabled``,
+    default True. Unreadable config fails safe (enabled) exactly like the
+    tick path. Tests should monkeypatch this symbol; production never
+    passes it explicitly.
+    """
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        return bool(_kanban_cfg.get("scoped_circuit_enabled", True))
+    except Exception:
+        return True
+
+
+def _clear_upstream_parks_for_task(
+    conn: sqlite3.Connection, task_id: str, board: Optional[str] = None,
+    *, clear_cross_board: bool = False,
+) -> None:
     """Success clears: a completed task proves its upstream is healthy — drop
-    every park episode for that key across boards (the probe succeeded, or a
-    pre-park spawn landed). One transition event on the completing task per
-    cleared board entry. Best-effort, never raises; no-op when empty."""
+    the park episode for that key on the completing task's board (the probe
+    succeeded, or a pre-park spawn landed). One transition event on the
+    completing task per cleared board entry. Best-effort, never raises;
+    no-op when empty.
+
+    Board scoping: ``tasks`` carries no board column (each board is its own
+    DB file), so the board slug arrives via the caller — the circuit slot is
+    ``(_circuit_board(board), key)`` and only that slot pops by default.
+    Cross-board clear needs explicit opt-in (``clear_cross_board=True``) and
+    never applies to :data:`UNKNOWN_UPSTREAM_KEY`: a blind-bucket success
+    proves nothing about the bucket. No caller opts in today.
+    """
     if not _UPSTREAM_CIRCUIT:
         return
     try:
@@ -655,7 +685,14 @@ def _clear_upstream_parks_for_task(conn: sqlite3.Connection, task_id: str) -> No
         )
     except Exception:
         return
-    for (b, k) in [slot for slot in _UPSTREAM_CIRCUIT if slot[1] == key]:
+    if not key or key == UNKNOWN_UPSTREAM_KEY:
+        return
+    if clear_cross_board:
+        slots = [slot for slot in _UPSTREAM_CIRCUIT if slot[1] == key]
+    else:
+        slot = (_circuit_board(board), key)
+        slots = [slot] if slot in _UPSTREAM_CIRCUIT else []
+    for (b, k) in slots:
         _UPSTREAM_CIRCUIT.pop((b, k), None)
         _kb._log.error(
             "kanban dispatcher: upstream %r cleared after task %s succeeded; "
@@ -2196,7 +2233,10 @@ def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: i
     return True
 
 
-def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
+def _clear_failure_counter(
+    conn: sqlite3.Connection, task_id: str, board: Optional[str] = None,
+    *, scoped_circuit_enabled: Optional[bool] = None,
+) -> None:
     """Reset the unified consecutive-failures counter.
 
     Called from ``complete_task`` on success. NOT called on spawn success: a
@@ -2211,10 +2251,16 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
     # Phase2 P3: success clears — a completed task proves its upstream is
     # healthy, so drop any circuit park for that key (probe success path).
-    # Gated on non-empty circuit: zero cost in the common case. Best-effort:
-    # event emission inside must never break completion.
+    # Gated on the scoped-circuit kill-switch (resolved exactly like the tick
+    # callers, default True): with the circuit off this is only the
+    # consecutive_failures UPDATE above — prior behaviour, byte for byte.
+    # Best-effort: event emission inside must never break completion.
+    if scoped_circuit_enabled is None:
+        scoped_circuit_enabled = _resolve_scoped_circuit_enabled()
+    if not scoped_circuit_enabled:
+        return
     try:
-        _clear_upstream_parks_for_task(conn, task_id)
+        _clear_upstream_parks_for_task(conn, task_id, board)
     except Exception:
         _kb._log.debug("kanban dispatch: success-clear failed", exc_info=True)
 

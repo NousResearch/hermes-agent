@@ -2758,6 +2758,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    board: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2775,6 +2776,9 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+    ``board`` scopes the Phase2 P3 success-clear to this board's circuit slot
+    (None = the default-board slot); it changes no SQL, only which in-memory
+    ``(board, key)`` park — if any — a success pops.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2851,7 +2855,7 @@ def complete_task(
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
-    _clear_failure_counter(conn, task_id)
+    _clear_failure_counter(conn, task_id, board)
     recompute_ready(conn)  # separate txn so children see ``done``
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)

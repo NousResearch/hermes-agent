@@ -434,3 +434,104 @@ def test_describe_suppression_surfaces_p3_buckets(isolated_kanban_home):
     held = kbd.describe_suppression([res])
     assert "upstream_capped=2" in held
     assert "scoped_paused=1" in held
+
+
+# --- H3 fix: board-scoped, kill-switched success-clear --------------------------
+
+def _upstream_unparked_events(kb, conn, tid):
+    return [
+        e for e in kb.list_events(conn, tid)
+        if getattr(e, "kind", None) == "upstream_unparked"
+    ]
+
+
+def test_success_clear_kill_switch_off_restores_prior_behaviour(
+    isolated_kanban_home, monkeypatch,
+):
+    # (1) Kill-switch restore: populated circuit + complete_task with the
+    # circuit disabled -> dict untouched, no upstream_unparked event, only
+    # the consecutive_failures UPDATE lands.
+    kb, kbc, kbd = _mods()
+    _stub_keys(monkeypatch, kbd, {"alpha": "k"})
+    monkeypatch.setattr(kbd, "_resolve_scoped_circuit_enabled", lambda: False)
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="a0", assignee="alpha")
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 3, last_failure_error = 'boom' WHERE id = ?",
+            (tid,),
+        )
+    _park(kbd, "A", "k")
+    before = dict(kbd._UPSTREAM_CIRCUIT)
+    assert before != {}
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid, board="A") is True
+    assert dict(kbd._UPSTREAM_CIRCUIT) == before
+    with kbc.connect_closing() as conn:
+        row = conn.execute(
+            "SELECT status, consecutive_failures, last_failure_error FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["status"] == "done"
+        assert row["consecutive_failures"] == 0
+        assert row["last_failure_error"] is None
+        assert _upstream_unparked_events(kb, conn, tid) == []
+
+
+def test_success_clear_scopes_to_completing_board(isolated_kanban_home, monkeypatch):
+    # (2) Cross-board isolation: parks on (A,K) + (B,K), complete on A ->
+    # only A pops, B intact with its signal count. Repeat with the unknown
+    # bucket: nothing pops anywhere (a blind-bucket success proves nothing).
+    kb, kbc, kbd = _mods()
+    _stub_keys(monkeypatch, kbd, {"alpha": "k"})
+    monkeypatch.setattr(kbd, "_resolve_scoped_circuit_enabled", lambda: True)
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid_a = kb.create_task(conn, title="a0", assignee="alpha")
+        tid_u = kb.create_task(conn, title="u0", assignee="alpha")
+    _park(kbd, "A", "k")
+    _park(kbd, "B", "k")
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid_a, board="A") is True
+    assert ("A", "k") not in kbd._UPSTREAM_CIRCUIT
+    assert kbd._UPSTREAM_CIRCUIT[("B", "k")]["signals"] == 3
+    with kbc.connect_closing() as conn:
+        cleared = _upstream_unparked_events(kb, conn, tid_a)
+        assert len(cleared) == 1
+        assert (cleared[0].payload or {}).get("upstream_key") == "k"
+    # Unknown bucket: parked on two boards, completing an unknown-keyed task
+    # pops neither and emits no event.
+    _park(kbd, "A", "unknown")
+    _park(kbd, "B", "unknown")
+    monkeypatch.setattr(kbd, "resolve_task_upstream_key", lambda *a, **k: "unknown")
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid_u, board="A") is True
+    assert kbd._UPSTREAM_CIRCUIT[("A", "unknown")]["signals"] == 3
+    assert kbd._UPSTREAM_CIRCUIT[("B", "unknown")]["signals"] == 3
+    with kbc.connect_closing() as conn:
+        assert _upstream_unparked_events(kb, conn, tid_u) == []
+
+
+def test_success_clear_drops_stale_park_once(isolated_kanban_home, monkeypatch):
+    # (3) Stale-park expiry: parked_until in the past -> the success-clear
+    # drops it (same as a live park), emits a single event, and the probe
+    # state resets (next signals start a fresh episode).
+    kb, kbc, kbd = _mods()
+    _stub_keys(monkeypatch, kbd, {"alpha": "k"})
+    monkeypatch.setattr(kbd, "_resolve_scoped_circuit_enabled", lambda: True)
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="a0", assignee="alpha")
+    _park(kbd, None, "k")
+    kbd._UPSTREAM_CIRCUIT[("", "k")]["parked_until"] = time.monotonic() - 1
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid) is True
+    assert ("", "k") not in kbd._UPSTREAM_CIRCUIT
+    assert kbd.get_parked_upstream_keys(None) == frozenset()
+    with kbc.connect_closing() as conn:
+        assert len(_upstream_unparked_events(kb, conn, tid)) == 1
+    # Probe reset: a fresh episode starts at signal 1, unparked, no probe.
+    assert kbd.note_upstream_signal(None, "k") is False
+    fresh = kbd._UPSTREAM_CIRCUIT[("", "k")]
+    assert fresh["signals"] == 1 and fresh["parked_until"] is None
+    assert fresh["probe_inflight"] is False

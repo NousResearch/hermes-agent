@@ -1462,6 +1462,10 @@ class _LoopState:
     _llm_middleware_trace: Any = None
     api_duration: Any = None
     assistant_message: Any = None
+    # Fixed for the turn: user-facing turns cap one backoff sleep at 300s.
+    # Default True; no caller threads a headless/cron signal yet (named
+    # follow-up), so cron turns still take the cap until then.
+    interactive: bool = True
 
 
 # _LoopState fields seeded from TurnContext (same name minus the leading underscore).

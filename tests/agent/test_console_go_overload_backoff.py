@@ -272,12 +272,17 @@ class TestInteractiveCap:
         err = SimpleNamespace(status_code=429, body={"error": {"resets_in_seconds": 3600}})
         assert _backoff(err, is_rate_limited=True, interactive=True) == 300.0
 
-    def test_retry_after_not_capped_by_interactive_guard(self):
+    def test_retry_after_capped_by_interactive_guard(self):
+        # H1: Retry-After takes the "retry_after" policy tag, which is in the
+        # interactive-capped set — a 600s header on a user-facing turn sleeps
+        # 300s, then the loop re-enters toward fallback/surface. The 600s
+        # provider-window cap itself is untouched (see non-interactive parity
+        # below); only the single-sleep cap applies.
         err = SimpleNamespace(
             status_code=429, body={"error": {"code": "service_overloaded"}},
             response=SimpleNamespace(headers={"Retry-After": "600"}),
         )
-        assert _backoff(err, retry_count=4, is_console_go_overload=True, interactive=True) == 600.0
+        assert _backoff(err, retry_count=4, is_console_go_overload=True, interactive=True) == 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -300,3 +305,98 @@ class TestErrorContextPlumbing:
         )
         ctx = extract_api_error_context(err)
         assert abs(ctx["reset_at"] - (time.time() + 999)) < 5.0
+
+
+# ---------------------------------------------------------------------------
+# H1/H2 fix: Retry-After takes the capped "retry_after" policy; the
+# interactive flag threads handle_api_error -> settle -> compute_error_backoff
+# ---------------------------------------------------------------------------
+
+def _retry_after_600_err():
+    return SimpleNamespace(
+        status_code=429, body={"error": {"code": "service_overloaded"}},
+        response=SimpleNamespace(headers={"Retry-After": "600"}),
+    )
+
+
+class TestH1H2RetryAfterCapAndThreading:
+    def test_retry_after_600_capped_interactive_rate_limited(self):
+        # (1) Retry-After 600 + interactive -> 300 (rate-limited shape, no
+        # Console Go ladder involved: the cap rides the policy tag alone).
+        assert _backoff(_retry_after_600_err(), is_rate_limited=True, interactive=True) == 300.0
+
+    def test_park_3600_uncapped_non_interactive(self):
+        # (2) interactive=False + 3600 park -> 3600 uncapped: headless
+        # callers honour the full provider window.
+        err = SimpleNamespace(status_code=429, body={"error": {"resets_in_seconds": 3600}})
+        assert _backoff(err, is_rate_limited=True, interactive=False) == 3600.0
+
+    def test_handle_api_error_forwards_interactive_false(self, monkeypatch):
+        # (3) handle_api_error(interactive=False) forwards False all the way
+        # to compute_error_backoff (mock assert on the deepest hop).
+        import agent.turn_api_error as tae
+        from agent.error_classifier import FailoverReason
+
+        seen: dict[str, Any] = {}
+
+        def fake_backoff(agent, api_error, **kw):
+            seen.update(kw)
+            return 0.0
+
+        classified = SimpleNamespace(
+            reason=FailoverReason.rate_limit, status_code=429, retryable=True,
+            should_compress=False, should_rotate_credential=False, should_fallback=False,
+        )
+        route_verdict = SimpleNamespace(
+            action="fallthrough", status_code=429, messages=[], active_system_prompt="sp",
+            conversation_history=None, retry_count=1, max_retries=8, compression_attempts=0,
+            is_rate_limited=True, wrapped_output_cap_budget=None,
+            is_zai_coding_overload=False, is_console_go_overload=False,
+            provider_overflow_recovery_pending=False, result=None,
+        )
+        overflow_verdict = SimpleNamespace(
+            action="fallthrough", messages=[], active_system_prompt="sp",
+            conversation_history=None, approx_tokens=10, compression_attempts=0,
+            is_context_length_error=False, provider_overflow_recovery_pending=False,
+            result=None,
+        )
+        monkeypatch.setattr(tae, "compute_error_backoff", fake_backoff)
+        monkeypatch.setattr(tae, "interruptible_backoff_sleep", lambda *a, **k: None)
+        monkeypatch.setattr(tae, "recover_before_classification", lambda *a, **k: (False, "sp"))
+        monkeypatch.setattr(tae, "recover_after_classification", lambda *a, **k: (False, False))
+        monkeypatch.setattr(
+            tae, "log_api_error_attempt", lambda *a, **k: ("t", "m", "p", "b", "m"))
+        monkeypatch.setattr(tae, "classify_api_error", lambda *a, **k: classified)
+        monkeypatch.setattr(tae, "route_classified_error", lambda *a, **k: route_verdict)
+        monkeypatch.setattr(tae, "recover_from_overflow", lambda *a, **k: overflow_verdict)
+        import tools.interpreter_shutdown as _shut
+        monkeypatch.setattr(_shut, "interpreter_shutting_down", lambda *a, **k: False)
+
+        agent = SimpleNamespace(
+            thinking_callback=None,
+            _extract_api_error_context=lambda e: {},
+            _invoke_api_request_error_hook=lambda **k: None,
+            _touch_activity=lambda *a, **k: None,
+            _interrupt_requested=False,
+            log_prefix="", provider="", model="", base_url="", api_key=None,
+        )
+        retry = SimpleNamespace(
+            primary_recovery_attempted=True, restart_with_redirected_messages=False,
+        )
+        verdict = tae.handle_api_error(
+            agent, api_error=_retry_after_600_err(), _retry=retry, thinking_spinner=None,
+            messages=[], api_messages=[{"role": "user", "content": "x"}], api_kwargs={},
+            system_message=None, active_system_prompt="sp", conversation_history=None,
+            approx_tokens=10, retry_count=0, max_retries=8, compression_attempts=0,
+            max_compression_attempts=3, api_call_count=1, api_request_id="r",
+            api_start_time=time.time(), effective_task_id="t", turn_id="t1",
+            interactive=False,
+        )
+        assert seen.get("interactive") is False
+        assert verdict.action == "fallthrough"
+
+    def test_interactive_parity_same_input(self):
+        # (4) Same Retry-After 600 input: interactive True -> 300,
+        # interactive False -> 600 (provider-window cap untouched).
+        assert _backoff(_retry_after_600_err(), is_rate_limited=True, interactive=True) == 300.0
+        assert _backoff(_retry_after_600_err(), is_rate_limited=True, interactive=False) == 600.0

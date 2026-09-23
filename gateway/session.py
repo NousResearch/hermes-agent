@@ -1129,6 +1129,7 @@ class SessionStore(
         new_entry = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
+            model_override=old_entry.model_override,
             transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry

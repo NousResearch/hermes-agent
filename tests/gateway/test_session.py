@@ -478,6 +478,10 @@ class TestSessionStoreSwitchSession:
         )
         current_entry = store.get_or_create_session(source)
         current_session_id = current_entry.session_id
+        store.set_model_override(
+            current_entry.session_key,
+            {"model": "nous/hermes-4", "provider": "nous"},
+        )
 
         target_session_id = "old_session_abc"
         db.create_session(target_session_id, source="feishu", user_id="user-1")
@@ -488,6 +492,10 @@ class TestSessionStoreSwitchSession:
 
         assert switched is not None
         assert switched.session_id == target_session_id
+        assert switched.model_override == {"model": "nous/hermes-4", "provider": "nous"}
+        assert store.get_model_override(current_entry.session_key) == {
+            "model": "nous/hermes-4", "provider": "nous",
+        }
         assert db.get_session(current_session_id)["end_reason"] == "session_switch"
         resumed = db.get_session(target_session_id)
         assert resumed["ended_at"] is None
@@ -1795,5 +1803,4 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-
 

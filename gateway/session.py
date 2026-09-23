@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
+from gateway.session_identity import transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
@@ -216,20 +217,27 @@ def _slack_tools_loaded() -> bool:
     except Exception:
         pass
 
-    # Profile secret scope, not bare env: under multiplex the env may hold another profile's token.
+    # Profile secret scope, not bare env: under multiplex the env may hold another
+    # profile's token. Only the unscoped default-profile path (UnscopedSecretError)
+    # reads the env; any other scoped-read failure fails closed rather than borrowing.
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import UnscopedSecretError, get_secret
 
-        token = get_secret("SLACK_BOT_TOKEN") or ""
-    except Exception:  # includes UnscopedSecretError
-        token = os.environ.get("SLACK_BOT_TOKEN") or ""
+        try:
+            token = get_secret("SLACK_BOT_TOKEN") or ""
+        except UnscopedSecretError:
+            token = os.environ.get("SLACK_BOT_TOKEN") or ""
+    except Exception:
+        return False
     if not token.strip():
         return False
     try:
-        from hermes_cli.config import load_config
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
         # include_default_mcp_servers defaults True so a default-enabled Slack MCP counts too.
-        return "slack" in _get_platform_tools(load_config(), "slack")
+        return "slack" in _get_platform_tools(load_config_readonly(), "slack")
     except Exception:
         return False
 
@@ -239,12 +247,14 @@ def _discord_tools_loaded() -> bool:
     toolset enabled AND `DISCORD_BOT_TOKEN` set (the tool's `check_fn` gates on it)."""
     try:
         from agent.secret_scope import get_secret
-        from hermes_cli.config import load_config
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
 
         if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
             return False
-        enabled = _get_platform_tools(load_config(), "discord", include_default_mcp_servers=False)
+        enabled = _get_platform_tools(load_config_readonly(), "discord", include_default_mcp_servers=False)
         return "discord" in enabled or "discord_admin" in enabled
     except Exception:
         return False
@@ -519,6 +529,10 @@ class SessionEntry:
     # Session-scoped /model override (model/provider/base_url ONLY — never credentials, see
     # sanitize_model_override). Persisted so a restart keeps the chosen model.
     model_override: Optional[Dict[str, str]] = None
+    # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,
+    # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
+    # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
+    transport_profile: Optional[str] = None
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
@@ -548,6 +562,8 @@ class SessionEntry:
         if self.model_override:
             # Defence-in-depth against an unsanitized dict stored directly.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.transport_profile:
+            result["transport_profile"] = self.transport_profile
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -578,6 +594,7 @@ class SessionEntry:
         defaults = {f.name: f.default for f in fields(cls)}
         plain = {n: data.get(n, defaults[n]) for n in cls._PLAIN_FIELDS + cls._RESET_FIELDS}
         plain["expiry_finalized"] = data.get("expiry_finalized", data.get("memory_flushed", False))
+        transport_profile = data.get("transport_profile")
         return cls(
             session_key=session_key, session_id=session_id,
             created_at=datetime.fromisoformat(data["created_at"]),
@@ -586,7 +603,9 @@ class SessionEntry:
             chat_type=data.get("chat_type", "dm"), metadata=dict(data.get("metadata") or {}),
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
-            model_override=sanitize_model_override(data.get("model_override")), **plain,
+            model_override=sanitize_model_override(data.get("model_override")),
+            transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
+            **plain,
         )
 
 
@@ -1013,7 +1032,7 @@ class SessionStore(
             origin=source, display_name=source.chat_name, platform=source.platform,
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
-            prev_session_id=decision.prev_session_id,
+            prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
         )
         with self._lock:
             current = self._entries.get(session_key)
@@ -1044,9 +1063,11 @@ class SessionStore(
                 entry.last_prompt_tokens = last_prompt_tokens
             # Snapshot peer fields under _lock so a concurrent reset/heal cannot tear the row.
             peer_sid, peer_origin, peer_name = entry.session_id, entry.origin, entry.display_name
+            peer_transport = entry.transport_profile
         # Metadata-only: single-row UPSERT, outside ``_lock``.
         self._save_entry(session_key)
-        self._record_gateway_session_peer(peer_sid, session_key, peer_origin, display_name=peer_name)
+        self._record_gateway_session_peer(
+            peer_sid, session_key, peer_origin, display_name=peer_name, transport_profile=peer_transport)
 
     def get_session_metadata(self, session_key: str, key: str, default: Any = None) -> Any:
         """Return a metadata value stored on a live session entry."""
@@ -1117,7 +1138,7 @@ class SessionStore(
         new_entry = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
-            **fields,
+            transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry
         self._save()
@@ -1197,7 +1218,7 @@ class SessionStore(
                 return old_entry
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
-                display_name=old_entry.display_name,
+                display_name=old_entry.display_name, model_override=old_entry.model_override,
             )
 
         if self._db_for_key(session_key) and old_entry.session_id:
@@ -1212,6 +1233,7 @@ class SessionStore(
             self._record_gateway_session_peer(
                 target_session_id, session_key, new_entry.origin,
                 display_name=new_entry.display_name, include_compression_ancestors=True,
+                transport_profile=new_entry.transport_profile,
             )
         return new_entry
 

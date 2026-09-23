@@ -15,13 +15,13 @@ Import an OpenClaw setup (memories, skills) into Hermes.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/migration/openclaw-migration` |
-| Path | `optional-skills/migration\openclaw-migration` |
+| Path | `optional-skills/migration/openclaw-migration` |
 | Version | `1.0.0` |
 | Author | Hermes Agent (Nous Research) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Migration`, `OpenClaw`, `Hermes`, `Memory`, `Persona`, `Import` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 

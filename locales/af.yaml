@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "Tak is geskep, maar oorskakeling het misluk."
     branched_one:          "⑂ Vertak na **{title}** ({count} boodskap gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
     branched_many:         "⑂ Vertak na **{title}** ({count} boodskappe gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
+    branched_thread_one:   "⑂ Vertak na **{title}** in 'n nuwe draad ({count} boodskap gekopieer)\nDraad: {thread}\nOorspronklik: `{parent}` — hierdie klets bly daarop\nTak: `{new}`\nGebruik `/branch --here` om in hierdie klets te vertak."
+    branched_thread_many:  "⑂ Vertak na **{title}** in 'n nuwe draad ({count} boodskappe gekopieer)\nDraad: {thread}\nOorspronklik: `{parent}` — hierdie klets bly daarop\nTak: `{new}`\nGebruik `/branch --here` om in hierdie klets te vertak."
+    thread_fallback:       "Geen draad kon hier geskep word nie, so die tak het hierdie klets se sessie vervang."
 
   commands:
     usage:                 "Gebruik: `/commands [page]`"

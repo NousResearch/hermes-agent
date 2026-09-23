@@ -37,6 +37,7 @@ import {
   refreshConnectionsRegistry,
   selectConnection
 } from '@/store/connections'
+import { managedUpdatesSupported } from '@/store/managed-updates'
 import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
@@ -161,11 +162,90 @@ function ModeCard({
   )
 }
 
+interface GatewaySettingsProps {
+  embedded?: boolean
+  subpage?: string
+}
+
+export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
+  // Recovery always keeps the complete connection form, regardless of a
+  // settings destination. Other tasks never mount that form or its probes.
+  if (!embedded && subpage === 'devices') {
+    return (
+      <SettingsContent>
+        <ConnectionsRegistrySection />
+      </SettingsContent>
+    )
+  }
+
+  if (!embedded && subpage === 'managed-updates') {
+    return <GatewayManagedUpdates />
+  }
+
+  return <GatewayConnectionSettings embedded={embedded} standalone={subpage !== undefined} />
+}
+
+function GatewayManagedUpdates() {
+  const { t } = useI18n()
+  const registry = useStore($connectionsRegistry)
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const supported = managedUpdatesSupported()
+
+  useEffect(() => {
+    if (!supported) {
+      return
+    }
+
+    let active = true
+    void refreshConnectionsRegistry()
+      .catch(() => {
+        if (active) {
+          setFailed(true)
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [supported])
+
+  if (supported && loading) {
+    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
+  }
+
+  const hasSsh = registry?.connections.some(connection => connection.kind === 'ssh')
+
+  return (
+    <SettingsContent>
+      {supported && !failed && hasSsh ? (
+        <ManagedUpdatesSection />
+      ) : (
+        <EmptyState
+          description={
+            !supported
+              ? t.settings.subpages.gatewayManagedUpdatesUnavailable
+              : failed
+                ? t.settings.gateway.failedLoad
+                : t.settings.subpages.gatewayManagedUpdatesEmpty
+          }
+          title={t.settings.managedUpdates.title}
+        />
+      )}
+    </SettingsContent>
+  )
+}
+
 // `embedded` trims the page chrome for reuse inside the boot-failure recovery
 // card: the outer title/intro, the "Save for next restart" action, and the
 // Diagnostics row are redundant there (the card owns its header + a single
 // reconnect action), so only the connection controls render.
-export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
+function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean; standalone: boolean }) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
@@ -1148,7 +1228,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
   return (
     <SettingsContent bare={embedded}>
-      {embedded ? null : (
+      {embedded || standalone ? null : (
         <div className="mb-5">
           <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
             <Globe className="size-4 text-muted-foreground" />
@@ -1394,7 +1474,14 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       ) : null}
 
-      {state.mode === 'remote' && !state.envOverride ? (
+      {/* An env-pinned remote (HERMES_DESKTOP_REMOTE_URL) still renders this
+          block: the override pins the URL/mode, but the browser SESSION is not
+          env-owned — docs promise "you still sign in from the Gateway settings
+          panel" (user-guide/desktop.md). Hiding it left a lapsed session with
+          no sign-in anywhere in Settings, and the boot-recovery card routes
+          every remote failure here, so "Use local gateway" became the only way
+          back in (#114856). The URL input and Save/Test stay env-gated above. */}
+      {state.mode === 'remote' ? (
         <div className="mt-5 grid gap-1">
           <ListRow
             action={
@@ -1433,13 +1520,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                     <Pill tone="primary">
                       <Check className="size-3" /> {g.signedIn}
                     </Pill>
-                    <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
+                    {/* Sign-in/out are session actions, not connection edits: an
+                        env-pinned URL must still be able to refresh its lapsed
+                        session from here (#114856). */}
+                    <Button disabled={signingIn} onClick={() => void signOut()} variant="outline">
                       {signingIn ? <Loader2 className="animate-spin" /> : null}
                       {g.signOut}
                     </Button>
                   </div>
                 ) : (
-                  <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
+                  <Button disabled={signingIn || !trimmedUrl} onClick={() => void signIn()}>
                     {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                     {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                   </Button>
@@ -1669,10 +1759,9 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       )}
 
-      {/* Unified Gateways page: the full connections registry (add/edit/delete
-          named agent sources) lives on this page now, below the window
-          connection controls. Hidden in the embedded (boot-recovery) form. */}
-      {embedded ? null : (
+      {/* Preserve the full legacy page outside subpage navigation, without
+          mounting registry editors in connection-only or recovery views. */}
+      {embedded || standalone ? null : (
         <>
           <ConnectionsRegistrySection />
           {/* Per-connection driver for the transactional managed SSH update

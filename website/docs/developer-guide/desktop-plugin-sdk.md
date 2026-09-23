@@ -6,7 +6,7 @@ description: "Extend the native Hermes Desktop app — panes, pages, sidebar nav
 
 # Desktop Plugin SDK
 
-The native [Hermes Desktop](/user-guide/desktop) app is contribution-driven: every
+The native [Hermes Desktop](../user-guide/desktop.md) app is contribution-driven: every
 surface in the window — panes, routes, sidebar nav, status-bar items, palette
 entries, keybinds, themes — registers into one central registry. Core registers
 its surfaces exactly the way a plugin does, so the plugin story is the real one,
@@ -26,8 +26,8 @@ desktop app** (`hermes desktop`) SDK — the `@hermes/plugin-sdk` module and
 `$HERMES_HOME/desktop-plugins/`. The **web dashboard** (`hermes dashboard`) has
 its own, unrelated plugin system on `window.__HERMES_PLUGIN_SDK__` with a
 `manifest.json` — documented at
-[Extending the Dashboard](/user-guide/features/extending-the-dashboard). Python
-CLI/gateway plugins are documented at [Build a Hermes Plugin](/developer-guide/plugins).
+[Extending the Dashboard](../user-guide/features/extending-the-dashboard.md). Python
+CLI/gateway plugins are documented at [Build a Hermes Plugin](./plugins/index.md).
 The three do not share code, APIs, or delivery. Only the backend `plugin_api.py`
 namespace (`/api/plugins/<id>`) is shared between the desktop and dashboard SDKs.
 :::
@@ -177,6 +177,12 @@ interface PluginContext {
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
   onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
+  /** Any other cleanup to run on unload/reload/disable (store subscriptions, injected DOM). */
+  onDispose: (fn: () => void) => void
+  /** Scoped timers and DOM listeners — cleared with the plugin. Each returns a disposer. */
+  setTimeout: (fn: () => void, ms: number) => () => void
+  setInterval: (fn: () => void, ms: number) => () => void
+  addEventListener: (target: EventTarget, type: string, listener: EventListener, options?: AddEventListenerOptions | boolean) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -690,6 +696,8 @@ Import the app's real components directly so your UI is native by default:
 > `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`,
 > `DecodeText`.
 
+`DecodeText`'s `loop` is opt-in as of this change — it decodes once and holds by default, so pass `loop` explicitly on progress surfaces that should keep scrambling.
+
 Plus helpers: `cn` (class merge), `icons.*` (the app's lucide set), `haptic`,
 `profileColor` / `profileColorSoft` (deterministic identity colors), the time
 formatters `relativeTime` / `fmtDateTime` / `fmtDayTime` / `coarseElapsed`,
@@ -781,7 +789,7 @@ The user gets a confirmation dialog (repo id, source links, a probe of what
 the repo ships) and picks components before anything is installed — deep links
 never auto-install. `force=1` replaces an existing install; dev builds use
 `hermes-dev://`. Full link reference:
-[One-click install links](/user-guide/features/plugins#one-click-install-links-desktop).
+[One-click install links](../user-guide/features/plugins.md#one-click-install-links-desktop).
 
 ### The Python side
 
@@ -814,7 +822,7 @@ async def action(body: dict):
 Routes mount under `/api/plugins/<id>/` (`GET /api/plugins/<id>/board`, …).
 Backend code runs inside the gateway process, so it can import from the
 hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
-[Extending the Dashboard → Backend API routes](/user-guide/features/extending-the-dashboard#backend-api-routes)
+[Extending the Dashboard → Backend API routes](../user-guide/features/extending-the-dashboard.md#backend-api-routes)
 for the full backend reference — the mount is identical.
 
 :::caution The Python backend is gated separately
@@ -895,16 +903,23 @@ companion repo.
 
 A loaded plugin is evaluated as ESM in the renderer realm with **full app
 authority** — the React singleton, the whole SDK (`host.request` gateway RPC,
-`ctx.rest`, storage, `navigate`). The isolation the loader provides is **error
+`ctx.rest`, storage, `navigate`) and the `window.hermesDesktop` native bridge
+(files, git, terminal, installs). The isolation the loader provides is **error
 isolation only**: a plugin can't crash the app (contributions are error-bounded,
-listeners isolated), but it can do anything the app can.
+listeners isolated, a throwing `register()` is rolled back and reported on the
+plugin's row), but it can do anything the app can. Plugin storage namespaces
+are a convention, not a wall.
 
 This is acceptable for **local** sources — a disk file can already run code on
 your machine — which is why the disk door only loads local files you (or your
-agent) wrote. The optional `integrity` (`sha256-…`) check only proves the bytes
-match a hash; it does **not** sandbox. A future remote-source door will need a
-real boundary (iframe/worker + CSP + capability gating) before it can land; do
-not treat this pipeline as a trust boundary.
+agent) wrote. For [catalog](../user-guide/features/plugin-catalog.md#trust-model)
+installs the trust comes from admission — a human reviewed the exact pinned
+commit — backed by two tripwires: the `desktop surface` lint at admission and
+the loader's import allowlist (`@hermes/plugin-sdk` and `react*` only; a static
+or dynamic `import` of anything else, including `https:` URLs, fails the load).
+Neither is a sandbox. A future remote-source door will need a real boundary
+(iframe/worker + CSP + capability gating) before it can land; do not treat this
+pipeline as a trust boundary.
 
 ## Pitfalls
 
@@ -925,6 +940,17 @@ not treat this pipeline as a trust boundary.
   the canvas (width/height attributes, not just CSS) — panes resize constantly.
 - **Don't poll faster than a few seconds** with `host.request`; prefer
   `host.onEvent` / `ctx.socket` and let React Query dedupe.
+- **Bare globals are not tracked.** `window.setInterval`, `window.addEventListener`,
+  a `<style>` you append — the host never sees them, so they survive disable and
+  every hot-reload (ES modules can't be unloaded; a hot-edit loop stacks live
+  copies). Use `ctx.setTimeout` / `ctx.setInterval` / `ctx.addEventListener`, and
+  wire anything else to `ctx.onDispose`. Module-scope state is yours to reset.
+- **Module evaluation has a 10 s deadline.** A top-level `await` that never
+  settles (waiting for a gateway that isn't up) fails the load as `import timed
+  out` instead of stalling the plugin scan; do the waiting inside `register()`.
+- **One id, one file.** Two folders exporting the same `id` (a standalone install
+  beside a unified-package copy) load first-wins in folder-name order; the later
+  one shows `duplicate id` on its own row in Capabilities ▸ Plugins.
 - **`ctx.socket` is a no-op on OAuth remotes.** Always have a polling fallback.
 
 ## Reference

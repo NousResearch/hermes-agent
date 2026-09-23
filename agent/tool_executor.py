@@ -26,6 +26,7 @@ from agent.display import (
     build_tool_label as _build_tool_label,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
+    tool_row_emoji as _tool_row_emoji,
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
@@ -33,6 +34,7 @@ from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
+    apply_transform_tool_result,
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
@@ -54,6 +56,11 @@ from tools.tool_result_storage import (
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
+# A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
+# The commit only flags it: the string is still referenced by the publish frames here, so the
+# trim runs once the whole batch has unwound (AIAgent._execute_tool_calls) (#70684).
+_LARGE_TOOL_RESULT_TRIM_CHARS = 1_000_000
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,7 +74,11 @@ def _tc_name(tool_call: Any) -> str:
 def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
     """Record the spillover file path so a later result-reference stub can't dangle (best-effort)."""
     try:
-        path = extract_persisted_path(function_result) if isinstance(function_result, str) else None
+        candidates = [function_result] if isinstance(function_result, str) else [
+            function_result.get("text_summary"),
+            *(p.get("text") for p in function_result.get("content") or [] if isinstance(p, dict)),
+        ] if _is_multimodal_tool_result(function_result) else []
+        path = next((p for p in map(extract_persisted_path, candidates) if p), None)
         if path:
             agent._tool_guardrails.record_persisted_result(tool_call_id, path)
     except Exception as exc:
@@ -837,6 +848,10 @@ def _poll_sequential_future(agent, future, function_name: str, deadline: float |
         try:
             return "done", future.result(timeout=wait_slice)
         except concurrent.futures.TimeoutError:
+            # Aliases builtin TimeoutError (3.11+): also fires when the TOOL WORKER died with one (#63892).
+            # A settled future never unsettles — re-waiting spun until the deadline (forever if None); propagate.
+            if future.done():
+                return "done", future.result()
             if agent._interrupt_requested:
                 return "interrupted", None
             elapsed = int(time.monotonic() - started)
@@ -1057,7 +1072,11 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
-    if not _is_multimodal_tool_result(persisted_result):
+    if _is_multimodal_tool_result(persisted_result):
+        persisted_result = _persist_multimodal_text_parts(
+            persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
+        )
+    else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
             tool_name=function_name,
@@ -1090,7 +1109,37 @@ def _commit_tool_result(
             agent.tool_progress_callback, "Tool progress",
             "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
         )
+    if isinstance(function_result, str) and len(function_result) >= _LARGE_TOOL_RESULT_TRIM_CHARS:
+        agent._trim_after_tool_batch = True
     return persisted_result, function_result, tool_message.get("_tool_output_risk")
+
+
+def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: str, env, budget: BudgetConfig) -> dict:
+    """Spill oversized TEXT parts of a multimodal envelope through the same persistence policy as
+    string results (#95429). A ``browser_exec`` call that captured a screenshot bakes its full
+    stdout into the envelope's text part, which used to bypass ``maybe_persist_tool_result``
+    entirely and ride every later request inline. Image parts are left untouched (their size is
+    governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
+    parts = result.get("content") or []
+    bounded_parts, first_replacement = [], None
+    for part in parts:
+        text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
+        if isinstance(text, str):
+            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=tool_call_id,
+                                                 env=env, config=budget)
+            if replaced != text:
+                part = {**part, "text": replaced}
+                first_replacement = first_replacement or replaced
+        bounded_parts.append(part)
+    if first_replacement is None:
+        return result
+    bounded = {**result, "content": bounded_parts}
+    summary = bounded.get("text_summary")
+    # The summary is a subset of the (already spilled) part text: reuse that bounded reference instead
+    # of a second persist under the same id, which would overwrite the spill file with the summary.
+    if isinstance(summary, str) and len(summary) > budget.resolve_threshold(tool_name):
+        bounded["text_summary"] = first_replacement
+    return bounded
 
 
 def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tools: int, budget: BudgetConfig) -> None:
@@ -1508,7 +1557,7 @@ def _start_quiet_tool_spinner(agent, function_name: str, function_args: dict, *,
     face = random.choice(KawaiiSpinner.get_waiting_faces())
     if label is None:
         display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-        label = f"{_get_tool_emoji(function_name)} {_build_tool_label(function_name, display_args) or function_name}"
+        label = f"{_tool_row_emoji(function_name, display_args)} {_build_tool_label(function_name, display_args) or function_name}"
     spinner = KawaiiSpinner(f"{face} {label}", spinner_type='dots', print_fn=agent._print_fn)
     spinner.start()
     return spinner
@@ -1545,6 +1594,7 @@ class _SequentialDispatch:
     is_delegate: bool = False
     finish_spinner: bool = True
     finish_in_finally: bool = True  # inline tools print their completion line only on success
+    transform_applied: bool = False  # True when execute already fired transform_tool_result
 
 
 def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _SequentialDispatch:
@@ -1609,6 +1659,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         error_log="handle_function_call raised for %s: %s",
         handles_keyboard_interrupt=True,
         finish_spinner=bool(agent.quiet_mode),
+        transform_applied=True,  # handle_function_call fires transform_tool_result itself
     )
 
 
@@ -1679,19 +1730,28 @@ def _run_sequential_call(
     return managed, tool_duration
 
 
-def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed: _ManagedToolResult, *, tool_duration: float, index: int, budget: BudgetConfig) -> bool:
+def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed: _ManagedToolResult, *, tool_duration: float, index: int, budget: BudgetConfig, transform_applied: bool) -> bool:
     """Terminal hook → observe → commit → completion callbacks/print for one sequential
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
     _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult))
-    # Multimodal dict results (_multimodal=True) are not sliceable as strings.
-    _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
-    _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
     # Inline-dispatched runtime tools never reach handle_function_call, so the
     # executor owns the one terminal post_tool_call per tool_call_id (the inner
     # observer is suppressed); also stops an abandoned timeout worker reporting late.
+    # transform_tool_result follows the observer, unless the dispatch already fired it.
     if not managed.blocked and not _execution_timed_out:
         ref.emit_post(agent, function_result, duration_ms=int(tool_duration * 1000))
+        if not transform_applied:
+            function_result = apply_transform_tool_result(
+                agent, function_name=ref.name, function_args=ref.args, result=function_result,
+                effective_task_id=ref.task_id, tool_call_id=ref.call_id,
+                duration_ms=int(tool_duration * 1000),
+            )
+    # Classify the result the model will actually see, i.e. after any transform; the
+    # registry and concurrent paths both classify post-transform.
+    # Multimodal dict results (_multimodal=True) are not sliceable as strings.
+    _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
+    _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
@@ -1762,7 +1822,8 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             display_index=i,
             tool_start_time=tool_start_time,
         )
-        if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
+        if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i,
+                                          budget=_tool_budget, transform_applied=dispatch.transform_applied):
             return
 
         if agent._interrupt_requested and i < len(tool_calls):

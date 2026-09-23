@@ -31,8 +31,8 @@ try:
     # ---------------------------------------------------------------------------
     from tools.lazy_deps import ensure
     ensure("provider.bedrock", prompt=False)
-except Exception:
-    pass  # let downstream imports surface the real error
+except Exception as exc:  # downstream imports surface the real error
+    logger.warning("boto3 lazy install did not complete: %s", exc)
 
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
@@ -53,13 +53,34 @@ def scoped_aws_session_kwargs() -> Dict[str, str]:
 
     Under a HERMES_HOME override the process env holds the LAUNCH profile's ``AWS_*`` (or nothing), so
     every Bedrock client for a served profile must be built from that profile's own ``.env`` values.
-    """
+    Under multiplexing a profile that sets none of its own must NOT get ``{}`` — ``boto3.Session()``
+    would then resolve the ambient default chain (process env, ~/.aws, instance metadata), i.e. the
+    launch context's identity, exactly the borrow the Entra adapter refuses. ``AWS_PROFILE`` counts as
+    an explicit per-profile choice (it names an entry in the shared AWS config, like the Entra
+    ``AZURE_CLIENT_ID``-only managed-identity opt-in)."""
     from hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is None:
         return {}
-    from agent.secret_scope import current_secret_scope
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() or {}
-    return {kw: scope[var].strip() for kw, var in _AWS_SCOPED_CREDENTIAL_VARS if (scope.get(var) or "").strip()}
+    kwargs = {kw: scope[var].strip() for kw, var in _AWS_SCOPED_CREDENTIAL_VARS
+              if (scope.get(var) or "").strip()}
+    # Under multiplexing a partial set is not enough: boto3 fills whatever is missing from the
+    # ambient chain (process env, ~/.aws, instance metadata), i.e. the launch context's identity —
+    # the same borrow the Entra adapter refuses. Require a COMPLETE credential: the key pair, or
+    # AWS_PROFILE naming an entry in the shared AWS config (an explicit per-profile choice, like
+    # the Entra AZURE_CLIENT_ID-only managed-identity opt-in).
+    complete = ("aws_access_key_id" in kwargs and "aws_secret_access_key" in kwargs) \
+        or "profile_name" in kwargs
+    if not complete and is_multiplex_active():
+        raise RuntimeError(
+            "Bedrock auth is refused for this profile: it sets no complete AWS credential of its "
+            "own, and under multiplexed profiles the ambient default chain (process env, ~/.aws, "
+            "instance metadata) would sign this profile's calls with the LAUNCH context's identity. "
+            "Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in this profile's own config, or "
+            "AWS_PROFILE to name a shared AWS config profile."
+        )
+    return kwargs
 
 # Bedrock-hosted GPT-5.x models are served from the Bedrock Mantle OpenAI-compatible endpoint, not
 # Converse. Narrow allowlist so GPT-OSS models stay on the native path.
@@ -108,8 +129,10 @@ def _cached_client(cache: Dict[str, Any], service: str, region: str):
     key = (hermes_home_key(), service, region)
     client = _bedrock_clients_by_home.get(key)
     if client is None:
-        boto3 = _require_boto3()
-        client = boto3.Session(**scoped_aws_session_kwargs()).client(service, region_name=region)
+        # Scope check first: a cred-less multiplex profile must hit the ambient-chain
+        # refusal, not a boto3 ImportError on hosts that lack the package.
+        kwargs = scoped_aws_session_kwargs()
+        client = _require_boto3().Session(**kwargs).client(service, region_name=region)
         _bedrock_clients_by_home[key] = client
     return client
 
@@ -127,6 +150,7 @@ def reset_client_cache():
     _bedrock_runtime_client_cache.clear()
     _bedrock_control_client_cache.clear()
     _bedrock_clients_by_home.clear()
+    _inference_profile_model_cache.clear()
 
 
 def invalidate_runtime_client(region: str) -> bool:
@@ -177,9 +201,17 @@ def is_bedrock_openai_base_url(base_url: str) -> bool:
 
 
 def resolve_bedrock_bearer_token(env: Optional[Dict[str, str]] = None) -> str:
-    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured."""
-    env = env if env is not None else os.environ
-    return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured.
+
+    Under a HERMES_HOME override the read goes through the profile secret scope so a
+    served profile never inherits the launch profile's bearer from the process env."""
+    if env is not None:
+        return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is not None:
+        from agent.secret_scope import get_secret
+        return (get_secret("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+    return (os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
 
 
 class BedrockOpenAISigV4Auth(httpx.Auth):
@@ -194,7 +226,8 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
     def auth_flow(self, request):  # pragma: no cover - exercised by live call
         from botocore.auth import SigV4Auth
         from botocore.awsrequest import AWSRequest
-        credentials = _require_boto3().Session(**scoped_aws_session_kwargs()).get_credentials()
+        kwargs = scoped_aws_session_kwargs()
+        credentials = _require_boto3().Session(**kwargs).get_credentials()
         if credentials is None:
             raise RuntimeError(
                 "No AWS credentials available for Bedrock OpenAI Responses. "
@@ -438,6 +471,9 @@ def _model_supports_tool_use(model_id: str) -> bool:
 
 
 def _model_supports_prompt_cache(model_id: str) -> bool:
+    # An application-inference-profile ARN names no model: match on the wrapped model (cached lookup).
+    if _APPLICATION_PROFILE_ARN_RE.search(model_id):
+        model_id = _resolve_inference_profile_model_id(model_id)
     return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
 
 
@@ -528,6 +564,63 @@ def recover_from_cache_point_rejection(exc: BaseException, kwargs: Dict[str, Any
     logger.warning(
         "bedrock: %s rejected a cachePoint block in %s — dropping that cache marker for this model and "
         "retrying. Prompt caching stays active for the remaining sections.", model_id or "model", placement,
+    )
+    return retry_kwargs
+
+
+# --- Encrypted-content redacted-reasoning suppression ---
+# Redacted thinking blobs are sealed to the issuing model/flow; replaying them after a model switch or
+# across regions fails with an encrypted-content ValidationException. Drop the redacted blocks and
+# resend once (mirrors the cachePoint self-heal above: same-object return means no retry can help).
+_REDACTED_REASONING_REJECTION_PATTERN = re.compile(
+    r"ValidationException.*(?:redacted|encrypt)", re.IGNORECASE | re.DOTALL,
+)
+
+
+def _without_redacted_reasoning(blocks):
+    """``blocks`` minus reasoningContent entries carrying redactedContent, or None if not a list /
+    nothing removed. Pure reasoningText blocks are kept."""
+    if not isinstance(blocks, list):
+        return None
+    cleaned = [b for b in blocks if not (
+        isinstance(b, dict) and isinstance(b.get("reasoningContent"), dict)
+        and "redactedContent" in b["reasoningContent"]
+    )]
+    return None if len(cleaned) == len(blocks) else cleaned
+
+
+def strip_redacted_reasoning(kwargs):
+    """Copy of Converse kwargs with redacted reasoning blocks removed; the SAME object
+    back when nothing was stripped (callers use identity to decide a retry cannot help).
+    Turns left with empty content are dropped (they carried no replayable signal)."""
+    messages = kwargs.get("messages")
+    if not isinstance(messages, list):
+        return kwargs
+    cleaned_contents = [
+        _without_redacted_reasoning(msg.get("content") if isinstance(msg, dict) else None)
+        for msg in messages
+    ]
+    if all(content is None for content in cleaned_contents):
+        return kwargs
+    return {**kwargs, "messages": [
+        msg if content is None else {**msg, "content": content}
+        for msg, content in zip(messages, cleaned_contents)
+        if content is None or len(content) > 0
+    ]}
+
+
+def recover_from_redacted_reasoning_rejection(exc, kwargs):
+    """Return retry kwargs with redacted reasoning blocks stripped, or None when the error
+    was not an encrypted-content rejection / nothing redacted remained (caller re-raises)."""
+    if not _REDACTED_REASONING_REJECTION_PATTERN.search(str(exc)):
+        return None
+    retry_kwargs = strip_redacted_reasoning(kwargs)
+    if retry_kwargs is kwargs:
+        return None
+    logger.warning(
+        "bedrock: %s rejected replayed redacted reasoning (encrypted content is sealed to the issuing "
+        "model/flow) - stripping redacted blocks and resending once.",
+        str(kwargs.get("modelId", "")) or "model",
     )
     return retry_kwargs
 
@@ -628,15 +721,18 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
             reasoning = block["reasoningContent"]
             if not isinstance(reasoning, dict):
                 continue
-            replay = {"text": reasoning["text"]} if isinstance(reasoning.get("text"), str) else {}
+            # ReasoningContentBlock is a tagged union: reasoningText and redactedContent must go
+            # out as separate blocks (#115865). Undecodable redacted entries are skipped alone.
+            if isinstance(reasoning.get("text"), str):
+                reasoning_text: Dict[str, str] = {"text": reasoning["text"]}
+                if isinstance(reasoning.get("signature"), str) and reasoning["signature"]:
+                    reasoning_text["signature"] = reasoning["signature"]  # models that sign thinking reject unsigned replay
+                content_blocks.append({"reasoningContent": {"reasoningText": reasoning_text}})
             encoded = reasoning.get("redactedContentBase64")
             if isinstance(encoded, str) and encoded:
                 redacted = _decode_redacted(encoded)
-                if redacted is None:
-                    continue
-                replay["redactedContent"] = redacted
-            if replay:
-                content_blocks.append({"reasoningContent": replay})
+                if redacted is not None:
+                    content_blocks.append({"reasoningContent": {"redactedContent": redacted}})
         elif "toolUse" in block and isinstance(block["toolUse"], dict):
             tu = block["toolUse"]
             content_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
@@ -737,15 +833,21 @@ class _ResponseParts:
         self.tool_calls: List[SimpleNamespace] = []
 
     def absorb_reasoning(self, reasoning: Any, block: Dict[str, Any], on_text=None) -> None:
-        """Fold a Converse ``reasoningContent`` payload into the accumulators and ``block``."""
+        """Fold a Converse ``reasoningContent`` payload into the accumulators and ``block``. The sync response
+        nests ``reasoningText: {text, signature}``; stream deltas carry ``text`` / ``signature`` flat."""
         if not isinstance(reasoning, dict):
             return
+        if isinstance(reasoning.get("reasoningText"), dict):
+            reasoning = {**reasoning, **reasoning["reasoningText"]}
         thinking_text = reasoning.get("text", "")
         if thinking_text:
             self.reasoning_parts.append(str(thinking_text))
             if on_text:
                 on_text(thinking_text)
             block["text"] = block.get("text", "") + str(thinking_text)
+        signature = reasoning.get("signature")
+        if isinstance(signature, str) and signature:
+            block["signature"] = block.get("signature", "") + signature
         encoded = _encode_redacted(reasoning.get("redactedContent"))
         if encoded:
             self.reasoning_details.append({"type": "redacted_thinking", "data": encoded})
@@ -871,7 +973,7 @@ def stream_converse_with_callbacks(
                 current_tool["input_json"] += delta["toolUse"].get("input", "")
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
-                if isinstance(reasoning, dict) and (reasoning.get("text", "") or _encode_redacted(reasoning.get("redactedContent"))):
+                if isinstance(reasoning, dict) and (reasoning.get("text", "") or reasoning.get("signature") or _encode_redacted(reasoning.get("redactedContent"))):
                     block = stream_blocks.setdefault(idx, {"reasoningContent": {}}).setdefault("reasoningContent", {})
                     parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
         elif "contentBlockStop" in event:
@@ -951,6 +1053,9 @@ def call_converse(
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
             return normalize_converse_response(client.converse(**retry_kwargs))
+        redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
+        if redacted_retry_kwargs is not None:
+            return normalize_converse_response(client.converse(**redacted_retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse(region=%s, model=%s): "
@@ -1123,11 +1228,56 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
 
 def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
     """Context window: live probe (if ``probe`` and ``region``) → static table → default. The table is fallback
-    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4")."""
+    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4").
+    An application-inference-profile ARN is first resolved to the model it wraps (#114476)."""
+    profile_arn = model_id if _APPLICATION_PROFILE_ARN_RE.search(model_id) else ""
+    if profile_arn:
+        model_id = _resolve_inference_profile_model_id(profile_arn, region)
     if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
         return probed
     matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
-    return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)] if matches else BEDROCK_DEFAULT_CONTEXT_LENGTH
+    if matches:
+        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+    if profile_arn:
+        logger.warning(
+            "Bedrock inference profile %s resolved no known model window; using the %s default. "
+            "Grant bedrock:GetInferenceProfile or set model.context_length explicitly if the "
+            "wrapped model has a larger window.",
+            profile_arn,
+            f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+        )
+    return BEDROCK_DEFAULT_CONTEXT_LENGTH
+
+
+# An application-inference-profile ARN (cost-allocation wrapper) carries an opaque id, so the probe
+# error text and the static substring table both miss and the 128k default silently applies
+# (#114476). System-defined `inference-profile/us.anthropic...` ARNs embed the model id and need no
+# lookup. The ARN's own region (field 4) is authoritative for the control-plane call: the runtime
+# region / base_url may differ, and an empty region must not skip the lookup because the
+# production caller (agent/model_metadata.py::_resolve_bedrock_context_length) passes none.
+_APPLICATION_PROFILE_ARN_RE = re.compile(r":application-inference-profile/")
+_ARN_REGION_RE = re.compile(r"^arn:[^:]+:bedrock:([a-z0-9-]+):", re.IGNORECASE)
+_inference_profile_model_cache: Dict[str, str] = {}
+
+
+def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> str:
+    """Application-profile ARN → the wrapped model's ARN (its ``foundation-model/<id>`` tail satisfies the
+    static-table substring match); the profile ARN itself when ``bedrock:GetInferenceProfile`` is not
+    granted or unavailable, so callers keep the default-window behaviour. Both outcomes are cached per
+    process: this runs on every context-length resolution, not once per model."""
+    if profile_arn in _inference_profile_model_cache:
+        return _inference_profile_model_cache[profile_arn]
+    arn_region = _ARN_REGION_RE.match(profile_arn)
+    region = (arn_region.group(1) if arn_region else "") or region or resolve_bedrock_region()
+    resolved = profile_arn
+    try:
+        client = _get_bedrock_control_client(region)
+        models = client.get_inference_profile(inferenceProfileIdentifier=profile_arn).get("models") or []
+        resolved = next((m["modelArn"] for m in models if m.get("modelArn")), profile_arn)
+    except Exception as exc:  # no boto3 / credentials / GetInferenceProfile not granted
+        logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
+    _inference_profile_model_cache[profile_arn] = resolved
+    return resolved
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
@@ -1188,6 +1338,11 @@ def call_converse_stream(
         if retry_kwargs is not None:
             return normalize_converse_stream_events(
                 client.converse_stream(**retry_kwargs)
+            )
+        redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
+        if redacted_retry_kwargs is not None:
+            return normalize_converse_stream_events(
+                client.converse_stream(**redacted_retry_kwargs)
             )
         if is_streaming_access_denied_error(exc):
             # IAM allows bedrock:InvokeModel but not

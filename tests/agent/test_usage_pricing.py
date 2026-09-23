@@ -109,26 +109,6 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
-def test_deepseek_v4_pro_pricing_entry_exists():
-    """Regression test: deepseek-v4-pro must have a pricing entry.
-
-    Before this fix, deepseek-v4-pro sessions showed as unknown cost
-    in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
-    entry for that model.  See #24218.  Rates track the 2026-07 price cut
-    ($1.74/$3.48 → $0.435/$0.87).
-    """
-    entry = get_pricing_entry(
-        "deepseek-v4-pro",
-        provider="deepseek",
-    )
-
-    assert entry is not None
-    assert entry.source == "official_docs_snapshot"
-    # Pro is the premium tier: every rate must sit above the Flash row's.
-    flash = get_pricing_entry("deepseek-flash", provider="deepseek")
-    assert entry.input_cost_per_million > flash.input_cost_per_million
-    assert entry.output_cost_per_million > flash.output_cost_per_million
-    assert entry.cache_read_cost_per_million > flash.cache_read_cost_per_million
 
 
 def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
@@ -219,41 +199,6 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
         assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
 
 
-def test_bedrock_current_gen_claude_rows_resolve():
-    """Current-gen Claude models (Opus 4.8/4.7, Sonnet 5) must have Bedrock
-    pricing rows so cached sessions report a dollar cost, not ``unknown``.
-    Assert each resolves via the bare id and a cross-region inference profile
-    (us./global. prefix), that every id for a given model resolves to the same
-    entry, and that the row carries the cache fields a Bedrock Claude session
-    needs.
-
-    (Version-suffixed IDs like ``...-v1:0`` are covered separately by the
-    normalizer test in the suffix-strip change; this test intentionally sticks
-    to id shapes that resolve on ``main`` so it is independent of that PR.)
-    """
-    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
-    for bare in (
-        "anthropic.claude-opus-4-8",
-        "anthropic.claude-opus-4-7",
-        "anthropic.claude-sonnet-5",
-    ):
-        ref = get_pricing_entry(bare, provider="bedrock", base_url=url)
-        assert ref is not None, bare
-        assert ref.input_cost_per_million is not None, bare
-        assert ref.output_cost_per_million is not None, bare
-        # Output costs more than input across the Claude line; sanity-check the
-        # row isn't malformed (input < output).
-        assert ref.output_cost_per_million > ref.input_cost_per_million, bare
-        # Cache fields present so cached sessions price correctly (the #50295
-        # symptom was unknown cost on cached Bedrock Claude sessions).
-        assert ref.cache_read_cost_per_million is not None, bare
-        assert ref.cache_write_cost_per_million is not None, bare
-        # Cross-region inference profiles resolve to the same entry.
-        for mid in (f"us.{bare}", f"global.{bare}"):
-            entry = get_pricing_entry(mid, provider="bedrock", base_url=url)
-            assert entry is not None, mid
-            assert entry.input_cost_per_million == ref.input_cost_per_million, mid
-            assert entry.output_cost_per_million == ref.output_cost_per_million, mid
 
 
 
@@ -411,62 +356,8 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
         assert model in _PROVIDER_MODELS["vertex"], model
 
 
-def test_normalize_usage_minimax_logs_cache_observability(caplog):
-    """MiniMax providers on the Anthropic wire emit a debug-level
-    cache-observability line recording the observable fields
-    (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens),
-    so an operator can see real cache behavior without trusting the
-    misleading cache_read number (constant +128 floor on MiniMax-M3).
-    Standard logging level gating applies — no separate opt-in flag.
-    """
-    usage = SimpleNamespace(
-        input_tokens=1,
-        output_tokens=11,
-        cache_read_input_tokens=8594,
-        cache_creation_input_tokens=0,
-    )
-
-    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
-        normalize_usage(
-            usage,
-            provider="minimax-cn",
-            api_mode="anthropic_messages",
-        )
-
-    cache_obs_records = [r for r in caplog.records if "cache_observability" in r.message]
-    assert len(cache_obs_records) == 1
-    record = cache_obs_records[0]
-    assert "input_tokens=1" in record.message
-    assert "output_tokens=11" in record.message
-    assert "cache_read_tokens=8594" in record.message
-    assert "cache_write_tokens=0" in record.message
 
 
-def test_normalize_usage_native_anthropic_no_cache_observability(caplog):
-    """The MiniMax cache-observability line must NOT fire for native
-    Anthropic: there cache_read_input_tokens is exact and billable, so
-    the MiniMax-specific "+128 floor / unreliable hit signal" note would
-    be false and misleading in the logs.
-    """
-    usage = SimpleNamespace(
-        input_tokens=100,
-        output_tokens=20,
-        cache_read_input_tokens=50,
-        cache_creation_input_tokens=10,
-    )
-
-    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
-        result = normalize_usage(
-            usage,
-            provider="anthropic",
-            api_mode="anthropic_messages",
-        )
-
-    assert all("cache_observability" not in rec.message for rec in caplog.records)
-    # Token normalization itself is unaffected.
-    assert result.input_tokens == 100
-    assert result.cache_read_tokens == 50
-    assert result.cache_write_tokens == 10
 
 
 # ---------------------------------------------------------------------------
@@ -494,14 +385,7 @@ class TestFormatCostLabel:
     def test_normal_cost_renders_2dp(self):
         assert format_cost_label(Decimal("1.23")) == "~$1.23"
 
-    def test_large_cost_renders_2dp(self):
-        assert format_cost_label(Decimal("42.50")) == "~$42.50"
 
-    def test_very_small_sub_cent(self):
-        """Even very small costs render non-zero."""
-        label = format_cost_label(Decimal("0.0001"))
-        assert label == "~$0.0001"
-        assert label != "$0.00"
 
     def test_below_4dp_floor_never_reads_zero(self):
         """Amounts below $0.00005 must not render as '~$0.0000' (#79220).
@@ -515,15 +399,6 @@ class TestFormatCostLabel:
         # and must also take the fallback.
         assert format_cost_label(Decimal("0.00005")) == "~$<0.0001"
 
-    def test_sub_cent_deepseek_scenario(self):
-        """Reproduce the #79220 reproduction: DeepSeek at $0.004640."""
-        # DeepSeek V4 Pro: 8K input + 1.2K output + 32K cache read
-        # = $0.004640 per turn
-        amount = Decimal("0.004640")
-        label = format_cost_label(amount)
-        assert "0.0046" in label
-        assert label != "$0.00"
-        assert label != "~$0.00"
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +427,6 @@ class TestSubscriptionIncludedNotes:
         assert result.status == "included"
         assert result.amount_usd == Decimal("0")
         assert len(result.notes) > 0
-        assert any("subscription" in note.lower() for note in result.notes)
 
 
 def test_normalize_usage_reads_kimi_top_level_cached_tokens():

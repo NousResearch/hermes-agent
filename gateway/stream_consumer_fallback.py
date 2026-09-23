@@ -51,7 +51,21 @@ class StreamFallbackMixin:
         """Return only the part of final_text the user has not already seen."""
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
-            return final_text[len(prefix):].lstrip()
+            cut = len(prefix)
+            # ``prefix`` is whatever the last successful edit put on screen. Edits
+            # fire on a throttle tick, not at a word boundary, so that prefix can
+            # end inside a word.  Back the cut up to the last space or newline so
+            # the continuation re-sends the broken word's tail and reads as an
+            # ordinary continuation.  A prefix with no boundary (one very long
+            # token) keeps the original cut rather than re-sending the whole reply.
+            if cut < len(final_text):
+                boundary = max(
+                    final_text.rfind(" ", 0, cut),
+                    final_text.rfind("\n", 0, cut),
+                )
+                if boundary >= 0:
+                    cut = boundary + 1
+            return final_text[cut:].lstrip()
         return final_text
 
     @staticmethod

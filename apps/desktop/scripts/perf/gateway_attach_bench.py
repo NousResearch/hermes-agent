@@ -114,7 +114,7 @@ def main() -> int:
     content_b64 = base64.b64encode(png_bytes(args.kb)).decode("ascii")
 
     scratch = home / "scratch.txt"
-    scratch.write_text("hello from the bench\n")
+    scratch.write_text("hello from the bench\n", encoding="utf-8")
 
     image_on_disk = home / "on-disk.png"
     image_on_disk.write_bytes(png_bytes(args.kb))
@@ -153,7 +153,7 @@ def main() -> int:
         ),
         (
             "image.detach",
-            lambda sid: {"session_id": sid, "path": "/tmp/nothing.png"},
+            lambda sid: {"session_id": sid, "path": "/nonexistent/nothing.png"},
         ),
         (
             "prompt.submit",

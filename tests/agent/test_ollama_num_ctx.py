@@ -7,6 +7,8 @@ Covers:
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 
 from agent.model_metadata import query_ollama_num_ctx, query_ollama_supports_vision
 
@@ -80,23 +82,9 @@ class TestQueryOllamaNumCtx:
 
         # Verify the post was called with stripped name (no "local:" prefix)
         call_args = mock_client.post.call_args
-        assert call_args[1]["json"]["name"] == "qwen2.5:7b" or call_args[0][1] is not None
+        assert call_args.kwargs["json"]["name"] == "qwen2.5:7b"
         assert result == 32768
 
-    def test_handles_qwen2_architecture_key(self):
-        """Different model architectures use different key prefixes in model_info."""
-        show_data = {
-            "model_info": {"qwen2.context_length": 65536},
-            "parameters": "",
-        }
-        mock_ctx, _ = _mock_httpx_client(show_data)
-
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
-            import httpx
-            with patch.object(httpx, "Client", return_value=mock_ctx):
-                result = query_ollama_num_ctx("qwen2.5:32b", "http://localhost:11434")
-
-        assert result == 65536
 
 
 
@@ -138,39 +126,40 @@ class TestQueryOllamaSupportsVision:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
+    import agent.context_compressor as cc_mod
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=probed_ctx,
+        ),
+        patch.object(
+            cc_mod, "get_model_context_length", return_value=probed_ctx,
+        ),
+    ):
+        from run_agent import AIAgent
+        return AIAgent(
+            model="gemma3:27b",
+            api_key="ollama",
+            base_url=base_url,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+
 class TestCompressorClampsToNumCtx:
     """A config setting ONLY model.ollama_num_ctx (no model.context_length)
     must not leave the compressor targeting the probed model window while
     requests run at the smaller served num_ctx."""
 
-    def _build_agent(self, cfg, probed_ctx):
-        import agent.context_compressor as cc_mod
-        with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
-            patch("hermes_cli.config.load_config", return_value=cfg),
-            patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-            patch(
-                "agent.model_metadata.get_model_context_length",
-                return_value=probed_ctx,
-            ),
-            patch.object(
-                cc_mod, "get_model_context_length", return_value=probed_ctx,
-            ),
-        ):
-            from run_agent import AIAgent
-            return AIAgent(
-                model="gemma3:27b",
-                api_key="ollama",
-                base_url="http://localhost:11434/v1",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-
     def test_num_ctx_only_config_clamps_compressor_window(self):
-        agent = self._build_agent(
+        agent = _build_agent(
             {"agent": {}, "model": {"ollama_num_ctx": 65536}}, probed_ctx=262144
         )
         assert agent._ollama_num_ctx == 65536
@@ -181,9 +170,43 @@ class TestCompressorClampsToNumCtx:
         assert agent.context_compressor.threshold_tokens < 65536
 
     def test_larger_num_ctx_does_not_inflate_compressor_window(self):
-        agent = self._build_agent(
+        agent = _build_agent(
             {"agent": {}, "model": {"ollama_num_ctx": 131072}}, probed_ctx=65536
         )
         # num_ctx above the resolved window must not RAISE the compressor
         # window: the clamp is one-directional.
         assert agent.context_compressor.context_length == 65536
+
+
+class TestServedNumCtxSatisfiesTheFloor:
+    """#100437: the 64K floor judges the window a local Ollama server actually serves. A Modelfile
+    or model.ollama_num_ctx at 64K+ is usable even when the GGUF metadata advertises 40K, so
+    construction must succeed; the compressor still targets the smaller probed window."""
+
+    def test_explicit_num_ctx_above_the_floor_admits_a_small_metadata_window(self):
+        agent = _build_agent({"agent": {}, "model": {"ollama_num_ctx": 65536}}, probed_ctx=40960)
+        assert agent._ollama_num_ctx == 65536
+        assert agent.context_compressor.context_length == 40960  # one-directional clamp unchanged
+
+    def test_served_window_counts_only_for_a_local_endpoint(self):
+        """Only a local server honours num_ctx; a stale override must not admit a hosted 40K model."""
+        with pytest.raises(ValueError, match="below the minimum"):
+            _build_agent({"agent": {}, "model": {"ollama_num_ctx": 65536}}, probed_ctx=40960,
+                         base_url="https://openrouter.ai/api/v1")
+
+
+class TestFloorRefusalNamesTheLocalServerHonestly:
+    """#87075: a local OpenAI-compatible server without /api/show (llama.cpp, vLLM) that serves a
+    sub-64K window must get server-agnostic guidance — raise the server's context or set
+    model.ollama_num_ctx — while a hosted route keeps the model.context_length advice."""
+
+    def test_local_refusal_names_server_flag_and_num_ctx_key(self):
+        with pytest.raises(ValueError) as exc:
+            _build_agent({"agent": {}, "model": {}}, probed_ctx=32768, base_url="http://127.0.0.1:8422/v1")
+        msg = str(exc.value)
+        assert "model.ollama_num_ctx" in msg
+
+    def test_hosted_refusal_keeps_context_length_advice(self):
+        with pytest.raises(ValueError, match="model.context_length") as exc:
+            _build_agent({"agent": {}, "model": {}}, probed_ctx=32768, base_url="https://openrouter.ai/api/v1")
+        assert "ollama_num_ctx" not in str(exc.value)

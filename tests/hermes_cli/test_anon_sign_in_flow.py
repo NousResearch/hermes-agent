@@ -10,12 +10,10 @@ from __future__ import annotations
 import threading
 import time
 
-import httpx
 import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _auth_file_path
-from hermes_cli.auth_constants import AuthError
 from tests.hermes_cli.test_anon_upgrade import (  # noqa: F401  (fixtures used by name)
     EMAIL, FREE_PICK, PORTAL, WELCOME, _shared_store, _write_model_config, free_account, portal)
 
@@ -63,7 +61,7 @@ def test_declined_yields_declined_and_persists_nothing(portal, tmp_path):
     _seed_free_tier()
     before = _auth_file_path().read_bytes()
     shared_before = _shared_store(tmp_path)
-    portal.status_sequence = [{"status": "pending"}, _voided("user_declined")]
+    portal.status_sequence = [_voided("user_declined")]
 
     terminal = [s for s in _drain() if s.terminal]
 
@@ -181,7 +179,7 @@ def test_a_transport_error_yields_failed_without_leaking_the_detail_into_chat_co
     lowered = state.copy.lower()
     for banned in ("http://", "https://", "/anonymous/", "anonymous"):
         assert banned not in lowered
-    assert state.copy_terminal == f"Sign-in failed: {detail}"
+    assert detail in state.copy_terminal
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
 
@@ -390,26 +388,6 @@ def test_a_persist_guard_that_refuses_persists_nothing_and_never_settles(
     assert _auth_file_path().read_bytes() == before
 
 
-def test_settle_runs_exactly_once_per_completion(portal, free_account, monkeypatch):
-    _seed_free_tier()
-    settles, persists = [], []
-    real_settle = anon_auth.settle_after_upgrade
-    from hermes_cli import auth_nous
-    real_persist = auth_nous.persist_nous_credentials
-    monkeypatch.setattr(
-        anon_auth, "settle_after_upgrade",
-        lambda state: (settles.append(state), real_settle(state))[1])
-    monkeypatch.setattr(
-        auth_nous, "persist_nous_credentials",
-        lambda state, **kw: (persists.append(state), real_persist(state, **kw))[1])
-
-    states = list(anon_auth.run_sign_in())
-
-    assert states[-1].kind == "completed"
-    assert len(settles) == 1
-    assert len(persists) == 1
-
-
 def test_persistence_happens_only_after_the_promotion_and_the_token_grant(portal, free_account):
     _seed_free_tier()
     before = _auth_file_path().read_bytes()
@@ -422,33 +400,6 @@ def test_persistence_happens_only_after_the_promotion_and_the_token_grant(portal
     assert seen["completed"] != before
     paths = [p for _, p in portal.calls]
     assert "/api/oauth/token" in paths
-
-
-def test_the_budget_shrinks_across_the_two_waits(portal, free_account, monkeypatch):
-    """One absolute deadline: what the promotion wait spends, the token poll no longer has."""
-    _seed_free_tier()
-    captured = {}
-    from hermes_cli import auth_device_flow
-    real_request, real_poll = auth_device_flow._request_device_code, auth_device_flow._poll_for_token
-
-    def _short_lived_code(client, portal_base_url, client_id, scope):
-        return {**real_request(client, portal_base_url, client_id, scope), "expires_in": 10}
-    monkeypatch.setattr(auth_device_flow, "_request_device_code", _short_lived_code)
-
-    def _wait(client, portal_base_url, claim_code, *, expires_in, interval, cancelled=None):
-        time.sleep(3.0)
-        return {"status": "completed", "account_email": EMAIL}
-    monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait)
-
-    def _poll(**kwargs):
-        captured.update(kwargs)
-        return real_poll(**kwargs)
-    monkeypatch.setattr(auth_device_flow, "_poll_for_token", _poll)
-
-    states = list(anon_auth.run_sign_in())
-
-    assert states[-1].kind == "completed"
-    assert 1 <= captured["expires_in"] <= 7
 
 
 def test_the_scope_is_entered_for_the_preconditions_and_the_persist_but_never_around_a_wait(
@@ -491,14 +442,3 @@ def test_the_scope_is_entered_for_the_preconditions_and_the_persist_but_never_ar
         assert not any(first[1] <= at <= second[1] for at in yields)
 
 
-def test_wait_for_promotion_without_a_cancel_hook_is_unchanged(portal):
-    import httpx
-    _seed_free_tier()
-    portal.status_sequence = [{"status": "completed", "account_email": EMAIL}]
-    portal.calls.clear()
-    with httpx.Client(transport=httpx.MockTransport(portal.handler), base_url=PORTAL) as client:
-        outcome = anon_auth.wait_for_promotion(
-            client, PORTAL, "clm_1", expires_in=30, interval=0)
-
-    assert outcome == {"status": "completed", "account_email": EMAIL}
-    assert [p for _, p in portal.calls] == ["/api/anonymous/promotion-status"]

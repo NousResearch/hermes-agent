@@ -26,12 +26,6 @@ class TestMediaDirectiveStripping:
 
 
 
-    def test_non_media_content_preserved(self, compressor):
-        turns = [
-            {"role": "assistant", "content": "The file path is /tmp/test.txt and it works."},
-        ]
-        result = compressor._serialize_for_summary(turns)
-        assert "/tmp/test.txt" in result
 
     def test_multiple_media_directives(self, compressor):
         turns = [

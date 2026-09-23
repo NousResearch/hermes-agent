@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, Usage
+from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
 
@@ -143,13 +143,15 @@ class TurnStatus(WireEnum):
 
 
 class ErrorSurface(Payload):
-    """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint)."""
+    """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,
+    + ``resets_at`` epoch seconds when the provider named when its limit lifts)."""
 
     layer: str
     code: str
     retryable: bool
     provider: str | None = None
     model: str | None = None
+    resets_at: float | None = None
     model_config = Payload.model_config | {"extra": "allow"}
 
 
@@ -163,6 +165,19 @@ class BillingBlock(Payload):
     is_nous: bool
     message: str
     unverified: bool | None = None
+
+
+class PersistedTurn(Payload):
+    """Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are
+    unproven, never negative acknowledgements. ``complete`` permits retiring the whole local
+    turn only when the original turn boundary, every row and final body are still accounted
+    for; compaction, redirects and partial writes conservatively leave it false. Row ids are
+    scoped to the owning profile's store, as in ``SessionMessage.row_id``."""
+
+    row_ids: list[int]
+    complete: bool
+    user_row_id: int | None = None
+    final_assistant_row_id: int | None = None
 
 
 class MessageCompletePayload(Payload):
@@ -183,6 +198,7 @@ class MessageCompletePayload(Payload):
     recoverable: bool | None = None
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
+    persisted_turn: PersistedTurn | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
@@ -249,6 +265,7 @@ class ToolStartPayload(Payload):
     args: dict[str, JsonValue] | None = None
     args_text: str | None = None
     preview: str | None = None
+    labels: list[ToolLabel] | None = None
 
 
 event("tool.start", ToolStartPayload, doc="A tool call began (stable id + full args).")
@@ -267,6 +284,7 @@ class ToolCompletePayload(Payload):
     inline_diff: str | None = None
     todos: list[JsonValue] | None = None
     revision: int | None = None
+    labels: list[ToolLabel] | None = None
 
 
 event("tool.complete", ToolCompletePayload, doc="A tool call finished: parsed result, summary, optional diff / todo snapshot.")
@@ -705,6 +723,7 @@ __all__ = [
     "SetupReadyPayload", "SideAgentCompletePayload", "SkinPayload", "StatusUpdatePayload",
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
-    "ToolGeneratingPayload", "ToolOutputRiskPayload", "ToolStartPayload", "TurnStatus", "VoiceStatusPayload",
+    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolStartPayload",
+    "TurnStatus", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

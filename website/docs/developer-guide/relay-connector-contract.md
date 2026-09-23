@@ -423,6 +423,16 @@ The gateway calls the transport with action dicts. Source of truth:
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`.
 
+**`metadata.profile` (multiplex round-trip).** Every chat-addressed outbound
+frame's `metadata` carries the tenant discriminators the gateway captured from
+the inbound (`scope_id`, `user_id`) and, on a multiplexed gateway, the Hermes
+`profile` the connector routed that chat's inbound to; `follow_up` frames carry
+the profile encoded in their `session_key` namespace. The connector MUST stamp
+the same `profile` on the next `passthrough_forward` / `inbound` for that chat or
+interaction, so a Discord button press after a slash command lands in the same
+profile's session (`gateway/relay/adapter.py::_with_scope`, `send_follow_up`).
+Single-profile gateways never emit the key — frames stay byte-identical.
+
 **`send_media` (Phase 2 media egress).** Media crosses the wire BY REFERENCE:
 `source_url` is either (a) a **connector re-host** the gateway previously
 uploaded via `POST {connector}/relay/media` (raw bytes body, `Content-Type` +
@@ -776,7 +786,7 @@ Typing/status frames always carry the triggering-ts anchor when one is known
 (liveliness is unconditional, both modes): Slack's status line is
 thread-scoped, and in flat mode the send-side anchor strip guarantees the
 status anchor can never leak into reply placement. Semantics of the native
-key: see [Slack](/user-guide/messaging/slack).
+key: see [Slack](../user-guide/messaging/slack.md).
 
 Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
 (`send_media`) alike — through one choke point

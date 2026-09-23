@@ -308,6 +308,21 @@ def _process_start_time(pid: int) -> Optional[float]:
         return None
 
 
+_OWN_START: tuple[int, float] | None = None  # (pid, create_time); published atomically, re-read after fork
+
+
+def _own_start_time() -> Optional[float]:
+    """This process's create_time, read from psutil once instead of per lease probe."""
+    global _OWN_START
+    pid = os.getpid()
+    if _OWN_START is None or _OWN_START[0] != pid:
+        start = _process_start_time(pid)
+        if start is None:
+            return None
+        _OWN_START = (pid, start)
+    return _OWN_START[1]
+
+
 def _optional_float(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -327,17 +342,18 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
         pid_int = 0
     if pid_int <= 0:
         return unknown_dead
-    try:
-        from gateway.status import _pid_exists
-        exists = bool(_pid_exists(pid_int))
-    except Exception:
-        return unknown_dead
-    if not exists:
-        return False
+    is_self = pid_int == os.getpid()  # trivially exists; the (pid, start) identity check still applies
+    if not is_self:
+        try:
+            from gateway.status import _pid_exists
+            if not _pid_exists(pid_int):
+                return False
+        except Exception:
+            return unknown_dead
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True
-    current_start = _process_start_time(pid_int)
+    current_start = _own_start_time() if is_self else _process_start_time(pid_int)
     if current_start is None:
         return True if lenient else None
     return abs(current_start - expected_start) < 0.001
@@ -452,7 +468,7 @@ def _lease_entry(
         "session_id": str(session_id),
         "surface": str(surface),
         "pid": os.getpid(),
-        "process_start_time": _process_start_time(os.getpid()),
+        "process_start_time": _own_start_time(),
         "started_at": now,
         "updated_at": now,
     }
@@ -695,14 +711,35 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
 def active_session_registry_snapshot(
     registry_home: str | Path | None = None, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return live leases; attachment callers require provable liveness."""
+    """Return live leases; attachment callers require provable liveness.
+
+    The per-entry liveness probes in ``_prune_dead`` run AFTER the file lock
+    is released: holding an exclusive, unfair lock across process-introspection
+    syscalls starves concurrent pollers once a handful of leases exist
+    (#115578). The prune write-back re-locks and drops only the lease ids
+    already proven dead, so a lease created between the snapshot and the
+    write-back is never lost.
+    """
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         raw_entries = _read_entries(state_path, strict=True)
-        entries = _prune_dead(raw_entries, strict=strict)
-        if entries != raw_entries:
-            _write_entries(state_path, entries)
-        return entries
+    entries = _prune_dead(raw_entries, strict=strict)
+    if entries != raw_entries:
+        live_lease_ids = {str(entry.get("lease_id") or "") for entry in entries}
+        dead_lease_ids = {
+            str(entry.get("lease_id") or "")
+            for entry in raw_entries
+            if str(entry.get("lease_id") or "") not in live_lease_ids
+        }
+        with _FileLock(lock_path):
+            current_entries = _read_entries(state_path, strict=True)
+            kept_entries = [
+                entry for entry in current_entries
+                if str(entry.get("lease_id") or "") not in dead_lease_ids
+            ]
+            if len(kept_entries) != len(current_entries):
+                _write_entries(state_path, kept_entries)
+    return entries
 
 
 @contextmanager

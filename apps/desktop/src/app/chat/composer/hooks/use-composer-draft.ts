@@ -14,6 +14,7 @@ import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
+  adoptGoneSessionDraft,
   adoptNewSessionDraft,
   type ComposerAttachment,
   type ComposerDraftSyncMode,
@@ -464,6 +465,14 @@ export function useComposerDraft({
     // the route flips the scope, so it is not a usable signal here.
     if (!draftScopeRef.current && activeQueueSessionKey) {
       adoptNewSessionDraft(activeQueueSessionKey)
+    } else if (!activeQueueSessionKey) {
+      // The reverse handoff: a session the user was typing into turned out
+      // to be gone and the window dropped to a fresh draft (#111868). The
+      // outgoing composer's cleanup has already stashed the live text under
+      // the dead key — whether that was this instance's previous scope or an
+      // unmounted one's — so move it into the fresh draft when the gone
+      // verdict announced it. No announcement, no-op.
+      adoptGoneSessionDraft()
     }
 
     draftScopeRef.current = activeQueueSessionKey

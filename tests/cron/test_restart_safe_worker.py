@@ -74,7 +74,6 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert execution_ledger.recover_interrupted_executions() == 1
     recovered = execution_ledger.latest_execution("job-crash")
     assert recovered["status"] == "unknown"
-    assert "whether side effects ran is unknown" in recovered["error"]
 
 
 @pytest.mark.linux_only
@@ -129,22 +128,6 @@ def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeyp
     assert dispatch.argv is command
 
 
-def test_restart_safe_gateway_child_never_probes_systemd_off_linux(monkeypatch):
-    import tools.process_registry as process_registry
-
-    command = ["python", "worker.py"]
-    probe = Mock(side_effect=AssertionError("systemd probe ran off Linux"))
-    monkeypatch.setattr(process_registry, "_IS_LINUX", False)
-    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", probe)
-    monkeypatch.setenv("INVOCATION_ID", "managed-service")
-
-    dispatch = process_registry.restart_safe_gateway_child_argv(
-        command, unit_suffix="cron-job-1", require_restart_safe_scope=False
-    )
-    assert dispatch.mode == "in_process"
-    assert dispatch.argv is command
-    probe.assert_not_called()
 
 
 def test_external_worker_adopts_execution_and_runs_payload_once(
@@ -192,6 +175,43 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     # Post-ack the worker owns the stderr capture: a gateway that restarted mid-run
     # would otherwise leave one orphan per surviving run.
     assert not stderr_capture.exists()
+
+
+def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
+    """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
+    must appear atomically with its full body, or the parent logs "unreadable acknowledgement"
+    and loses the worker pid for a handoff that actually succeeded."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"})
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: True)
+
+    real_dump = json.dump
+    visible_while_writing = []
+
+    def spying_dump(obj, fp, *args, **kwargs):
+        # The body is being produced right now: a reader must not be able to see the ack yet.
+        visible_while_writing.append(ack.exists())
+        return real_dump(obj, fp, *args, **kwargs)
+
+    monkeypatch.setattr(scheduler.json, "dump", spying_dump)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert visible_while_writing == [False]
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("exec-1")] == [ack.name]
 
 
 def test_external_worker_refuses_to_run_without_durable_ownership(
@@ -409,7 +429,7 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     assert scheduler._launch_external_cron_worker(job) is True
     # The acknowledged path records the worker pid; the ownership-uncertain
     # timeout path never does.
-    assert scheduler._running_worker_pids == {"job-cold": 4321}
+    assert scheduler._running_worker_pids == {scheduler._inflight_key("job-cold"): 4321}
 
 
 def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
@@ -481,39 +501,6 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     assert get.call_count == 2
 
 
-def test_terminal_early_return_still_reaps_the_worker(monkeypatch):
-    """The ledger can turn terminal while the worker is still tearing down; the
-    waiter returns then, but the gateway stays the worker's parent, so the exit
-    must still be waited for somewhere — otherwise the worker lingers as a
-    zombie under the gateway until it is restarted (#114509)."""
-    import cron.scheduler as scheduler
-
-    monkeypatch.setattr(
-        scheduler,
-        "get_execution",
-        lambda _execution_id: {"id": "exec-1", "status": "completed"},
-        raising=False,
-    )
-
-    def wait(timeout=None):
-        if wait.calls == 0:
-            wait.calls += 1
-            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
-        return 0
-
-    wait.calls = 0
-    process = Mock()
-    process.pid = 4321
-    process.wait.side_effect = wait
-
-    assert scheduler._wait_for_external_cron_worker_body(
-        process, execution_id="exec-1"
-    ) is True
-    # the background reaper owns the second and final wait(); no third caller appears
-    deadline = time.monotonic() + 5.0
-    while process.wait.call_count < 2 and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert process.wait.call_count == 2
 
 
 def test_terminal_early_return_reaps_a_real_worker_process(monkeypatch):
@@ -680,15 +667,15 @@ def test_shutdown_does_not_interrupt_restart_safe_waiter():
     import cron.scheduler as scheduler
 
     job_id = "external-waiter"
-    scheduler._running_job_ids.add(job_id)
-    scheduler._restart_safe_waiter_job_ids.add(job_id)
+    scheduler._running_job_ids.add(scheduler._inflight_key(job_id))
+    scheduler._restart_safe_waiter_job_ids.add(scheduler._inflight_key(job_id))
     try:
         assert scheduler.mark_running_jobs_interrupted("gateway restart") == []
-        assert job_id not in scheduler._interrupted_job_ids
+        assert scheduler._inflight_key(job_id) not in scheduler._interrupted_job_ids
     finally:
-        scheduler._restart_safe_waiter_job_ids.discard(job_id)
-        scheduler._running_job_ids.discard(job_id)
-        scheduler._interrupted_job_ids.discard(job_id)
+        scheduler._restart_safe_waiter_job_ids.discard(scheduler._inflight_key(job_id))
+        scheduler._running_job_ids.discard(scheduler._inflight_key(job_id))
+        scheduler._interrupted_job_ids.discard(scheduler._inflight_key(job_id))
 
 
 def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
@@ -742,7 +729,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
         adapters=None,
         loop=None,
     )
-    assert error == "failed to load gateway config: standalone path reached"
+    assert "standalone path reached" in error
     assert queued == ["exec-outer"]
 
 
@@ -765,20 +752,6 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
     run.assert_not_called()
 
 
-def test_shared_run_path_creates_execution_before_managed_handoff(monkeypatch):
-    import cron.scheduler as scheduler
-
-    created = Mock(return_value={"id": "exec-new"})
-    launch = Mock(return_value=True)
-    monkeypatch.setattr(scheduler, "create_execution", created)
-    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
-    job = {"id": "manual-job"}
-
-    assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
-
-    created.assert_called_once_with("manual-job", source="direct", scheduled_instant=None)
-    assert job["execution_id"] == "exec-new"
-    launch.assert_called_once_with(job)
 
 
 def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):

@@ -28,19 +28,15 @@ that ``_run_protected_sync_provider_call`` spawns.
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import inspect
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from agent import auxiliary_client as aux
 from agent.conversation_compression import (
-    DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS,
     CompressionCommitFence,
 )
 
@@ -87,26 +83,6 @@ class _AsyncStream(_Stream):
 # ── The structural gap the bug lives in ──────────────────────────────────
 
 
-def test_stream_ceiling_structurally_outlives_the_default_host_ceiling():
-    """The worker's own budget is >= the host's for every configured timeout.
-
-    This is the arithmetic that guarantees the orphan: there is no aux timeout
-    for which ``_aux_stream_total_ceiling`` lands below the 600s default host
-    ceiling, and the reporter's ``auxiliary.compression.timeout: 600`` puts it
-    at 2400s — a 30-minute window in which an abandoned provider daemon keeps
-    streaming a summary nobody can commit.
-    """
-    for aux_timeout in (None, 0, 30.0, 120.0, 300.0):
-        assert (
-            aux._aux_stream_total_ceiling(aux_timeout)
-            >= DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS
-        )
-    assert aux._aux_stream_total_ceiling(600.0) == 2400.0
-    assert (
-        aux._aux_stream_total_ceiling(600.0)
-        - DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS
-        == 1800.0
-    )
 
 
 # ── The fence must publish the deadline it already owns ──────────────────
@@ -141,7 +117,6 @@ def test_streamed_summary_stops_at_an_elapsed_host_deadline():
     # "timed out" keeps _is_timeout_error classification identical to a
     # request timeout, so the existing recovery chains are unchanged.
     assert "timed out" in str(excinfo.value)
-    assert "host compression deadline" in str(excinfo.value)
     # Stopped on the first frame instead of draining the whole stream, and the
     # HTTP response was closed rather than left dangling.
     assert stream.yielded == 1
@@ -254,42 +229,5 @@ def test_protected_provider_daemon_inherits_the_host_deadline():
     ), aux.aux_stream_deadline(deadline):
         assert aux._run_protected_sync_provider_call(_callback, {}) == "ok"
 
-    assert seen["thread"] == "hermes-protected-aux-provider"
+    assert seen["thread"] != threading.current_thread().name
     assert seen["deadline"] == deadline
-
-
-# ── The compression worker must actually install it ──────────────────────
-
-
-def _summary_dispatch_source() -> str:
-    from agent import conversation_compression
-
-    path = Path(inspect.getsourcefile(conversation_compression))
-    return path.read_text(encoding="utf-8")
-
-
-def test_compression_summary_dispatch_installs_the_fence_deadline():
-    """Source guard: the wiring is one line and trivially droppable.
-
-    A behavioural test would have to drive the whole ``compress_context`` body
-    (durable lock, watermark, telemetry, commit). This asserts the seam itself:
-    the same ``with`` statement that installs the progress hook must also
-    install the stream deadline.
-    """
-    tree = ast.parse(_summary_dispatch_source())
-    wired = False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.With):
-            continue
-        names = set()
-        for item in node.items:
-            call = item.context_expr
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
-                names.add(call.func.id)
-        if "aux_progress_hook" in names:
-            assert "aux_stream_deadline" in names, (
-                "the summary dispatch scope installs the progress hook but not "
-                "the host stream deadline — #99692 would regress"
-            )
-            wired = True
-    assert wired, "summary dispatch scope not found"

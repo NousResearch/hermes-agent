@@ -225,7 +225,6 @@ def test_xai_text_only_via_tool_surface(matrix_env):
     assert len(xai_calls) == 1
     assert xai_calls[0]["url"].endswith("/videos/generations")
     payload = xai_calls[0]["json"] or {}
-    assert payload["model"] == "grok-imagine-video"
     assert "image" not in payload
     assert "reference_images" not in payload
     assert payload["storage_options"]["public_url"] is True
@@ -236,43 +235,24 @@ def test_xai_text_only_via_tool_surface(matrix_env):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# tool-level `model` arg overrides config
+# models do not choose models (#83080 ruling): the configured video_gen.model is the only selector
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_tool_model_arg_overrides_config(matrix_env):
-    """When the tool call passes model=, it wins over video_gen.model in config."""
+def test_model_is_never_an_agent_choice(matrix_env):
+    """No generation tool advertises a ``model`` parameter, and a ``model`` smuggled into the call
+    is ignored: the configured ``video_gen.model`` is what reaches the provider request."""
+    import tools.video_generation_tool as vt
+    import tools.xai_video_tools as xt
     home, fal_calls, _ = matrix_env
 
-    # Config picks pixverse-v6, but tool call says veo3.1
     result = _invoke_tool(
         home,
         {"video_gen": {"provider": "fal", "model": "pixverse-v6"}},
         {"prompt": "a dog", "model": "veo3.1"},
     )
-
     assert result["success"] is True
-    assert result["model"] == "veo3.1"
-    # Outbound endpoint reflects the override, not config
-    assert fal_calls[0]["endpoint"] == "fal-ai/veo3.1"
+    assert result["model"] == "pixverse-v6"
+    assert fal_calls[0]["endpoint"] == "fal-ai/pixverse/v6/text-to-video"
 
-
-def test_tool_model_arg_with_image_url_routes_to_override_image_endpoint(matrix_env):
-    """model= override on text+image goes to the override family's image endpoint."""
-    home, fal_calls, _ = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "fal", "model": "pixverse-v6"}},
-        {
-            "prompt": "animate this",
-            "image_url": "https://example.com/i.png",
-            "model": "kling-v3-4k",
-        },
-    )
-
-    assert result["success"] is True
-    assert result["model"] == "kling-v3-4k"
-    assert fal_calls[0]["endpoint"] == "fal-ai/kling-video/v3/4k/image-to-video"
-    # Kling 4K uses start_image_url
-    assert fal_calls[0]["arguments"].get("start_image_url") == "https://example.com/i.png"
-    assert "image_url" not in fal_calls[0]["arguments"]
+    schemas = [vt._build_dynamic_video_schema(), xt.XAI_VIDEO_EDIT_SCHEMA, xt.XAI_VIDEO_EXTEND_SCHEMA]
+    assert all("model" not in schema["parameters"]["properties"] for schema in schemas)

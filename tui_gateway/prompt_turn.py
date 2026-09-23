@@ -47,11 +47,19 @@ def _hook_failure(what: str, exc: BaseException) -> None:
 
 
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
-    """Whether a turn produced a real response the goal judge can use."""
-    return bool(
-        status == "complete" and isinstance(raw, str) and raw.strip()
-        and not (isinstance(result, dict) and result.get("failed"))
-        and not (isinstance(result, dict) and result.get("completed") is False))
+    """Whether a turn produced a real response the goal judge can use.
+
+    A non-failed ``max_iterations_reached(...)`` handoff is a resumable turn boundary, not a
+    failure: its summary must reach the judge so an active goal continues (#102213). Failed,
+    interrupted and other ``completed is False`` turns still stay out (cf. #63180)."""
+    from agent.turn_failure_copy import is_max_iteration_handoff
+    if status != "complete" or not isinstance(raw, str) or not raw.strip():
+        return False
+    if not isinstance(result, dict):
+        return True
+    if result.get("failed") or result.get("interrupted"):
+        return False
+    return result.get("completed") is not False or is_max_iteration_handoff(result)
 
 
 def _active_goal_manager(session: dict):
@@ -479,12 +487,59 @@ class _TurnRun:
     thinking_started: bool = False
     history: list = dataclasses.field(default_factory=list)
     history_version: int = 0
+    compression_count: int | None = None
     run_kwargs: Any = None
     error_retained: bool = False
     error_detail: str = ""
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+
+
+def _adopt_out_of_band_turns(session: dict) -> None:
+    """Fold turns another surface appended to this session (Telegram reply, cron run) into the model-facing
+    history before the turn snapshots it. The desktop already repaints them from the DB (#86588); without
+    this the next prompt still ran on the in-memory history and the model never saw them (#42962).
+    Foreign rows are the active rows between the highest ``_row_id`` the agent's own flushes stamped onto
+    the in-memory messages (``sync_flushed_message_markers``; a local compaction re-stamps them too) and
+    this turn's own user row, which ``_persist_submit_user_row`` already wrote (#111868). When a foreign
+    row is a compaction summary the other surface rewrote the transcript under us, so the in-memory history
+    is stale from the root and is re-hydrated from the DB the way ``session.resume`` does. Nothing stamped
+    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped."""
+    with session["history_lock"]:
+        history, version = list(session.get("history") or ()), int(session.get("history_version", 0))
+    seen = max((rid for m in history if isinstance(m, dict) and (rid := _message_row_id(m)) is not None),
+               default=None)
+    if seen is None:
+        return
+    ceiling = _message_row_id(session.get("_submit_user_row") or {})
+
+    def _below_ceiling(rid) -> bool:
+        return isinstance(rid, int) and (ceiling is None or rid < ceiling)
+
+    def _foreign(rid) -> bool:
+        return _below_ceiling(rid) and rid > seen
+    # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
+    with _session_db(session) as db:
+        try:
+            newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
+        except Exception:
+            logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
+            return
+    newer = [row for row in newer if _foreign(row.get("id"))]
+    if not newer:
+        return
+    rewritten = any(row.get("_compressed_summary") for row in newer)
+    rows = _load_durable_truncation_history(session, repair_alternation=rewritten) or []
+    keep = _below_ceiling if rewritten else _foreign
+    tail = canonicalize_replay_history([m for m in rows if keep(_message_row_id(m))])
+    if not tail:
+        return
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != version:
+            return  # /compress, a rewind or a pivot marker landed meanwhile; the next turn re-derives
+        session["history"] = tail if rewritten else history + tail
+        session["history_version"] = version + 1
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
@@ -519,7 +574,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _apply_pending_model_switch(sid, session)
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
+    _sync_agent_fallback_with_config(sid, session)  # chain added after the chat opened reaches this turn
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
+    _adopt_out_of_band_turns(session)
     st.agent = agent = session["agent"]
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
@@ -567,6 +624,7 @@ def _invoke_agent(
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
+    st.compression_count = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
     # shown and then retracted (the client keeps streamed text when message.complete is "").
@@ -698,6 +756,53 @@ def _absorb_turn_result(
     return status_note
 
 
+def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
+    """Report committed row addresses, never a text/timestamp search for a matching turn.
+
+    The agent's persistence cursor is re-anchored during compaction. A partial receipt can
+    address its surviving rows, but cannot retire a client's entire streamed turn. Full coverage
+    additionally requires the unchanged pre-turn prefix and no redirected user boundary.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    messages = st.result.get("messages")
+    start = getattr(st.agent, "_persist_user_message_idx", None)
+    if (not isinstance(messages, list) or type(start) is not int or not 0 <= start < len(messages)
+            or messages[start].get("role") != "user"):
+        return None
+
+    def committed_id(message):
+        row_id = message.get("_row_id")
+        return row_id if message.get(_DB_PERSISTED_MARKER) and type(row_id) is int and row_id > 0 else None
+
+    tail = messages[start:]
+    anchor_id = committed_id(tail[0])
+    if any(before is tail[0] or (anchor_id is not None and anchor_id == committed_id(before))
+           for before in st.history):
+        return None  # preflight returned the old transcript, not a new turn
+    row_ids = [rid for message in tail if (rid := committed_id(message)) is not None]
+    if not row_ids:
+        return None
+    receipt = {"row_ids": row_ids, "complete": False}
+    if (user_row_id := committed_id(tail[0])) is not None:
+        receipt["user_row_id"] = user_row_id
+    last = tail[-1]
+    # Equality only verifies the structurally selected final row's body: it never selects an identity.
+    if (status == "complete" and last.get("role") == "assistant" and not last.get("tool_calls")
+            and last.get("content") == raw and (final_id := committed_id(last)) is not None):
+        receipt["final_assistant_row_id"] = final_id
+    prefix_unchanged = start == len(st.history) and all(
+        committed_id(before) is not None and committed_id(before) == committed_id(after)
+        for before, after in zip(st.history, messages[:start]))
+    receipt["complete"] = bool(
+        prefix_unchanged and type(st.compression_count) is int
+        and st.compression_count == getattr(getattr(st.agent, "context_compressor", None), "compression_count", None)
+        and len(row_ids) == len(tail)
+        and sum(message.get("role") == "user" for message in tail) == 1
+        and "final_assistant_row_id" in receipt)
+    return receipt
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -717,6 +822,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    if receipt := _persisted_turn_receipt(st, raw, status):
+        payload["persisted_turn"] = receipt
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:
@@ -730,10 +837,17 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if rendered := render_message(raw, cols):
         payload["rendered"] = rendered
     error_value = result.get("error")
+    final_text = result.get("final_response")
+    has_partial_text = bool(
+        result.get("partial") and isinstance(final_text, str)
+        and final_text.strip() and final_text.strip() != str(error_value or "").strip())
     with session["history_lock"]:
         if status == "error":
             # Retain the failed turn: resume's inflight payload is the only carrier of the
             # failure if this frame is lost to a disconnect.
+            if has_partial_text and not (session.get("inflight_turn") or {}).get("assistant"):
+                # Non-streaming results need a replay body too; keep existing streamed segments intact.
+                _append_inflight_delta(session, raw)
             _fail_inflight_turn(session, error_value, error_surface=_error_surface)
             st.error_retained = True
             st.error_detail = _turn_failure_detail(
@@ -743,6 +857,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if status == "error":
         payload["error"] = str(error_value or raw)
         payload["recoverable"] = True
+        # Desktop distinguishes retained answer text from error copy using this flag.
+        if has_partial_text:
+            payload["partial"] = True
         if _error_surface:
             payload["error_surface"] = _error_surface
     if st.terminal_callback is not None:
@@ -799,7 +916,9 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
         run_kwargs.clear()
     try:  # while the profile HERMES_HOME override is still active (session's own config)
         from hermes_cli.mem_trim import trim_memory
-        trim_memory(reason="tui turn completion")
+        # The finishing session is still marked running here; every OTHER session must be idle (#58576).
+        if _sessions_quiescent(exclude=sid):
+            trim_memory(reason="tui turn completion")
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
     if st.thinking_started:

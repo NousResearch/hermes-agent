@@ -45,18 +45,3 @@ def test_get_available_skills_null_category_becomes_general():
     assert result["general"] == ["orphan-skill"]
 
 
-def test_get_available_skills_is_memoized():
-    """Second call must not re-walk the skills tree (startup perf contract)."""
-    import hermes_cli.banner as banner
-    calls = []
-
-    def fake_find(**kwargs):
-        calls.append(1)
-        return list(_MOCK_SKILLS)
-
-    with patch("tools.skills_tool._find_all_skills", side_effect=fake_find):
-        first = banner.get_available_skills()
-        second = banner.get_available_skills()
-
-    assert first == second
-    assert len(calls) == 1

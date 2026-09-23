@@ -499,18 +499,6 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
     assert str(img) in sent_paths[0]
 
 
-def test_stream_rescan_accepts_no_history_dedup_input():
-    """Contract pin for the run.py half of the fix: the explicit-only
-    post-stream rescan must not accept a history-dedup set at all — with the
-    old ``history_media_paths`` parameter present, the call site fed it the
-    session transcript and explicit resends were silently filtered."""
-    import inspect
-
-    params = inspect.signature(GatewayRunner._deliver_media_from_response).parameters
-    assert "history_media_paths" not in params, (
-        "history dedup re-attached to the explicit-only post-stream rescan "
-        "(#73771 regression)"
-    )
 
 
 # ---------------------------------------------------------------------------

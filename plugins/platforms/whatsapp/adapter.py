@@ -100,15 +100,20 @@ def _kill_port_process(port: int) -> None:
                     os.kill(pid, signal.SIGTERM)
 
 
-def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
-    """``pid`` alive AND still our bridge: kernel start time (definitive), else legacy ``node`` + session path in cmdline."""
+def _bridge_pid_is_ours(pid: int, expected_start) -> bool:
+    """``pid`` alive AND still our bridge: kernel start time (definitive); fail closed without it.
+
+    Legacy pidfiles record only the PID. The old fallback accepted a ``node`` + session-path cmdline
+    substring as kill evidence — but a log tail, editor, or grep that merely *mentions* the session
+    path matches that same substring (#116883), so a legacy pidfile could signal a stranger. Without
+    a start-time fingerprint the caller must reap via the bridge-port scan instead.
+    """
     from gateway import status
     if not status._pid_exists(pid):
         return False
-    if expected_start is not None:
-        return status.get_process_start_time(pid) == expected_start
-    cmdline = status._read_process_cmdline(pid)
-    return bool(cmdline) and ("node" in cmdline) and (str(session_path) in cmdline)
+    if expected_start is None:
+        return False
+    return status.get_process_start_time(pid) == expected_start
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -129,13 +134,15 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     except (ValueError, OSError, TypeError, IndexError):
         _unlink_quietly(pid_file)
         return
-    if _bridge_pid_is_ours(pid, session_path, recorded_start):
+    if _bridge_pid_is_ours(pid, recorded_start):
         with suppress(OSError):  # ProcessLookupError / PermissionError included
             os.kill(pid, signal.SIGTERM)
             logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
     elif _pid_exists(pid):
-        logger.warning("[whatsapp] Not killing pidfile PID %d: it is no longer the bridge (recycled onto an unrelated process); "
-                       "skipping to avoid killing a stranger.", pid)
+        reason = ("legacy pidfile lacks a start-time fingerprint and cmdline substring evidence can name a stranger"
+                  if recorded_start is None else "it is no longer the bridge (recycled onto an unrelated process)")
+        logger.warning("[whatsapp] Not killing pidfile PID %d: %s; "
+                       "skipping to avoid killing a stranger.", pid, reason)
     _unlink_quietly(pid_file)
 
 
@@ -225,7 +232,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
     "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_REQUIRE_MENTION",
     "WHATSAPP_MENTION_PATTERNS", "WHATSAPP_FREE_RESPONSE_CHATS", "WHATSAPP_DEBUG",
-    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
+    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
@@ -275,7 +282,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(_extra_or_secret(extra, "group_policy", "WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        # Same precedence as the DM list. Until #72529 the env carrier only reached the Node bridge, so
+        # env-only installs gated groups on an empty allowlist.
+        _, raw_groups = self._select_allowlist(
+            extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_GROUP_ALLOWED_USERS"), _wenv)
+        self._group_allow_from = self._coerce_allow_list(raw_groups)
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
         self._mention_patterns = self._compile_mention_patterns()
@@ -284,17 +295,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 5.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 10.0)
-
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Read a float from ``config.extra``; NaN/Inf/negative/unparseable → ``default`` (fed to asyncio.sleep)."""
-        import math
-        try:  # float(None) → TypeError → default
-            parsed = float(self.config.extra.get(key) if getattr(self.config, "extra", None) else None)
-        except (TypeError, ValueError):
-            return float(default)
-        return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
+        # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
+        self._configure_text_batch_delays()
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -380,8 +382,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # that copy carries the DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is
         # re-resolved from this profile (dropped on a scoped miss), never inherited from the launch env.
         bridge_env = with_hermes_node_path()
-        if self._reply_prefix is not None:
+        reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
+        if reply_prefix:
+            bridge_env["WHATSAPP_REPLY_PREFIX"] = reply_prefix
+        elif self._reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+        else:
+            bridge_env.pop("WHATSAPP_REPLY_PREFIX", None)
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
@@ -392,11 +399,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.
         bridge_env["WHATSAPP_DM_POLICY"] = self._dm_policy
-        allowed = ",".join(sorted(self._allow_from))
-        if allowed:
-            bridge_env["WHATSAPP_ALLOWED_USERS"] = allowed
-        else:
-            bridge_env.pop("WHATSAPP_ALLOWED_USERS", None)
+        bridge_env["WHATSAPP_GROUP_POLICY"] = self._group_policy
+        for env_key, ids in (("WHATSAPP_ALLOWED_USERS", self._allow_from), ("WHATSAPP_GROUP_ALLOWED_USERS", self._group_allow_from)):
+            if ids:
+                bridge_env[env_key] = ",".join(sorted(ids))
+            else:
+                bridge_env.pop(env_key, None)
         # Without these the bridge hardcodes ~/.hermes/{image,audio,document}_cache (wrong under HERMES_HOME/profiles/cache layout).
         img_dir, audio_dir, _video_dir, doc_dir = _cache_dirs()
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))
@@ -625,7 +633,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # knows inbound media only, so index our own sends (the cron-delivered image case).
             from gateway import rich_sent_store
             mime = mimetypes.guess_type(file_path)[0] or _MEDIA_INFO.get(_MEDIA_TYPE_BY_BRIDGE_KIND.get(media_type), ("", ""))[1]
-            rich_sent_store.record_media(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
+            await rich_sent_store.record_media_async(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
         return result
 
     @_needs_bridge

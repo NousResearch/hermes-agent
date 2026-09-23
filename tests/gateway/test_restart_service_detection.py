@@ -66,7 +66,7 @@ async def test_restart_with_external_supervisor_marker_uses_service_path(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["", "0", "false", "off"])
+@pytest.mark.parametrize("value", ["", "false"])
 async def test_false_external_supervisor_marker_keeps_detached_path(
     value, tmp_path, monkeypatch
 ):

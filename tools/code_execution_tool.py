@@ -469,7 +469,7 @@ def _env_temp_dir(env: Any) -> str:
     for candidate in (temp_dir, tempfile.gettempdir()):
         if isinstance(candidate, str) and candidate.startswith("/"):
             return candidate.rstrip("/") or "/"
-    return "/tmp"
+    return tempfile.gettempdir()
 
 
 def _format_interrupted_output(stdout_text: str) -> str:

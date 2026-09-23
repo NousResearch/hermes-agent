@@ -303,7 +303,13 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
         suffix = "" if version is None else f": {version or 'unknown version'}"
         _print_success(f"    {driver_cmd} already installed{suffix}.")
         if is_windows and not _repair_cua_driver_autostart_windows(binary, verbose=False):
-            return _fail("    cua-driver is compatible, but Windows autostart repair failed.")
+            # Degrade, do not fail (#115017): the driver is installed and compatible — only its
+            # logon task is missing (declined or unavailable UAC consent, no interactive desktop).
+            # Returning False here made the whole install report failure, so a working Computer Use
+            # toolset read as broken and the install was re-attempted on the next run. The reachable
+            # next step is the manual elevated command.
+            _print_warning("    cua-driver is compatible; its logon auto-start was not registered.")
+            _print_info("    From an elevated shell, run: cua-driver autostart enable")
         _print_cua_platform_notes(is_windows, is_linux, fresh_install=False)
         return True
     if repair_existing:
@@ -512,7 +518,16 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     """Best-effort repair for Windows installer autostart quoting failures.
     Older install.ps1 builds interpolated the binary path into a PowerShell command string, which
     split at the first space. If the scheduled task is missing, retry via Start-Process's
-    structured ``-FilePath`` / ``-ArgumentList`` parameters instead."""
+    structured ``-FilePath`` / ``-ArgumentList`` parameters instead.
+
+    The wrapper itself must stay invisible and unattended (#115017): this runs from the shared
+    install/refresh path, which a windowless parent drives (Desktop backend, detached gateway, a
+    logon task). A ``powershell.exe`` spawned without ``CREATE_NO_WINDOW`` allocates its OWN console
+    there — a blank PowerShell window parked on the user's desktop for as long as the elevated
+    ``-Verb RunAs -Wait`` child lives — and without ``-NonInteractive`` that shell can sit on an
+    interactive prompt instead of unwinding. ``CREATE_NO_WINDOW`` (stdlib ``windows_hide_flags``,
+    the same seam every other spawn in this module uses) keeps stdio as pipes so the failure text
+    is still reported; the OS-owned UAC consent UI is unaffected."""
     if sys.platform != "win32" or _cua_driver_autostart_registered_windows():
         return True
     binary = shutil.which(driver_cmd)
@@ -525,8 +540,10 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     _print_info("    Registering cua-driver auto-start..." if verbose
                 else "    Repairing cua-driver auto-start registration...")
     try:
-        result = _run_text([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                           timeout=300, env=_cua_driver_env())
+        result = _run_text([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-Command", ps_cmd],
+                           timeout=300, env=_cua_driver_env(),
+                           creationflags=_post_setup_no_window_flags())
     except subprocess.TimeoutExpired:
         return _fail("    cua-driver autostart registration timed out.")
     except Exception as exc:

@@ -9,6 +9,7 @@ from hermes_cli import process_identity
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves
 from hermes_constants import get_hermes_home
 
 
@@ -39,13 +40,13 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
         with pytest.raises(SystemExit) as exc:
             fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
         assert exc.value.code == 1
-        assert fleet._fleet_restart_pending_marker_path().exists()
+        assert fleet._fleet_restart_obligation_armed()
         assert update_receipt.read_latest_receipt()["outcome"] == "partial"
         return
     fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
     receipt = update_receipt.read_latest_receipt()
     assert receipt["runtime_outcomes"][0]["outcome"] == "deferred"
-    assert not fleet._fleet_restart_pending_marker_path().exists()
+    assert not fleet._fleet_restart_obligation_armed()
     assert "hermes-serve.service" not in capsys.readouterr().out
     update_receipt.begin_update_receipt()
     update_receipt.finalize_update_receipt("success", fleet=[])
@@ -85,8 +86,9 @@ def test_historical_manual_obligation_does_not_block_healthy_gateway(monkeypatch
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: [{"profile": "default", "state": "current", "code_sha": "new"}] if gateway_present else [])
     if marker:
         fleet._write_fleet_restart_pending_marker(expected_sha="new")
-    # Legacy markers cannot inherit inventory from any historical receipt, even with a nonempty current fleet.
-    pending = marker
+    # An inventory-less marker never inherits inventory from a historical receipt, but it
+    # discharges when the live fleet provably serves its expected SHA (#115638).
+    pending = marker and not gateway_present
     assert fleet._pending_fleet_restart_needed() is pending
     fleet._warn_pending_fleet_restart_on_startup()
     warning = capsys.readouterr().err
@@ -116,7 +118,7 @@ def test_stamped_manual_only_history_has_no_gateway_obligation(monkeypatch, caps
 
 
 @pytest.mark.parametrize("manual_first", [True, False])
-@pytest.mark.parametrize("unsupported", [{"kind": "serve", "supervisor": "desktop"}, {"kind": "gateway", "profile": "unknown"}, None])
+@pytest.mark.parametrize("unsupported", [{"kind": "serve"}, {"kind": "gateway", "profile": "unknown"}, None])
 def test_historical_retention_is_independent_of_plan_order(monkeypatch, capsys, manual_first, unsupported):
     manual = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": 1000.0}))
     rows = [manual, unsupported] if manual_first else [unsupported, manual]
@@ -189,3 +191,27 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
     fleet._warn_pending_fleet_restart_on_startup()
     assert "900" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["serve", "dashboard"])
+@pytest.mark.parametrize("alive", [True, None, False])
+def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, kind, alive):
+    """#116507: a row without a readable create_time is discharged once its pid is provably dead,
+    stays pending while it is live or unknowable, and never counts as a live handoff."""
+    runtime = asdict(RuntimeRecord(kind=kind, profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
+    pending = retain_receipt_manual_serves({"plan": {"runtimes": [runtime]}})
+    assert pending == ([] if alive is False else [runtime])
+    assert defer_manual_serve(runtime, require_alive=True) is False
+
+
+
+
+def test_launchd_serve_row_never_pessimize_gateway_coverage():
+    """#116503: a launchd-owned serve/dashboard row is the post-update dashboard cleanup pass's
+    to kickstart, so it must not make the receipt's gateway coverage unverified (owed=None keeps
+    ``fleet_restart_pending`` armed with nothing gateway-side left to restart)."""
+    launchd = asdict(RuntimeRecord(
+        kind="serve", profile="work", pid=900, supervisor="launchd", restart_via="launchd", detail={}))
+    receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, launchd]}, "fleet": []}
+    assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}

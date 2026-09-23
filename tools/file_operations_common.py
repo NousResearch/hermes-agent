@@ -17,6 +17,7 @@ class ReadResult:
     total_lines: int = 0
     file_size: int = 0
     truncated: bool = False
+    truncated_lines: Optional[bool] = None
     hint: Optional[str] = None
     is_binary: bool = False
     is_image: bool = False
@@ -25,9 +26,10 @@ class ReadResult:
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
     similar_files: List[str] = field(default_factory=list)
+    _snapshot: Optional[tuple] = None
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None and v != []}
 
 
 @dataclass
@@ -38,6 +40,7 @@ class WriteResult:
     # True when the on-disk sha256 matched the intended content; None when the
     # backend couldn't verify (no sha256sum). A mismatch is a hard error, never a flag.
     verified: Optional[bool] = None
+    _content_sha256: Optional[str] = None
     lint: Optional[Dict[str, Any]] = None
     # LSP semantic diagnostics, kept separate from ``lint`` (syntax) so the model
     # reads the two as independent signals. None when LSP is off/inapplicable.
@@ -46,7 +49,7 @@ class WriteResult:
     warning: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None}
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None}
 
 
 @dataclass
@@ -187,6 +190,18 @@ class ExecuteResult:
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+
+
+_CONFLICT_OPEN = re.compile(r"^\s*\d+\|<<<<<<< ", re.M)
+_CONFLICT_CLOSE = re.compile(r"^\s*\d+\|>>>>>>> ", re.M)
+
+
+def count_conflict_blocks(formatted_content: str) -> int:
+    """Unresolved git merge-conflict blocks in a ``LINE|CONTENT`` read; 0 when the page has no
+    balanced ``<<<<<<< `` / ``>>>>>>> `` pair (a lone marker in prose or a test fixture is not a
+    conflict). Reported on read so the model resolves the conflict instead of editing around it."""
+    opens = len(_CONFLICT_OPEN.findall(formatted_content))
+    return min(opens, len(_CONFLICT_CLOSE.findall(formatted_content))) if opens else 0
 
 
 def _strip_terminal_fence_leaks(text: str) -> str:

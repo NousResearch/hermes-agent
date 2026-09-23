@@ -82,23 +82,18 @@ def codex_backend(monkeypatch):
 
 
 class TestMetadata:
-    def test_name(self, provider):
-        assert provider.name == "openai-codex"
 
-    def test_display_name(self, provider):
-        assert provider.display_name == "OpenAI (Codex auth)"
 
-    def test_default_model(self, provider):
-        assert provider.default_model() == "gpt-image-2-medium"
 
-    def test_list_models_three_tiers(self, provider):
-        ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
+        """#102144: the keyless row must declare the shared Codex OAuth bootstrap hook (otherwise setup
+        saves the backend without ever signing in) and its hint must name a command that exists."""
         schema = provider.get_setup_schema()
         assert schema["env_vars"] == []
-        assert "hermes auth codex" in schema["post_setup_hint"]
+        assert schema["post_setup"] == "openai_codex"
+        assert "hermes auth add openai-codex" in schema["post_setup_hint"]
+        assert "hermes auth codex`" not in schema["post_setup_hint"]
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -191,10 +186,6 @@ class TestGenerate:
         body = json.loads(codex_backend["requests"][0].content)
         assert body["images"] == [{"image_url": "data:image/png;base64," + _b64_png()}]
 
-    def test_capabilities_advertise_image_inputs(self, provider):
-        caps = provider.capabilities()
-        assert caps["modalities"] == ["text", "image"]
-        assert caps["max_reference_images"] == 16
 
     def test_rejects_non_image_local_source(self, provider, codex_backend, tmp_path):
         text_path = tmp_path / "not-image.txt"

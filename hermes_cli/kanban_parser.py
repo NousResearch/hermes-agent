@@ -42,6 +42,18 @@ def _reason(help: str):
     return _arg("--reason", help=help)
 
 
+def _nonnegative_int(value: str) -> int:
+    """argparse type for retention days: a negative window builds a future cutoff
+    that matches every row, so reject it at the CLI boundary before any sweep."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("retention days must be >= 0 (0 disables that sweep)")
+    return parsed
+
+
 def _run_state_args(type_help: str):
     return (
         _arg("--state-type", choices=("status", "outcome"), help=f"With --state-name: {type_help}"),
@@ -148,6 +160,10 @@ _SPECS = [
     _cmd("create", [
         _arg("title", help="Task title"),
         _arg("--body", help="Optional opening post"),
+        _arg("--body-file", metavar="PATH",
+             help="Read the opening post from a file ('-' = stdin), so bodies with embedded "
+                  "newlines or flag-like lines survive shell quoting. "
+                  "Mutually exclusive with --body."),
         _arg("--assignee", help="Profile name to assign"),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
         _arg("--workspace",
@@ -290,9 +306,12 @@ _SPECS = [
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,
-        _arg("--result", required=True, help="Backfilled task result text for a done task"),
+        _arg("--title", help="Replace the task title"),
+        _arg("--body", help="Replace the task body"),
+        _arg("--priority", type=int, help="Replace the task priority"),
+        _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
-    ], help="Edit recovery fields on an already-completed task"),
+    ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("block", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason (also appended as a comment)"),
@@ -416,9 +435,10 @@ _SPECS = [
               "to specify-style single-task promotion when the task "
               "doesn't benefit from fan-out. Uses auxiliary.kanban_decomposer."),
     _cmd("gc", [
-        _arg("--event-retention-days", type=int, default=30,
-             help="Delete task_events older than N days for terminal tasks (default: 30)"),
-        _arg("--log-retention-days", type=int, default=30, help="Delete worker log files older than N days (default: 30)"),
+        _arg("--event-retention-days", type=_nonnegative_int, default=30,
+             help="Delete task_events older than N days for terminal tasks (default: 30; 0 disables)"),
+        _arg("--log-retention-days", type=_nonnegative_int, default=30,
+             help="Delete worker log files older than N days (default: 30; 0 disables)"),
     ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",

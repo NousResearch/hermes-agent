@@ -15,6 +15,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
+import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
@@ -1392,9 +1393,11 @@ export async function removeWorktreePath(
 }
 
 // Reveal a project/worktree path in the OS file manager (git-GUI standard).
+// Routes through `revealFile` so a path that is not on this computer toasts
+// instead of silently showing nothing.
 export async function revealPath(path: null | string): Promise<void> {
   if (path) {
-    await window.hermesDesktop?.revealPath?.(path)
+    await revealFile(path)
   }
 }
 

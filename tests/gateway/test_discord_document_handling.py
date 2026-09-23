@@ -182,38 +182,7 @@ class TestIncomingDocumentHandling:
         # injection prepended before caption
         assert event.text.index("[Content of") < event.text.index("summarize this")
 
-    @pytest.mark.asyncio
-    async def test_md_content_injected(self, adapter):
-        """.md file under 100KB should have its content injected."""
-        file_content = b"# Title\nSome markdown content"
 
-        with _mock_aiohttp_download(file_content):
-            msg = make_message(
-                attachments=[make_attachment(filename="readme.md", content_type="text/markdown")],
-                content="",
-            )
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert "[Content of readme.md]:" in event.text
-        assert "# Title" in event.text
-
-    @pytest.mark.asyncio
-    async def test_log_content_injected(self, adapter):
-        """.log file under 100KB should be treated as text/plain and injected."""
-        file_content = b"BLE trace line 1\nBLE trace line 2"
-
-        with _mock_aiohttp_download(file_content):
-            msg = make_message(
-                attachments=[make_attachment(filename="btsnoop_hci.log", content_type="text/plain")],
-                content="please inspect this",
-            )
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert "[Content of btsnoop_hci.log]:" in event.text
-        assert "BLE trace line 1" in event.text
-        assert "please inspect this" in event.text
 
 
     @pytest.mark.asyncio

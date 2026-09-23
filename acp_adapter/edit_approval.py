@@ -30,6 +30,10 @@ class EditProposal:
     old_text: str | None
     new_text: str
     arguments: dict[str, Any]
+    # Every file the edit will actually touch. ``path`` may be a comma-joined
+    # display string for multi-file V4A patches; ``paths`` is the authoritative
+    # set for auto-approve checks. Empty means "``path`` alone".
+    paths: tuple[str, ...] = ()
 
 
 EditApprovalRequester = Callable[[EditProposal], bool]
@@ -118,6 +122,7 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     return EditProposal(
         "patch", paths[0] if single else ", ".join(paths),
         _read_text_if_exists(paths[0]) if single else None, patch_body, dict(arguments),
+        tuple(paths),
     )
 
 
@@ -145,16 +150,22 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
 
     Session-scoped and conservative: sensitive paths still ask under autonomous policies."""
     policy = str(policy or AUTO_APPROVE_ASK).strip()
-    if policy == AUTO_APPROVE_ASK or _is_sensitive_auto_approve_path(proposal.path):
+    # Multi-file V4A proposals join paths into one display string; the checks
+    # must run per real target or a sensitive/escaped file hides in the join.
+    paths = proposal.paths or (proposal.path,)
+    if policy == AUTO_APPROVE_ASK or any(_is_sensitive_auto_approve_path(p) for p in paths):
         return False
-    path = Path(proposal.path).expanduser().resolve(strict=False)
+    resolved = [Path(p).expanduser().resolve(strict=False) for p in paths]
     if policy == AUTO_APPROVE_SESSION:
         return True
     if policy == AUTO_APPROVE_WORKSPACE:
         # tempfile.gettempdir() is the real temp root on every platform
         # (``/private/tmp`` on macOS since resolve() follows the symlink).
-        return path.is_relative_to(Path(tempfile.gettempdir()).resolve(strict=False)) or (
-            bool(cwd) and path.is_relative_to(Path(cwd).expanduser().resolve(strict=False)))
+        tmp = Path(tempfile.gettempdir()).resolve(strict=False)
+        ws = Path(cwd).expanduser().resolve(strict=False) if cwd else None
+        return all(
+            path.is_relative_to(tmp) or (ws is not None and path.is_relative_to(ws))
+            for path in resolved)
     return False
 
 
@@ -199,14 +210,14 @@ def build_acp_edit_tool_call(proposal: EditProposal):
 
 def make_acp_edit_approval_requester(
     request_permission_fn: Callable, loop: asyncio.AbstractEventLoop, session_id: str,
-    timeout: float = 60.0, auto_approve_getter: Callable[[], tuple[str, str | None]] | None = None,
+    timeout: float | None = None, auto_approve_getter: Callable[[], tuple[str, str | None]] | None = None,
     send_update: Callable[[object], None] | None = None,
 ) -> EditApprovalRequester:
     """Return a sync requester that bridges edit proposals to ACP permissions."""
 
     def _requester(proposal: EditProposal) -> bool:
         from acp.schema import PermissionOption
-        from acp_adapter.permissions import await_permission
+        from acp_adapter.permissions import await_permission, resolve_permission_timeout
 
         if auto_approve_getter is not None:
             try:
@@ -221,7 +232,7 @@ def make_acp_edit_approval_requester(
             request_permission_fn, loop, session_id, tool_call=build_acp_edit_tool_call(proposal),
             options=[PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),
                      PermissionOption(option_id="deny", kind="reject_once", name="Deny")],
-            timeout=timeout, what="Edit approval request", send_update=send_update,
+            timeout=resolve_permission_timeout(timeout), what="Edit approval request", send_update=send_update,
         )
         outcome = getattr(response, "outcome", None)
         return getattr(outcome, "outcome", None) == "selected" and getattr(outcome, "option_id", None) == "allow_once"

@@ -242,3 +242,75 @@ def test_exit_cleanup_kills_foreground_command_still_running(monkeypatch):
         with contextlib.suppress(Exception):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         env.cleanup()
+
+
+# Child for the hard-exit race tests: it really os._exit()s right after the kill, like the watchdogs.
+_HARD_EXIT_RACE_CHILD = r"""
+import os, sys, threading
+from tools.environments import base
+from tools.environments.local import LocalEnvironment
+scenario, cmd = sys.argv[1], sys.argv[2]
+env = LocalEnvironment(cwd=os.getcwd())
+if scenario == "spawn_before_publish":
+    spawned, release = threading.Event(), threading.Event()
+    real_run_bash = LocalEnvironment._run_bash
+    def gated(self, command, **kw):
+        proc = real_run_bash(self, command, **kw)
+        if cmd in command:
+            spawned.set()
+            release.wait(10)  # barrier: the child exists, it is not published yet
+        return proc
+    LocalEnvironment._run_bash = gated
+    threading.Thread(target=env.execute, args=(cmd,), kwargs={"timeout": 600}, daemon=True).start()
+    assert spawned.wait(20)
+    threading.Timer(0.2, release.set).start()  # registration lands while the killer is in flight
+    base.kill_live_foreground_processes(now=True)
+else:  # launch_after_fence
+    base.kill_live_foreground_processes(now=True)
+    t = threading.Thread(target=env.execute, args=(cmd,), kwargs={"timeout": 600}, daemon=True)
+    t.start()
+    t.join(3)
+os._exit(0)
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+@pytest.mark.live_system_guard_bypass  # a red run must reap survivors reparented to init
+@pytest.mark.parametrize("scenario", ["spawn_before_publish", "launch_after_fence"])
+def test_hard_exit_leaves_no_foreground_survivor_around_the_spawn(scenario, tmp_path):
+    """A hard exit must own every foreground child: one spawned but not yet registered when the kill
+    runs, and one launched after the kill took its snapshot (the exit fence refuses it)."""
+    import sys
+
+    import psutil
+
+    cmd = f"sleep {35000 + os.getpid() % 1000}.{len(scenario)}"
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    r = subprocess.run([sys.executable, "-c", _HARD_EXIT_RACE_CHILD, scenario, cmd], cwd=str(tmp_path),
+                       env={**os.environ, "PYTHONPATH": repo}, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-2000:]
+    time.sleep(0.3)
+    survivors = [p for p in psutil.process_iter(["cmdline"]) if cmd in " ".join(p.info["cmdline"] or [])]
+    for p in survivors:
+        with contextlib.suppress(psutil.Error):
+            p.kill()
+    assert not survivors, f"{scenario}: {[' '.join(p.info['cmdline']) for p in survivors]} outlived the hard exit"
+
+
+def test_hard_exit_kill_never_blocks_on_a_slow_remote_cancel(monkeypatch):
+    """Modal/Daytona/Vercel cancel through a blocking SDK call; the hard-exit kill runs just before
+    os._exit, so it must give those one short deadline instead of waiting them out."""
+    from tools.environments import base
+    from tools.environments.base_output import _ThreadedProcessHandle
+
+    class _SdkEnv:  # the kill every SDK backend inherits: proc.kill() -> cancel_fn
+        _kill_process = base.BaseEnvironment._kill_process
+        _force_kill_process = base.BaseEnvironment._force_kill_process
+
+    cancelled = threading.Event()
+    handle = _ThreadedProcessHandle(lambda: ("", 0), cancel_fn=lambda: (cancelled.set(), time.sleep(8)))
+    monkeypatch.setitem(base._live_foreground, id(handle), (_SdkEnv(), handle))
+    t0 = time.monotonic()
+    base.kill_live_foreground_processes(now=True)
+    elapsed = time.monotonic() - t0
+    assert cancelled.is_set() and elapsed < 1.0, f"blocked {elapsed:.2f}s"

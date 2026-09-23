@@ -653,6 +653,14 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture(autouse=True)
+def _reset_foreground_exit_fence():
+    """A test that drives a hard-exit path raises the one-way foreground-spawn fence; lower it after."""
+    yield
+    if (base := sys.modules.get("tools.environments.base")) is not None:
+        base._exit_fenced = False
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_kanban_memory_guard(request, monkeypatch):
     """Pin the kanban dispatcher's memory guard to "no data" for every test.
 

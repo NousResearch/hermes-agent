@@ -549,16 +549,18 @@ def test_profile_rollover_keeps_shared_group_access_across_uids(tmp_path):
     try:
         rotator = """
 import logging, os, sys
+from unittest.mock import patch
 from hermes_logging import _ManagedRotatingFileHandler
 directory_fd = int(sys.argv[1])
 os.setgroups([4])
 os.setgid(1000)
 os.setuid(1000)
 path = f'/proc/self/fd/{directory_fd}/agent.log'
-handler = _ManagedRotatingFileHandler(path, maxBytes=10, backupCount=1, encoding='utf-8')
+with patch('hermes_cli.config.is_managed', return_value=False):
+    handler = _ManagedRotatingFileHandler(path, maxBytes=10, backupCount=1, encoding='utf-8')
 try:
     for message in ('rollover', 'next'):
-        handler.emit(logging.LogRecord('agent', logging.INFO, __file__, 0, message, (), None))
+        handler.emit(logging.LogRecord('agent', logging.INFO, '<rollover>', 0, message, (), None))
 finally:
     handler.close()
 """

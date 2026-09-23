@@ -105,8 +105,25 @@ class ClientLifecycleMixin:
         """Release task resources without treating a shared environment as process ownership."""
         from run_agent import _quietly, cleanup_browser, cleanup_vm
 
+        # Recoverable close (agent_close) resumes this session on the same task_id, so its live
+        # background processes must survive — release_clients() keeps them for exactly this reason.
+        # Killing them here destroys in-flight work and swallows its pending notify_on_complete.
+        # Kill only on deliberate teardown; see _RECOVERABLE_END_REASONS and issue #41225.
         def kill_processes() -> None:
             from tools.process_registry import process_registry
+            from hermes_state_common import is_automatic_end_reason
+            # Ownership handed forward (compression helpers, shared-id forks): the live work
+            # belongs to the successor now.
+            if not getattr(self, "_end_session_on_close", True):
+                return
+            # An open or accidental end stamp means this close is recoverable (it stamps
+            # `agent_close`, first-reason-wins): keep the session's background work alive.
+            session_db = getattr(self, "_session_db", None)
+            session_id = getattr(self, "session_id", None)
+            row = session_db.get_session(session_id) if session_db is not None and session_id else None
+            reason = (row or {}).get("end_reason") or ""
+            if session_db is not None and (not reason or is_automatic_end_reason(reason)):
+                return
             # A session can run several task IDs; delegated IDs also differ from session_id.
             # Never match the environment key (e.g. "default"), shared by parent and siblings.
             owners = getattr(self, "_process_owner_task_ids", ())

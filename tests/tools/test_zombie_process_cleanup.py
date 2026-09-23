@@ -30,6 +30,74 @@ def _pid_alive(pid: int) -> bool:
 
 
 
+class TestAgentCloseRecoverableKeepsProcesses:
+    """A recoverable/accidental close keeps live background processes (#41225).
+
+    Only a deliberate end stamp already on the session row (e.g. ``cli_close``)
+    authorizes the kill; an open row means close() will stamp the recoverable
+    ``agent_close`` (first-reason-wins) and the session may resume.
+    """
+
+    class _StubSessionDB:
+        def __init__(self, end_reason):
+            self._row = {"end_reason": end_reason}
+
+        def get_session(self, _session_id):
+            return dict(self._row)
+
+    def _agent(self, end_reason, *, end_session_on_close=True):
+        from unittest.mock import patch
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-recoverable-close"
+            agent._process_owner_task_ids = {"sa-owned"}
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            agent._session_db = self._StubSessionDB(end_reason)
+            agent._end_session_on_close = end_session_on_close
+            return agent
+
+    def _close_with_registry(self, agent):
+        from unittest.mock import patch
+        with patch("tools.process_registry.process_registry") as mock_registry, \
+             patch("run_agent.cleanup_vm") as _vm, \
+             patch("run_agent.cleanup_browser") as _browser, \
+             patch("tools.computer_use.tool.release_computer_use_session") as _cua:
+            mock_registry.list_sessions.return_value = [
+                {"session_id": "owned", "owner_task_id": "sa-owned", "status": "running"},
+                {"session_id": "foreign", "owner_task_id": "parent", "status": "running"},
+            ]
+            agent.close()
+            return mock_registry
+
+    def test_open_row_keeps_processes(self):
+        """An open row is a recoverable close: nothing is killed."""
+        registry = self._close_with_registry(self._agent(""))
+        registry.kill_process.assert_not_called()
+        registry.kill_all.assert_not_called()
+
+    def test_automatic_end_stamp_keeps_processes(self):
+        """agent_close / ws_orphan_reap & co. are accidental ends: nothing is killed."""
+        for reason in ("agent_close", "ws_orphan_reap", "superseded_by_resume", "startup_orphan_reap"):
+            registry = self._close_with_registry(self._agent(reason))
+            registry.kill_process.assert_not_called()
+
+    def test_handed_forward_close_keeps_processes(self):
+        """Ownership handed forward: the successor owns the live work."""
+        registry = self._close_with_registry(self._agent("cli_close", end_session_on_close=False))
+        registry.kill_process.assert_not_called()
+
+    def test_deliberate_end_kills_owned_processes(self):
+        """A deliberate end stamp keeps today's teardown: owned processes die, foreign live."""
+        registry = self._close_with_registry(self._agent("cli_close"))
+        registry.kill_process.assert_called_once_with(
+            "owned", source="agent_close", consume_output=True,
+        )
+        registry.kill_all.assert_not_called()
+
+
 class TestAgentCloseMethod:
     """Verify AIAgent.close() exists, is idempotent, and calls cleanup."""
 

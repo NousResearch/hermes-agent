@@ -788,6 +788,11 @@ def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
             except Exception:
                 pass  # Intermediate publication is best-effort; don't kill the scan.
 
+        # A partial covers a prefix of history: better than the empty "pending" payload, but swapped in over a
+        # finished (even stale) snapshot it rolls every tier and progress bar back until the scan ends, and a warm
+        # scan would re-aggregate the growing prefix every ``progress_every`` sessions for nothing.
+        served_mode = ((_SNAPSHOT_CACHE or {}).get("scan_meta") or {}).get("mode")
+        publish_partial_snapshots = publish_partial_snapshots and served_mode in (None, "pending", "in_progress", "failed")
         try:
             computed = _json_safe(compute_all(progress_callback=_publish_partial if publish_partial_snapshots else None))
             _set_cache(computed, int(computed.get("generated_at") or int(time.time())))

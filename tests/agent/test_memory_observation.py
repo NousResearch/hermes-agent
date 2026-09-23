@@ -592,25 +592,24 @@ def test_memory_prefetch_observer_is_async_and_preserves_operation_envelope(
     shutdown_plugin_observer_dispatcher()
     started = threading.Event()
     release = threading.Event()
+    completed = threading.Event()
+    operation_returned = threading.Event()
     events = []
 
     def consumer(**kwargs):
         started.set()
-        release.wait(timeout=1.0)
+        release.wait(timeout=10.0)
         events.append(kwargs)
+        completed.set()
 
-    monkeypatch.setattr(
-        plugins,
-        "iter_hook_callbacks",
-        lambda name: (consumer,) if name == "memory_prefetch" else (),
-    )
-    monkeypatch.setattr(
-        plugins,
-        "has_hook",
-        lambda name: name == "memory_prefetch",
-    )
-    manager = MemoryManager()
-    manager.add_provider(
+    plugin_manager = plugins.PluginManager()
+    plugin_manager._discovered = True
+    plugins.PluginContext(
+        plugins.PluginManifest(name="memory-observer"), plugin_manager
+    ).register_hook("memory_prefetch", consumer)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: plugin_manager)
+    memory_manager = MemoryManager()
+    memory_manager.add_provider(
         StructuredMemoryProvider(
             name="builtin",
             result=MemoryPrefetchResult(
@@ -620,22 +619,32 @@ def test_memory_prefetch_observer_is_async_and_preserves_operation_envelope(
         )
     )
 
-    try:
-        started_at = time.monotonic()
-        result = manager.prefetch_all_result(
-            "question",
-            session_id="session-a",
-            task_id="task-a",
-            turn_id="turn-a",
-        )
-        elapsed = time.monotonic() - started_at
+    result_holder = {}
+    errors = []
 
-        assert elapsed < 0.1
-        assert started.wait(timeout=1.0)
+    def prefetch():
+        try:
+            result_holder["result"] = memory_manager.prefetch_all_result(
+                "question",
+                session_id="session-a",
+                task_id="task-a",
+                turn_id="turn-a",
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            operation_returned.set()
+
+    prefetch_thread = threading.Thread(target=prefetch)
+    try:
+        prefetch_thread.start()
+        assert started.wait(timeout=5.0)
+        assert operation_returned.wait(timeout=5.0)
+        assert not release.is_set()
+        assert not errors
+        result = result_holder["result"]
         release.set()
-        deadline = time.monotonic() + 1.0
-        while not events and time.monotonic() < deadline:
-            time.sleep(0.01)
+        assert completed.wait(timeout=5.0)
 
         assert len(events) == 1
         event = events[0]
@@ -650,7 +659,8 @@ def test_memory_prefetch_observer_is_async_and_preserves_operation_envelope(
             result.observations[0].payload["changed"] = True  # type: ignore[index]
     finally:
         release.set()
-        shutdown_plugin_observer_dispatcher()
+        prefetch_thread.join(timeout=5.0)
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
 
 
 def test_operation_observation_count_budget_keeps_ordered_prefix_and_context(

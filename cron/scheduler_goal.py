@@ -34,10 +34,10 @@ def run_goal_turns(
     """Drive a cron goal until its existing GoalManager reaches a boundary.
 
     The manager owns turn budgets, judge failures, wait barriers, and terminal
-    states. ``initial_prompt`` is the already assembled cron prompt for a new
-    goal; continuations use GoalManager's compact prompt. Cron only supplies
-    the synchronous turn runner and returns one final delivery payload instead
-    of emitting gateway progress messages.
+    states. ``initial_prompt`` is the already assembled cron prompt for this
+    fire's first turn; only later turns use GoalManager's compact prompt. Cron
+    only supplies the synchronous turn runner and returns one final delivery
+    payload instead of emitting gateway progress messages.
     """
     state = manager.state
     if state is not None and getattr(state, "goal", goal) != goal:
@@ -46,7 +46,7 @@ def run_goal_turns(
     elif manager.is_active() and manager.is_waiting():
         return {}, "", "⏳ Goal remains parked; the next scheduled fire will retry when its wait barrier clears."
     elif manager.is_active():
-        prompt = manager.next_continuation_prompt() or goal
+        prompt = initial_prompt
     elif manager.has_goal():
         return {}, "", "⏸ Goal remains paused; resume it explicitly before the next scheduled fire."
     elif getattr(state, "status", None) == "done":

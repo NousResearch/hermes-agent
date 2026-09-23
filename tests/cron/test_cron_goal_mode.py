@@ -79,8 +79,12 @@ def test_run_goal_turns_does_not_burn_a_turn_while_a_goal_is_parked():
     assert "parked" in status
 
 
-def test_run_goal_turns_uses_only_the_continuation_for_an_active_goal():
+def test_run_goal_turns_restores_context_after_a_wait_barrier_clears():
     prompts = []
+    decisions = iter((
+        {"should_continue": True, "continuation_prompt": "continuation only", "message": "keep going"},
+        {"should_continue": False, "continuation_prompt": None, "message": "done"},
+    ))
 
     class Manager:
         state = type("State", (), {"goal": "ship the release"})()
@@ -89,16 +93,15 @@ def test_run_goal_turns_uses_only_the_continuation_for_an_active_goal():
             return True
 
         def is_waiting(self):
+            # This goal was parked on fire A, but its barrier is now clear on
+            # fire B. The fire must retain B's freshly assembled context.
             return False
 
         def has_goal(self):
             return True
 
-        def next_continuation_prompt(self):
-            return "continuation only"
-
         def evaluate_after_turn(self, _response, **_kwargs):
-            return {"should_continue": False, "continuation_prompt": None, "message": "done"}
+            return next(decisions)
 
     result, response, status = run_goal_turns(
         Manager(), "ship the release", initial_prompt="assembled initial context",
@@ -106,7 +109,7 @@ def test_run_goal_turns_uses_only_the_continuation_for_an_active_goal():
         response_from_result=lambda result: result["final_response"],
     )
 
-    assert prompts == ["continuation only"]
+    assert prompts == ["assembled initial context", "continuation only"]
     assert result["final_response"] == response == "response"
     assert status == "done"
 

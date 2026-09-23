@@ -222,14 +222,33 @@ export function DesktopOnboardingOverlay({
   const targetScope = onboarding.targetScope
 
   // Async flows retain the initiating route even after the overlay closes.
-  const ctx = useMemo<OnboardingContext>(
-    () => ({
+  const ctx = useMemo<OnboardingContext>(() => {
+    const isCurrent = () => {
+      const currentOwner = $settingsOwner.get()
+
+      const current =
+        !targetScope ||
+        typeof targetScope === 'string' ||
+        (targetScope.connectionId
+          ? !targetScope.connectionOwner || currentOwner === targetScope
+          : !targetScope.legacyConnection ||
+            (currentOwner?.legacyConnection === targetScope.legacyConnection && currentOwner?.profile === targetProfile))
+
+      if (!current && $desktopOnboarding.get().manual) {
+        closeManualOnboarding()
+      }
+
+      return current
+    }
+
+    return {
+      isCurrent,
       profile: targetProfile,
       scope: targetScope,
       requestGateway:
         targetScope && typeof targetScope === 'object' && targetScope.connectionId
           ? async (method, params) => {
-              if (targetScope.connectionOwner && $settingsOwner.get() !== targetScope) {
+              if (!isCurrent()) {
                 throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
               }
 
@@ -237,24 +256,18 @@ export function DesktopOnboardingOverlay({
             }
           : targetScope && typeof targetScope === 'object' && targetScope.legacyConnection
             ? async (method, params) => {
-                const currentOwner = $settingsOwner.get()
-
-                if (
-                  currentOwner?.legacyConnection !== targetScope.legacyConnection ||
-                  currentOwner?.profile !== targetProfile
-                ) {
+                if (!isCurrent()) {
                   throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
                 }
 
                 return requestGatewayForProfile(targetProfile, method, params)
               }
-          : onboarding.targetProfile
-            ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-            : requestGateway,
+            : onboarding.targetProfile
+              ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
+              : requestGateway,
       onCompleted: () => onCompletedRef.current?.()
-    }),
-    [onboarding.targetProfile, requestGateway, targetProfile, targetScope]
-  )
+    }
+  }, [onboarding.targetProfile, requestGateway, targetProfile, targetScope])
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
   // behind), THEN finalize so the unmount lands after the fade — mirrors the

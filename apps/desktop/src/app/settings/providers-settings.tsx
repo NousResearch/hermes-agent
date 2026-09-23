@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { runInTerminal } from '@/app/right-sidebar/store'
 import {
@@ -357,6 +357,8 @@ export function ProvidersSettings({
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const settingsOwner = useStore($settingsOwner)
+  const settingsOwnerRef = useRef(settingsOwner)
+  settingsOwnerRef.current = settingsOwner
   const { rowProps, vars } = useEnvCredentials(settingsOwner)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
@@ -368,18 +370,22 @@ export function ProvidersSettings({
   // they launched from this page — otherwise the cards keep their stale status.
   const onboardingActive = useStore($desktopOnboarding).manual
 
-  const refreshOAuthProviders = useCallback(async () => {
+  const refreshOAuthProviders = useCallback(async (target: ProfileScope) => {
     // OAuth providers are best-effort — a failure here just hides the panel.
-    if (!settingsOwner) {
+    const { providers } = await listOAuthProviders(target)
+
+    if (settingsOwnerRef.current !== target) {
       return
     }
 
-    const { providers } = await listOAuthProviders(settingsOwner)
     setOauthProviders(providers)
-  }, [settingsOwner])
+  }, [])
 
   useEffect(() => {
     let cancelled = false
+
+    setOauthProviders([])
+    setDisconnecting(null)
 
     void (async () => {
       if (onboardingActive) {
@@ -409,9 +415,10 @@ export function ProvidersSettings({
   // Instead we run the documented removal command in the embedded terminal so
   // the user sees exactly what executes, then return them to chat to watch it.
   async function handleTerminalDisconnect(provider: OAuthProvider) {
+    const target = settingsOwner
     const command = provider.disconnect_command
 
-    if (!command) {
+    if (!command || !target) {
       return
     }
 
@@ -423,7 +430,7 @@ export function ProvidersSettings({
       title: t.settings.providers.removeTerminalConfirm(name, command)
     })
 
-    if (!ok) {
+    if (!ok || settingsOwnerRef.current !== target) {
       return
     }
 
@@ -438,7 +445,12 @@ export function ProvidersSettings({
   }
 
   async function handleDisconnect(provider: OAuthProvider) {
+    const target = settingsOwner
     const name = providerTitle(provider)
+
+    if (!target) {
+      return
+    }
 
     const ok = await confirm({
       confirmLabel: t.settings.providers.disconnect,
@@ -446,29 +458,36 @@ export function ProvidersSettings({
       title: t.settings.providers.removeConfirm(name)
     })
 
-    if (!ok) {
+    if (!ok || settingsOwnerRef.current !== target) {
       return
     }
 
     setDisconnecting(provider.id)
 
     try {
-      if (!settingsOwner) {
+      await disconnectOAuthProvider(provider.id, target)
+
+      if (settingsOwnerRef.current !== target) {
         return
       }
 
-      await disconnectOAuthProvider(provider.id, settingsOwner)
       notify({
         durationMs: 3_000,
         kind: 'success',
         title: t.settings.providers.removedTitle,
         message: t.settings.providers.removedMessage(name)
       })
-      await refreshOAuthProviders().catch(() => undefined)
+      await refreshOAuthProviders(target).catch(() => undefined)
     } catch (err) {
+      if (settingsOwnerRef.current !== target) {
+        return
+      }
+
       notifyError(err, t.settings.providers.failedRemove(name))
     } finally {
-      setDisconnecting(null)
+      if (settingsOwnerRef.current === target) {
+        setDisconnecting(null)
+      }
     }
   }
 

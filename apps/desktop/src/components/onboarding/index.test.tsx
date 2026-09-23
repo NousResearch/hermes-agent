@@ -306,9 +306,13 @@ describe('DesktopOnboardingOverlay owner routing', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://legacy-b.example', token: 'token-b' } as never)
     fireEvent.click(screen.getByRole('button', { name: "I've signed in" }))
 
-    await waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('error'))
-    expect(requestGateway).not.toHaveBeenCalled()
-    const flow = $desktopOnboarding.get().flow
-    expect(flow.status === 'error' ? flow.message : '').toContain('Settings gateway changed')
+    await waitFor(() =>
+      expect($desktopOnboarding.get()).toMatchObject({
+        flow: { status: 'idle' },
+        manual: false,
+        targetProfile: undefined,
+        targetScope: undefined
+      })
+    )
   })
 })

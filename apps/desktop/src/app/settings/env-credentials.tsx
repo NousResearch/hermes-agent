@@ -89,7 +89,9 @@ export function useEnvCredentials(scope: null | ProfileScope): UseEnvCredentials
           setVars(next)
         }
       } catch (err) {
-        notifyError(err, t.settings.keys.failedLoad)
+        if (!cancelled) {
+          notifyError(err, t.settings.keys.failedLoad)
+        }
       }
     })()
 
@@ -128,6 +130,10 @@ export function useEnvCredentials(scope: null | ProfileScope): UseEnvCredentials
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
     } catch (err) {
+      if (scopeRef.current !== target) {
+        return
+      }
+
       notifyError(err, toolsets.failedSave(key))
     } finally {
       if (scopeRef.current === target) {
@@ -163,6 +169,10 @@ export function useEnvCredentials(scope: null | ProfileScope): UseEnvCredentials
 
       return { ok: true }
     } catch (err) {
+      if (scopeRef.current !== target) {
+        return { ok: false }
+      }
+
       notifyError(err, toolsets.failedSave(key))
 
       return { message: err instanceof Error ? err.message : credentials.couldNotSave, ok: false }
@@ -198,6 +208,10 @@ export function useEnvCredentials(scope: null | ProfileScope): UseEnvCredentials
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
     } catch (err) {
+      if (scopeRef.current !== target) {
+        return
+      }
+
       notifyError(err, toolsets.failedRemove(key))
     } finally {
       if (scopeRef.current === target) {
@@ -228,6 +242,10 @@ export function useEnvCredentials(scope: null | ProfileScope): UseEnvCredentials
 
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
+      if (scopeRef.current !== target) {
+        return
+      }
+
       notifyError(err, toolsets.failedReveal(key))
     }
   }

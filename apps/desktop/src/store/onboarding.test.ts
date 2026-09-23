@@ -208,6 +208,53 @@ describe('refreshOnboarding', () => {
     }
   })
 
+  it('stops provider setup after its gateway owner changes while env reload is pending', async () => {
+    const { saveOnboardingApiKey } = await import('./onboarding')
+    const requests: string[] = []
+    let releaseReload!: () => void
+    let current = true
+
+    installApiMock(async ({ path }) => {
+      requests.push(path)
+
+      if (path === '/api/env') {
+        return { ok: true }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'fireworks', name: 'Fireworks', models: ['fixture-model'] }] }
+      }
+
+      if (path.startsWith('/api/model/recommended-default')) {
+        return { model: 'fixture-model' }
+      }
+
+      return { ok: true }
+    })
+
+    const pending = saveOnboardingApiKey('FIREWORKS_API_KEY', 'fake-key', 'Fireworks', {
+      isCurrent: () => current,
+      requestGateway: async method => {
+        if (method === 'reload.env') {
+          await new Promise<void>(resolve => {
+            releaseReload = resolve
+          })
+
+          return {} as never
+        }
+
+        return { ok: true } as never
+      }
+    })
+
+    await vi.waitFor(() => expect(releaseReload).toBeTypeOf('function'))
+    current = false
+    releaseReload()
+
+    await expect(pending).resolves.toEqual({ ok: false })
+    expect(requests.some(path => path.startsWith('/api/model/'))).toBe(false)
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())

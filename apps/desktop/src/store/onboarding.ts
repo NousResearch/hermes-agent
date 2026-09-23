@@ -89,6 +89,7 @@ export interface DesktopOnboardingState {
 }
 
 export interface OnboardingContext {
+  isCurrent?: () => boolean
   onCompleted?: () => void
   profile?: string
   scope?: ProfileScope
@@ -371,18 +372,18 @@ async function completeWithModelConfirm(
   // user is allowed through onboarding regardless. Used by the API-key path,
   // where we intentionally don't validate the key (it blocked too many users).
   ignoreRuntimeGate = false
-) {
+): Promise<boolean> {
   const generation = flowGeneration
   await ctx.requestGateway('reload.env').catch(() => undefined)
 
-  if (generation !== flowGeneration) {
-    return
+  if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    return false
   }
 
   const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.scope ?? ctx.profile)
 
-  if (generation !== flowGeneration) {
-    return
+  if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    return false
   }
 
   if (defaults) {
@@ -401,32 +402,32 @@ async function completeWithModelConfirm(
         { skipConfirmPrompt: true }
       )
 
-      if (generation !== flowGeneration) {
-        return
+      if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+        return false
       }
 
       notifyGatewayTools(res.gateway_tools)
     } catch (error) {
-      if (generation !== flowGeneration) {
-        return
+      if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+        return false
       }
 
       onFail(error instanceof Error ? error.message : 'Hermes could not save the selected model.')
 
-      return
+      return false
     }
   }
 
   const runtime = await checkRuntime(ctx, preferredSlugs[0])
 
-  if (generation !== flowGeneration) {
-    return
+  if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    return false
   }
 
   if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
-    return
+    return false
   }
 
   if (!defaults) {
@@ -435,7 +436,7 @@ async function completeWithModelConfirm(
     completeDesktopOnboarding()
     ctx.onCompleted?.()
 
-    return
+    return true
   }
 
   setFlow({
@@ -445,6 +446,8 @@ async function completeWithModelConfirm(
     label: providerLabel,
     saving: false
   })
+
+  return true
 }
 
 function providerResolutionFailure(reason: null | string) {
@@ -1076,7 +1079,11 @@ export async function saveOnboardingApiKey(
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
     // ignoreRuntimeGate=true: never block onboarding on the runtime check.
-    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
+    const completed = await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
+
+    if (!completed || generation !== flowGeneration) {
+      return { ok: false }
+    }
 
     return { ok: true }
   } catch (error) {

@@ -313,6 +313,10 @@ _SPECS = [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
+    _cmd("continue-pr", [
+        _TASK_ID,
+        _arg("reason", nargs="+", help="Why work should resume on the existing PR"),
+    ], help="Explicitly authorize a ready task to continue work on its existing PR"),
     _cmd("request-review", [
         _TASK_ID,
         _arg("--summary", help="What was implemented and how it was verified — shown to the reviewer."),

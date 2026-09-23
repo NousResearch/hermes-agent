@@ -493,6 +493,97 @@ def _backdate_comments(conn, tid, seconds=60):
         )
 
 
+def test_record_pr_continuation_requires_ready_task_and_audit_fields(
+    kanban_home: Path,
+) -> None:
+    with kbc.connect() as conn:
+        ready_id = kb.create_task(conn, title="ready continuation", assignee="publisher")
+        with pytest.raises(ValueError, match="actor is required"):
+            kb.record_pr_continuation(conn, ready_id, actor=" ", reason="verified")
+        with pytest.raises(ValueError, match="reason is required"):
+            kb.record_pr_continuation(conn, ready_id, actor="operator", reason=" ")
+
+        running_id = kb.create_task(conn, title="running continuation", assignee="publisher")
+        assert kb.claim_task(conn, running_id) is not None
+        assert kb.record_pr_continuation(
+            conn, running_id, actor="operator", reason="too late",
+        ) is False
+        assert all(
+            event.kind != "pr_continuation" for event in kb.list_events(conn, running_id)
+        )
+
+
+def test_active_pr_guard_stays_after_generic_unblock(kanban_home: Path) -> None:
+    """A routine unblock is not proof that an existing PR should be continued."""
+    pr_comment = "Opened https://github.com/example/repo/pull/44; CI needs a repair."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="republish existing PR", assignee="publisher")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kb.add_comment(conn, tid, author="publisher", body=pr_comment)
+        _backdate_comments(conn, tid)
+        assert kb.block_task(conn, tid, reason="waiting for repair") is True
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_stays_after_generic_dependency_promotion(
+    kanban_home: Path,
+) -> None:
+    """An automatic dependency promotion is not an explicit PR continuation."""
+    pr_comment = "Opened https://github.com/example/repo/pull/44; CI needs a repair."
+    with kbc.connect() as conn:
+        publish_id = kb.create_task(conn, title="publish existing PR", assignee="publisher")
+        kb.add_comment(conn, publish_id, author="publisher", body=pr_comment)
+        _backdate_comments(conn, publish_id)
+        fix_id = kb.create_task(conn, title="repair CI", assignee="implementer")
+        assert kb.link_tasks(conn, fix_id, publish_id) is True
+        claimed = kb.claim_task(conn, fix_id)
+        assert claimed is not None
+        assert kb.complete_task(conn, fix_id, summary="repair complete") is True
+        assert kb.get_task(conn, publish_id).status == "ready"
+        assert kbd.check_respawn_guard(conn, publish_id) == "active_pr"
+
+
+def test_active_pr_guard_lifts_after_explicit_pr_continuation(
+    kanban_home: Path,
+) -> None:
+    """An auditable operator decision may resume work on the existing PR."""
+    pr_comment = "Opened https://github.com/example/repo/pull/44; CI needs a repair."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="republish existing PR", assignee="publisher")
+        kb.add_comment(conn, tid, author="publisher", body=pr_comment)
+        _backdate_comments(conn, tid)
+        assert kb.record_pr_continuation(
+            conn, tid, actor="operator", reason="repair is ready for the existing PR",
+        ) is True
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_pr_continuation_does_not_authorize_a_later_pr_comment(
+    kanban_home: Path,
+) -> None:
+    """A continuation marker is scoped to the PR comment that precedes it."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="republish existing PR", assignee="publisher")
+        kb.add_comment(
+            conn, tid, author="publisher",
+            body="Opened https://github.com/example/repo/pull/44; CI needs a repair.",
+        )
+        _backdate_comments(conn, tid, seconds=120)
+        assert kb.record_pr_continuation(
+            conn, tid, actor="operator", reason="repair ready for PR 44",
+        ) is True
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        kb.add_comment(
+            conn, tid, author="publisher",
+            body="Opened https://github.com/example/repo/pull/45 for replacement.",
+        )
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
 def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

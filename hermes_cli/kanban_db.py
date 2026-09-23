@@ -1782,6 +1782,30 @@ def _require_task(conn: sqlite3.Connection, task_id: str) -> None:
         raise ValueError(f"unknown task {task_id}")
 
 
+def record_pr_continuation(
+    conn: sqlite3.Connection, task_id: str, *, actor: str, reason: str,
+) -> bool:
+    """Record an explicit operator decision to continue work on an existing PR.
+
+    The marker is accepted only while the task is ready to dispatch.  Generic
+    promotion and unblock events deliberately do not imply this authorization.
+    """
+    actor = (actor or "").strip()
+    reason = (reason or "").strip()
+    if not actor:
+        raise ValueError("PR continuation actor is required")
+    if not reason:
+        raise ValueError("PR continuation reason is required")
+    with write_txn(conn):
+        _require_task(conn, task_id)
+        if _task_status(conn, task_id) != "ready":
+            return False
+        _append_event(
+            conn, task_id, "pr_continuation", {"actor": actor, "reason": reason},
+        )
+        return True
+
+
 def _task_rows(conn: sqlite3.Connection, table: str, task_id: str, order: str) -> list[sqlite3.Row]:
     return conn.execute(
         f"SELECT * FROM {table} WHERE task_id = ? ORDER BY {order}", (task_id,)

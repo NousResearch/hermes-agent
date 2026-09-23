@@ -214,3 +214,29 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_continue_pr_records_audited_operator_event(kanban_home):
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="resume existing PR", assignee="publisher")
+
+    out = kc.run_slash(f"continue-pr {tid} 'repair verified for existing PR'")
+
+    assert f"Authorized existing-PR continuation for {tid}" in out
+    with kbc.connect_closing() as conn:
+        events = [event for event in kb.list_events(conn, tid) if event.kind == "pr_continuation"]
+    assert len(events) == 1
+    assert events[0].payload["reason"] == "repair verified for existing PR"
+    assert events[0].payload["actor"]
+
+
+def test_continue_pr_is_orchestrator_only(kanban_home, monkeypatch):
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="resume existing PR", assignee="publisher")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+
+    out = kc.run_slash(f"continue-pr {tid} 'worker must not authorize this'")
+
+    assert "orchestrator-only" in out
+    with kbc.connect_closing() as conn:
+        assert all(event.kind != "pr_continuation" for event in kb.list_events(conn, tid))

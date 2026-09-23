@@ -1,6 +1,6 @@
 name: little-canary
 repo: https://github.com/hermes-labs-ai/little-canary
-sha: 95992207a2e00664043a6ba0d846850dd1e2683b
+sha: f1ced5beb450b994e1430b63d20242c408a86dc2
 version: "0.3.8"
 description: Screens user turns and blocks downstream tools on a BLOCK verdict; the original prompt still reaches the model.
 maintainer: Hermes Labs

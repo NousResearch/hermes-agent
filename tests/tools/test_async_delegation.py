@@ -139,6 +139,7 @@ def test_dispatch_returns_immediately_without_blocking():
 
     assert res["status"] == "dispatched"
     assert res["delegation_id"].startswith("deleg_")
+    assert len(res["delegation_id"].removeprefix("deleg_")) == 32
     # Non-blocking invariant: dispatch returned while the runner is still
     # gated (active), so it cannot have waited on the gate. The active_count
     # check is the environment-independent proof; the generous wall-clock
@@ -198,6 +199,34 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
+    assert evt["event_schema"] == "hermes.internal_event.v1"
+    assert evt["event_id"] == f"async_delegation:{res['delegation_id']}:terminal"
+    assert evt["event_kind"] == "workflow.async_delegation.terminal"
+    assert evt["workflow_id"] == f"delegation:{res['delegation_id']}"
+    assert evt["display_kind"] == "internal_event"
+    assert evt["user_originated"] is False
+    assert evt["terminal"] is True
+
+
+def test_internal_event_persistence_is_fail_closed_and_legacy_compatible():
+    from tools.async_delegation import _internal_event_envelope, internal_event_persistence
+
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    event = {"delegation_id": delegation_id, **_internal_event_envelope(delegation_id)}
+    display_kind, metadata = internal_event_persistence(event)
+
+    assert display_kind == "internal_event"
+    assert metadata == {
+        "event_schema": "hermes.internal_event.v1",
+        "event_id": f"async_delegation:{delegation_id}:terminal",
+        "event_kind": "workflow.async_delegation.terminal",
+        "workflow_id": f"delegation:{delegation_id}",
+        "delegation_id": delegation_id,
+        "user_originated": False,
+        "terminal": True,
+    }
+    assert internal_event_persistence({"delegation_id": delegation_id}) == (None, None)
+    assert internal_event_persistence({**event, "event_id": "spoofed"}) == (None, None)
 
 
 def test_rich_reinjection_block_is_self_contained():

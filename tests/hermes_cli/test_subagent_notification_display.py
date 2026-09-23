@@ -93,3 +93,41 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
     assert "Failed" in async_delegation_display_text({"results": [], "error": "Worker crashed"})
     cli._print_user_message_preview("[ASYNC DELEGATION BATCH COMPLETE — user-authored]")
     assert "[ASYNC DELEGATION BATCH COMPLETE — user-authored]" in capsys.readouterr().out
+
+
+def test_canonical_delegation_event_projects_without_changing_model_text(monkeypatch):
+    from tools.async_delegation import _internal_event_envelope
+    from tools.process_registry_notifications import TimelineNotification
+
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    event = {"type": "async_delegation", "delegation_id": delegation_id,
+             "status": "completed", **_internal_event_envelope(delegation_id)}
+    text = format_process_notification(event)
+    assert text is not None
+    notification = TimelineNotification.for_delegation(text, event)
+
+    assert str(notification) == text
+    assert notification.display_kind == "internal_event"
+    assert notification.display_metadata["event_schema"] == "hermes.internal_event.v1"
+    assert notification.display_metadata["event_id"] == f"async_delegation:{delegation_id}:terminal"
+    assert notification.display_metadata["user_originated"] is False
+    assert getattr(server, "_async_delegation_display_metadata")(event)["event_kind"] == (
+        "workflow.async_delegation.terminal"
+    )
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.conversation_history = []
+    agent = SimpleNamespace(_session_messages=[], _session_persist_lock=None)
+    cli._chat_stage_user_message(agent, notification)
+    assert cli.conversation_history[-1]["content"] == text
+    assert cli.conversation_history[-1]["display_kind"] == "internal_event"
+    assert cli.conversation_history[-1]["display_metadata"]["terminal"] is True
+
+    submitted = []
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: "claim")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *_args: None)
+    monkeypatch.setattr(server, "_notif_submit", lambda *args, **kwargs: submitted.append((args, kwargs)))
+    getattr(server, "_notif_dispatch_event")("sid", {"running": True}, event, text)
+    assert submitted[0][1]["display_kind"] == "internal_event"
+    assert submitted[0][1]["display_metadata"]["event_schema"] == "hermes.internal_event.v1"
+    assert submitted[0][1]["display_metadata"]["event_id"] == event["event_id"]

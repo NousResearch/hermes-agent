@@ -1331,6 +1331,11 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            from tools.async_delegation import internal_event_persistence
+            internal_display_kind, internal_metadata = internal_event_persistence(evt)
+            if internal_display_kind is not None and internal_metadata is not None:
+                metadata.update(internal_metadata)
+                metadata["display_kind"] = internal_display_kind
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,

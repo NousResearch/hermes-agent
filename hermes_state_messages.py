@@ -328,8 +328,9 @@ class SessionMessagesMixin:
         delegation_id = metadata.get("delegation_id")
         if not delegation_id:
             raise ValueError("Delegation delivery requires a stable delegation_id")
+        display_kind = metadata.get("display_kind") or "async_delegation_complete"
         msg = {"content": content,
-               "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
+               "display_kind": "hidden" if metadata.get("presentation_suppressed") else display_kind,
                "display_metadata": metadata}
         params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
 
@@ -340,7 +341,7 @@ class SessionMessagesMixin:
                     SELECT s.parent_session_id FROM sessions s JOIN lineage l ON s.id = l.id
                     JOIN sessions p ON p.id = s.parent_session_id WHERE p.end_reason = 'compression'
                 ) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id
-                WHERE m.display_kind IN ('async_delegation_complete', 'hidden')
+                WHERE m.display_kind IN ('async_delegation_complete', 'internal_event', 'hidden')
                 AND json_extract(m.display_metadata, '$.delegation_id') = ?
                 AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ? LIMIT 1""",
                 (session_id, delegation_id, metadata.get("delivery_notice", ""))).fetchone()

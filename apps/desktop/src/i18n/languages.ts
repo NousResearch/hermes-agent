@@ -1,3 +1,5 @@
+import { LOCALE_ENDONYMS } from '@hermes/shared/i18n'
+
 import { normalize } from '@/lib/text'
 
 import type { Locale } from './types'
@@ -7,33 +9,39 @@ export const DEFAULT_LOCALE: Locale = 'en'
 export const LOCALE_OPTIONS = [
   {
     id: 'en',
-    name: 'English',
+    name: LOCALE_ENDONYMS.en,
     englishName: 'English',
     configValue: 'en'
   },
   {
     id: 'zh',
-    name: '简体中文',
+    name: LOCALE_ENDONYMS.zh,
     englishName: 'Simplified Chinese',
     configValue: 'zh'
   },
   {
     id: 'zh-hant',
-    name: '繁體中文',
+    name: LOCALE_ENDONYMS['zh-hant'],
     englishName: 'Traditional Chinese',
     configValue: 'zh-hant'
   },
   {
     id: 'ja',
-    name: '日本語',
+    name: LOCALE_ENDONYMS.ja,
     englishName: 'Japanese',
     configValue: 'ja'
   },
   {
     id: 'ar',
-    name: 'العربية',
+    name: LOCALE_ENDONYMS.ar,
     englishName: 'Arabic',
     configValue: 'ar'
+  },
+  {
+    id: 'ru',
+    name: LOCALE_ENDONYMS.ru,
+    englishName: 'Russian',
+    configValue: 'ru'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -79,7 +87,16 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'ar-eg': 'ar',
   ar_eg: 'ar',
   arabic: 'ar',
-  العربية: 'ar'
+  العربية: 'ar',
+  ru: 'ru',
+  'ru-ru': 'ru',
+  ru_ru: 'ru',
+  'ru-by': 'ru',
+  'ru-kz': 'ru',
+  russian: 'ru',
+  'russian-russian': 'ru',
+  русский: 'ru',
+  руский: 'ru'
 }
 
 export function isLocale(value: unknown): value is Locale {
@@ -96,6 +113,32 @@ export function normalizeLocale(value: unknown): Locale {
 
 export function isSupportedLocaleValue(value: unknown): boolean {
   return typeof value === 'string' && LOCALE_ALIASES[normalize(value)] != null
+}
+
+/** OS tags can include regions absent from the picker aliases, such as ru-UA. */
+export function osPreferredLocale(tag: string | null | undefined): Locale | null {
+  if (!tag) {
+    return null
+  }
+
+  const exact = LOCALE_ALIASES[normalize(tag)]
+
+  if (exact) {
+    return exact
+  }
+
+  const base = tag.split(/[-_]/)[0]
+
+  return (base && LOCALE_ALIASES[normalize(base)]) || null
+}
+
+/** An explicit choice must win even when it differs from the OS language. */
+export function resolveInitialLocale(saved: string | null | undefined, osLocale: string | null | undefined): Locale {
+  if (isSupportedLocaleValue(saved)) {
+    return normalizeLocale(saved)
+  }
+
+  return osPreferredLocale(osLocale) ?? DEFAULT_LOCALE
 }
 
 export function localeConfigValue(locale: Locale): string {

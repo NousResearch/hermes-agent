@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: figma
+connector_slug: figma
 description: >-
   Official Figma remote MCP — design context, Code Connect, and
   write-to-canvas via https://mcp.figma.com/mcp (OAuth).
@@ -21,6 +22,15 @@ transport:
 
 auth:
   type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - figma
+    - mockup
+    - wireframe
+  hosts:
+    - figma.com
 
 post_install: |
   On first connection Hermes opens a browser to authorize with Figma

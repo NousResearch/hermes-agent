@@ -55,9 +55,10 @@ def test_wake_surface_enabled_gate():
 
 
 def test_looks_like_path():
-    assert ww._looks_like_path("models/hey_hermes.onnx")
-    assert ww._looks_like_path("custom.ppn")
-    assert not ww._looks_like_path("hey_jarvis")
+    from tools.wake_word_engines import _looks_like_path
+    assert _looks_like_path("models/hey_hermes.onnx")
+    assert _looks_like_path("custom.ppn")
+    assert not _looks_like_path("hey_jarvis")
 
 
 def test_load_wake_word_config_is_a_dict_with_defaults():
@@ -171,12 +172,14 @@ def test_requirements_fresh_install_lazy_allowed(monkeypatch):
 def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
     """Once deps ARE installed, a failing audio probe blocks with a mic hint
     (lazy installs can't fix a missing audio device)."""
+    _voice_loop_ready(monkeypatch)
     monkeypatch.setattr(ww, "_audio_available", lambda: False)
+    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: False)
     monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
     monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
-    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    r = ww.check_wake_word_requirements({"provider": "openwakeword", "capture": "local"})
     assert r["available"] is False
-    assert "audio device" in r["hint"]
+    assert "audio device" in r["hint"] or "microphone" in r["hint"].lower()
 
 
 # ── openWakeWord engine (bundled model + base-model fetch) ───────────────
@@ -237,17 +240,40 @@ def test_bundled_hey_hermes_model_ships_on_disk():
 # ── platform-aware backend selection (openWakeWord onnx is broken on macOS ARM64,
 #    upstream dscripka/openWakeWord#336) ────────────────────────────────────────
 
-def test_default_framework_is_tflite_on_macos_arm64(monkeypatch):
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
+def test_default_framework_tracks_the_macos_arm64_probe():
+    """``default_inference_framework()`` is exactly the ``_is_macos_arm64()``
+    branch — tflite there, onnx everywhere else.
+
+    Stated as an invariant between the probe and its consumer so it holds on
+    every host, including the macOS runner (where both sides are real) and an
+    Intel Mac (where ONNX is fine and both sides say so).
+    """
+    expected = "tflite" if ww._is_macos_arm64() else "onnx"
+    assert ww.default_inference_framework() == expected
+
+
+@pytest.mark.macos_only
+def test_macos_arm64_prefers_tflite_on_this_host():
+    """On a real ARM64 Mac the default must be tflite (upstream #336).
+
+    Runs on the macOS CI job, where ``platform.machine()`` and
+    ``sys.platform`` are the genuine article rather than a patched pair.
+    """
+    if not ww._is_macos_arm64():
+        pytest.skip("Intel Mac — ONNX works here, nothing to assert")
     assert ww.default_inference_framework() == "tflite"
+    assert ww.resolve_inference_framework({}) == "tflite"
+    assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
+    # The one explicit value we override: pinned onnx is provably dead here.
+    assert ww.resolve_inference_framework(
+        {"openwakeword": {"inference_framework": "onnx"}}
+    ) == "tflite"
 
 
-def test_explicit_framework_kept_off_broken_platform(monkeypatch):
+def test_explicit_framework_kept_where_onnx_works(monkeypatch):
     # An operator who pins a backend keeps it everywhere ONNX actually works.
     calls = _install_fake_openwakeword(monkeypatch)
-    monkeypatch.setattr(ww.sys, "platform", "linux")
-    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
     )
@@ -256,12 +282,17 @@ def test_explicit_framework_kept_off_broken_platform(monkeypatch):
 
 
 def test_empty_framework_falls_back_to_platform_default(monkeypatch):
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    """Empty/missing config defers to ``default_inference_framework()``.
+
+    The macOS-ARM64 side of the fallback is asserted for real in
+    ``test_macos_arm64_prefers_tflite_on_this_host``; here we pin the
+    delegation itself by swapping the platform probe (a seam in our own
+    module) rather than lying to the interpreter about which OS it is on.
+    """
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: True)
     assert ww.resolve_inference_framework({}) == "tflite"
     assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
-    monkeypatch.setattr(ww.sys, "platform", "linux")
-    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     assert ww.resolve_inference_framework({}) == "onnx"
 
 
@@ -435,10 +466,22 @@ class _LoudStream(_FakeStream):
 
 def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch):
     opened = []
+    reads = []
+    processed = []
+
+    class _NativeRateStream(_LoudStream):
+        def read(self, n):
+            reads.append(n)
+            return super().read(n)
+
+    class _RecordingEngine(_FakeEngine):
+        def process(self, frame):
+            processed.append(frame)
+            return False
 
     def _stream(**kwargs):
         opened.append(kwargs)
-        return _LoudStream(**kwargs)
+        return _NativeRateStream(**kwargs)
 
     fake_sd = types.SimpleNamespace(
         InputStream=_stream,
@@ -450,16 +493,25 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
         },
         query_hostapis=lambda index: {"name": "Windows WASAPI"},
     )
-    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+    np = pytest.importorskip("numpy")
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, np))
 
     det = ww.WakeWordDetector(
-        _FakeEngine(fire=False),
+        _RecordingEngine(fire=False),
         lambda: None,
         input_device="Microphone Array",
     )
     det.start()
     try:
         assert opened[0]["device"] == "Microphone Array"
+        assert opened[0]["samplerate"] == 48000
+        assert opened[0]["blocksize"] == 12
+        deadline = time.monotonic() + 2.0
+        while not processed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert reads[0] == 12
+        assert len(processed[0]) == 4
+        assert processed[0].tolist() == [500] * 4
         assert det.input_device_details == {
             "selector": "Microphone Array",
             "name": "Microphone Array",
@@ -472,8 +524,8 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
         det.stop()
 
 
-def test_windows_silent_hint_names_selected_device(monkeypatch):
-    monkeypatch.setattr(ww.sys, "platform", "win32")
+@pytest.mark.windows_only
+def test_windows_silent_hint_names_selected_device():
     hint = ww.silent_audio_hint(
         {
             "selector": 3,
@@ -484,6 +536,26 @@ def test_windows_silent_hint_names_selected_device(monkeypatch):
     assert "Microphone Array (Windows WASAPI)" in hint
     assert "wake_word.input_device" in hint
     assert "macOS" not in hint
+
+
+@pytest.mark.macos_only
+def test_macos_silent_hint_points_at_privacy_settings():
+    """On macOS a silent stream is almost always the TCC mic permission, so the
+    hint names System Settings rather than the device."""
+    hint = ww.silent_audio_hint(
+        {"selector": 1, "name": "MacBook Pro Microphone", "hostapi": "Core Audio"}
+    )
+    assert "Privacy & Security" in hint
+    assert "Microphone" in hint
+
+
+@pytest.mark.linux_only
+def test_linux_silent_hint_names_selected_device():
+    hint = ww.silent_audio_hint(
+        {"selector": 2, "name": "HD Audio Capture", "hostapi": "ALSA"}
+    )
+    assert "HD Audio Capture (ALSA)" in hint
+    assert "Privacy & Security" not in hint
 
 
 def test_detector_flags_silent_stream_and_recovers(monkeypatch):
@@ -545,6 +617,56 @@ def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):
     assert ww.is_listening() is False
     assert streams[0].closed is True
     assert ww.stop_listening(owner=owner) is True
+
+
+def test_wedged_stream_halts_without_blocking_read_and_aborts_before_close(monkeypatch):
+    """A PortAudio device that never delivers samples (#117096) must not wedge pause().
+
+    ``read(n)`` on such a device blocks forever; the detector must never call it
+    while ``read_available`` is short, must return from pause() promptly once the
+    stop event is set, and must ``abort()`` the stream before ``close()``.
+    """
+    class _WedgedStream(_FakeStream):
+        read_available = 0
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.calls = []
+            self.read_calls = 0
+
+        def read(self, n):
+            self.read_calls += 1
+            time.sleep(30)  # a real wedged ALSA/PipeWire read never returns
+            return [0] * n, False
+
+        def abort(self):
+            self.calls.append("abort")
+
+        def stop(self):
+            self.calls.append("stop")
+
+        def close(self):
+            self.calls.append("close")
+            self.closed = True
+
+    streams = []
+
+    def _stream(**kw):
+        streams.append(_WedgedStream(**kw))
+        return streams[-1]
+
+    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
+    det.start()
+    assert det.running is True
+    time.sleep(0.2)
+    t0 = time.monotonic()
+    det.pause()
+    assert time.monotonic() - t0 < 1.5, "pause() must not wait out the join timeout"
+    assert det.running is False
+    stream = streams[0]
+    assert stream.read_calls == 0, "read() must not be entered while read_available < frame_length"
+    assert stream.calls[:2] == ["abort", "close"]
 
 
 def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
@@ -624,3 +746,89 @@ def test_machine_lock_is_released_when_owner_process_exits(tmp_path):
         if process.is_alive():
             process.terminate()
         process.join(10)
+
+
+# ── Client capture (remote desktop mic → wake.feed) ──────────────────────
+
+
+def test_resolve_capture_mode_auto_and_prefer_client(monkeypatch):
+    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: False)
+    # auto without prefer_client stays local (CLI/TUI/status semantics)
+    assert ww.resolve_capture_mode({"capture": "auto"}) == "local"
+    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "client"
+    assert ww.resolve_capture_mode({"capture": "local"}, prefer_client=True) == "local"
+    assert ww.resolve_capture_mode({"capture": "client"}) == "client"
+    assert ww.resolve_capture_mode({"capture": "auto"}, force_local=True) == "local"
+    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: True)
+    assert ww.resolve_capture_mode({"capture": "auto"}) == "local"
+    # A working backend mic wins under auto even for a preferring surface, so
+    # local desktops keep PortAudio + wake_word.input_device selection.
+    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "local"
+    # Explicit client still forces streaming (backend mic exists but is wrong).
+    assert ww.resolve_capture_mode({"capture": "client"}, prefer_client=True) == "client"
+
+
+def test_requirements_client_capture_without_local_mic(monkeypatch):
+    monkeypatch.setattr(ww, "_audio_available", lambda: False)
+    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: False)
+    monkeypatch.setattr(ww, "_stt_ready", lambda: True)
+    monkeypatch.setattr(ww, "_tts_ready", lambda: True)
+
+    class _LD:
+        @staticmethod
+        def is_available(feature):
+            return True
+
+        @staticmethod
+        def _allow_lazy_installs():
+            return False
+
+        @staticmethod
+        def feature_install_command(feature):
+            return ""
+
+    monkeypatch.setattr(ww, "lazy_deps", _LD, raising=False)
+    import tools.lazy_deps as real_ld
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
+
+    reqs = ww.check_wake_word_requirements({"capture": "client", "provider": "openwakeword"})
+    assert reqs["available"] is True
+    assert reqs["capture"] == "client"
+
+
+def test_client_capture_feed_fires(monkeypatch, tmp_path):
+    np = pytest.importorskip("numpy")
+
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=True))
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    # External mode must not import sounddevice
+    monkeypatch.setattr(
+        ww,
+        "_import_audio",
+        lambda: (_ for _ in ()).throw(OSError("no local mic")),
+    )
+    owner = object()
+    fired = threading.Event()
+
+    def _on_wake():
+        fired.set()
+
+    ww.start_listening(_on_wake, owner=owner, config={}, external_audio=True)
+    assert ww.is_listening() is True
+    info = ww.detector_frame_info()
+    fl = int(info["frame_length"])
+    # Non-silent frame so silence flag does not dominate
+    pcm = (np.ones(fl, dtype=np.int16) * 5000).tobytes()
+    assert ww.feed_audio(owner=owner, pcm_int16=pcm) is True
+    assert fired.wait(2.0)
+    assert ww.stop_listening(owner=owner) is True
+
+
+def test_feed_audio_rejects_wrong_owner(monkeypatch, tmp_path):
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=False))
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    owner = object()
+    ww.start_listening(lambda: None, owner=owner, config={}, external_audio=True)
+    assert ww.feed_audio(owner=object(), pcm_int16=b"\x00\x00") is False
+    assert ww.stop_listening(owner=owner) is True

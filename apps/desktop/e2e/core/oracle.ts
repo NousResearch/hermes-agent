@@ -439,6 +439,18 @@ export async function assertTranscriptOracle(
     view: { text: '', userBubbles: [] }
   }
 
+  // Wire first: wait until every expected turn's message.complete is on the
+  // wire (it can trail the persisted row under load), so the DOM check below
+  // also covers whatever the renderer does on completion. Duplicate/garbled
+  // frames never heal, so polling cannot mask them.
+  await expect
+    .poll(() => wireViolations(ws, provider, new Set(target.expectUserMarkers), new Set(target.lossyWire ?? [])), {
+      timeout: 60_000,
+      intervals: [250, 500, 1000],
+      message: `wire integrity [${label}]`
+    })
+    .toEqual([])
+
   await expect
     .poll(
       async () => {
@@ -463,7 +475,4 @@ export async function assertTranscriptOracle(
   expect(transient.violations, `transient duplicate render during [${label}] (${transient.samples} samples)`).toEqual(
     []
   )
-
-  const wire = wireViolations(ws, provider, new Set(target.expectUserMarkers), new Set(target.lossyWire ?? []))
-  expect(wire, `wire integrity [${label}]`).toEqual([])
 }

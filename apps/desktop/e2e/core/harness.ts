@@ -154,9 +154,27 @@ export async function launchCoreApp(env: Record<string, string>): Promise<{ app:
     cwd: DESKTOP_ROOT
   })
 
+  // Keep the main process's stdout/stderr (backend supervisor lines included)
+  // so a boot that never becomes interactive fails with its own story.
+  const lines: string[] = []
+  const collect = (chunk: Buffer) => {
+    lines.push(...chunk.toString('utf8').split('\n').filter(Boolean))
+    lines.splice(0, Math.max(0, lines.length - 200))
+  }
+  app.process().stdout?.on('data', collect)
+  app.process().stderr?.on('data', collect)
+  APP_LOGS.set(app, lines)
+
   const page = await app.firstWindow()
 
   return { app, page }
+}
+
+const APP_LOGS = new WeakMap<ElectronApplication, string[]>()
+
+/** Last main-process output lines of `app` (for failure messages). */
+export function appLogTail(app: ElectronApplication, n = 60): string {
+  return (APP_LOGS.get(app) ?? []).slice(-n).join('\n')
 }
 
 // ─── Process census ─────────────────────────────────────────────────────
@@ -427,35 +445,62 @@ export function composer(page: Page) {
 
 /** Composer mounted, no full-viewport overlay above it, window visible. */
 export async function waitForInteractive(app: ElectronApplication, page: Page, timeout = 180_000): Promise<void> {
-  await expect(composer(page)).toBeVisible({ timeout })
-  await page.waitForFunction(
-    () => {
-      const el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)
-      let node: Element | null = el
+  try {
+    await expect(composer(page)).toBeVisible({ timeout })
+    await page.waitForFunction(
+      () => {
+        const el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)
+        let node: Element | null = el
 
-      if (!el) {
-        return false
-      }
-
-      while (node) {
-        const cs = window.getComputedStyle(node)
-
-        if (cs.position === 'fixed') {
-          const r = node.getBoundingClientRect()
-
-          if (r.left <= 0 && r.top <= 0 && r.right >= window.innerWidth && r.bottom >= window.innerHeight) {
-            return false
-          }
+        if (!el) {
+          return false
         }
 
-        node = node.parentElement
-      }
+        while (node) {
+          const cs = window.getComputedStyle(node)
 
-      return true
-    },
-    undefined,
-    { timeout, polling: 250 }
-  )
+          if (cs.position === 'fixed') {
+            const r = node.getBoundingClientRect()
+
+            if (r.left <= 0 && r.top <= 0 && r.right >= window.innerWidth && r.bottom >= window.innerHeight) {
+              return false
+            }
+          }
+
+          node = node.parentElement
+        }
+
+        return true
+      },
+      undefined,
+      { timeout, polling: 250 }
+    )
+  } catch (error) {
+    const blocker = await page
+      .evaluate(() => {
+        let node: Element | null = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)
+        const chain: string[] = []
+
+        while (node && chain.length < 12) {
+          const slot = node.getAttribute('data-slot') ?? ''
+          const role = node.getAttribute('role') ?? ''
+          chain.push(
+            `${node.tagName.toLowerCase()}${slot ? `[data-slot=${slot}]` : ''}${role ? `[role=${role}]` : ''}${window.getComputedStyle(node).position === 'fixed' ? '{fixed}' : ''}`
+          )
+          node = node.parentElement
+        }
+
+        return { chain, route: location.hash, text: document.body.innerText.replace(/\s+/g, ' ').slice(0, 800) }
+      })
+      .catch(e => ({ chain: [], route: '', text: `evaluate failed: ${String(e)}` }))
+
+    throw new Error(
+      `app never became interactive: ${(error as Error).message.split('\n')[0]}\n` +
+        `route: ${blocker.route}\ncenter element chain: ${blocker.chain.join(' < ')}\nbody text: ${blocker.text}\n` +
+        `main-process log tail:\n${appLogTail(app)}`
+    )
+  }
+
   await expect
     .poll(
       () =>

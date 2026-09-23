@@ -18,9 +18,9 @@ A small, deterministic Electron suite that guards three issue classes end to end
     `reasoning.delta` equals what the provider streamed, and
     `message.complete` equals the final completion.
   - one live socket per backend process (#120006).
-  `switch-back-race.spec.ts` forces both orders of "reply completes" vs "the
-  switch-back REST hydrate resolves" with gates (no sleeps) under the same
-  oracle.
+    `switch-back-race.spec.ts` forces both orders of "reply completes" vs "the
+    switch-back REST hydrate resolves" with gates (no sleeps) under the same
+    oracle.
 - **C20 interactive prompts** — `interactive-prompts.spec.ts`: clarify (one
   card; the clicked choice is exactly what the model receives), approval
   Run once (the command runs only after the click) and Deny (never runs; the

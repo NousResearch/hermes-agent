@@ -511,6 +511,29 @@ class TestAddRotatingHandler:
 
 
 
+@pytest.mark.linux_only
+def test_profile_rollover_keeps_previous_file_access(tmp_path):
+    """The replacement must not inherit the gateway's tighter umask."""
+    path = tmp_path / "agent.log"
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(path), maxBytes=10, backupCount=1, encoding="utf-8",
+    )
+    try:
+        os.chmod(path, 0o660)
+        original = path.stat()
+        old_umask = os.umask(0o077)
+        try:
+            handler.emit(logging.LogRecord("agent", logging.INFO, __file__, 0, "rollover", (), None))
+            handler.emit(logging.LogRecord("agent", logging.INFO, __file__, 0, "next", (), None))
+        finally:
+            os.umask(old_umask)
+        replacement = path.stat()
+        assert (replacement.st_uid, replacement.st_gid) == (original.st_uid, original.st_gid)
+        assert stat.S_IMODE(replacement.st_mode) == stat.S_IMODE(original.st_mode)
+    finally:
+        handler.close()
+
+
 class TestWindowsConcurrentLogLockTimeout:
     """Windows concurrent-log-handler lock timeouts stay inside logging."""
 

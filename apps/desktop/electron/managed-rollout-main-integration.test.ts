@@ -146,7 +146,7 @@ function rolloutState(rows: ManagedRolloutAttempt[], currentWave = 0): ManagedRo
 function seedJournal(
   integration: ReturnType<typeof createManagedRolloutMainIntegration>,
   state: ManagedRolloutState,
-  options: { priorHealthy?: boolean; fencePrior?: boolean } = {}
+  options: { priorHealthy?: boolean; fencePrior?: boolean; requiredScopeIds?: string[] } = {}
 ): void {
   integration.journal.create({
     schemaVersion: 1,
@@ -165,7 +165,7 @@ function seedJournal(
       correlationId: row.correlationId,
       wave: row.wave,
       phase: row.state,
-      requiredScopeIds: [],
+      requiredScopeIds: options.requiredScopeIds ?? [],
       receipt: options.priorHealthy && row.wave < state.currentWave
         ? { correlationId: row.correlationId, postSha: TARGET_SHA, outcome: 'updated' }
         : null,
@@ -188,6 +188,39 @@ function seedJournal(
     reason: 'authorization not cleared',
     recordedAt: '2026-09-21T00:00:00.000Z'
   }] } : {})
+}
+
+async function reprobeFixture(
+  headSha = TARGET_SHA,
+  extra: Record<string, unknown> = {},
+  requiredScopeIds: string[] = []
+) {
+  const fixture = makeIntegration(headSha, { readRecoveryRecord: () => null, ...extra })
+  const inventory = await fixture.integration.adapters.inventoryReader.capture()
+  const inspected: any = inventory!.observations.find(row => row.installId === INSTALL_ID)!
+  const row = attempt(
+    inspected.computedSourceFingerprint,
+    installationFingerprint({ installId: INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID })
+  )
+  row.state = 'unverified'
+  const state = rolloutState([row])
+  state.phase = 'attention-required'
+  seedJournal(fixture.integration, state, { requiredScopeIds })
+
+  return {
+    ...fixture,
+    authorization: {
+      rolloutId: state.id,
+      installId: row.installId,
+      connectionId: row.connectionId,
+      installationFingerprint: row.installationFingerprint,
+      sourceFingerprint: row.sourceFingerprint,
+      targetSha: row.targetSha,
+      reviewedSource: row.reviewedSource,
+      correlationId: row.correlationId,
+      queueGeneration: state.queueGeneration
+    }
+  }
 }
 
 async function promotionFixture(
@@ -383,7 +416,7 @@ describe('managed rollout main integration', () => {
     }
     let recoveredRecord: any = null
 
-    const { integration } = makeIntegration(TARGET_SHA, {
+    const { integration, authorization } = await reprobeFixture(TARGET_SHA, {
       readRecoveryRecord: () => durableRecord,
       recoverManagedSsh: async (record: any) => {
         recoveredRecord = record
@@ -391,42 +424,31 @@ describe('managed rollout main integration', () => {
       }
     })
 
-    const authorization = {
-      rolloutId: 'rollout-1',
-      installId: INSTALL_ID,
-      connectionId: CONNECTION_ID,
-      installationFingerprint: 'e'.repeat(64),
-      sourceFingerprint: 'f'.repeat(64),
-      targetSha: TARGET_SHA,
-      reviewedSource: {
-        repositoryRoot: ROOT,
-        originUrl: 'https://github.com/nousresearch/hermes-agent.git',
-        resolvedRef: 'refs/remotes/origin/main',
-        targetSha: TARGET_SHA,
-        assuranceProfile: 'profile-v1',
-        assuranceEvidenceSha256: 'c'.repeat(64),
-        assuranceGeneration: 1
-      },
-      correlationId: CORRELATION_ID,
-      queueGeneration: 1
-    }
-
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent',
       launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA },
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 },
       exitCode: 0
     } as any)
 
     await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
       correlationId: CORRELATION_ID,
-      outcome: 'updated',
-      terminal: true
+      outcome: 'unverified',
+      terminal: false,
+      recoveryRecordClear: false
     })
     await expect((integration.observe as any).recover(authorization)).resolves.toEqual({
       correlationId: CORRELATION_ID,
       clearanceProved: true
+    })
+    await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
+      correlationId: CORRELATION_ID,
+      outcome: 'updated',
+      terminal: true,
+      recoveryRecordClear: true,
+      receipt: { correlationId: CORRELATION_ID, postSha: TARGET_SHA },
+      health: { installId: INSTALL_ID, checkoutSha: TARGET_SHA, scopeCapture: 'complete' }
     })
     expect(recoveredRecord).toMatchObject({
       connectionId: CONNECTION_ID,
@@ -434,6 +456,106 @@ describe('managed rollout main integration', () => {
       phase: 'launching',
       scopes: [durableScope],
       source: { label: 'original-host' }
+    })
+  })
+
+  test('normal post-launch observation recognizes the updater durable success receipt', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent', receipt,
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt, scopes: [] }
+    })).resolves.toMatchObject({
+      outcome: 'updated',
+      receipt,
+      health: { receiptSucceeded: true, receiptCorrelated: true, dependencyReady: true }
+    })
+  })
+
+  test.each([
+    ['Git HEAD differs from the reviewed target', 'd'.repeat(40), {}, []],
+    ['coordinator dependency has no readiness proof', TARGET_SHA, {}, []],
+    ['a required scope is absent', TARGET_SHA, {}, ['ssh:profile:default']],
+    ['a required process has no identity proof', TARGET_SHA, {
+      captureScopes: async () => [{ key: 'ssh:profile:default', profile: 'default', state: {} }]
+    }, ['ssh:profile:default']]
+  ])('Reprobe keeps success fenced when %s', async (_reason, headSha, extra, requiredScopeIds) => {
+    const { integration, authorization } = await reprobeFixture(headSha, extra, requiredScopeIds)
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
+      coordinatorReady: _reason === 'coordinator dependency has no readiness proof'
+        ? null : { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
+      correlationId: CORRELATION_ID,
+      outcome: 'unverified',
+      terminal: false
+    })
+  })
+
+  test('Reprobe cannot turn a terminal receipt into success without a local scope record', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const missing = { ...authorization, rolloutId: '99999999-9999-4999-8999-999999999999' }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).reprobe(missing)).resolves.toMatchObject({
+      outcome: 'unverified', terminal: false
+    })
+  })
+
+  test('Reprobe rejects a receipt for a different requested target', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'already-current', postSha: 'd'.repeat(40) },
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
+      outcome: 'unverified', terminal: false
+    })
+  })
+
+  test('Reprobe rejects an install identity change on the selected SSH target', async () => {
+    const { integration, authorization, ssh } = await reprobeFixture()
+    const originalExec = ssh.exec.getMockImplementation()!
+    ssh.exec.mockImplementation(command => command.includes('if [ -f') ? Promise.resolve(NEXT_INSTALL_ID) : originalExec(command))
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
+      outcome: 'unverified', terminal: false
+    })
+  })
+
+  test.each([
+    ['failed', 'failed'],
+    ['refused', 'refused'],
+    ['partial', 'failed']
+  ] as const)('Reprobe classifies a correlated %s receipt without inventing health', async (receiptOutcome, outcome) => {
+    const { integration, authorization } = await reprobeFixture()
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: receiptOutcome, postSha: null }
+    } as any)
+
+    await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
+      correlationId: CORRELATION_ID, outcome, terminal: true, recoveryRecordClear: false
     })
   })
 

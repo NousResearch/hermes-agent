@@ -471,16 +471,17 @@ async function observeHealth(
   expectedReceipt: any = null,
   observationId = authorization.correlationId,
   expectedScopes: readonly any[] | null = null,
-  context?: SweepProbeContext
+  context?: SweepProbeContext,
+  selected?: { source: any; target: any; observed: any }
 ) {
-  const source = options.getSource(authorization.connectionId)
+  const source = selected?.source ?? options.getSource(authorization.connectionId)
 
   if (!source) {throw new Error('observed-source-connection-unavailable')}
-  const transport = await options.openTransport(source, context)
+  const transport = selected ? null : await options.openTransport(source, context)
 
   try {
-    const target = boundedTarget(transport.target, options, context)
-    const raw: any = await observeManagedRemoteUpdate(target, authorization.correlationId)
+    const target = boundedTarget(selected?.target ?? transport!.target, options, context)
+    const raw: any = selected?.observed ?? await observeManagedRemoteUpdate(target, authorization.correlationId)
     const installId = await readInstallId(target)
     const scopes = await options.captureScopes(source)
     const receipt = expectedReceipt || raw.receipt
@@ -491,7 +492,7 @@ async function observeHealth(
     )
 
     const receiptSucceeded = Boolean(
-      raw.receipt && ['updated', 'already-current'].includes(raw.receipt.outcome) &&
+      raw.receipt && ['success', 'updated', 'already-current'].includes(raw.receipt.outcome) &&
       (!expectedReceipt || expectedReceipt.outcome === raw.receipt.outcome)
     )
 
@@ -545,7 +546,7 @@ async function observeHealth(
 
     return { health, receipt }
   } finally {
-    await transport.close().catch(() => undefined)
+    await transport?.close().catch(() => undefined)
   }
 }
 
@@ -565,26 +566,101 @@ async function observeRemote(options: ManagedRolloutMainIntegrationOptions, inpu
   }
 }
 
-async function reprobeRemote(options: ManagedRolloutMainIntegrationOptions, authorization: any) {
+function requiredReprobeScopes(journal: ManagedRolloutJournal, authorization: any): { scopes: string[]; generation: string } | null {
+  const record = journal.read(authorization.rolloutId)
+  const matches = record.snapshot.attempts.filter((row: any) => row.identity?.installId === authorization.installId)
+  const row: any = matches.length === 1 ? matches[0] : null
+
+  if (!row || record.snapshot.id !== authorization.rolloutId ||
+      row.identity.installationFingerprint !== authorization.installationFingerprint ||
+      row.identity.sourceFingerprint !== authorization.sourceFingerprint ||
+      row.identity.admittedSha !== authorization.targetSha ||
+      row.correlationId !== authorization.correlationId ||
+      !Array.isArray(row.requiredScopeIds) ||
+      !row.requiredScopeIds.every((id: unknown) => typeof id === 'string') ||
+      new Set(row.requiredScopeIds).size !== row.requiredScopeIds.length) {return null}
+
+  return { scopes: row.requiredScopeIds, generation: record.generation }
+}
+
+async function reprobeRemote(options: ManagedRolloutMainIntegrationOptions, journal: ManagedRolloutJournal, authorization: any) {
+  const inconclusive = (correlationId = authorization.correlationId) => ({
+    correlationId, outcome: 'unverified' as const, terminal: false,
+    receipt: null, health: null, recoveryRecordClear: false
+  })
   const source = options.getSource(authorization.connectionId)
 
-  if (!source) {throw new Error('reprobe-source-connection-unavailable')}
-  const transport = await options.openTransport(source)
+  if (!source) {return inconclusive()}
+  let transport: Awaited<ReturnType<ManagedRolloutMainIntegrationOptions['openTransport']>>
+
+  try {transport = await options.openTransport(source)}
+  catch {return inconclusive()}
 
   try {
-    const raw: any = await observeManagedRemoteUpdate(transport.target, authorization.correlationId)
+    const target = boundedTarget(transport.target, options)
+    const raw: any = await observeManagedRemoteUpdate(target, authorization.correlationId)
     const receipt = raw.receipt
-    const correlationId = typeof receipt?.correlationId === 'string' ? receipt.correlationId : ''
+    const correlationId = typeof receipt?.correlationId === 'string' ? receipt.correlationId : authorization.correlationId
 
-    const terminal = correlationId === authorization.correlationId &&
-      ['updated', 'already-current', 'failed', 'refused'].includes(receipt?.outcome) &&
-      ['absent', 'dead'].includes(raw.marker) && ['absent', 'dead'].includes(raw.launchIntent)
-
-    return {
-      correlationId,
-      outcome: terminal ? receipt.outcome : 'unverified',
-      terminal
+    if (correlationId !== authorization.correlationId ||
+        !['success', 'updated', 'already-current', 'partial', 'failed', 'refused'].includes(receipt?.outcome) ||
+        !['absent', 'dead'].includes(raw.marker) || !['absent', 'dead'].includes(raw.launchIntent)) {
+      return inconclusive(correlationId)
     }
+
+    const inspection = await inspectConnectedSource(options, source, target)
+
+    if (!inspection) {return inconclusive()}
+    const installation = installationFingerprint(inspection)
+    const fingerprint = sourceFingerprint({ ...inspection.source, installationFingerprint: installation })
+
+    if (inspection.installId !== authorization.installId ||
+        installation !== authorization.installationFingerprint ||
+        fingerprint !== authorization.sourceFingerprint ||
+        inspection.codeRoot !== authorization.reviewedSource?.repositoryRoot ||
+        inspection.repositoryId !== canonicalRepositoryId(authorization.reviewedSource?.originUrl || '') ||
+        authorization.reviewedSource?.targetSha !== authorization.targetSha) {return inconclusive()}
+
+    const before = requiredReprobeScopes(journal, authorization)
+
+    if (!before) {return inconclusive()}
+
+    if (receipt.outcome === 'partial' || receipt.outcome === 'failed' || receipt.outcome === 'refused') {
+      return {
+        correlationId, outcome: receipt.outcome === 'refused' ? 'refused' as const : 'failed' as const,
+        terminal: true, receipt, health: null, recoveryRecordClear: false
+      }
+    }
+
+    if (receipt.postSha !== authorization.targetSha || inspection.headSha !== authorization.targetSha ||
+        !options.readRecoveryRecord ||
+        options.readRecoveryRecord(authorization.connectionId, authorization.correlationId) !== null) {
+      return inconclusive()
+    }
+
+    const observed = await observeHealth(options, authorization, null, authorization.correlationId, null, undefined, {
+      source, target, observed: raw
+    })
+    const after = requiredReprobeScopes(journal, authorization)
+    const health = observed.health
+    const proved = after?.generation === before.generation &&
+      options.readRecoveryRecord(authorization.connectionId, authorization.correlationId) === null &&
+      sameScopeIds(before.scopes, after.scopes) && health.installId === authorization.installId &&
+      health.checkoutSha === authorization.targetSha && health.installReady &&
+      health.markerClear && health.receiptCorrelated && health.receiptSucceeded &&
+      health.dependencyReady && health.recoveryClear && health.scopeCapture === 'complete' &&
+      sameScopeIds(before.scopes, health.scopes.map(scope => scope.scopeId)) &&
+      health.scopes.every(scope => scope.restored && scope.ready && scope.processIdentityVerified &&
+        scope.codeSha === authorization.targetSha)
+
+    return proved
+      ? {
+          correlationId, outcome: receipt.outcome === 'already-current' ? 'already-current' as const : 'updated' as const,
+          terminal: true, receipt, health, recoveryRecordClear: true
+        }
+      : inconclusive()
+  } catch {
+    return inconclusive()
   } finally {
     await transport.close().catch(() => undefined)
   }
@@ -664,7 +740,7 @@ export function createManagedRolloutMainIntegration(options: ManagedRolloutMainI
     processGeneration,
     observe: {
       observe: (input: any) => observeRemote(options, input),
-      reprobe: (authorization: any) => reprobeRemote(options, authorization),
+      reprobe: (authorization: any) => reprobeRemote(options, journal, authorization),
       recover: (authorization: any) => recoverRemote(options, authorization)
     }
   }

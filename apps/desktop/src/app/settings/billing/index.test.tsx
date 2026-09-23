@@ -1,8 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
 
 import { formatMoney } from './billing-amounts'
 import {
@@ -79,6 +81,51 @@ afterEach(() => {
 })
 
 describe('BillingSettings', () => {
+  it('changes billing shell language without losing the credit amount or issuing a charge', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
+    apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+    let language!: I18nContextValue
+
+    function Surface() {
+      language = useI18n()
+
+      return <BillingSettings />
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <MemoryRouter>
+        <I18nProvider configClient={null} initialLocale="zh">
+          <QueryClientProvider client={client}>
+            <Surface />
+          </QueryClientProvider>
+        </I18nProvider>
+      </MemoryRouter>
+    )
+    await screen.findByText('支付与额度')
+    expect(screen.getByText('余额')).toBeTruthy()
+    const input = screen.getByRole('spinbutton', { name: '自定义充值金额' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '37' } })
+    await act(() => language.setLocale('zh-hant'))
+    expect(screen.getByText('支付與額度')).toBeTruthy()
+    expect(screen.getByText('餘額')).toBeTruthy()
+    expect((screen.getByRole('spinbutton', { name: '自訂儲值金額' }) as HTMLInputElement).value).toBe('37')
+    expect(apiMocks.charge).not.toHaveBeenCalled()
+    apiMocks.charge.mockResolvedValue({
+      ok: false,
+      refusal: { kind: 'stripe_unavailable', message: '', retryAfter: 120 },
+      idempotencyKey: 'fixture-charge'
+    })
+    fireEvent.click(screen.getByRole('button', { name: '購買' }))
+    await screen.findByText(/Stripe 遇到問題/)
+    await act(() => language.setLocale('zh'))
+    expect(screen.getByText(/Stripe 遇到问题/)).toBeTruthy()
+    expect(apiMocks.charge).toHaveBeenCalledTimes(1)
+    expect(apiMocks.charge).toHaveBeenCalledWith('37', undefined)
+    expect(screen.getAllByText(postTrainSubscriptionState.current!.tier_name!).length).toBeGreaterThan(0)
+    client.clear()
+  })
+
   it('renders the post-train payload with enabled buy controls and card provenance', async () => {
     apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
     apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))

@@ -1385,6 +1385,229 @@ export const zhHant = defineLocale({
       deleted: model => `已刪除 ${model}。`,
       deleteFailed: '刪除失敗'
     },
+    billing: {
+      perMonth: amount => `${amount}/月`,
+      creditsPerMonth: amount => `${amount} 額度/月`,
+      usageLabel: label => `${label}用量`,
+      freeTier: {
+        signIn: '登入',
+        title: '你正在使用 Nous 免費服務',
+        message: '登入 Nous 帳戶以解鎖更多模型和工具。',
+        caption: '使用 nous/welcome，包含連接器。登入後會保留連接器，並增加需要帳戶的工具和其他所有模型。',
+        name: 'Nous · 免費服務',
+        footnote: '免費服務沒有餘額，無需付款。登入 Nous 帳戶後才會顯示支付與用量。',
+        plan: '免費服務',
+        model: '模型',
+        connectors: '連接器',
+        included: '已包含'
+      },
+      amountValidation: {
+        reloadTo: '儲值金額',
+        greaterThanThreshold: '儲值金額必須大於門檻。',
+        decimal: label => `${label}：請輸入最多含兩位小數的美元金額。`,
+        positive: label => `${label}：金額必須大於 $0。`,
+        minimum: (label, amount) => `${label}：最低金額為 ${amount}。`,
+        maximum: (label, amount) => `${label}：最高金額為 ${amount}。`
+      },
+      stepUp: {
+        openVerification: '開啟驗證頁面',
+        dismiss: '關閉',
+        waiting: '正在等待驗證連結…',
+        verify: '驗證以繼續',
+        deniedTitle: '驗證未獲核准',
+        deniedBody: '驗證已結束，但未允許此終端進行遠端支出。',
+        successTitle: '驗證完成',
+        successBody: '此終端已獲准進行遠端支出。'
+      },
+      charge: {
+        added: amount => (amount ? `已加入 $${amount}。` : '已加入額度。'),
+        failedTitle: '扣款失敗',
+        unconfirmedTitle: '扣款結果尚未確認',
+        unconfirmedBody: message => `${message} 上次扣款結果尚未確認，請在重試前檢查餘額和歷史記錄。`,
+        checkTitle: '無法檢查扣款',
+        checkBody: '無法檢查扣款。',
+        untrackedTitle: '無法追蹤扣款',
+        untrackedBody: '帳單服務已接受請求，但未傳回扣款識別碼。',
+        timeoutTitle: '5 分鐘後仍在處理',
+        timeoutBody: '扣款仍可能結算，請在重試前檢查入口網站。',
+        authenticationRequired: '銀行要求驗證（3DS）。請在入口網站完成驗證以完成本次購買。',
+        expired: '銀行卡已到期。請在入口網站中更新。',
+        declined: '銀行卡遭拒。請在入口網站中嘗試另一張卡。',
+        failedBody: reason => `扣款未成功（${reason}）。`
+      },
+      title: '帳單',
+      preview: '預覽',
+      summary: { balance: '餘額', plan: '方案', autoRefill: '自動儲值' },
+      sections: {
+        invoices: '發票',
+        plan: '方案',
+        paymentAndCredits: '支付與額度',
+        usage: '用量'
+      },
+      usage: { title: '用量' },
+      buyCredits: {
+        customAmount: '自訂儲值金額',
+        title: '立即購買額度',
+        buyButton: '購買',
+        processing: '處理中…正在確認結算',
+        added: amount => `已加入 ${amount}，正在重新整理餘額。`,
+        retry: '重試',
+        openPortal: '開啟入口網站'
+      },
+      plan: {
+        title: '方案',
+        changePlan: '變更方案',
+        viewPlans: '查看方案',
+        backAria: '返回帳單',
+        current: '目前方案',
+        scheduled: '已排定',
+        empty: '目前沒有可切換的方案。',
+        undo: '復原',
+        undoing: '正在復原…',
+        downgrade: '降級',
+        confirmDowngrade: '確認降級',
+        tryAgain: '重試',
+        checkingChange: '正在檢查此變更…',
+        cannotChange: '無法在此進行該變更。',
+        alreadyOn: name => `你已使用 ${name}，無需變更。`,
+        notScheduleable: '無法在此排定該變更。',
+        scheduling: '正在排定…',
+        cancel: '取消',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `變更為 ${targetName}，於 ${effectiveAt} 生效。現在不扣款；在此之前保留目前方案。${creditsDelta ? `每月額度變化：${creditsDelta}。` : ''}`
+      },
+      autoReload: {
+        threshold: '門檻',
+        thresholdAria: '自動儲值門檻',
+        reloadTo: '儲值金額',
+        reloadToAria: '自動儲值金額',
+        turnOffConfirm: '關閉自動儲值？',
+        turnOff: '關閉',
+        disable: '停用',
+        updated: '自動儲值已更新。',
+        turnedOff: '自動儲值已關閉。',
+        manage: '管理',
+        save: '儲存',
+        saving: '正在儲存…',
+        cancel: '取消'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: '連接你的 Nous 帳戶',
+            message: '在 TUI 中執行 /portal，或開啟 Nous 入口網站連接帳戶。',
+            action: '開啟入口網站 ↗'
+          },
+          noCard: {
+            title: '尚未新增付款方式',
+            message: '新增銀行卡後才能購買額度和使用自動儲值。請在入口網站中新增。',
+            action: '新增銀行卡 ↗'
+          }
+        },
+        paymentMethod: {
+          title: '付款方式',
+          description: '管理用於儲值和訂閱續費的銀行卡。',
+          addAction: '新增付款方式',
+          updateAction: '更新',
+          provenance: {
+            autoRefill: '自動儲值卡',
+            customerDefault: '帳戶預設卡',
+            subPin: '訂閱卡',
+            suffix: label => ` - ${label}`
+          }
+        },
+        buyCredits: { description: '從銀行卡一次性扣款，今天即可計入餘額。' },
+        autoRefill: {
+          title: '餘額不足時儲值',
+          genericDescription: '餘額低於門檻時自動補充額度。',
+          offPill: '已關閉',
+          enabledPill: '已啟用',
+          notAvailablePill: '—',
+          manageCaption: '在入口網站中管理自動儲值。',
+          turnOnCaption: '在入口網站中開啟自動儲值',
+          chargesDescription: (reloadTo, threshold) => `餘額低於 ${threshold} 時自動扣款 ${reloadTo}。`,
+          distinctCardCaption: cardLabel => `自動儲值使用 ${cardLabel} 扣款，請在入口網站中核對`,
+          distinctCardFallback: '另一張銀行卡',
+          reconcileAction: '核對 ↗'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: '訂閱額度',
+            barLabel: '剩餘訂閱額度',
+            captionResets: date => `於 ${date} 重設`,
+            valueOf: (remaining, monthly) => `${monthly} 中剩餘 ${remaining}`,
+            valueOver: (remaining, monthly, over) => `${monthly} 中剩餘 ${remaining} · 超出 ${over}`
+          },
+          topupCredits: { title: '儲值額度', caption: '不會到期' },
+          monthlyCap: {
+            title: '每月支出上限',
+            barLabel: '已用每月支出限額',
+            captionDefault: '預設上限',
+            captionSpending: '每月遠端支出',
+            valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          }
+        },
+        planCard: {
+          freeTier: '免費',
+          chooseAction: '選擇 ↗',
+          adjustPlanAction: '調整方案 ↗',
+          unavailableCaption: '訂閱詳細資料暫不可用，仍可開啟入口網站。',
+          downgradeCaption: (tierName, when) => `於 ${when} 變更為 ${tierName}。`,
+          cancellationCaption: when => `於 ${when} 取消。`,
+          renewsCaption: date => `於 ${date} 續費`,
+          noSubscriptionCaption: '沒有有效訂閱，付費模型會扣除儲值額度。'
+        }
+      },
+      errors: {
+        consentRequired: { title: '需要確認銀行卡', message: '請在入口網站中確認此卡可用於終端扣款' },
+        insufficientScope: {
+          title: '需要核准遠端支出',
+          message: '此操作需要遠端支出權限。請發起一次儲值以授權，然後重試。'
+        },
+        remoteSpendingRevoked: {
+          title: '遠端支出已停止',
+          messageByAdmin: '管理員已停止此終端的遠端支出。',
+          messageBySelf: '你已停止此終端的遠端支出。'
+        },
+        remoteSpendingReconnect: who => `${who} 請從「設定 → 閘道」重新連線以重新授權此裝置。`,
+        sessionRevoked: { title: '工作階段已登出', message: '你的工作階段已登出。請從「設定 → 閘道」重新登入。' },
+        cliBillingDisabled: {
+          title: '遠端支出已關閉',
+          message: '此帳戶的遠端支出已關閉，帳單管理員可在入口網站的 Hermes Agent 頁面開啟。'
+        },
+        roleRequired: {
+          title: '需要管理員權限',
+          message: '新增資金需要組織管理員或擁有者權限。請聯絡管理員，或在入口網站中管理。'
+        },
+        idempotencyConflict: { title: '請發起新的儲值', message: '🔴 此扣款識別碼已用於另一金額。請發起新的儲值。' },
+        noPaymentMethod: {
+          title: '沒有已儲存的銀行卡',
+          message: '💳 尚未儲存用於終端扣款的銀行卡。請在入口網站中設定（一次性購買額度不會儲存可重複使用的卡）。'
+        },
+        orgAccessDenied: { title: '組織存取遭拒', message: '此權杖未綁定到你可管理的組織' },
+        monthlyCapExceeded: {
+          title: '已達每月支出上限',
+          messageReached: '🔴 已達每月支出上限。',
+          messageHeadroom: remaining => `🔴 已達每月支出上限，剩餘額度為 $${remaining}。`
+        },
+        rateLimited: {
+          title: '目前扣款請求過多',
+          message: mins => `🟡 目前扣款請求過多${mins > 0 ? `（請約 ${mins} 分鐘後重試）` : ''}。這不是付款失敗。`
+        },
+        stripeUnavailable: {
+          title: 'Stripe 遇到問題',
+          message: mins => (mins > 0 ? `Stripe 遇到問題，請約 ${mins} 分鐘後重試` : 'Stripe 遇到問題，請稍後重試')
+        },
+        upgradeCapExceeded: { title: '已達每日方案變更次數上限', message: '已達每日方案變更次數上限，請明天重試' },
+        endpointUnavailable: {
+          title: '帳單端點不可用',
+          message: '帳單端點傳回了非 JSON 回應（此部署可能不支援該端點）。'
+        },
+        timeout: { title: '帳單請求逾時', message: '帳單請求逾時。' },
+        transport: { title: '帳單連線失敗', message: '帳單請求在到達閘道前失敗。' },
+        default: { title: '帳單請求失敗', message: '帳單請求失敗。' }
+      }
+    },
     providers: {
       connectAccount: '連結帳號',
       haveApiKey: '改用 API 金鑰？',

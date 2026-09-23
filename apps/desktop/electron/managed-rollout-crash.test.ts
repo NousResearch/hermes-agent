@@ -46,7 +46,7 @@ function coordinator(state = authorizedState(), calls: string[] = []) {
         calls.push('launch')
       }
     },
-    evidence: { sweep: async current => ({ rolloutId: current.id, revision: current.revision, queueGeneration: current.queueGeneration, processGeneration: 1, valid: false, reason: 'not-needed', admissions: [] }) },
+    evidence: { sweep: async current => ({ rolloutId: current.id, revision: current.revision, queueGeneration: current.queueGeneration, processGeneration: 1, completedMono: 0, priorWaveClear: false, nextAdmissionInstallIds: [], valid: false, reason: 'not-needed', admissions: [] }) },
     recovery: {
       reprobe: async authorization => ({ correlationId: authorization.correlationId, outcome: 'unverified', terminal: false }),
       recover: async authorization => ({ correlationId: authorization.correlationId, clearanceProved: true })
@@ -107,7 +107,7 @@ test('inconclusive reprobes enter a bounded cooldown instead of an eternal locko
   const reopened = createManagedRolloutCoordinator(state, {
     journal: { persistAuthorization: async () => {} },
     service: { issueCapability: () => ({}), launch: async () => {} },
-    evidence: { sweep: async current => ({ rolloutId: current.id, revision: current.revision, queueGeneration: current.queueGeneration, processGeneration: 1, valid: false, reason: 'not-needed', admissions: [] }) },
+    evidence: { sweep: async current => ({ rolloutId: current.id, revision: current.revision, queueGeneration: current.queueGeneration, processGeneration: 1, completedMono: 0, priorWaveClear: false, nextAdmissionInstallIds: [], valid: false, reason: 'not-needed', admissions: [] }) },
     recovery: {
       reprobe: async authorization => {
         reprobes += 1

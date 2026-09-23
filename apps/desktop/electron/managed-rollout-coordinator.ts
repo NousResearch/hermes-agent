@@ -146,6 +146,9 @@ export interface ManagedRolloutEvidenceProof {
   revision: number
   queueGeneration: number
   processGeneration: number
+  completedMono: number
+  priorWaveClear: boolean
+  nextAdmissionInstallIds: string[]
   valid: boolean
   reason: string | null
   admissions: Array<{
@@ -239,30 +242,43 @@ function sameReviewedSource(left: ManagedRolloutReviewedSource, right: ManagedRo
   )
 }
 
-function proofMatchesState(state: ManagedRolloutState, proof: ManagedRolloutEvidenceProof, processGeneration: number): boolean {
+function proofMatchesState(state: ManagedRolloutState, proof: ManagedRolloutEvidenceProof, processGeneration: number, nowMono: number): boolean {
   if (
     !proof.valid ||
+    !proof.priorWaveClear ||
     proof.rolloutId !== state.id ||
     proof.revision !== state.revision ||
     proof.queueGeneration !== state.queueGeneration ||
-    proof.processGeneration !== processGeneration
+    proof.processGeneration !== processGeneration ||
+    !Number.isFinite(proof.completedMono) ||
+    !Number.isFinite(nowMono) ||
+    nowMono < proof.completedMono ||
+    nowMono - proof.completedMono > 10_000
   ) {
     return false
   }
 
-  // Promotion proves the wave that is being settled. Later waves are still
-  // queued work and must not be probed as though they had already dispatched;
-  // earlier waves are immutable settled history.
-  const active = Object.values(state.attempts).filter(
-    attempt => !attempt.excluded && attempt.wave === state.currentWave
-  )
+  const attempts = Object.values(state.attempts).filter(attempt => !attempt.excluded)
+  const nextWave = Math.min(...attempts.filter(attempt => attempt.wave > state.currentWave).map(attempt => attempt.wave))
 
-  return active.every(attempt => {
+  if (!Number.isFinite(nextWave) || nextWave !== state.currentWave + 1) {return false}
+
+  const expected = attempts.filter(attempt => attempt.wave === state.currentWave || attempt.wave === nextWave)
+  const nextIds = expected.filter(attempt => attempt.wave === nextWave).map(attempt => attempt.installId).sort()
+
+  if (
+    JSON.stringify([...proof.nextAdmissionInstallIds].sort()) !== JSON.stringify(nextIds) ||
+    new Set(proof.nextAdmissionInstallIds).size !== nextIds.length ||
+    proof.admissions.length !== expected.length
+  ) {return false}
+
+  return expected.every(attempt => {
     const admissions = proof.admissions.filter(admission => admission.installId === attempt.installId)
     const admission = admissions[0]
 
     return (
       admissions.length === 1 &&
+      admission.observationGeneration === processGeneration &&
       admission.installationFingerprint === attempt.installationFingerprint &&
       admission.sourceFingerprint === attempt.sourceFingerprint &&
       admission.reviewedSource.targetSha === attempt.targetSha &&
@@ -664,7 +680,7 @@ export function createManagedRolloutCoordinator(
     const proof = await deps.evidence.sweep(snapshot)
 
     return admit(async () => {
-      if (!proofMatchesState(state, proof, processGeneration)) {
+      if (!proofMatchesState(state, proof, processGeneration, nowMono())) {
         return refuse(state, 'promotion-proof-is-stale-or-invalid')
       }
 

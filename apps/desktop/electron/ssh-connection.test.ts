@@ -450,6 +450,22 @@ test('exec() treats a hung ssh as a timeout (half-open connection)', async () =>
   )
 })
 
+test('exec() abort terminates its in-flight SSH child', async () => {
+  const child = fakeChild({ hang: true })
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn: () => child, controlDir: '/tmp/d', execTimeoutMs: 1000 }
+  )
+  const controller = new AbortController()
+  const executing = conn.exec('uname -s', { signal: controller.signal })
+
+  await Promise.resolve()
+  controller.abort()
+
+  await assert.rejects(executing, (error: any) => error.kind === 'superseded')
+  assert.equal(child._killed, true)
+})
+
 posixTest('forward() issues -O forward with a loopback-bound -L spec', async () => {
   const spawnFn = scriptedSpawn([{ code: 0 }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })

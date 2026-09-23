@@ -72,6 +72,9 @@ function adapters(overrides: Partial<{
           revision: state.revision,
           queueGeneration: state.queueGeneration,
           processGeneration: 1,
+          completedMono: 1_000,
+          priorWaveClear: true,
+          nextAdmissionInstallIds: Object.values(state.attempts).filter(attempt => attempt.wave === state.currentWave + 1 && !attempt.excluded).map(attempt => attempt.installId).sort(),
           valid: true,
           reason: null,
           admissions: Object.values(state.attempts).map(attempt => ({

@@ -8,6 +8,8 @@ vi.mock('./managed-ssh-update', () => ({
   observeManagedRemoteUpdate: vi.fn()
 }))
 
+import type { ManagedRolloutAttempt, ManagedRolloutState } from './managed-rollout-coordinator'
+import { buildHealthEvidence } from './managed-rollout-evidence'
 import { installationFingerprint } from './managed-rollout-identity'
 import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
 import { observeManagedRemoteUpdate } from './managed-ssh-update'
@@ -18,6 +20,10 @@ const ROOT = '/srv/hermes-agent'
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
 const CORRELATION_ID = '22222222-2222-4222-8222-222222222222'
 const REPOSITORY_ID = 'github.com/nousresearch/hermes-agent'
+const NEXT_INSTALL_ID = 'd'.repeat(32)
+const NEXT_CONNECTION_ID = '33333333-3333-4333-8333-333333333333'
+const NEXT_CORRELATION_ID = '55555555-5555-4555-8555-555555555555'
+const ROLLOUT_ID = '44444444-4444-4444-8444-444444444444'
 
 const temporaryDirectories: string[] = []
 
@@ -27,26 +33,31 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {fs.rmSync(directory, { recursive: true, force: true })}
 })
 
-function makeIntegration(headSha = TARGET_SHA, extra: Record<string, unknown> = {}) {
+function makeIntegration(
+  headSha = TARGET_SHA,
+  extra: Record<string, unknown> = {},
+  additional: Array<{ source: { id: string; kind: string; label: string }; installId: string; headSha: string }> = []
+) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-rollout-main-integration-'))
   temporaryDirectories.push(directory)
-  let inspectionHeadReads = 0
+  const sshFor = (installId: string, observedHead: string) => {
+    let inspectionHeadReads = 0
 
-  const ssh = {
-    exec: vi.fn(async (command: string) => {
+    return { exec: vi.fn(async (command: string) => {
       if (command.includes("'--show-toplevel'")) {return ROOT}
 
       if (command.includes("'remote' 'get-url'")) {return 'https://github.com/nousresearch/hermes-agent.git'}
 
-      if (command.includes("'rev-parse' 'HEAD'")) {return inspectionHeadReads++ === 0 ? TARGET_SHA : headSha}
+      if (command.includes("'rev-parse' 'HEAD'")) {return inspectionHeadReads++ === 0 ? TARGET_SHA : observedHead}
 
       if (command.includes('echo "${HERMES_HOME:-$HOME/.hermes}"')) {return '~/.hermes'}
 
-      if (command.includes('if [ -f')) {return INSTALL_ID}
+      if (command.includes('if [ -f')) {return installId}
 
-      return headSha
-    })
+      return observedHead
+    }) }
   }
+  const ssh = sshFor(INSTALL_ID, headSha)
 
   const target = {
     platform: 'Linux',
@@ -56,14 +67,22 @@ function makeIntegration(headSha = TARGET_SHA, extra: Record<string, unknown> = 
   }
 
   const source = { id: CONNECTION_ID, kind: 'ssh', label: 'test-source' }
+  const targets = new Map<string, { source: typeof source; target: typeof target }>([[source.id, { source, target }]])
+
+  for (const item of additional) {
+    targets.set(item.source.id, {
+      source: item.source,
+      target: { ...target, ssh: sshFor(item.installId, item.headSha) }
+    })
+  }
 
   const integration = createManagedRolloutMainIntegration({
     nowMono: () => 1000,
     processOwner: () => true,
-    listSources: () => [source],
-    getSource: connectionId => connectionId === CONNECTION_ID ? source : null,
+    listSources: () => [...targets.values()].map(item => item.source),
+    getSource: connectionId => targets.get(connectionId)?.source ?? null,
     managedSshConfig: () => ({ user: 'hermes', host: 'source.example.test', port: 22 }),
-    openTransport: async () => ({ target, close: async () => undefined }),
+    openTransport: async selected => ({ target: targets.get(selected.id)!.target, close: async () => undefined }),
     captureScopes: async () => [],
     readHostKeyFingerprint: async () => 'SHA256:host-key',
     effectiveConfigFingerprint: async () => 'config-revision',
@@ -76,11 +95,18 @@ function makeIntegration(headSha = TARGET_SHA, extra: Record<string, unknown> = 
   return { integration, source, ssh }
 }
 
-function attempt(sourceFingerprint: string, installation: string) {
+function attempt(
+  sourceFingerprint: string,
+  installation: string,
+  installId = INSTALL_ID,
+  connectionId = CONNECTION_ID,
+  wave = 0,
+  correlationId = CORRELATION_ID
+): ManagedRolloutAttempt {
   return {
-    installId: INSTALL_ID,
+    installId,
     installationFingerprint: installation,
-    connectionId: CONNECTION_ID,
+    connectionId,
     sourceFingerprint,
     targetSha: TARGET_SHA,
     reviewedSource: {
@@ -92,10 +118,134 @@ function attempt(sourceFingerprint: string, installation: string) {
       assuranceEvidenceSha256: 'c'.repeat(64),
       assuranceGeneration: 1
     },
-    correlationId: CORRELATION_ID,
-    wave: 0,
-    excluded: false
+    correlationId,
+    wave,
+    excluded: false,
+    state: wave === 0 ? 'updated' : 'none',
+    reprobeCount: 0,
+    reprobeCooldownUntilMono: null
   }
+}
+
+function rolloutState(rows: ManagedRolloutAttempt[], currentWave = 0): ManagedRolloutState {
+  return {
+    id: ROLLOUT_ID,
+    revision: 1,
+    queueGeneration: 1,
+    phase: 'awaiting-promotion',
+    policy: 'manual',
+    currentWave,
+    canaryApproved: false,
+    continuationRequired: false,
+    stopRequested: false,
+    attempts: Object.fromEntries(rows.map(row => [row.installId, row]))
+  }
+}
+
+function seedJournal(
+  integration: ReturnType<typeof createManagedRolloutMainIntegration>,
+  state: ManagedRolloutState,
+  options: { priorHealthy?: boolean; fencePrior?: boolean } = {}
+): void {
+  integration.journal.create({
+    schemaVersion: 1,
+    id: state.id,
+    revision: 0,
+    createdAt: '2026-09-21T00:00:00.000Z',
+    updatedAt: '2026-09-21T00:00:00.000Z',
+    phase: state.phase,
+    attempts: Object.values(state.attempts).map(row => ({
+      identity: {
+        installId: row.installId,
+        installationFingerprint: row.installationFingerprint,
+        sourceFingerprint: row.sourceFingerprint,
+        admittedSha: TARGET_SHA
+      },
+      correlationId: row.correlationId,
+      wave: row.wave,
+      phase: row.state,
+      requiredScopeIds: [],
+      receipt: options.priorHealthy && row.wave < state.currentWave
+        ? { correlationId: row.correlationId, postSha: TARGET_SHA, outcome: 'updated' }
+        : null,
+      health: options.priorHealthy && row.wave < state.currentWave
+        ? buildHealthEvidence({
+            observationId: 'prior-local-proof', observedAt: '2026-09-21T00:00:00.000Z',
+            installId: row.installId, checkoutSha: TARGET_SHA,
+            installReady: true, markerClear: true, receiptCorrelated: true, receiptSucceeded: true,
+            dependencyReady: true, recoveryClear: true, scopes: [], reasons: []
+          })
+        : null,
+      recoveryRequired: false
+    })),
+    eventCount: 0
+  }, options.fencePrior ? { unresolved: [{
+    key: `${state.id}:${INSTALL_ID}`,
+    rolloutId: state.id,
+    installId: INSTALL_ID,
+    correlationId: CORRELATION_ID,
+    reason: 'authorization not cleared',
+    recordedAt: '2026-09-21T00:00:00.000Z'
+  }] } : {})
+}
+
+async function promotionFixture(
+  headSha = TARGET_SHA,
+  includeThirdWave = false,
+  currentWave = 0,
+  localOptions: { priorHealthy?: boolean; fencePrior?: boolean } = {}
+) {
+  const additional = [{
+    source: { id: NEXT_CONNECTION_ID, kind: 'ssh', label: 'next-source' },
+    installId: NEXT_INSTALL_ID,
+    headSha: TARGET_SHA
+  }]
+
+  if (includeThirdWave) {
+    additional.push({
+      source: { id: '66666666-6666-4666-8666-666666666666', kind: 'ssh', label: 'third-source' },
+      installId: 'e'.repeat(32), headSha: TARGET_SHA
+    })
+  }
+
+  const { integration, ssh } = makeIntegration(headSha, {}, additional)
+  const inventory = await integration.adapters.inventoryReader.capture()
+  expect(inventory).not.toBeNull()
+  const byId = new Map(inventory!.observations.map((row: any) => [row.installId, row]))
+  const current = attempt(
+    byId.get(INSTALL_ID)!.computedSourceFingerprint,
+    installationFingerprint({ installId: INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID })
+  )
+  const next = attempt(
+    byId.get(NEXT_INSTALL_ID)!.computedSourceFingerprint,
+    installationFingerprint({ installId: NEXT_INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID }),
+    NEXT_INSTALL_ID, NEXT_CONNECTION_ID, 1, NEXT_CORRELATION_ID
+  )
+  const attempts = [current, next]
+
+  if (currentWave === 1) {next.state = 'updated'}
+
+  if (includeThirdWave) {
+    const id = 'e'.repeat(32)
+    attempts.push(attempt(
+      byId.get(id)!.computedSourceFingerprint,
+      installationFingerprint({ installId: id, codeRoot: ROOT, repositoryId: REPOSITORY_ID }),
+      id, additional[1].source.id, 2, '77777777-7777-4777-8777-777777777777'
+    ))
+  }
+
+  const state = rolloutState(attempts, currentWave)
+  seedJournal(integration, state, localOptions)
+  const currentCorrelation = currentWave === 1 ? NEXT_CORRELATION_ID : CORRELATION_ID
+  vi.mocked(observeManagedRemoteUpdate).mockImplementation(async (_target, correlationId) => correlationId === currentCorrelation
+    ? {
+        marker: 'absent', launchIntent: 'absent',
+        receipt: { correlationId: currentCorrelation, outcome: 'updated', postSha: TARGET_SHA },
+        coordinatorReady: { correlationId: currentCorrelation, pid: 1 }, exitCode: 0
+      } as any
+    : { marker: 'absent', launchIntent: 'absent', receipt: null, coordinatorReady: null, exitCode: 0 } as any)
+
+  return { integration, state, ssh }
 }
 
 describe('managed rollout main integration', () => {
@@ -110,90 +260,91 @@ describe('managed rollout main integration', () => {
   })
 
   test('runs an independent bounded evidence sweep and verifies target HEAD', async () => {
-    const { integration } = makeIntegration()
-    const snapshot = await integration.adapters.inventoryReader.capture()
-    expect(snapshot).not.toBeNull()
-    const row: any = snapshot!.observations[0]
-    const installation = installationFingerprint({ installId: INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID })
-    const currentAttempt = attempt(row.computedSourceFingerprint, installation)
-    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
-      marker: 'absent',
-      launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
-      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 },
-      exitCode: 0
-    } as any)
-
-    const proof = await integration.evidence.sweep({
-      id: 'rollout-1',
-      revision: 1,
-      queueGeneration: 1,
-      attempts: { [INSTALL_ID]: currentAttempt }
+    const { integration, state, ssh } = await promotionFixture()
+    const bulkCapture = vi.spyOn(integration.adapters.inventoryReader, 'capture').mockImplementation(async () => {
+      throw new Error('unbounded-inventory-capture-used-during-promotion')
     })
+    const proof = await integration.evidence.sweep(state)
 
     expect(proof.valid).toBe(true)
-    expect(proof.admissions).toHaveLength(1)
+    expect(proof.admissions).toHaveLength(2)
     expect(proof.admissions[0].installId).toBe(INSTALL_ID)
+    expect(proof.nextAdmissionInstallIds).toEqual([NEXT_INSTALL_ID])
+    expect(proof.priorWaveClear).toBe(true)
+    expect(bulkCapture).not.toHaveBeenCalled()
+    expect((ssh.exec.mock.calls as unknown as Array<[string, { signal?: AbortSignal }?]>).some(([, options]) => options?.signal instanceof AbortSignal)).toBe(true)
   })
 
   test('refuses promotion evidence when an independent Git HEAD read disagrees', async () => {
-    const { integration } = makeIntegration('d'.repeat(40))
-    const snapshot = await integration.adapters.inventoryReader.capture()
-    const row: any = snapshot!.observations[0]
-    const installation = installationFingerprint({ installId: INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID })
-    const currentAttempt = attempt(row.computedSourceFingerprint, installation)
-    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
-      marker: 'absent',
-      launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
-      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 },
-      exitCode: 0
-    } as any)
-
-    const proof = await integration.evidence.sweep({
-      id: 'rollout-1',
-      revision: 1,
-      queueGeneration: 1,
-      attempts: { [INSTALL_ID]: currentAttempt }
-    })
+    const { integration, state } = await promotionFixture('d'.repeat(40))
+    const proof = await integration.evidence.sweep(state)
 
     expect(proof.valid).toBe(false)
     expect(proof.reason).toBe('health-evidence-not-proven')
   })
 
-  test('sweeps only the active wave when later waves exceed the two-wave probe budget', async () => {
-    const { integration } = makeIntegration()
-    const snapshot = await integration.adapters.inventoryReader.capture()
-    expect(snapshot).not.toBeNull()
-    const row: any = snapshot!.observations[0]
-    const installation = installationFingerprint({ installId: INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID })
-    const currentAttempt = attempt(row.computedSourceFingerprint, installation)
-    const laterAttempt = { ...currentAttempt, installId: 'c'.repeat(32), wave: 1 }
-    const finalAttempt = { ...currentAttempt, installId: 'd'.repeat(32), wave: 2 }
-    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
-      marker: 'absent',
-      launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
-      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 },
-      exitCode: 0
-    } as any)
-
-    const proof = await integration.evidence.sweep({
-      id: 'rollout-1',
-      revision: 1,
-      queueGeneration: 1,
-      currentWave: 0,
-      attempts: {
-        [INSTALL_ID]: currentAttempt,
-        [laterAttempt.installId]: laterAttempt,
-        [finalAttempt.installId]: finalAttempt
-      }
-    })
+  test('sweeps the settled wave and immediate successor without probing a later wave', async () => {
+    const { integration, state } = await promotionFixture(TARGET_SHA, true)
+    const proof = await integration.evidence.sweep(state)
 
     expect(proof.valid).toBe(true)
-    expect(proof.admissions.map((admission: any) => admission.installId)).toEqual([INSTALL_ID])
+    expect(proof.admissions.map(admission => admission.installId)).toEqual([INSTALL_ID, NEXT_INSTALL_ID])
     expect(proof.processGeneration).toBe(integration.processGeneration)
     expect(proof.processGeneration).not.toBe(1)
+  })
+
+  test('requires prior-wave scope proof and rejects a retained local fence before remote probing', async () => {
+    const missing = await promotionFixture(TARGET_SHA, true, 1)
+    const missingProof = await missing.integration.evidence.sweep(missing.state)
+
+    expect(missingProof.valid).toBe(false)
+    expect(missingProof.reason).toBe('prior-wave-local-proof-missing')
+
+    const fenced = await promotionFixture(TARGET_SHA, true, 1, { priorHealthy: true, fencePrior: true })
+    const fencedProof = await fenced.integration.evidence.sweep(fenced.state)
+
+    expect(fencedProof.valid).toBe(false)
+    expect(fencedProof.reason).toBe('prior-wave-local-proof-missing')
+
+    const clear = await promotionFixture(TARGET_SHA, true, 1, { priorHealthy: true })
+    const clearProof = await clear.integration.evidence.sweep(clear.state)
+
+    expect(clearProof.valid).toBe(true)
+    expect(clearProof.nextAdmissionInstallIds).toEqual(['e'.repeat(32)])
+  })
+
+  test('rejects a next-wave target with a live update marker', async () => {
+    const { integration, state } = await promotionFixture()
+    vi.mocked(observeManagedRemoteUpdate).mockImplementation(async (_target, correlationId) => ({
+      marker: correlationId === NEXT_CORRELATION_ID ? 'live' : 'absent',
+      launchIntent: 'absent',
+      receipt: correlationId === CORRELATION_ID
+        ? { correlationId, outcome: 'updated', postSha: TARGET_SHA } : null,
+      coordinatorReady: correlationId === CORRELATION_ID ? { correlationId, pid: 1 } : null,
+      exitCode: 0
+    } as any))
+
+    const proof = await integration.evidence.sweep(state)
+
+    expect(proof.valid).toBe(false)
+    expect(proof.reason).toBe('health-evidence-not-proven')
+  })
+
+  test('rejects local journal generation changes during the sweep', async () => {
+    const { integration, state } = await promotionFixture()
+    const actualRead = integration.journal.read.bind(integration.journal)
+    let reads = 0
+
+    vi.spyOn(integration.journal, 'read').mockImplementation(id => {
+      const record = actualRead(id)
+
+      return ++reads === 2 ? { ...record, generation: 'changed-during-sweep' } : record
+    })
+
+    const proof = await integration.evidence.sweep(state)
+
+    expect(proof.valid).toBe(false)
+    expect(proof.reason).toBe('prior-wave-local-proof-missing')
   })
 
   test('wires read-only reprobe and correlated recovery through the production integration', async () => {

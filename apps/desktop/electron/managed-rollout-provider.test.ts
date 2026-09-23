@@ -252,12 +252,15 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
   }
 
   const evidence = {
-    async sweep(state: { id: string; revision: number; queueGeneration: number; attempts: Record<string, { installId: string; installationFingerprint: string; sourceFingerprint: string; reviewedSource: ReviewedSourceBinding }> }) {
+    async sweep(state: { id: string; revision: number; queueGeneration: number; currentWave: number; attempts: Record<string, { installId: string; installationFingerprint: string; sourceFingerprint: string; reviewedSource: ReviewedSourceBinding; wave: number; excluded?: boolean }> }) {
       return {
         rolloutId: state.id,
         revision: state.revision,
         queueGeneration: state.queueGeneration,
         processGeneration: 1,
+        completedMono: NOW_MONO,
+        priorWaveClear: true,
+        nextAdmissionInstallIds: Object.values(state.attempts).filter(attempt => attempt.wave === state.currentWave + 1 && !attempt.excluded).map(attempt => attempt.installId).sort(),
         valid: true,
         reason: null,
         admissions: Object.values(state.attempts).map(attempt => ({

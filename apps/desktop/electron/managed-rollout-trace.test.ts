@@ -40,6 +40,9 @@ function proof(state: ReturnType<typeof createManagedRolloutState>, overrides: P
     revision: state.revision,
     queueGeneration: state.queueGeneration,
     processGeneration: 1,
+    completedMono: 1_000,
+    priorWaveClear: true,
+    nextAdmissionInstallIds: Object.values(state.attempts).filter(attempt => attempt.wave === state.currentWave + 1 && !attempt.excluded).map(attempt => attempt.installId).sort(),
     valid: true,
     reason: null,
     admissions: Object.values(state.attempts).map(attempt => ({
@@ -179,6 +182,39 @@ test('a stale sweep proof cannot authorize a promotion', async () => {
 
   assert.equal(result.ok, false)
   assert.equal(result.reason, 'promotion-proof-is-stale-or-invalid')
+})
+
+test('promotion refuses proof consumed after ten seconds or missing a next-wave admission', async () => {
+  let state = running()
+
+  for (const action of [
+    { kind: 'record-intent' as const, installId: 'canary' },
+    { kind: 'launch-authorized' as const, installId: 'canary' },
+    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' as const }
+  ]) {state = reduceManagedRollout(state, action).state}
+
+  const make = (now: number, omitNext = false) => createManagedRolloutCoordinator(state, {
+    journal: { persistAuthorization: async () => {} },
+    service: { issueCapability: () => ({}), launch: async () => {} },
+    nowMono: () => now,
+    evidence: {
+      sweep: async current => {
+        const result = proof(current)
+
+        return {
+          ...result,
+          completedMono: 1_000,
+          nextAdmissionInstallIds: ['later-a', 'later-b'],
+          priorWaveClear: true,
+          admissions: omitNext ? result.admissions.filter(row => row.installId !== 'later-b') : result.admissions
+        }
+      }
+    }
+  })
+
+  assert.equal((await make(11_001).promote()).reason, 'promotion-proof-is-stale-or-invalid')
+  assert.equal((await make(2_000, true).promote()).reason, 'promotion-proof-is-stale-or-invalid')
+  assert.equal((await make(2_000).promote()).ok, true)
 })
 
 test('a losing controller records no handoff after the journal rejects its authorization', async () => {

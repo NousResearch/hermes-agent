@@ -69,6 +69,7 @@ export interface SweepObservation {
 export interface SweepProbeContext {
   epochId: string
   deadlineMono: number
+  signal: AbortSignal
 }
 
 export type SweepProbe = (target: SweepTarget, context: SweepProbeContext) => Promise<{ health: HealthEvidence }>
@@ -137,24 +138,101 @@ function targetIsComplete(target: SweepTarget, observation: SweepObservation | u
   )
 }
 
+// The lease belongs to the actual probe promise, not the timeout race. A
+// transport that ignores cancellation keeps its slot until it really settles;
+// later sweeps then fail closed instead of creating a ninth live probe.
+let liveProbeSlots = 0
+const waitingProbeSlots: Array<{ grant: () => void; cancel: () => void }> = []
+
+function acquireProbeSlot(signal: AbortSignal): Promise<() => void> {
+  if (signal.aborted) {return Promise.reject(new Error('probe-slot-cancelled'))}
+
+  return new Promise((resolve, reject) => {
+    let released = false
+
+    const release = () => {
+      if (released) {return}
+      released = true
+      liveProbeSlots -= 1
+      waitingProbeSlots.shift()?.grant()
+    }
+
+    const grant = () => {
+      if (signal.aborted) {
+        reject(new Error('probe-slot-cancelled'))
+        waitingProbeSlots.shift()?.grant()
+
+        return
+      }
+      signal.removeEventListener('abort', cancel)
+      liveProbeSlots += 1
+      resolve(release)
+    }
+
+    const cancel = () => {
+      const index = waitingProbeSlots.findIndex(waiter => waiter.grant === grant)
+
+      if (index >= 0) {waitingProbeSlots.splice(index, 1)}
+      reject(new Error('probe-slot-cancelled'))
+    }
+
+    if (liveProbeSlots < MAX_PROBE_CONCURRENCY) {grant()}
+    else {
+      waitingProbeSlots.push({ grant, cancel })
+      signal.addEventListener('abort', cancel, { once: true })
+    }
+  })
+}
+
 async function runBoundedProbe(
   probe: SweepProbe,
   target: SweepTarget,
-  context: SweepProbeContext,
-  remainingMs: number
+  context: Omit<SweepProbeContext, 'signal'>,
+  remainingMs: number,
+  sweepSignal: AbortSignal
 ): Promise<{ health: HealthEvidence }> {
   if (remainingMs <= 0) {throw new Error('probe-timeout')}
 
+  const controller = new AbortController()
   let timeout: ReturnType<typeof setTimeout> | undefined
 
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error('probe-timeout')), Math.max(1, remainingMs))
+    timeout = setTimeout(() => {
+      controller.abort()
+      reject(new Error('probe-timeout'))
+    }, Math.max(1, remainingMs))
   })
+  const onSweepAbort = () => controller.abort()
+  sweepSignal.addEventListener('abort', onSweepAbort, { once: true })
 
   try {
-    return await Promise.race([Promise.resolve().then(() => probe(target, context)), timeoutPromise])
+    if (sweepSignal.aborted) {controller.abort()}
+    const permit = acquireProbeSlot(controller.signal).then(release => {
+      if (controller.signal.aborted) {
+        release()
+        throw new Error('probe-slot-cancelled')
+      }
+
+      return release
+    })
+    const release = await Promise.race([permit, timeoutPromise])
+    const actualProbe = Promise.resolve().then(() => {
+      if (controller.signal.aborted) {throw new Error('probe-timeout')}
+
+      return probe(target, { ...context, signal: controller.signal })
+    })
+    void actualProbe.then(release, release)
+
+    return await Promise.race([actualProbe, timeoutPromise])
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(sweepSignal.aborted ? 'sweep-deadline-exceeded' : 'probe-timeout')
+    }
+
+    throw error
   } finally {
     if (timeout) {clearTimeout(timeout)}
+    sweepSignal.removeEventListener('abort', onSweepAbort)
   }
 }
 
@@ -204,9 +282,12 @@ export async function runEvidenceSweep(
   const requestedProbes = targets.filter(target => !target.excluded).length
   let firstProbeStartedMono: number | undefined
   let cursor = 0
+  let closed = false
+  const sweepController = new AbortController()
 
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (closed) {return}
       const index = cursor
       cursor += 1
 
@@ -216,7 +297,7 @@ export async function runEvidenceSweep(
 
       if (target.excluded) {continue}
 
-      if (nowMono() - startedMono > deadlineMs) {
+      if (nowMono() - startedMono >= deadlineMs) {
         errors.push({ installId: target.installId, reason: 'sweep-deadline-exceeded' })
 
         continue
@@ -232,8 +313,11 @@ export async function runEvidenceSweep(
           probe,
           target,
           { epochId: options.epochId, deadlineMono: probeDeadlineMono },
-          probeDeadlineMono - now
+          probeDeadlineMono - now,
+          sweepController.signal
         )
+
+        if (closed) {return}
 
         const health = validateHealthEvidence(result.health)
 
@@ -245,12 +329,35 @@ export async function runEvidenceSweep(
 
         observationsByIndex.set(index, { installId: target.installId, wave: target.wave, health })
       } catch (error) {
+        if (closed) {return}
         errors.push({ installId: target.installId, reason: boundedReason(error) })
       }
     }
   }
 
-  await Promise.all(Array.from({ length: concurrency }, () => worker()))
+  const workers = Promise.all(Array.from({ length: concurrency }, () => worker()))
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<void>(resolve => {
+    deadlineTimer = setTimeout(() => {
+      closed = true
+      sweepController.abort()
+      resolve()
+    }, deadlineMs)
+  })
+  await Promise.race([workers, deadline])
+  if (deadlineTimer) {clearTimeout(deadlineTimer)}
+  const expired = closed
+  closed = true
+
+  if (expired) {
+    const known = new Set([...errors.map(error => error.installId), ...[...observationsByIndex.values()].map(row => row.installId)])
+
+    for (const target of targets) {
+      if (!target.excluded && !known.has(target.installId)) {
+        errors.push({ installId: target.installId, reason: 'sweep-deadline-exceeded' })
+      }
+    }
+  }
 
   const observations = [...observationsByIndex.entries()]
     .sort(([left], [right]) => left - right)
@@ -263,11 +370,13 @@ export async function runEvidenceSweep(
   const fresh =
     finishedMono >= startedMono &&
     finishedMono - startedMono <= deadlineMs &&
+    !expired &&
     errors.length === 0 &&
     observations.every(observation => observation.health.observationId === options.epochId)
 
+  const firstWave = Math.min(...targets.filter(target => !target.excluded).map(target => target.wave))
   const nextAdmissionInstallIds = targets
-    .filter(target => !target.excluded)
+    .filter(target => !target.excluded && target.wave === firstWave + 1)
     .sort((left, right) => left.wave - right.wave || left.installId.localeCompare(right.installId))
     .map(target => target.installId)
 

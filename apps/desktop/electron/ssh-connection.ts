@@ -860,7 +860,7 @@ class SshConnection {
 
   // One-shot remote command over the control connection. Resolves stdout;
   // rejects with a classified error on non-zero exit or timeout.
-  async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
+  async exec(remoteCommand, { timeoutMs, stdinData, signal }: any = {}) {
     const args = buildExecArgs(this, remoteCommand, this._connectTimeoutMs)
     let result
 
@@ -868,6 +868,7 @@ class SshConnection {
       result = await runSsh(args, {
         timeoutMs: timeoutMs ?? this._execTimeoutMs,
         spawnFn: this._spawnFn,
+        signal,
         ...(stdinData != null ? { stdinData } : {})
       })
     } catch (error) {

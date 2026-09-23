@@ -211,8 +211,6 @@ async function run(): Promise<void> {
   })
 
   const state = stateAwaitingPromotion()
-  const activeAttempt = state.attempts['fixture-canary']
-
   const coordinator = createManagedRolloutCoordinator(state, {
     processGeneration: generation,
     journal: { persistAuthorization: async () => { throw new Error('stale-proof-mutated-journal') } },
@@ -226,16 +224,19 @@ async function run(): Promise<void> {
         revision: current.revision,
         queueGeneration: current.queueGeneration,
         processGeneration: oldGeneration,
+        completedMono: Number(process.hrtime.bigint() / 1_000_000n),
+        priorWaveClear: true,
+        nextAdmissionInstallIds: ['fixture-later'],
         valid: true,
         reason: null,
-        admissions: [{
-          installId: activeAttempt.installId,
-          installationFingerprint: activeAttempt.installationFingerprint,
-          sourceFingerprint: activeAttempt.sourceFingerprint,
-          reviewedSource: activeAttempt.reviewedSource,
+        admissions: Object.values(current.attempts).map(attempt => ({
+          installId: attempt.installId,
+          installationFingerprint: attempt.installationFingerprint,
+          sourceFingerprint: attempt.sourceFingerprint,
+          reviewedSource: attempt.reviewedSource,
           observationGeneration: oldGeneration,
           observedAt: '2026-09-23T00:00:00.000Z'
-        }]
+        }))
       })
     }
   })

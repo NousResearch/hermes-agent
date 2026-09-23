@@ -130,6 +130,7 @@ describe('managed rollout evidence', () => {
 
     expect(result.ok).toBe(true)
     expect(result.observations).toHaveLength(240)
+    expect(result.nextAdmissionInstallIds).toEqual(targets.slice(120).map(target => target.installId))
     expect(result.metrics).toEqual({
       requestedProbes: 240,
       completedProbes: 240,
@@ -178,9 +179,12 @@ describe('managed rollout evidence', () => {
   })
 
   it('bounds a probe that never settles', async () => {
+    let release!: () => void
     const result = await runEvidenceSweep(
       [{ installId: INSTALL, requiredScopeIds: [], wave: 0, excluded: false }],
-      () => new Promise(() => undefined),
+      () => new Promise(resolve => {
+        release = () => resolve({ health: healthy('epoch-1', [], INSTALL) })
+      }),
       { epochId: 'epoch-1', nowMono: () => 0, deadlineMs: 5, maxConcurrency: 1 }
     )
 
@@ -193,6 +197,48 @@ describe('managed rollout evidence', () => {
       timedOutProbes: 1,
       retryCount: 0
     })
+    release()
+    await Promise.resolve()
+  })
+
+  it('does not admit a ninth physical probe while timed-out probes still run', async () => {
+    let active = 0
+    let peak = 0
+    const release: Array<() => void> = []
+    const firstTargets = Array.from({ length: MAX_PROBE_CONCURRENCY }, (_, index) => ({
+      installId: index.toString(16).padStart(32, '0'), requiredScopeIds: ['default'], wave: 0, excluded: false
+    }))
+    const first = await runEvidenceSweep(firstTargets, async target => {
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise<void>(resolve => { release.push(resolve) })
+      active -= 1
+
+      return { health: healthy('old', ['default'], target.installId) }
+    }, { epochId: 'old', nowMono: () => 0, deadlineMs: 5 })
+
+    expect(first.ok).toBe(false)
+    expect(release).toHaveLength(MAX_PROBE_CONCURRENCY)
+
+    let nextStarted = false
+    const next = runEvidenceSweep(
+      [{ installId: 'f'.repeat(32), requiredScopeIds: ['default'], wave: 1, excluded: false }],
+      async target => {
+        nextStarted = true
+        active += 1
+        peak = Math.max(peak, active)
+        active -= 1
+
+        return { health: healthy('next', ['default'], target.installId) }
+      },
+      { epochId: 'next', nowMono: () => 0, deadlineMs: 100 }
+    )
+
+    await new Promise(resolve => setTimeout(resolve, 1))
+    expect(nextStarted).toBe(false)
+    release.forEach(resolve => resolve())
+    expect((await next).ok).toBe(true)
+    expect(peak).toBeLessThanOrEqual(MAX_PROBE_CONCURRENCY)
   })
 
   it('rejects a promotion sweep beyond 120 installations per wave or 240 total probes', async () => {

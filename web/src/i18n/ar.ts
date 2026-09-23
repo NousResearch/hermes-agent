@@ -1,6 +1,6 @@
-import { defineLocale } from "./define-locale";
+import { defineLocale, type TranslationOverrides } from "./define-locale";
 
-export const ar = defineLocale({
+export const arOverrides = {
   common: {
     save: "حفظ",
     saving: "جاري الحفظ...",
@@ -712,4 +712,6 @@ export const ar = defineLocale({
     logTruncated: "(عرض آخر 100 كيلوبايت — السجل الكامل في ",
     logAt: ")",
   },
-});
+} satisfies TranslationOverrides;
+
+export const ar = defineLocale(arOverrides);

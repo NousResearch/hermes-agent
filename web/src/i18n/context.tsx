@@ -17,9 +17,9 @@ import { ga } from "./ga";
 import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
-import { ar } from "./ar";
+import { ar, arOverrides } from "./ar";
 
-const TRANSLATIONS: Record<Locale, Translations> = {
+export const TRANSLATIONS: Record<Locale, Translations> = {
   en,
   zh,
   "zh-hant": zhHant,
@@ -37,6 +37,13 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   ru,
   hu,
   ar,
+};
+
+// Keep the unmerged source catalogs available to coverage tests. Runtime
+// translations intentionally use TRANSLATIONS so partial locales fall back to English.
+export const SOURCE_TRANSLATIONS = {
+  ...TRANSLATIONS,
+  ar: arOverrides,
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];

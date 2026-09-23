@@ -591,6 +591,8 @@ This prevents drift between what Nix declares and what's on disk. Detection uses
 
 Both signals hold the name of the system that manages the install. Thus the refusal names the correct rebuild command. The NixOS module gives `sudo nixos-rebuild switch`. The Home Manager module gives `home-manager switch`.
 
+A blocked command exits with status 1, so a script such as `hermes config set ... && systemctl restart ...` stops at the refusal. `hermes update` and `hermes update --check` are refused through the update admission gate: they exit with status 2 and write a `refused` update receipt, as on a Docker or apt install. `hermes update --plan` is read-only, so it still runs and reports the install as not updatable in place.
+
 ---
 
 ## Home Manager Module

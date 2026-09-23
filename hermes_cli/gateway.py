@@ -4688,7 +4688,7 @@ def _install_systemd_from_cli(args, *, force: bool, system: bool, run_as_user) -
 def _cmd_install(args):
     if is_managed():
         managed_error("install gateway service")
-        return
+        sys.exit(1)
     force = getattr(args, "force", False)
     # `--force` doubles as the reinstall flag here; a served profile's unit would only ever exit 78.
     _guard_named_profile_under_multiplexer(force=force)
@@ -4718,7 +4718,7 @@ def _cmd_uninstall(args):
     _refuse_from_inside_gateway("uninstall", "the gateway from terminating itself")
     if is_managed():
         managed_error("uninstall gateway service")
-        return
+        sys.exit(1)
     system = getattr(args, "system", False)
     if is_termux():
         _no_backend_exit("uninstall", "termux")

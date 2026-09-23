@@ -3103,7 +3103,7 @@ def edit_config():
     """Open config file in user's editor."""
     if is_managed():
         managed_error("edit configuration")
-        return
+        sys.exit(1)
     config_path = get_config_path()
     if not config_path.exists():
         save_config(DEFAULT_CONFIG, strip_defaults=False)
@@ -3552,7 +3552,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     to ``model.default``."""
     if is_managed():
         managed_error("set configuration values")
-        return
+        sys.exit(1)
     # Empty segments (``"agent."``) would write config["agent"][""] into a live schema section.
     if key != key.strip() or not key.strip():
         _exit_invalid(f"✗ Invalid config key: {key!r} (empty or surrounding whitespace).")
@@ -3724,7 +3724,7 @@ def unset_config_value(key: str):
     """Remove a user-set configuration or .env value."""
     if is_managed():
         managed_error("unset configuration values")
-        return
+        sys.exit(1)
     _exit_if_key_managed(key, "unset")
 
     if _is_env_config_key(key):

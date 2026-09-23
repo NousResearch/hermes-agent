@@ -12,22 +12,22 @@
  * Best-effort, like ChatSidebar: a failed fetch surfaces a small inline
  * error with a retry affordance and the terminal pane keeps working.
  *
- * This is a navigation surface, NOT a session-management one — delete,
- * rename, export, and bulk actions live on the Sessions page. Keeping this
- * panel read-only (plus select / new) avoids duplicating that machinery and
- * keeps the chat context focused on switching conversations quickly.
+ * This is primarily a navigation surface. It also lets the user delete
+ * inactive sessions; rename, export, and bulk actions live on Sessions.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
+import { AlertCircle, MessageSquarePlus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 
 const SESSION_LIMIT = 30;
 interface ChatSessionListProps {
@@ -67,6 +67,7 @@ export function ChatSessionList({
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   // Bumped to force a refetch (after switching, on Refresh, on mount).
   const [reloadNonce, setReloadNonce] = useState(0);
 
@@ -132,7 +133,7 @@ export function ChatSessionList({
   // PTY respawn even from an already-fresh session). Fallback: clear the
   // resume param ourselves, which spawns a fresh PTY whenever one was being
   // resumed. Session management (delete/rename/export) lives on the Sessions
-  // page; this panel only switches and starts conversations.
+  // page; this panel only switches, starts, and deletes inactive conversations.
   const startNew = useCallback(() => {
     onPicked?.();
     if (onNewChat) {
@@ -148,6 +149,22 @@ export function ChatSessionList({
       { replace: false },
     );
   }, [onNewChat, onPicked, setSearchParams]);
+
+  const sessionDelete = useConfirmDelete({
+    onDelete: useCallback(
+      async (id: string) => {
+        try {
+          await api.deleteSession(id, sessions?.find((s) => s.id === id)?.profile ?? profile);
+          setSessions((prev) => prev?.filter((s) => s.id !== id) ?? null);
+        } catch {
+          setDeleteError(t.sessions.failedToDelete);
+          throw new Error("delete failed");
+        }
+      },
+      [profile, sessions, t.sessions.failedToDelete],
+    ),
+  });
+  const pendingSession = sessions?.find((s) => s.id === sessionDelete.pendingId);
 
   const content = useMemo(() => {
     if (loading && sessions === null) {
@@ -194,9 +211,27 @@ export function ChatSessionList({
                   : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
               )}
             >
-              <span className="w-full truncate text-sm font-medium">
-                {rowLabel(s, t.sessions.untitledSession)}
-              </span>
+              <div className="flex w-full items-center gap-1">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                  {rowLabel(s, t.sessions.untitledSession)}
+                </span>
+                {!isActive && (
+                  <Button
+                    ghost
+                    destructive
+                    size="icon"
+                    aria-label={t.sessions.deleteSession}
+                    title={t.sessions.deleteSession}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setDeleteError(null);
+                      sessionDelete.requestDelete(s.id);
+                    }}
+                  >
+                    <Trash2 />
+                  </Button>
+                )}
+              </div>
               <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
                 <span>{timeAgo(s.last_active)}</span>
                 {s.message_count > 0 && (
@@ -217,7 +252,7 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [activeSessionId, error, loading, pick, reload, sessionDelete, sessions, t]);
 
   return (
     <aside
@@ -226,6 +261,18 @@ export function ChatSessionList({
         className,
       )}
     >
+      <DeleteConfirmDialog
+        open={sessionDelete.isOpen}
+        onCancel={sessionDelete.cancel}
+        onConfirm={sessionDelete.confirm}
+        title={t.sessions.confirmDeleteTitle}
+        description={
+          pendingSession
+            ? `"${rowLabel(pendingSession, t.sessions.untitledSession)}" — ${t.sessions.confirmDeleteMessage}`
+            : t.sessions.confirmDeleteMessage
+        }
+        loading={sessionDelete.isDeleting}
+      />
       <div className="flex items-center justify-between gap-2 px-2 pb-2">
         <span className="text-display text-xs tracking-wider text-text-tertiary">
           {t.sessions.title}
@@ -253,6 +300,12 @@ export function ChatSessionList({
       </Button>
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">
+        {deleteError && (
+          <div className="flex items-start gap-2 px-2 py-2 text-xs text-destructive">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="wrap-break-word">{deleteError}</span>
+          </div>
+        )}
         {content}
       </div>
     </aside>

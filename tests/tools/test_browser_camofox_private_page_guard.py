@@ -32,20 +32,18 @@ def _block_active(monkeypatch):
 
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
     monkeypatch.setattr(
-        bt_eval_policy, "_camofox_current_page_private_url", lambda tab_id, user_id: PRIVATE_URL
+        bt_eval_policy, "_camofox_current_page_blocked_url", lambda tab_id, user_id, *, include_private: PRIVATE_URL
     )
 
 
 def _block_inactive_guard(monkeypatch):
-    """SSRF guard inactive (local backend / allow_private_urls)."""
-    from tools import browser_tool
-
+    """Ordinary private URLs remain allowed when the private URL guard is disabled."""
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
-
-    def fail_probe(tab_id, user_id):
-        raise AssertionError("must not probe page URL when the SSRF guard is inactive")
-
-    monkeypatch.setattr(bt_eval_policy, "_camofox_current_page_private_url", fail_probe)
+    monkeypatch.setattr(
+        bt_eval_policy,
+        "_camofox_current_page_blocked_url",
+        lambda tab_id, user_id, *, include_private: None,
+    )
 
 
 def _public_page(monkeypatch):
@@ -53,7 +51,7 @@ def _public_page(monkeypatch):
 
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
     monkeypatch.setattr(
-        bt_eval_policy, "_camofox_current_page_private_url", lambda tab_id, user_id: None
+        bt_eval_policy, "_camofox_current_page_blocked_url", lambda tab_id, user_id, *, include_private: None
     )
 
 
@@ -150,13 +148,7 @@ def test_camofox_click_still_runs_when_page_is_public(monkeypatch, _session):
     ]
 
 
-def test_guard_inactive_does_not_probe(monkeypatch, _session):
-    """When the SSRF guard is inactive the read proceeds WITHOUT probing the URL.
-
-    This is the branch most likely to silently regress if the guard condition is
-    ever inverted, so it is exercised explicitly (mirrors the agent-browser
-    guard test).
-    """
+def test_guard_inactive_allows_ordinary_private_page(monkeypatch, _session):
     _block_inactive_guard(monkeypatch)
 
     monkeypatch.setattr(
@@ -169,3 +161,25 @@ def test_guard_inactive_does_not_probe(monkeypatch, _session):
 
     assert out["success"] is True
     assert out["element_count"] == 1
+
+
+def test_camofox_metadata_floor_applies_when_private_guard_is_disabled(monkeypatch, _session):
+    probes = []
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+
+    def blocked_url(tab_id, user_id, *, include_private):
+        probes.append((tab_id, user_id, include_private))
+        return PRIVATE_URL
+
+    monkeypatch.setattr(bt_eval_policy, "_camofox_current_page_blocked_url", blocked_url)
+    monkeypatch.setattr(
+        browser_camofox,
+        "_get",
+        lambda *args, **kwargs: pytest.fail("snapshot request must not run"),
+    )
+
+    out = json.loads(browser_camofox.camofox_snapshot(task_id="t1"))
+
+    assert out["success"] is False
+    assert PRIVATE_URL in out["error"]
+    assert probes == [("tab-1", "user-1", False)]

@@ -62,9 +62,10 @@ HAR recording works differently in each case (see How to Run).
   - (If a system Playwright already has browsers under `~/.cache/ms-playwright`, reuse it.)
 - `requests` or `httpx` for the replay step (stdlib `urllib` also works).
 - No API keys. Any keys/tokens the client needs are the ones the HAR captured.
-- For the CDP path (`har_capture_cdp.py`): a reachable CDP endpoint. On Hermes,
-  run `/browser connect` to print the active endpoint, or read `BROWSER_CDP_URL`
-  / `browser.cdp_url` in config. Cloud backends expose it as `cdpUrl`/`connectUrl`.
+- For the CDP path (`har_capture_cdp.py`): a reachable, explicitly configured CDP
+  endpoint. On Hermes, use `/browser connect <url>` or set `BROWSER_CDP_URL` /
+  `browser.cdp_url`. A cloud backend's `cdpUrl`/`connectUrl` is not automatically
+  registered or printed; explicitly configure it before attaching.
 
 ## How to Run
 
@@ -75,7 +76,7 @@ Scripts under this skill's `scripts/`, invoked through the `terminal` tool.
 |---|---|---|
 | Local `browser_navigate` (default, agent-browser/Playwright) | launched locally | `har_capture.py` |
 | Camofox (`CAMOFOX_URL` set) | local REST/CDP | `har_capture_cdp.py` if it exposes CDP, else drive it yourself |
-| Browserbase / Browser-Use / Firecrawl (cloud) | **CDP** (`cdpUrl`) | `har_capture_cdp.py` |
+| Browserbase / Browser-Use / Firecrawl (cloud) | provider CDP; explicitly configure its `cdpUrl` first | `har_capture_cdp.py` |
 | `/browser connect <url>` / `BROWSER_CDP_URL` | **CDP** | `har_capture_cdp.py` |
 
 Rule of thumb: **if Hermes *launched* the browser, use `har_capture.py`; if it
@@ -96,8 +97,8 @@ Resolve paths against this skill's directory. Canonical loop:
 python3 scripts/har_capture.py "https://SITE/" out.har \
   --action "fill:input[name=search]:my query" --action "sleep:3" --wait 2
 
-# 1b. Capture, CDP browser (cloud backend or /browser connect)
-#     get the endpoint from /browser connect or BROWSER_CDP_URL
+# 1b. Capture, CDP browser (explicit /browser connect or cdp_url override)
+#     configure a cloud cdpUrl explicitly; it is not auto-printed
 python3 scripts/har_capture_cdp.py "ws://HOST/devtools/browser/..." out.har \
   --goto "https://SITE/" --action "fill:input[name=search]:my query" \
   --action "sleep:3" --wait 2
@@ -118,7 +119,7 @@ har_capture.py <url> <out.har> [--wait S] [--headed] [--action SPEC ...]
 
 har_capture_cdp.py <cdp_url> <out.har> [--goto URL] [--wait S] [--action SPEC ...]
   same action SPEC; attaches to an existing CDP browser and does NOT close it
-  use for cloud backends (Browserbase/Browser-Use/Firecrawl) & /browser connect
+  use for an explicitly configured cloud endpoint or /browser connect
 
 har_to_client.py <in.har> [--host SUBSTR] [--include-static] [--max-body N]
   default: keeps only XHR/fetch/JSON; --host narrows to one domain
@@ -129,7 +130,7 @@ har_to_client.py <in.har> [--host SUBSTR] [--include-static] [--max-body N]
 
 ## Procedure
 
-0. **Pick the capturer by pathway** (see How to Run table). Launched-locally → `har_capture.py`; reached over CDP → `har_capture_cdp.py`. On Hermes, `/browser connect` tells you the CDP endpoint when a cloud/remote backend is active.
+0. **Pick the capturer by pathway** (see How to Run table). Launched-locally → `har_capture.py`; reached over CDP → `har_capture_cdp.py`. For a cloud backend, explicitly pass its `cdpUrl` to `/browser connect` or configure `browser.cdp_url`; Hermes does not automatically register or print a provider-managed endpoint.
 1. **Find the interaction.** Open the site with `browser_navigate` (or `--headed` capture) to see which selector to type into / click, and confirm a JSON XHR fires in devtools/network.
 2. **Capture the HAR** via the `terminal` tool. Order `--action` to reach the request: `fill` the box, then `sleep` long enough for the debounced XHR, and always leave `--wait` at the end so late responses flush. Both capturers embed response bodies, so the derived client sees real payload shapes.
 3. **Derive** with `har_to_client.py --host <domain>`. Read off: the method, the URL/path template (numeric/UUID segments collapse to `{id}`), query params, request-body JSON, and the `### Replay hints` block.
@@ -161,7 +162,7 @@ for p in r.json()["pages"]:
 - **Auth/session endpoints** need the captured `Cookie`/`Authorization` header, and those expire. The derived client is only as durable as the credential; re-capture when it 401s. HARs contain live secrets — treat `out.har` as sensitive and delete it after deriving.
 - **`record_har_content="embed"` makes big HARs.** Use `--max-body` to cap what's printed; the file itself can be large for media-heavy pages.
 - **Endpoints shift.** Sites change private APIs without notice. Re-run the capture→derive loop when a client breaks rather than patching URLs by hand.
-- **Wrong capturer = empty/no HAR.** `har_capture.py` on a cloud/CDP backend records nothing (it launches its own local browser instead of the one you meant). `har_capture_cdp.py` needs the endpoint; on Hermes get it from `/browser connect` or `BROWSER_CDP_URL`. Match the capturer to the pathway (How to Run table).
+- **Wrong capturer = empty/no HAR.** `har_capture.py` on a cloud/CDP backend records nothing (it launches its own local browser instead of the one you meant). `har_capture_cdp.py` needs an explicit endpoint; configure a cloud `cdpUrl` through `/browser connect` or `browser.cdp_url` rather than expecting Hermes to register or print it. Match the capturer to the pathway (How to Run table).
 - **Headless-Chrome UA is a weak tell.** Local/agent-browser capture yields a `HeadlessChrome/...` User-Agent; some sites sniff the "Headless" token. Cloud backends (Browserbase/Browser-Use) send a real desktop-Chrome UA, so a client derived from a cloud capture replays more reliably. If a headless-derived client 403s where the browser didn't, swap the "Headless" UA for a normal Chrome UA string before assuming the endpoint changed.
 - **CDP capture doesn't close the browser.** `har_capture_cdp.py` attaches to a browser it doesn't own and leaves it running — correct for cloud/remote sessions Hermes manages. Don't add a close; let the owning backend tear it down.
 

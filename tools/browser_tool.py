@@ -57,11 +57,7 @@ def _build_browser_env() -> dict:
             env[key] = value
     # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
     # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
-    # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over). Pure: this
-    # builder also serves the npx cache warmer, the Chromium auto-installer and the Lightpanda engine, none of which
-    # may bring a screen up — the auto-start hook lives at the headed Chromium spawn sites (browser_tool_session).
-    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
-    env = add_loopback_no_proxy(_bot_desktop_env(env))
+    env = add_loopback_no_proxy(env)
     # Chrome puts its SingletonSocket under $TMPDIR; a deep scratch dir overflows the AF_UNIX
     # path cap and Chrome dies at startup ("Socket path too long"), so browsers get the short root.
     env["TMPDIR"] = _socket_safe_tmpdir()
@@ -587,7 +583,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_console",
-        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first. When 'expression' is provided, evaluates JavaScript in the page context and returns the result — use this for DOM inspection, reading page state, or extracting data programmatically.",
+        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first. JavaScript evaluation is retired: passing 'expression' is rejected to prevent page code from reading credentials or reaching internal services. Use browser_snapshot, browser_get_images, browser_vision, and dedicated browser actions instead.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -598,7 +594,7 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "expression": {
                     "type": "string",
-                    "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'"
+                    "description": "Retired compatibility parameter. Any supplied expression is rejected; use browser_snapshot, browser_get_images, browser_vision, or browser actions instead."
                 }
             },
             "required": []
@@ -815,13 +811,15 @@ def browser_snapshot(
     if _is_camofox_mode():
         return _camofox("camofox_snapshot", full, task_id)
     effective_task_id = _last_session_key(task_id or "default")
-    result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
-    if not result.get("success"):
-        return _failed_response(result, "Failed to get snapshot")
-
+    # Probe before reading the accessibility tree: snapshot content from a metadata
+    # page must never enter the response, even transiently.
     blocked = _blocked_private_page_content(effective_task_id)
     if blocked is not None:
         return blocked
+
+    result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
+    if not result.get("success"):
+        return _failed_response(result, "Failed to get snapshot")
 
     response = {"success": True, **_snapshot_fields(result)}
     _lp._copy_fallback_warning(response, result)
@@ -847,9 +845,7 @@ def _json_with_fallback(response: Dict[str, Any], result: Dict[str, Any]) -> str
 
 
 def _failed_response(result: Dict[str, Any], default_error: str) -> str:
-    # ``code`` = machine-readable refusal (human_has_control), same shape as computer_use's.
-    extra = {"code": result["code"]} if result.get("code") else {}
-    return _json_with_fallback(_err(result.get("error", default_error), **extra), result)
+    return _json_with_fallback(_err(result.get("error", default_error)), result)
 
 
 def _tool_response(result: Dict[str, Any], ok: Dict[str, Any], default_error: str) -> str:
@@ -947,11 +943,12 @@ def _blocked_private_page_json(blocked_url: str, why: str) -> str:
 
 
 def _blocked_private_page(effective_task_id: str, why: str) -> Optional[str]:
-    """Blocked payload when the SSRF guard is active and the current page is private, else
-    None. Fail-open on probe failure (see ``_current_page_private_url``)."""
-    if not _eval_policy._eval_ssrf_guard_active(effective_task_id):
-        return None
-    blocked_url = _eval_policy._current_page_private_url(effective_task_id)
+    """Blocked payload when the current page reaches the metadata floor or, while the
+    private-URL guard is active, an ordinary private address."""
+    blocked_url = _eval_policy._current_page_blocked_url(
+        effective_task_id,
+        include_private=_eval_policy._eval_ssrf_guard_active(effective_task_id),
+    )
     return _blocked_private_page_json(blocked_url, why) if blocked_url else None
 
 
@@ -961,6 +958,10 @@ def _blocked_private_page_action(effective_task_id: str, action: str) -> Optiona
 
 
 _EVAL_NAVIGATED_WHY = "This may have been caused by a JavaScript navigation via browser_console."
+BROWSER_EVALUATION_DISABLED_ERROR = (
+    "Blocked: arbitrary browser JavaScript evaluation is unavailable. "
+    "Use browser_snapshot, browser_get_images, browser_vision, or browser actions instead."
+)
 
 
 def _blocked_private_page_content(effective_task_id: str) -> Optional[str]:
@@ -970,13 +971,9 @@ def _blocked_private_page_content(effective_task_id: str) -> Optional[str]:
 
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
-    """Console messages + uncaught JS errors (optionally ``clear``ing the buffers),
-    or — when ``expression`` is given — evaluate JS in the page like the DevTools console."""
+    """Read console messages and uncaught JS errors, optionally clearing their buffers."""
     if expression is not None:
-        policy_error = _eval_policy._enforce_browser_eval_policy(expression)
-        if policy_error:
-            return _dumps(_err(policy_error))
-        return _browser_eval(expression, task_id)
+        return _dumps(_err(BROWSER_EVALUATION_DISABLED_ERROR))
 
     if _is_camofox_mode():
         return _camofox("camofox_console", clear, task_id)
@@ -1076,62 +1073,13 @@ def _eval_failure_response(result: Dict[str, Any]) -> str:
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
-    """Evaluate JS in the page context. Private-network guard in two halves: the literal
-    pre-scan closes direct fetches (they never update ``location.href``); the post-eval
-    page-URL recheck closes navigate-then-read."""
-    effective_task_id = _last_session_key(task_id or "default")
-
-    if _eval_policy._eval_ssrf_guard_active(effective_task_id):
-        blocked_literal = _eval_policy._expression_targets_private_url(expression)
-        if blocked_literal:
-            return _dumps(_err(
-                "Blocked: JavaScript expression targets a private or "
-                f"internal address ({blocked_literal}). Reading internal "
-                "endpoints via browser_console is not permitted in this "
-                "browser mode."
-            ))
-
-    # Camofox keeps its own raw-task_id-keyed session map, so pass the raw id.
-    if _is_camofox_mode():
-        return _camofox_eval(expression, task_id)
-
-    # The supervisor answers over its own WebSocket and never reaches _run_browser_command, so the Bot
-    # Desktop lease fence has to bracket it here too — otherwise the one command that reads arbitrary
-    # page state is the one a human's takeover does not stop. Same fence, same session identity.
-    fenced = _session.run_fenced(_active_sessions.get(effective_task_id) or {},
-                                 lambda: {"fast": _eval_supervisor_fast_path(effective_task_id, expression)})
-    if fenced.get("code") == "human_has_control":
-        return _dumps(fenced)
-    if fenced["fast"] is not None:
-        return fenced["fast"]
-
-    result = _session._run_browser_command(effective_task_id, "eval", [expression])
-    if not result.get("success"):
-        return _eval_failure_response(result)
-    return _eval_result_or_blocked(effective_task_id, _parse_eval_value(result.get("data", {}).get("result")), result)
+    """Compatibility entry point for the retired public evaluation capability."""
+    return _dumps(_err(BROWSER_EVALUATION_DISABLED_ERROR))
 
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
-    """Evaluate JS via Camofox's /tabs/{tab_id}/evaluate endpoint (if available)."""
-    from tools.browser_camofox import _ensure_tab, _post
-    try:
-        tab_info = _ensure_tab(task_id or "default")
-        tab_id = tab_info.get("tab_id") or tab_info.get("id")
-        user_id = tab_info["user_id"]
-        resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": user_id})
-        parsed = _parse_eval_value(resp.get("result") if isinstance(resp, dict) else resp)
-
-        if _eval_policy._eval_ssrf_guard_active(task_id or "default"):
-            _blocked_url = _eval_policy._camofox_current_page_private_url(tab_id, user_id)
-            if _blocked_url:
-                return _blocked_private_page_json(_blocked_url, _EVAL_NAVIGATED_WHY)
-
-        return _dumps(_eval_ok_response(parsed), default=str)
-    except Exception as e:
-        if any(code in str(e) for code in ("404", "405", "501")):  # server without eval support
-            return json.dumps(_err("JavaScript evaluation is not supported by this Camofox server. "
-                                   "Use browser_snapshot or browser_vision to inspect page state."))
-        return tool_error(str(e), success=False)
+    """Compatibility entry point for the retired public Camofox evaluation capability."""
+    return _dumps(_err(BROWSER_EVALUATION_DISABLED_ERROR))
 
 
 def _maybe_start_recording(task_id: str):

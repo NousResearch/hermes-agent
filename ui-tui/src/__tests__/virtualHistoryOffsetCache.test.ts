@@ -66,7 +66,8 @@ function Harness({
   generation = 0,
   initialHeights,
   items,
-  maxMounted = 16
+  maxMounted = 16,
+  unmountFirstRef = false
 }: {
   columns?: number
   expose: React.MutableRefObject<Exposed | null>
@@ -75,6 +76,7 @@ function Harness({
   initialHeights?: ReadonlyMap<string, number>
   items: readonly Item[]
   maxMounted?: number
+  unmountFirstRef?: boolean
 }) {
   const scrollRef = useRef<ScrollBoxHandle | null>(null)
 
@@ -104,7 +106,7 @@ function Harness({
           {
             height: itemHeightForColumns(item, columns),
             key: item.key,
-            ref: virtualHistory.measureRef(item.key)
+            ref: unmountFirstRef && item.key === items[0]?.key ? undefined : virtualHistory.measureRef(item.key)
           },
           React.createElement(Text, null, item.text ?? item.key)
         )
@@ -533,19 +535,21 @@ describe('useVirtualHistory offset cache reuse', () => {
 
       scroll.scrollTo(0)
       await delay(20)
-      scroll.scrollTo(5)
+      scroll.scrollTo(3)
+      await delay(20)
+      expect(expose.current!.virtualHistory.start).toBe(0)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
       const staleHeights = new Map(initialHeights)
 
       staleHeights.set(items[0]!.key, 1)
-      instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
+      instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items, unmountFirstRef: true }))
       await delay(40)
 
       expect(adjustScrollTop).toHaveBeenCalledOnce()
       expect(adjustScrollTop).toHaveBeenCalledWith(1)
-      expect(scroll.getScrollTop()).toBe(6)
+      expect(scroll.getScrollTop()).toBe(4)
       expect(scroll.isSticky()).toBe(false)
-      expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
+      expect(expose.current!.virtualHistory.start).toBe(0)
       expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
     } finally {
       instance.unmount()

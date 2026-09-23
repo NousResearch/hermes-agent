@@ -185,6 +185,17 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     supervisor provenance — no argv/PID inference), ``gateway_state.json`` fallback, then PID-file
     mapped gateways no status record covers."""
     supervisor = _supervisor_classifier()
+    from hermes_cli.update_receipt import _gateway_code_root, _updater_code_root
+
+    expected_root = _updater_code_root()
+
+    def add_gateway(profile: str, home: Any, pid: int, sup: str, record: dict) -> None:
+        code_root = _gateway_code_root(pid, home)
+        detail = {"code_root": str(code_root)} if code_root and expected_root and code_root != expected_root else {}
+        plan.runtimes.append(_runtime(
+            "gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version"), detail=detail,
+        ))
+
     with _probe("Gateway-state inventory"):
         from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
@@ -208,14 +219,19 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 record = read_runtime_status(home / "gateway_state.json") or {}
                 seen.add(pid)
                 sup = supervisor(pid)
-            plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
+            add_gateway(profile, home, pid, sup, record)
     with _probe("PID-file gateway inventory"):
         from hermes_cli.gateway import find_profile_gateway_processes
 
+        homes = dict(profile_homes)
         for proc in find_profile_gateway_processes():
             if proc.pid not in seen:
                 seen.add(proc.pid)
-                plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
+                home = homes.get(proc.profile)
+                if home is None:
+                    plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
+                else:
+                    add_gateway(proc.profile, home, proc.pid, supervisor(proc.pid), {})
 
 
 def _loaded_backend_launchd_jobs() -> list:
@@ -325,7 +341,10 @@ def print_update_plan(plan: UpdatePlan) -> None:
     for runtime in plan.runtimes:
         sha = f" @ {runtime.code_sha[:8]}" if runtime.code_sha else ""
         print(f"    • {runtime.kind} [{runtime.profile}] pid {runtime.pid} — {runtime.supervisor}{sha}")
-        print(f"      restart: {describe_restart_mechanism(runtime.restart_via, runtime.profile)}")
+        if runtime.kind == "gateway" and runtime.detail.get("code_root"):
+            print(f"      restart: external checkout ({runtime.detail['code_root']}); update separately")
+        else:
+            print(f"      restart: {describe_restart_mechanism(runtime.restart_via, runtime.profile)}")
 
 
 def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
@@ -366,13 +385,15 @@ def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
     stale_serve_pids: "set | None" = None,
+    external_gateway_pids: "set[int] | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
     planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
-    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire), or ``external``
+    when a verified gateway runs from a separate checkout. Never raises.
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
     ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
@@ -396,6 +417,8 @@ def match_runtime_outcomes(
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
 
         def _outcome(r: RuntimeRecord) -> str:
+            if r.kind == "gateway" and (r.detail.get("code_root") or r.pid in (external_gateway_pids or set())):
+                return "external"
             killed_here = r.pid is not None and r.pid in killed
             if r.kind in _SERVE_KINDS:
                 if killed_here:

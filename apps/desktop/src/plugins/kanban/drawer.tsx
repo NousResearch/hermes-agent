@@ -558,10 +558,10 @@ function LinkChips({
     <div className="flex flex-wrap gap-1">
       {ids.map(linked => (
         <button
+          aria-label={linkTitles.get(linked) || shortId(linked)}
           className="max-w-full truncate rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
           key={linked}
           onClick={() => onOpen(linked)}
-          title={`${linkTitles.get(linked) ?? ''} (${shortId(linked)})`}
           type="button"
         >
           {linkTitles.get(linked) || shortId(linked)}

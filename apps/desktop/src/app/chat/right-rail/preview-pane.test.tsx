@@ -812,6 +812,34 @@ describe('PreviewPane local HTML Render|Source toggle', () => {
     expect($previewTabs.get()[0]?.target.renderMode).toBe('preview')
   })
 
+  it('lands on Source, not Diff, when Source is picked for a file with uncommitted changes', async () => {
+    desktopWindow.hermesDesktop = {
+      ...desktopWindow.hermesDesktop,
+      git: { fileDiff: vi.fn(async () => '--- a/page.html\n+++ b/page.html\n-<p>x</p>\n+<p>y</p>\n') },
+      gitRoot: vi.fn(async () => '/work')
+    } as unknown as Window['hermesDesktop']
+
+    openPreview(target)
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewTilePane tabId={previewTabId(target)} />)
+    })
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'SOURCE' }))
+    })
+
+    await waitFor(() => expect(rendered.getByRole('button', { name: 'DIFF' })).toBeTruthy(), {
+      container: rendered.container
+    })
+    const activeMode = (name: string) => rendered.getByRole('button', { name }).classList.contains('underline')
+
+    expect(activeMode('SOURCE')).toBe(true)
+    expect(activeMode('DIFF')).toBe(false)
+  })
+
   it('offers no Render mode for a remote HTML file that fell back to source', async () => {
     // local-preview marks a remote HTML file whose data URL failed validation
     // as a source-only transient target; there is nothing to render it with.

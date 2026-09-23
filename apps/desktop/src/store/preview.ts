@@ -500,13 +500,15 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
 }
 
-/** HTML files open rendered unless the caller asks for a mode. */
-function withRenderMode(target: PreviewTarget): PreviewTarget {
+/** HTML files open rendered unless the caller asks for a mode. A re-open keeps
+ *  the mode the tab is already in, so refreshing the target never undoes a
+ *  user's Source pick. */
+function withRenderMode(target: PreviewTarget, open?: PreviewTarget): PreviewTarget {
   if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode) {
     return target
   }
 
-  return { ...target, renderMode: 'preview' }
+  return { ...target, renderMode: open?.renderMode ?? 'preview' }
 }
 
 /** Flip a tab between live Render and Source in place. Same tab id. */
@@ -528,7 +530,7 @@ export function openPreview(target: PreviewTarget) {
   const current = $previewTabs.get()
   const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: withRenderMode(target) }
+  const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)

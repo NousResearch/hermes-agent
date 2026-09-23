@@ -187,6 +187,22 @@ describe('preview store', () => {
     expect($previewTarget.get()?.renderMode).toBe('preview')
   })
 
+  it('keeps a tab in Source when the same file is opened again', () => {
+    const target = fileTarget('/work/again.html')
+
+    openPreview(target)
+    setPreviewRenderMode(previewTabId(target), 'source')
+    openPreview({ ...target, label: 'again.html (renamed)' })
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTarget.get()?.label).toBe('again.html (renamed)')
+    expect($previewTarget.get()?.renderMode).toBe('source')
+
+    openPreview({ ...target, renderMode: 'preview' })
+
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+  })
+
   it('falls back to a neighbouring tab when the active one closes, and clears the selection on the last', () => {
     openPreview(fileTarget('/work/one.html'))
     openPreview(fileTarget('/work/two.html'))

@@ -1102,7 +1102,9 @@ export function LocalFilePreview({
     }
 
     const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
-    const mode = userMode && modes.includes(userMode) ? userMode : autoMode
+    // The pane hands an HTML file over only once Source was picked; that pick
+    // outranks the diff-first default.
+    const mode = userMode && modes.includes(userMode) ? userMode : onSelectRendered ? 'source' : autoMode
 
     const selectMode = (next: PreviewViewMode) => {
       if (next === 'rendered' && onSelectRendered) {

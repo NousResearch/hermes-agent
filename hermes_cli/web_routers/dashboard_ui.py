@@ -319,7 +319,11 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
                                profile: Optional[str] = None):
     """Persist memory provider / context engine selection (writes config.yaml)."""
     _require_token(request)
-    from hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
+    from hermes_cli.plugins_cmd import (
+        _normalize_context_engine_name,
+        _save_context_engine,
+        _save_memory_provider,
+    )
 
     def _run():
         # ``_save_memory_provider``/``_save_context_engine`` are functools.partial over
@@ -335,7 +339,7 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
                 _require_memory_provider_ready(memory_provider)
                 _save_memory_provider(memory_provider)
             if body.context_engine is not None:
-                _save_context_engine(body.context_engine)
+                _save_context_engine(_normalize_context_engine_name(body.context_engine))
         _invalidate_plugins_hub_cache()
         return {"ok": True}
 

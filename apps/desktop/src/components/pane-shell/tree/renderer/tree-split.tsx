@@ -541,7 +541,9 @@ export function TreeSplit({
     ]
   )
 
-  // Double-click a sash: every neighbor returns to its DEFAULT size.
+  // Double-click a horizontal sash: distribute every visible sibling evenly.
+  // Hidden and minimized siblings keep their remembered weight and overrides.
+  // Vertical splits retain their default-size reset behavior:
   //  - fixed zones (sidebar stacks): clear the drag override -> the declared
   //    width (237px etc.) comes back;
   //  - flex zones fronted by a size-declaring pane (a sidebar in a mixed
@@ -553,6 +555,26 @@ export function TreeSplit({
       const container = containerRef.current
 
       if (!container) {
+        return
+      }
+
+      if (horizontal) {
+        const weights = [...node.weights]
+
+        node.children.forEach((child, i) => {
+          if (isCollapsed(child) || (child.type === 'group' && child.minimized)) {
+            return
+          }
+
+          weights[i] = 1
+
+          for (const paneId of allPaneIds(child).filter(id => !paneGone(id))) {
+            setPaneWidthOverride(paneId, undefined)
+          }
+        })
+
+        setTreeSplitWeights(node.id, weights)
+
         return
       }
 

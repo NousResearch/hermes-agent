@@ -94,6 +94,37 @@ function row(): SplitNode {
 }
 
 describe('TreeSplit cascading expansion', () => {
+  it('equalizes three visible panes despite declared widths while preserving a hidden sibling', () => {
+    const tree = split(
+      'row',
+      [
+        group(['chat'], { id: 'chat-zone' }),
+        group(['cron'], { id: 'cron-zone' }),
+        group(['browser'], { id: 'browser-zone' }),
+        group(['logs'], { id: 'logs-zone' })
+      ],
+      [5, 1, 2, 7],
+      'equalize-row'
+    )
+
+    disposers.push(
+      registry.register({ area: 'panes', data: { placement: 'right' }, id: 'logs', render: () => null, title: 'Logs' }),
+      registry.register({ area: 'layouts', data: tree, id: 'unequal-layout', title: 'Unequal' })
+    )
+    $hiddenTreePanes.set(new Set(['logs']))
+    $layoutTree.set(tree)
+    $paneStates.set({ cron: { open: true, widthOverride: 180 }, logs: { open: true, widthOverride: 260 } })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const sash = document.querySelectorAll('[role="separator"]')[0]!
+    fireEvent.doubleClick(sash)
+
+    expect(row().weights).toEqual([1, 1, 1, 7])
+    expect($paneStates.get().cron?.widthOverride).toBeUndefined()
+    expect($paneStates.get().logs).toEqual({ open: true, widthOverride: 260 })
+  })
+
   it('grows Browser through Cron into Chat after Cron reaches its minimum', () => {
     const tree = split(
       'row',

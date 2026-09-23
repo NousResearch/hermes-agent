@@ -1420,6 +1420,9 @@ platform_toolsets:
 #       # dashboard/mobile front-end) count as human instead of being dropped
 #       # as app traffic. Narrower than allow_bots: all. Users only — never apps.
 #       api_human_users: ["U0AAAAAAA", "U0BBBBBBB"]
+#       # Drop exact Slack bot (B...), bot-user (U...), or app (A...) IDs before
+#       # mention/thread/session routing. Other bots still follow allow_bots.
+#       ignored_bot_ids: []
 #       # Suppress automatic link-preview cards without removing clickable links.
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false

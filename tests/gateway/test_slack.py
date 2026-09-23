@@ -2297,6 +2297,88 @@ class TestMessageRouting:
 
         adapter.handle_message.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ignored_id", ["B_IGNORED", "U_IGNORED", "A_IGNORED"])
+    async def test_ignored_bot_ids_drop_declared_bot_before_routing(
+        self, adapter, ignored_id
+    ):
+        """An ignored bot/app cannot trigger a turn even under allow_bots=all."""
+        adapter.config.extra.update(
+            {"allow_bots": "all", "ignored_bot_ids": [ignored_id]}
+        )
+        event = {
+            "text": "deployment finished",
+            "user": "U_IGNORED",
+            "bot_id": "B_IGNORED",
+            "app_id": "A_IGNORED",
+            "subtype": "bot_message",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000002",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ignored_bot_user_without_bot_event_markers_is_dropped(self, adapter):
+        """Resolved bot users obey ignored_bot_ids even without bot_id/subtype."""
+        adapter.config.extra.update(
+            {"allow_bots": "all", "ignored_bot_ids": "U_PEER_BOT"}
+        )
+        adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"is_bot": True, "profile": {}}}
+        )
+        event = {
+            "text": "background status update",
+            "user": "U_PEER_BOT",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000003",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_nonignored_bot_still_obeys_allow_bots_policy(self, adapter):
+        """Configuring a denylist must not narrow unrelated bot traffic."""
+        adapter.config.extra.update(
+            {"allow_bots": "all", "ignored_bot_ids": ["B_IGNORED"]}
+        )
+        event = {
+            "text": "deployment finished",
+            "user": "U_CI_BOT",
+            "bot_id": "B_CI_BOT",
+            "subtype": "bot_message",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000004",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ignored_bot_id_does_not_block_a_human_sender(self, adapter):
+        """The denylist applies only after Slack bot detection succeeds."""
+        adapter.config.extra["ignored_bot_ids"] = ["U_USER"]
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "client_msg_id": "human-message-1",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000005",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_awaited_once()
+
 
     @pytest.mark.asyncio
     async def test_message_edit_with_new_mention_processed(self, adapter):

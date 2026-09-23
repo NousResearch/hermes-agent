@@ -286,6 +286,31 @@ class TestLoadGatewayConfig:
 
         assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
 
+    def test_slack_ignored_bot_ids_are_seeded_into_platform_extra(
+        self, tmp_path, monkeypatch
+    ):
+        """Slack bot denylist stays typed config instead of becoming a secret env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    extra:\n"
+            "      ignored_bot_ids:\n"
+            "        - B0123456789\n"
+            "        - U0123456789\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].extra["ignored_bot_ids"] == [
+            "B0123456789",
+            "U0123456789",
+        ]
+
 
     def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
         """``platforms.slack.typing_status_text`` reaches PlatformConfig via

@@ -2728,6 +2728,35 @@ class SlackAdapter(BasePlatformAdapter):
             return "none"
         return value
 
+    def _slack_ignored_bot_ids(self) -> set[str]:
+        """Exact bot, bot-user, and app IDs dropped before normal bot routing.
+
+        Accept a YAML list or comma-separated scalar. Normalizing the setting
+        here keeps Slack's labeled-event and resolved-bot-user paths on the
+        same exact-ID policy.
+        """
+        raw = _extra_or_secret(
+            self.config.extra,
+            "ignored_bot_ids",
+            "SLACK_IGNORED_BOT_IDS",
+            "",
+            blank_is_unset=False,
+        )
+        parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
+        return {str(part).strip() for part in parts if str(part).strip()}
+
+    def _is_ignored_bot_sender(self, event: dict) -> bool:
+        """Match a bot/app event against configured Slack sender IDs."""
+        ignored = self._slack_ignored_bot_ids()
+        if not ignored:
+            return False
+        sender_ids = {
+            str(event.get(key) or "").strip()
+            for key in ("bot_id", "user", "app_id")
+        }
+        sender_ids.discard("")
+        return bool(sender_ids & ignored)
+
     def _slack_api_human_users(self) -> frozenset:
         """User IDs whose Web-API posts count as human (``extra.api_human_users`` /
         ``SLACK_API_HUMAN_USERS``): ``xoxp-`` posts carry ``app_id`` and no ``client_msg_id`` so
@@ -4315,6 +4344,9 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id=str(event.get("team") or event.get("team_id") or ""))
         if not sender_is_bot:
             return False
+        if self._is_ignored_bot_sender(event):
+            logger.debug("[Slack] Dropping message from configured ignored bot/app sender")
+            return True
         allow_bots = self._slack_allow_bots()
         if allow_bots == "none":
             return True
@@ -4404,6 +4436,9 @@ class SlackAdapter(BasePlatformAdapter):
                 user_id, chat_id=channel_id, team_id=team_id)
         if not sender_is_bot_user:
             return False
+        if self._is_ignored_bot_sender(event):
+            logger.debug("[Slack] Dropping message from configured ignored bot/app sender")
+            return True
         allow_bots = self._slack_allow_bots()
         return allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned)
 
@@ -6697,6 +6732,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
     ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
     ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
+    ("ignored_bot_ids", "SLACK_IGNORED_BOT_IDS", "csv"),
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
@@ -6731,6 +6767,7 @@ def register(ctx) -> None:
         # YAML→env bridge: config.yaml slack: keys → SLACK_* env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of config.yaml slack: keys (require_mention,
         # strict_mention, ignore_other_user_mentions, thread_require_mention, allow_bots,
+        # ignored_bot_ids,
         # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
         # env vars that the adapter reads via os.getenv(). Replaces the hardcoded block in
         # gateway/config.py. Hook contract: #24849.

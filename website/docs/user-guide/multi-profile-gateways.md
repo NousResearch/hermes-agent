@@ -87,6 +87,10 @@ rather than "this profile's gateway":
 - Under a service supervisor the attach exits 75, not 0 — systemd, s6 and
   launchd all restart a 75 after a short delay, so the unit keeps retrying and
   takes over by itself the moment the host process goes away.
+- Two units started at once can both see no host process yet; the host lock
+  decides which one runs, and the loser exits 75 and attaches on the retry.
+  `--replace` does not skip that check (every generated unit carries it), only
+  `--force` does.
 
 Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
 `true`), with one safety rule: an *unset* flag is a request the default gateway

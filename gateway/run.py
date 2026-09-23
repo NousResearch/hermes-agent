@@ -5853,7 +5853,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _planned_stop_watcher_thread.start()
 
     # PID file BEFORE adapters: of two concurrent `run --replace`, only the O_EXCL winner opens sockets.
-    if not _start_gateway_claim_pid_file(force=force or replace):
+    # Only --force skips the host-lock refusal. Every generated unit carries --replace, so reading it as
+    # --force there disabled the one arbiter of the two-units-at-once race; a replace that took the
+    # owner over already freed the lock with that process.
+    if not _start_gateway_claim_pid_file(force=force):
         return False
 
     # Right after the PID claim (which makes us authoritative); non-fatal — consumers fall back to scan.

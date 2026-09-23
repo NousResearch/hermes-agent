@@ -58,7 +58,9 @@ class _RecordingAdapter:
 
     def __init__(self) -> None:
         self._pending_messages: dict = {}
+        self._active_sessions: dict = {}
         self.sends: list[dict] = []
+        self.handled: list = []
 
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None):
         self.sends.append({"chat_id": chat_id, "content": content, "metadata": metadata})
@@ -68,6 +70,12 @@ class _RecordingAdapter:
             message_id = "mock-msg"
 
         return _R()
+
+    async def handle_message(self, event):
+        """Idle-session active drain hands the continuation straight here (see
+        gateway/run_goals.py::_post_turn_goal_continuation); record it like the
+        production adapter would rather than actually re-running a turn."""
+        self.handled.append(event)
 
 
 def _make_runner_with_adapter(session_id: str = None):
@@ -120,9 +128,10 @@ async def _drain_until(condition, timeout=5.0):
 @pytest.mark.asyncio
 async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
     """When the judge says continue, both the 'continuing' status and the
-    continuation-prompt event must be delivered. The continuation prompt is
-    routed through the adapter's pending-messages FIFO so the goal loop
-    proceeds on the next turn."""
+    continuation-prompt event must be delivered. For an idle session (no
+    concurrent turn owns _active_sessions) the continuation is actively
+    drained straight to handle_message rather than sitting in the FIFO
+    waiting for an unrelated inbound message (see #47699)."""
     runner, adapter, session_entry, src = _make_runner_with_adapter()
 
     from hermes_cli.goals import GoalManager
@@ -136,13 +145,14 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
             source=src,
             final_response="here's a partial edit",
         )
-        await _drain_until(lambda: adapter.sends and adapter._pending_messages)
+        await _drain_until(lambda: adapter.sends and adapter.handled)
 
     # Status line sent back
     assert len(adapter.sends) == 1
     assert "Continuing toward goal" in adapter.sends[0]["content"]
-    # Continuation prompt enqueued for next turn
-    assert adapter._pending_messages, "continuation prompt must be enqueued in pending_messages"
+    # Continuation actively dispatched (idle session), not left sitting in the FIFO
+    assert adapter.handled, "continuation must be actively drained for an idle session"
+    assert not adapter._pending_messages, "drained continuation should not remain queued"
 
 
 @pytest.mark.asyncio

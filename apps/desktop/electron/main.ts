@@ -116,6 +116,7 @@ import { createDesktopNativeChromeRuntime } from './desktop-native-chrome-runtim
 import { createDesktopNativePreferencesRuntime, registerDesktopF12PreferenceIpc } from './desktop-native-preferences-runtime'
 import { createDesktopOauthSessionRuntime } from './desktop-oauth-session-runtime'
 import { createDesktopPetOverlayRuntime } from './desktop-pet-overlay-runtime'
+import { createDesktopPluginCompatNoticeRuntime } from './desktop-plugin-compat-notice-runtime'
 import { createDesktopPowerRuntime } from './desktop-power-runtime'
 import { createDesktopPrimaryBackendRuntime } from './desktop-primary-backend-runtime'
 import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
@@ -2371,64 +2372,17 @@ function getAppIconPath() {
   }
 }
 
-// One-time modal for plugins importing pre-decomposition module paths (see
-// electron/plugin-compat-notice.ts). The backend writes the report during plugin
-// discovery; we show each distinct report exactly once and remember the dismissal
-// in userData so the user is never nagged twice about the same set of plugins.
-let pluginCompatNoticeShown = false
-
-async function showPluginCompatNoticeOnce() {
-  if (pluginCompatNoticeShown) {
-    return
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  let notice
-
-  try {
-    notice = pendingPluginCompatNotice(HERMES_HOME, app.getPath('userData'))
-  } catch (err) {
-    rememberLog(`[plugins] compat notice check failed: ${err.message}`)
-
-    return
-  }
-
-  if (!notice) {
-    return
-  }
-
-  pluginCompatNoticeShown = true
-  rememberLog(`[plugins] compat notice shown (${notice.key})`)
-
-  try {
-    // 'OK' is the default and cancel so a stray Enter/Escape never navigates;
-    // 'Open Plugins' rides the existing deep-link channel (hermes://open/…),
-    // which the renderer already maps to its hash router.
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      title: notice.title,
-      message: notice.message,
-      detail: notice.detail,
-      buttons: ['Open Plugins', 'OK'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true
-    })
-
-    if (response === 0) {
-      handleDeepLink(`${HERMES_PROTOCOL}://open/capabilities?tab=plugins`)
-    }
-  } finally {
-    try {
-      recordPluginCompatDismissed(app.getPath('userData'), notice.key)
-    } catch (err) {
-      rememberLog(`[plugins] could not persist compat notice dismissal: ${err.message}`)
-    }
-  }
-}
+const { showPluginCompatNoticeOnce } = createDesktopPluginCompatNoticeRuntime({
+  HERMES_HOME,
+  app,
+  dialog,
+  getHermesProtocol: () => HERMES_PROTOCOL,
+  getMainWindow: () => mainWindow,
+  handleDeepLink,
+  pendingPluginCompatNotice,
+  recordPluginCompatDismissed,
+  rememberLog
+})
 
 function sendOpenUpdatesRequested() {
   // The renderer mounts its open-updates listener in the same effect pass that

@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 SINGLE_PROFILE_REASON = "only one profile exists (nothing to multiplex)"
 STANDALONE_PROFILE_REASON = "this profile is standalone (gateway.standalone: true); it serves only itself"
 
+#: ``gateway.standalone: true`` is a TEMPORARY backwards-compatibility shim, not a supported topology.
+#: It exists so fleets that lost per-profile gateways in the multiplex-only switch keep working while
+#: the remaining multiplexing gaps (per-profile stop/restart, WhatsApp bridge/relay on secondaries,
+#: dashboard scoping) are closed; it is removed once they are. Every surface that names the key
+#: prints this so nobody builds on it.
+STANDALONE_DEPRECATION_NOTICE = (
+    "gateway.standalone is a temporary compatibility shim while multiplexing gaps are fixed; "
+    "it will be removed once they are — plan to fold this profile with `hermes gateway migrate --multiplex`."
+)
+
 #: ``gateway.multiplex_profiles: false`` is no longer an opt-out from the one-gateway-per-host
 #: topology; it parses, it is reported, and it is ignored.
 RETIRED_OPT_OUT_REASON = (

@@ -621,6 +621,8 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     if plan.standalone_by_config:
         lines.append(f"  Standalone by config (gateway.standalone: true), left alone: "
                      f"{', '.join(plan.standalone_by_config)}")
+        lines.append("    (temporary compatibility shim; remove the key and re-run once the gaps it "
+                     "covers for you are fixed)")
     lines.append("")
     if plan.already_multiplexed:
         lines.append("  ✓ The default gateway is already multiplexing"

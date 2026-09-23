@@ -62,8 +62,9 @@ def test_non_standalone_refusal_names_the_opt_out(standalone_home):
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     refused, out = _refusal(gw)
     assert refused is True
-    assert "Or opt this profile out of the host gateway for good" in out
+    assert "Temporary compatibility path" in out
     assert "gateway.standalone: true" in out
+    assert "temporary compatibility shim" in out  # the deprecation notice rides every mention
 
 
 def test_setup_stale_host_record_names_rescan(standalone_home, monkeypatch, capsys):

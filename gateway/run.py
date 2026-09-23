@@ -5494,11 +5494,12 @@ def _log_standalone_profiles_at_boot(runner) -> None:
         if not getattr(runner.config, "multiplex_profiles", False):
             return
         from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
+        from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
         served = set(runner.served_profile_names())
         for name, home in profiles_to_serve(True, include_standalone=True):
             if name != "default" and name not in served and profile_is_standalone(home):
-                logger.info("profile '%s' is standalone (gateway.standalone: true); not served by "
-                            "this gateway", name)
+                logger.warning("profile '%s' is standalone (gateway.standalone: true); not served by "
+                               "this gateway. %s", name, STANDALONE_DEPRECATION_NOTICE)
     except Exception:
         logger.warning("standalone-profile boot notice failed", exc_info=True)
 

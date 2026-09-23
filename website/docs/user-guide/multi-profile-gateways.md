@@ -108,14 +108,14 @@ profile that opts out with `gateway.standalone: true`:
 - `gateway.multiplex_profiles: false` is **retired**. It used to keep
   per-profile gateways for good; now it resolves exactly like an unset key and
   the gateway logs a warning pointing at `hermes gateway migrate --multiplex`.
-  Use `gateway.standalone: true` for a deliberate per-profile gateway, or
-  `--force` for the boundary cases below.
+  `--force` remains the path for the boundary cases below; `gateway.standalone:
+  true` is a temporary shim for fleets the switch broke, not a supported topology.
 - `GATEWAY_MULTIPLEX_PROFILES` in the process environment overrides the
   unset-key decision the same way an explicit `true` does.
 - `gateway.standalone: true` in a **named** profile's own `config.yaml`
-  (`profiles/<name>/config.yaml`) opts that profile out of the host multiplexer
-  entirely: the host gateway does not serve it, and the profile runs its own
-  gateway without `--force`. Its gateway serves only itself, even if
+  (`profiles/<name>/config.yaml`) is a **temporary compatibility shim** (see
+  [below](#temporary-gatewaystandalone-true)): the host gateway does not serve
+  that profile, and the profile runs its own gateway without `--force`. Its gateway serves only itself, even if
   `multiplex_profiles: true` is also set (see
   [No new per-profile gateways](#no-new-per-profile-gateways)). Set on the
   default profile it is ignored with a warning — the default profile is the
@@ -136,8 +136,9 @@ only when no gateway runs.
 One-process-per-profile is no longer a topology to *choose* implicitly: a named
 profile's `gateway install` / `gateway start` refuses without `--force` (see
 [No new per-profile gateways](#no-new-per-profile-gateways)). A profile that
-wants its own gateway opts out with `gateway.standalone: true` in its own
-`config.yaml`; where a real boundary blocks the fold — a fleet split across
+still needs its own gateway while a multiplexing gap is open can set the
+temporary `gateway.standalone: true` in its own `config.yaml`; where a real
+boundary blocks the fold — a fleet split across
 UNIX users, or a `HERMES_HOME` outside `<default home>/profiles/` — every
 profile keeps `--force` as its path.
 
@@ -196,9 +197,11 @@ a host gateway is running right now:
   A separate per-profile gateway (for a fleet split across UNIX users or a
   HERMES_HOME outside profiles/) needs --force:  hermes -p coder gateway install --force
 
-  Or opt this profile out of the host gateway for good: set
-  gateway.standalone: true in profiles/coder/config.yaml.
-  Wait for the host gateway to rescan (<=30s), or send its rescan-profiles control verb.
+  Temporary compatibility path while multiplexing gaps are closed: set
+  gateway.standalone: true in profiles/coder/config.yaml,
+  then wait for the host gateway to rescan (<=30s) or send its rescan-profiles control verb.
+  (gateway.standalone is a temporary compatibility shim while multiplexing gaps are fixed;
+  it will be removed once they are — plan to fold this profile with `hermes gateway migrate --multiplex`.)
 ```
 
 When the host gateway is already running and serves the profile, the first
@@ -206,8 +209,22 @@ line reads `The host gateway already serves profile 'coder'.` with the owner's
 PID and served set, and the pointer is `hermes -p default gateway restart`.
 The dashboard's **Start** button for a named profile returns the same refusal.
 
-A profile can also get a gateway of its own by authoring the opt-out. Set
-`gateway.standalone: true` in the profile's own `config.yaml`:
+### Temporary: `gateway.standalone: true`
+
+:::warning Temporary backwards compatibility, not a topology we keep
+Multiplex-only is the direction: one gateway per host serves every profile. The
+switch landed before every gap was closed — per-profile stop/restart, the
+WhatsApp bridge and relay on secondary profiles, and dashboard scoping are the
+open ones — and fleets that relied on per-profile gateways lost them overnight.
+`gateway.standalone: true` exists so those fleets keep working **while those
+gaps are fixed**. It will be removed once they are, with a release-notes notice
+ahead of time; every surface that prints it says so. Do not build new setups on
+it: if you are starting fresh, run the host multiplexer. If a gap blocks you
+today, set the key, and file or upvote the issue for the gap so we can remove
+the shim sooner.
+:::
+
+Set `gateway.standalone: true` in the profile's own `config.yaml`:
 
 ```yaml
 # profiles/coder/config.yaml
@@ -243,7 +260,7 @@ alone and prints it as `Standalone by config (gateway.standalone: true), left
 alone`. The WhatsApp bridge and relay run in the profile's own gateway, as in
 any standalone gateway.
 
-`--force` is not the path for this opt-out; it remains the escape for the two
+`--force` is not the path for this shim; it remains the escape for the two
 boundary cases the refusal names (a fleet split across UNIX users, a
 `HERMES_HOME` outside `profiles/`): it installs a real per-profile service, and
 that service (its `ExecStart` carries no `--force`) keeps starting normally

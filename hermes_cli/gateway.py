@@ -3788,9 +3788,11 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
     print(f"  HERMES_HOME outside profiles/) needs --force:  hermes -p {suffix} gateway install --force")
     print()
     from hermes_constants import display_hermes_home
-    print("  Or opt this profile out of the host gateway for good: set")
-    print(f"  gateway.standalone: true in {display_hermes_home(get_hermes_home())}/config.yaml.")
-    print("  Wait for the host gateway to rescan (<=30s), or send its rescan-profiles control verb.")
+    from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+    print("  Temporary compatibility path while multiplexing gaps are closed: set")
+    print(f"  gateway.standalone: true in {display_hermes_home(get_hermes_home())}/config.yaml,")
+    print("  then wait for the host gateway to rescan (<=30s) or send its rescan-profiles control verb.")
+    print(f"  ({STANDALONE_DEPRECATION_NOTICE})")
     return True
 
 
@@ -5023,7 +5025,9 @@ def _cmd_status(args):
     active_standalone = ((get_active_profile_name() or "default") != "default"
                          and profile_is_standalone(get_hermes_home()))
     if active_standalone:
-        print("standalone by config (gateway.standalone: true)")
+        from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+        print("standalone by config (gateway.standalone: true) — temporary compatibility shim")
+        print(f"  {STANDALONE_DEPRECATION_NOTICE}")
     _windows_service_installed = is_windows() and _gw_windows().is_installed()
     if not active_standalone and not snapshot.running and named_profile_served_by_running_multiplexer():
         # Satellite profile: the default multiplexer is the live inbound process for it.
@@ -5074,7 +5078,7 @@ def _print_standalone_by_config() -> None:
     served = {name for name, _home in profiles_to_serve(True)}
     names = sorted(roster - served - {"default"})
     if names:
-        print(f"standalone by config: {', '.join(names)}")
+        print(f"standalone by config (temporary compatibility shim): {', '.join(names)}")
 
 
 def _cmd_list(args):

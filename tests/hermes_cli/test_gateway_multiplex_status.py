@@ -118,4 +118,4 @@ def test_default_status_lists_standalone_profiles(monkeypatch, tmp_path):
         gw._gateway_command_inner(
             SimpleNamespace(gateway_command="status", deep=False, full=False, system=False)
         )
-    assert "standalone by config: beta" in buf.getvalue()
+    assert "standalone by config (temporary compatibility shim): beta" in buf.getvalue()

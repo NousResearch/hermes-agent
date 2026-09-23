@@ -872,3 +872,15 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging._queued_file_handlers
         )
+
+
+class TestNoisyLoggers:
+    """Third-party loggers stay pinned at WARNING so their request lines cannot
+    leak URLs (and any credentials embedded in them) into agent.log at INFO."""
+
+    def test_mcp_sdk_httpx2_logger_is_pinned(self):
+        # mcp>=2.0 makes its HTTP requests through the `httpx2` distribution,
+        # whose module logger is named `httpx2`; without the pin every MCP
+        # request URL lands in agent.log (secret-path MCP servers authenticate
+        # via that URL, so it is a credential).
+        assert "httpx2" in hermes_logging._NOISY_LOGGERS

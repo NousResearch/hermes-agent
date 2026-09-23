@@ -117,7 +117,7 @@ import { createDesktopPoolBackendRuntime } from './desktop-pool-backend-runtime'
 import { createDesktopPoolPolicyRuntime } from './desktop-pool-policy-runtime'
 import { createDesktopPowerRuntime } from './desktop-power-runtime'
 import { createDesktopPrimaryBackendRuntime } from './desktop-primary-backend-runtime'
-import { createDesktopPrimaryTeardownRuntime } from './desktop-primary-teardown-runtime'
+import { createDesktopPrimaryTeardownRuntime, sendBackendExitToLiveWindow } from './desktop-primary-teardown-runtime'
 import {
   type DesktopProfileRoute
 } from './desktop-profile'
@@ -171,6 +171,7 @@ import { createLinkMetadataRuntime } from './link-metadata-runtime'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { registerManagedRolloutDesktopRuntime } from './managed-rollout-desktop-runtime'
 import { createManagedSshLifecycleRuntime } from './managed-ssh-lifecycle-runtime'
 import {
   assertManagedUpdatePreflightClear,
@@ -935,23 +936,7 @@ const {
 })
 
 function sendBackendExit(payload) {
-  // Intentional soft re-home (gateway mode apply) kills the child on purpose —
-  // don't surface the "backend stopped" error toast / boot-failure path.
-  if (primaryTeardown.isSoftRehomeInProgress()) {
-    return
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:backend-exit', payload)
+  sendBackendExitToLiveWindow(primaryTeardown, () => mainWindow, payload)
 }
 
 const { registerPowerResumeListeners } = createDesktopPowerRuntime({
@@ -1230,8 +1215,7 @@ const desktopMediaProtocolRuntime = createDesktopMediaProtocolRuntime({
   ensureBackend
 })
 
-const { managedSshConfig, updateManagedSshConnection, resumeManagedSshRecoveries } =
-  createManagedSshLifecycleRuntime({
+const managedSshLifecycle = createManagedSshLifecycleRuntime({
     assertManagedUpdatePreflightClear,
     backendConnectionState,
     backendPool,
@@ -1272,6 +1256,8 @@ const { managedSshConfig, updateManagedSshConnection, resumeManagedSshRecoveries
     waitForManagedRemoteClearance,
     waitForManagedSshBootstrapFence
   })
+
+const { managedSshConfig, updateManagedSshConnection, resumeManagedSshRecoveries } = managedSshLifecycle
 
 const { saveGatewayFile } = createGatewayFileRuntime({
   dialog,
@@ -1988,3 +1974,10 @@ const { desktopAppLifecycle, isPrimaryInstance } = installDesktopMainLifecycle({
   previewTargetRuntime, quitTeardown, teardownSshForQuit,
   terminalIpc, waitForManagedUpdateOperations, writeSandboxMarker
 })
+
+if (isPrimaryInstance) {
+  registerManagedRolloutDesktopRuntime({
+    app, ipcMain, connections, lifecycle: managedSshLifecycle,
+    getMainWindow: () => mainWindow, processOwner: () => isPrimaryInstance
+  })
+}

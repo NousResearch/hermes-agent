@@ -2,6 +2,29 @@ import { waitForBackendExit as waitForBackendExitImpl } from './backend-child'
 import { backendScopePrefix } from './connection-registry'
 import { PrimaryProfilePin } from './primary-profile-pin'
 
+export function sendBackendExitToLiveWindow(
+  primaryTeardown: { isSoftRehomeInProgress: () => boolean },
+  getMainWindow: () => {
+    isDestroyed: () => boolean
+    webContents?: { isDestroyed: () => boolean; send: (channel: string, payload: unknown) => void }
+  } | null,
+  payload: unknown
+) {
+  // Intentional soft re-home (gateway mode apply) kills the child on purpose —
+  // don't surface the "backend stopped" error toast / boot-failure path.
+  if (primaryTeardown.isSoftRehomeInProgress()) {return}
+
+  const mainWindow = getMainWindow()
+
+  if (!mainWindow || mainWindow.isDestroyed()) {return}
+
+  const { webContents } = mainWindow
+
+  if (!webContents || webContents.isDestroyed()) {return}
+
+  webContents.send('hermes:backend-exit', payload)
+}
+
 // Owns intentional primary invalidation, exit-wait deduplication, and cleanup
 // of every scope behind a removed registry connection. Late pool callbacks stay
 // lazy until the pool owner and SSH bootstrap runtime are initialized.

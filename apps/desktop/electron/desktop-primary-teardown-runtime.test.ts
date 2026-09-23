@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
 
-import { createDesktopPrimaryTeardownRuntime } from './desktop-primary-teardown-runtime'
+import { createDesktopPrimaryTeardownRuntime, sendBackendExitToLiveWindow } from './desktop-primary-teardown-runtime'
 
 test('soft primary rehome invalidates the slot and suppresses recovery without resetting boot progress', () => {
   const child = { pid: 42 }
@@ -35,4 +35,36 @@ test('soft primary rehome invalidates the slot and suppresses recovery without r
   expect(stopped).toHaveBeenCalledExactlyOnceWith(child)
   expect(updateBootProgress).not.toHaveBeenCalled()
   expect(runtime.isSoftRehomeInProgress()).toBe(false)
+})
+
+test('backend exit notification reaches only a live primary window outside soft rehome', () => {
+  const send = vi.fn()
+  let softRehome = true
+  let destroyed = false
+  let contentDestroyed = false
+  const primaryTeardown = { isSoftRehomeInProgress: () => softRehome }
+
+  const getMainWindow = () => ({
+    isDestroyed: () => destroyed,
+    webContents: { isDestroyed: () => contentDestroyed, send }
+  })
+
+  const payload = { reason: 'process-exited' }
+
+  sendBackendExitToLiveWindow(primaryTeardown, getMainWindow, payload)
+  expect(send).not.toHaveBeenCalled()
+
+  softRehome = false
+  destroyed = true
+  sendBackendExitToLiveWindow(primaryTeardown, getMainWindow, payload)
+  expect(send).not.toHaveBeenCalled()
+
+  destroyed = false
+  contentDestroyed = true
+  sendBackendExitToLiveWindow(primaryTeardown, getMainWindow, payload)
+  expect(send).not.toHaveBeenCalled()
+
+  contentDestroyed = false
+  sendBackendExitToLiveWindow(primaryTeardown, getMainWindow, payload)
+  expect(send).toHaveBeenCalledExactlyOnceWith('hermes:backend-exit', payload)
 })

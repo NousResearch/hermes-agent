@@ -1077,7 +1077,7 @@ export const ar = defineLocale({
       moaAggregator: 'نموذج التجميع',
       moaAggregatorBilled: 'النموذج المنفّذ · تُحتسب عليه تكلفة التشغيل',
       moaReferenceHint: 'يقدّم المشورة مرة واحدة لكل رسالة افتراضياً',
-      setupProviderFallback: "الموفّر",
+      setupProviderFallback: 'الموفّر',
       setUpProvider: name => `إعداد ${name}`,
       staleAuxBefore: (count, names) => `المهام المساعدة (${count}: ${names}) ما زالت تعمل لدى `,
       staleAuxAfter: '، وليس على النموذج الرئيسي.',

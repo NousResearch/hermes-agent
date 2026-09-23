@@ -1279,7 +1279,7 @@ export const zhHant = defineLocale({
       deepLinkErrorTooLarge: '設定內容超過 32KB 上限。'
     },
     model: {
-      setupProviderFallback: "提供方",
+      setupProviderFallback: '提供方',
       setUpProvider: name => `設定 ${name}`,
       staleAuxBefore: (count, names) => `${count} 個輔助任務（${names}）仍由 `,
       staleAuxAfter: ' 執行，而非主要模型。',

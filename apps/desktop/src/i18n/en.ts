@@ -1665,7 +1665,7 @@ export const en: Translations = {
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
     model: {
-      setupProviderFallback: "provider",
+      setupProviderFallback: 'provider',
       setUpProvider: name => `Set up ${name}`,
       staleAuxBefore: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
       staleAuxAfter: ', not your main model.',
@@ -3372,7 +3372,7 @@ export const en: Translations = {
       '/export': 'Export a profile (config, skills, theme) to a shareable archive',
       '/import': 'Import a shared profile archive as a new profile',
       '/stop': 'Stop the active turn and background processes',
-      '/pause': 'Pause new work globally (emergency stop); \'/pause off\' resumes',
+      '/pause': "Pause new work globally (emergency stop); '/pause off' resumes",
       '/bg': 'Run a prompt in a separate background session',
       '/btw': 'Ask a side question about this conversation without interrupting it',
       '/agents': 'Show active agents and running tasks',
@@ -3389,7 +3389,8 @@ export const en: Translations = {
       '/subgoal': 'Add or manage extra criteria on the active goal',
       '/status': 'Show current session status',
       '/egress': 'Show Docker egress proxy status',
-      '/context': 'Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput',
+      '/context':
+        'Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput',
       '/whoami': 'Show your slash command access (admin / user)',
       '/profile': 'Switch the active Hermes profile',
       '/codex-runtime': 'Toggle codex app-server runtime for OpenAI/Codex models',

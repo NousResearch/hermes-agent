@@ -1430,7 +1430,7 @@ export const ru = defineLocale({
       moaAggregator: 'Модель-агрегатор',
       moaAggregatorBilled: 'исполняющая модель · на неё приходится стоимость запуска',
       moaReferenceHint: 'по умолчанию советует один раз за ход',
-      setupProviderFallback: "провайдер",
+      setupProviderFallback: 'провайдер',
       setUpProvider: name => `Настроить ${name}`,
       staleAuxBefore: (count, names) => `Вспомогательные задачи (${count}: ${names}) по-прежнему используют `,
       staleAuxAfter: ', а не основную модель.',

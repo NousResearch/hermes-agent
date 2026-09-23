@@ -1237,7 +1237,7 @@ export const ja = defineLocale({
       moaAggregator: '集約モデル',
       moaAggregatorBilled: '実行モデル · 実行費用の請求先',
       moaReferenceHint: '既定では各ターンに一度だけ助言',
-      setupProviderFallback: "プロバイダー",
+      setupProviderFallback: 'プロバイダー',
       setUpProvider: name => `${name} を設定`,
       staleAuxBefore: (count, names) => `${count} 件の補助タスク（${names}）は引き続き `,
       staleAuxAfter: ' で実行され、メインモデルは使用されません。',

@@ -693,6 +693,49 @@ _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 _cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
 
 
+_WRITE_APPROVAL_SUBCOMMANDS = {
+    "pending", "approve", "apply", "reject", "deny", "drop", "diff", "approval", "mode",
+}
+
+
+def _save_write_approval_mode(subsystem: str, enabled: bool) -> None:
+    """Persist an approval setting in the profile currently bound by command.dispatch."""
+    config = _tools_mod("hermes_cli.config")
+    cfg = config.load_config()
+    cfg.setdefault(subsystem, {})["write_approval"] = enabled
+    config.save_config(cfg)
+
+
+def _cmd_write_approval(subsystem: str):
+    """Route /memory and /skills approval actions without starting a slash worker."""
+
+    def cmd(rid, params, session, name, arg):
+        args = arg.split()
+        if not args or args[0].lower() not in _WRITE_APPROVAL_SUBCOMMANDS:
+            return None
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+
+        memory_store = None
+        if subsystem == wa.MEMORY:
+            # There is no live CLI MemoryStore in Desktop/TUI. Load the same profile-scoped
+            # on-disk store the CLI fallback uses, so approve writes persist to MEMORY/USER.md.
+            memory_store = _tools_mod("tools.memory_tool").load_on_disk_store()
+        output = handle_pending_subcommand(
+            subsystem,
+            args,
+            memory_store=memory_store,
+            set_mode_fn=lambda enabled: _save_write_approval_mode(subsystem, enabled),
+        )
+        return _exec_out(rid, output) if output is not None else None
+
+    return cmd
+
+
+_cmd_memory = _cmd_write_approval("memory")
+_cmd_skills = _cmd_write_approval("skills")
+
+
 def _cmd_moa(rid, params, session, name, arg):
     # One prompt through the default MoA preset, then restore the prior model (whole-session
     # switching goes through the model picker).
@@ -908,7 +951,7 @@ _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
-    "compress": _cmd_compress, "compact": _cmd_compress}
+    "compress": _cmd_compress, "compact": _cmd_compress, "memory": _cmd_memory, "skills": _cmd_skills}
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:

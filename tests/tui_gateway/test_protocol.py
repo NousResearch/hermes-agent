@@ -1416,6 +1416,38 @@ def test_command_dispatch_queue_sends_message(server):
     assert result["message"] == "tell me about quantum computing"
 
 
+@pytest.mark.parametrize("name", ["memory", "skills"])
+def test_command_dispatch_routes_write_approval_pending_without_refusal(server, monkeypatch, name):
+    """A failed slash worker can fall back to command.dispatch for approval review."""
+    from hermes_cli import write_approval_commands
+
+    seen = {}
+
+    def handle(subsystem, args, **kwargs):
+        seen.update(subsystem=subsystem, args=args, kwargs=kwargs)
+        return f"No pending {subsystem} writes."
+
+    monkeypatch.setattr(write_approval_commands, "handle_pending_subcommand", handle)
+    store = MagicMock()
+    monkeypatch.setattr("tools.memory_tool.load_on_disk_store", lambda: store)
+
+    resp = server.handle_request({
+        "id": f"{name}-pending",
+        "method": "command.dispatch",
+        "params": {"name": name, "arg": "pending", "session_id": "test-session"},
+    })
+
+    assert "error" not in resp, resp
+    assert resp["result"] == {"type": "exec", "output": f"No pending {name} writes."}
+    assert seen["args"] == ["pending"]
+    if name == "memory":
+        assert seen["subsystem"] == "memory"
+        assert seen["kwargs"]["memory_store"] is store
+    else:
+        assert seen["subsystem"] == "skills"
+        assert seen["kwargs"]["memory_store"] is None
+
+
 def test_skills_manage_search_uses_tools_hub_sources(server):
     result = type("Result", (), {
         "description": "Build better terminal demos",

@@ -139,6 +139,14 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                          "Configure the Microsoft Graph source CIDRs or bind to loopback (127.0.0.1/::1) behind a "
                          "tunnel or reverse proxy.", self._host)
             return False
+        # Prevent two profiles from binding the same webhook host:port.
+        # Shared-listener secondaries bind nothing, so skip the lock there.
+        from gateway.platforms.shared_ingress import shared_ingress_profile
+
+        if not shared_ingress_profile(self) and not self._acquire_platform_lock(
+            "msgraph_webhook", f"{self._host or '0.0.0.0'}:{self._port}", "msgraph_webhook host:port"
+        ):
+            return False
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
@@ -157,6 +165,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
+        self._release_platform_lock()
         self._mark_disconnected()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,

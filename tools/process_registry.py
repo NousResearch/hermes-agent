@@ -2612,11 +2612,21 @@ def _handle_process(args, **kw):
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 
 
+def _check_process_requirements() -> bool:
+    # Lazy import avoids the circular dependency (terminal_tool imports this module at
+    # call time too). ``process_manage`` manages background processes spawned by
+    # ``terminal(background=True)``, so it must be available exactly when terminal is.
+    from tools.terminal_tool import check_terminal_requirements
+
+    return check_terminal_requirements()
+
+
 registry.register(
     name="process_manage",
     toolset="terminal",
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
+    check_fn=_check_process_requirements,
     emoji="⚙️",
 )
 

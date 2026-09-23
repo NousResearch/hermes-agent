@@ -4178,6 +4178,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "`/platform resume api_server`.",
                 retryable=False)
             return False
+        # Prevent two profiles from binding the same listener host:port. Shared-listener
+        # secondaries publish into the default profile's listener and bind nothing, so
+        # only the profile that actually binds takes the lock.
+        from gateway.platforms.shared_ingress import shared_ingress_profile
+
+        if not shared_ingress_profile(self) and not self._acquire_platform_lock(
+            "api_server", f"{self._host}:{self._port}", "api_server host:port"
+        ):
+            return False
         try:
             mws = [mw for mw in (
                 self._make_profile_prefix_middleware(), cors_middleware, body_limit_middleware,
@@ -4282,6 +4291,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
+        self._release_platform_lock()
         if self._response_store is not None:
             try:
                 self._response_store.close()

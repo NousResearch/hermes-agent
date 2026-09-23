@@ -261,6 +261,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not ok:
                 self._set_fatal_error(code, message, retryable=False)
                 return False
+        # Prevent two profiles from using the same WhatsApp phone number (and its
+        # outbound credential) at once. Shared-listener secondaries bind nothing, so
+        # they must not contend on the default profile's host:port lock.
+        from gateway.platforms.shared_ingress import shared_ingress_profile
+
+        if not shared_ingress_profile(self) and not self._acquire_platform_lock(
+            "whatsapp_cloud", self._phone_number_id, "WhatsApp phone number"
+        ):
+            return False
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # Outbound HTTP client. See #18451.
         from gateway.platforms._http_client_limits import platform_httpx_limits
@@ -301,6 +310,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception:
                 logger.exception("[whatsapp_cloud] %s failed", what)
             setattr(self, attr, None)
+        self._release_platform_lock()
         self._mark_disconnected()
 
     # ------------------------------------------------------------------ outbound

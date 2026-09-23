@@ -2558,6 +2558,8 @@ export const zh = defineLocale({
     actionStartedWaiting: '操作已启动，等待状态…',
     loadingStatus: '正在加载状态…',
     recentLogs: '最近日志',
+    logTop: '日志顶部',
+    logBottom: '日志底部',
     noLogs: '尚未加载日志。',
     days: count => `${count} 天`,
     statSessions: '会话',
@@ -2579,7 +2581,7 @@ export const zh = defineLocale({
     actions: count => `${count} 次操作`,
     logFile: '日志文件',
     logLevel: '级别',
-    logSearchPlaceholder: '筛选日志行…',
+    logSearchPlaceholder: '搜索日志行…',
     maintenance: {
       runOps: '诊断',
       doctor: '运行体检',

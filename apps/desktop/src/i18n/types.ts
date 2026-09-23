@@ -2342,6 +2342,8 @@ export interface Translations {
     logFile: string
     logLevel: string
     logSearchPlaceholder: string
+    logTop: string
+    logBottom: string
     maintenance: {
       runOps: string
       doctor: string

@@ -8,6 +8,7 @@ import {
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
+  resolveOverlayCtrlC,
   shouldAllowIdleHotkeyExit,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
@@ -107,6 +108,16 @@ describe('resolveCtrlCComposerAction — draft wins over interrupt', () => {
 
   it('does not interrupt a busy session that has no sid yet', () => {
     expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: false })).toBe('exit')
+  })
+})
+
+describe('resolveOverlayCtrlC — copy selection instead of denying the overlay (#18375)', () => {
+  it('copies when the user has a text selection', () => {
+    expect(resolveOverlayCtrlC(true)).toBe('copy')
+  })
+
+  it('denies (cancels the overlay) when nothing is selected', () => {
+    expect(resolveOverlayCtrlC(false)).toBe('deny')
   })
 })
 

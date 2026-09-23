@@ -1,7 +1,7 @@
 name: tamahermes
 repo: https://github.com/ahrazzle/TamaHermes
 subdir: plugins/tamahermes
-sha: 5e0e7ae416b0be325c52b57c560a6e8a508831bb
+sha: d25f76fdf5d8032910ffbe1dca3ba00bf442061f
 description: >-
   Grow a local TamaHermes pet from real Hermes agent activity. Disclosure — hooks write a pet
   ledger and sprite atlas under $HERMES_HOME only; the optional python -m tamahermes CLI
@@ -14,7 +14,7 @@ tier: community
 category: general
 requires_hermes: ">=0.21"
 docs_url: https://github.com/ahrazzle/TamaHermes
-version: "1.2.2"
+version: "1.2.3"
 readme: true
 platforms:
   - macos

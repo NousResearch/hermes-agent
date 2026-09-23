@@ -854,13 +854,109 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha) -> None:
     sys.exit(1)
 
 
+def _check_pull_preflight(git_cmd, branch):
+    """Pre-sync safety probe for the git-pull path: a dirty tree, or same-branch local
+    commits ahead of origin that the diverged ``reset --hard`` would destroy.
+
+    Returns ``(None, "")`` when the sync may proceed, else ``("dirty"|"diverged",
+    detail)``. A probe that errors or reports nothing parseable fails OPEN — a broken
+    probe must never block an update. Callers abort via
+    ``_abort_pull_on_unsafe_worktree`` before the ff-only merge runs.
+    See #115639 (the ZIP path already refuses dirty trees; the git path did not).
+    """
+    try:
+        result = _git_run(git_cmd, ["status", "--porcelain=v2", "--branch"], _m().PROJECT_ROOT)
+    except Exception:
+        return None, ""
+    if result.returncode != 0:
+        return None, ""
+    head = None
+    ahead = 0
+    dirty_paths = []
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("# branch.head "):
+            head = line.split(" ", 2)[2].strip()
+        elif line.startswith("# branch.ab "):
+            for token in line.split():
+                if token.startswith("+") and token[1:].isdigit():
+                    ahead = int(token[1:])
+        elif line[:2] in ("1 ", "2 ", "u ", "? "):
+            dirty_paths.append(line.split()[-1][:80])
+    if dirty_paths:
+        if len(dirty_paths) == 1:
+            shown = dirty_paths[0]
+        else:
+            shown = f"{dirty_paths[0]} (+{len(dirty_paths) - 1} more)"
+        return "dirty", f"{len(dirty_paths)} uncommitted change(s), e.g. {shown}"
+    if head is not None and head == branch and ahead > 0:
+        return "diverged", (
+            f"{ahead} local commit(s) ahead of origin/{branch} — "
+            "syncing would reset --hard and destroy them")
+    return None, ""
+
+
+def _abort_pull_on_unsafe_worktree(git_cmd, branch) -> None:
+    """Run the pre-sync probe; ``sys.exit(1)`` with recovery guidance when the worktree
+    is unsafe to sync. Nothing has been changed at this point, so the abort leaves the
+    checkout untouched. See #115639."""
+    kind, detail = _check_pull_preflight(git_cmd, branch)
+    if kind is None:
+        return
+    if kind == "dirty":
+        print("✗ Update refused: uncommitted changes in the checkout:")
+        print(f"  {detail}")
+        print("  Syncing now could conflict with or lose that work.")
+        print("  Commit or stash your changes, then re-run `hermes update`.")
+        print("  To inspect: git status --porcelain")
+    else:
+        print("✗ Update refused: local commits would be destroyed by the sync:")
+        print(f"  {detail}")
+        print(f"  Push, rebase onto origin/{branch}, or move them to another branch,")
+        print("  then re-run `hermes update`.")
+    sys.exit(1)
+
+
+def _smoke_check_pulled_imports_or_rollback(git_cmd, pre_pull_sha) -> None:
+    """Post-sync import smoke: the syntax guard only *parses* — pulled code that fails
+    to *import* (cross-module breakage past CI) rolls back to the pre-pull SHA before
+    the drain/forced-restart runs it. ``sys.exit(1)`` on failure; silent on success.
+    See #115639."""
+    import_ok, failing_module, import_error = _validate_critical_modules_import(_m().PROJECT_ROOT)
+    if import_ok:
+        return
+    print()
+    print("✗ Pulled code fails to import a critical module:")
+    print(f"  {failing_module}: {import_error}")
+    print()
+    if pre_pull_sha:
+        print(f"→ Rolling back to {pre_pull_sha[:10]}...")
+        rollback_result = _git_run(git_cmd, ["reset", "--hard", pre_pull_sha])
+        if rollback_result.returncode == 0:
+            print("  ✓ Rollback complete — your install is unchanged.")
+            print("  Try ``hermes update`` again later once a fix lands.")
+        else:
+            print("  ✗ Rollback failed. Recover manually with:")
+            print(f"    cd {_m().PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
+            if rollback_result.stderr.strip():
+                print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
+    else:
+        print("  Could not capture pre-pull SHA — recover manually with:")
+        print(f"    cd {_m().PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
+    sys.exit(1)
+
+
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> reset, orphan history -> rescue ref first; a
-    post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
+    post-pull syntax error in a critical file rolls back. A pre-sync probe aborts on dirty
+    trees or same-branch local commits first; a post-sync import smoke rolls back after the
+    syntax guard. Exits on failure; returns pre-pull SHA."""
     update_succeeded = False
+    # Pre-flight (#115639): refuse to sync over uncommitted changes or local commits the
+    # diverged reset would destroy — aborts before anything is changed.
+    _abort_pull_on_unsafe_worktree(git_cmd, branch)
     # Pre-pull SHA for auto-rollback (stray conflict markers once bricked every updater).
     # Capture the pre-pull SHA so we can auto-roll-back if the new code has a syntax error in a
     # critical-path file (PR #28452 incident: orphan merge-conflict markers in hermes_cli/config.py bricked
@@ -872,6 +968,9 @@ def _pull_updates(
         if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
             _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
         _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
+        # Post-sync smoke (#115639): parses-OK is not imports-OK — roll back to the
+        # snapshot when the pulled tree fails to import, before the restart runs it.
+        _smoke_check_pulled_imports_or_rollback(git_cmd, pre_pull_sha)
         update_succeeded = True
     finally:
         if auto_stash_ref is not None:

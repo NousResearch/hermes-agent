@@ -18,6 +18,7 @@ import { notifyError } from '@/store/notifications'
 export type AgentPluginServerState =
   | 'connected'
   | 'app_not_running'
+  | 'mcp_not_connected'
   | 'endpoint_unavailable'
   | 'no_interactive_session'
   | 'version_too_old'
@@ -43,6 +44,8 @@ export interface AgentPluginRow {
   portable?: boolean
   /** Curated-catalog provenance (from the install sidecar), when present. */
   catalog_name?: string
+  /** Human catalog title used by server status text when available. */
+  catalog_title?: string
   catalog_tier?: string
   installed_sha?: string
   /** Current catalog pin for this entry (backend-computed). */

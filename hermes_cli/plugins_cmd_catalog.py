@@ -557,11 +557,17 @@ def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, A
     }
 
 
-def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def catalog_row_fields(
+    dir_path,
+    pins: Dict[str, str],
+    versions: Optional[Dict[str, str]] = None,
+    titles: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
     name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
     *versions*) and ``update_available``."""
     versions = versions or {}
+    titles = titles or {}
     sidecar = read_catalog_sidecar(dir_path)
     if not sidecar:
         return {}
@@ -569,6 +575,8 @@ def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[s
     row: Dict[str, Any] = {
         "catalog_name": sidecar["catalog_name"], "catalog_tier": str(sidecar.get("tier") or "community"),
         "installed_sha": installed_sha}
+    if title := titles.get(str(sidecar["catalog_name"])):
+        row["catalog_title"] = title
     pin = pins.get(str(sidecar["catalog_name"]))
     if pin:
         row["catalog_sha"] = pin
@@ -589,5 +597,13 @@ def catalog_versions() -> Dict[str, str]:
     """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
     try:
         return {e.name: e.version for e in load_catalog_live() if e.version}
+    except Exception:
+        return {}
+
+
+def catalog_titles() -> Dict[str, str]:
+    """``{catalog_name: human_title}`` for installed-plugin status text."""
+    try:
+        return {entry.name: entry.title for entry in load_catalog_live() if entry.title}
     except Exception:
         return {}

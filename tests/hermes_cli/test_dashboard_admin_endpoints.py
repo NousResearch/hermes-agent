@@ -244,40 +244,50 @@ class TestMemoryEndpoints:
             "/api/memory/reset", json={"target": "bogus"}
         ).status_code == 400
 
-    def test_plugins_hub_provider_options_under_multiplex_fail_closed(self):
-        """The plugins hub must not mark memory providers 'unavailable' once the
-        dashboard hosts multiple profiles.
+    _SCOPEDPROV_INIT = """
+from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 
-        Regression: ``_merged_plugins_hub`` calls ``_discover_memory_provider_statuses``
-        without a secret scope. On a multiplexed host the provider schema probe
-        (mem0's ``get_config_schema`` -> ``get_secret``) raises
-        ``UnscopedSecretError``; ``probe_availability`` swallows it and every
-        provider renders 'unavailable' in the dashboard's plugins page with no
-        user-visible error. The hub is built for the dashboard's own (launch)
-        profile, so it must bind that scope explicitly.
-        """
-        import agent.secret_scope as _ss
-        from tui_gateway.launch_profile_policy import capture_launch_env
 
-        # Emulate the dashboard boot: freeze the launch env, then flip to
-        # fail-closed multi-profile hosting.
-        capture_launch_env()
-        _ss.set_multiplex_active(True)
-        try:
-            hub = self.client.get("/api/dashboard/plugins/hub")
-            assert hub.status_code == 200, hub.text
-            providers = hub.json().get("providers", {}).get("memory_options", [])
-            assert providers, "expected the hub to list memory provider options"
-            # Without the fix, the mem0 schema probe runs unscoped, get_secret
-            # fail-closes, probe_availability swallows it, and mem0 renders
-            # 'unavailable'. With the launch scope bound, mem0 resolves to at
-            # least needs_config — never silently unavailable.
-            mem0 = next((p for p in providers if p["name"] == "mem0"), None)
-            if mem0 is not None:
-                assert mem0["status"] != "unavailable", \
-                    f"mem0 unavailable under multiplex: {mem0}"
-        finally:
-            _ss.set_multiplex_active(False)
+class ScopedProvMemoryProvider(MemoryProvider):
+    @property
+    def name(self):
+        return "scopedprov"
+
+    def is_available(self):
+        # A credentialed provider: availability IS a scoped secret read.
+        return bool(get_secret("SCOPEDPROV_API_KEY"))
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+"""
+
+    def test_plugins_hub_resolves_launch_profile_secrets_under_multiplex(self):
+        """The hub is built for the dashboard's own (launch) profile. Once the process hosts a
+        second profile home, ``get_secret`` fails closed for unscoped reads; a provider whose
+        ``is_available`` reads the launch profile's credential must still resolve it from the
+        launch home's ``.env`` instead of rendering "unavailable" with no visible error
+        (``probe_availability`` swallows the ``UnscopedSecretError``)."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+
+        home = get_hermes_home()
+        (home / ".env").write_text("SCOPEDPROV_API_KEY=launch-key\n", encoding="utf-8")
+        plugin_dir = home / "plugins" / "scopedprov"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(self._SCOPEDPROV_INIT, encoding="utf-8")
+        _invalidate_plugins_hub_cache()
+        activate_multi_profile_hosting()  # the conftest resets the latch after the test
+
+        hub = self.client.get("/api/dashboard/plugins/hub")
+        assert hub.status_code == 200, hub.text
+        providers = hub.json()["providers"]["memory_options"]
+        row = next(p for p in providers if p["name"] == "scopedprov")
+        assert row["available"] is True and row["status"] == "ready", row
 
 
 class TestPairingEndpoints:

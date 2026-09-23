@@ -83,6 +83,10 @@ def _warn_profile_fallback_once() -> None:
     global _profile_fallback_warned
     if _profile_fallback_warned:
         return
+    # Latch on the FIRST check regardless of outcome (one-shot contract). Previously the latch
+    # was only set on the warning branch, so with no active_profile (or "default") the stat +
+    # read re-ran on every get_hermes_home() call (#90065).
+    _profile_fallback_warned = True
     try:
         fallback_home = _get_platform_default_hermes_home()
         active_path = fallback_home / "active_profile"
@@ -90,7 +94,6 @@ def _warn_profile_fallback_once() -> None:
     except (UnicodeDecodeError, OSError):
         active = ""
     if active and active != "default":
-        _profile_fallback_warned = True
         # Direct stderr, not logging: runs at import time (often before logging is
         # configured) and root-logger propagation would double-emit.
         msg = (

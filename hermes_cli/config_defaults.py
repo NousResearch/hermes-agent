@@ -1654,6 +1654,12 @@ DEFAULT_CONFIG = {
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
+        # Per-platform mode override keyed by the session platform (telegram, discord, slack,
+        # whatsapp, api_server, ...): a platform listed here uses its own mode; every other
+        # platform — and CLI/TUI/desktop, which bind no platform — keeps "mode" above.
+        # Example: {"telegram": "manual"} demands a real approval tap on mobile while a trusted
+        # desktop CLI stays on "smart". Values accept the same manual | smart | off vocabulary.
+        "platform_overrides": {},
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",

@@ -18,9 +18,12 @@ locally (see commits f9cd577915, 1e652cca7a, bd246db10d — repeated parity
 re-alignments). This test pins the invariant so drift regressions fail
 loudly instead of silently disagreeing per surface.
 
-There is no per-platform ``approvals.mode`` override in the config schema;
-mode/timeout are global, so the synthetic configs below cover global-set,
-unset (defaults), and malformed values.
+There is no *global-schema* per-platform ``approvals.mode`` override: ``mode``/``timeout``
+are global, so the synthetic configs below cover global-set, unset (defaults), and
+malformed values. The one platform-scoped knob is ``approvals.platform_overrides``
+(keyed by the bound session platform, resolved by the core ``_get_approval_mode``);
+``test_platform_override_reaches_every_surface`` below pins that the TUI reports the
+platform's mode too, so the statusbar/permission UI never disagrees with the gate.
 """
 
 from __future__ import annotations
@@ -155,3 +158,35 @@ def test_tui_loader_delegates_to_core(hermes_home, tui_server):
         approval_context, "_get_approval_mode", return_value="weird"
     ):
         assert tui_server._load_approval_mode() == "manual"
+
+
+def test_platform_override_reaches_every_surface(hermes_home, tui_server):
+    """``approvals.platform_overrides.<platform>`` must land on the TUI surface too.
+
+    The override is keyed by the bound session platform, which the TUI gateway binds for
+    its own turns as well. A surface that re-read ``approvals.mode`` on its own would
+    report the global mode and desync the permission UI from the gate that actually
+    decides the command.
+    """
+    approval_context = importlib.import_module("tools.approval_context")
+    session_context = importlib.import_module("gateway.session_context")
+
+    _write_config(
+        hermes_home,
+        "approvals:\n  mode: smart\n  platform_overrides:\n    telegram: manual\n",
+    )
+
+    session_context.set_session_vars(platform="telegram")
+    try:
+        assert approval_context._get_approval_mode() == "manual"
+        assert tui_server._load_approval_mode() == "manual"
+    finally:
+        session_context.reset_session_vars()
+
+    # A platform without an entry: both surfaces stay on the global mode.
+    session_context.set_session_vars(platform="discord")
+    try:
+        assert approval_context._get_approval_mode() == "smart"
+        assert tui_server._load_approval_mode() == "smart"
+    finally:
+        session_context.reset_session_vars()

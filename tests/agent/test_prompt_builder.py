@@ -568,7 +568,14 @@ class TestFindHermesMd:
         with patch("agent.prompt_builder._find_git_root", return_value=None):
             assert _find_hermes_md(cwd) is None
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+    @pytest.mark.skipif(
+        # os.geteuid is POSIX-only, and a skipif condition is evaluated at
+        # collection time - calling it unguarded would raise AttributeError
+        # and take the whole module down on Windows.
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses directory permissions",
+    )
     def test_unreadable_cwd_is_treated_as_not_found(self, tmp_path):
         """A cwd the process cannot stat yields "no context file" instead of a PermissionError
         escaping prompt construction and taking down every surface sharing the gateway (#112430:
@@ -597,7 +604,14 @@ class TestFindGitRoot:
 
 
 class TestCursorrulesCandidates:
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+    @pytest.mark.skipif(
+        # os.geteuid is POSIX-only, and a skipif condition is evaluated at
+        # collection time - calling it unguarded would raise AttributeError
+        # and take the whole module down on Windows.
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses directory permissions",
+    )
     def test_unreadable_cwd_is_treated_as_absent(self, tmp_path):
         """Same crash shape as ``_find_hermes_md``: ``.is_dir()`` on ``<cwd>/.cursor/rules`` inside an
         unreadable cwd must not raise; a readable sibling project still yields its rules."""

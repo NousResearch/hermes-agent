@@ -124,7 +124,13 @@ class TestReadJournalMode:
 
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(
+        # os.geteuid is POSIX-only, and a skipif condition is evaluated at
+        # collection time - calling it unguarded would raise AttributeError
+        # and take the whole module down on Windows.
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root ignores file permissions",
+    )
     def test_read_only_directory_is_still_readable(self, tmp_path):
         db = tmp_path / "state.db"
         _make_db(db, journal_mode="WAL")
@@ -244,9 +250,15 @@ class TestLiveConnectionSafety:
 
 class TestUnreadableReason:
     def test_missing_file_keeps_the_os_error_text(self, tmp_path):
-        reason = doctor_platform._unreadable_reason(tmp_path / "gone.db")
+        missing = tmp_path / "gone.db"
+        # The OS spells this differently per platform -- "No such file or directory" against
+        # "[WinError 2] The system cannot find the file specified" -- so pin the invariant that
+        # actually matters: the reason is the OS's own text for the very call doctor makes,
+        # not a generic substitute.
+        with pytest.raises(OSError) as raised:
+            missing.stat()
 
-        assert "No such file or directory" in reason
+        assert doctor_platform._unreadable_reason(missing) == str(raised.value)
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
     @pytest.mark.skipif(
@@ -341,7 +353,7 @@ class TestReportDatabaseJournalModes:
         assert "state.db is in WAL mode" in out
         assert "projects.db: rollback journal mode" in out
         assert "kanban.db: rollback journal mode" in out
-        assert "kanban/boards/myboard/kanban.db is in WAL mode" in out
+        assert f"{os.path.join('kanban', 'boards', 'myboard', 'kanban.db')} is in WAL mode" in out
 
     def test_missing_databases_are_skipped(self, tmp_path, capsys):
         doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
@@ -365,7 +377,13 @@ class TestReportDatabaseJournalModes:
         assert "state.db: rollback journal mode" in out
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(
+        # os.geteuid is POSIX-only, and a skipif condition is evaluated at
+        # collection time - calling it unguarded would raise AttributeError
+        # and take the whole module down on Windows.
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root ignores file permissions",
+    )
     def test_unreadable_database_does_not_crash(self, tmp_path, capsys):
         db = tmp_path / "state.db"
         _make_db(db)
@@ -460,7 +478,10 @@ class TestConfiguredDeleteNeverApplied:
         doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
 
         out = capsys.readouterr().out
-        assert "cannot prove the database is quiet" in out and "open-file scan unavailable" in out
+        # Windows returns before the scan (there is none), POSIX reports the partial result;
+        # either way an unusable scan must read as "cannot prove", never as an all-clear.
+        detail = "holder scan is unavailable on Windows" if os.name == "nt" else "open-file scan unavailable"
+        assert "cannot prove the database is quiet" in out and detail in out
         assert "no other process holds it" not in out and "held by PID" not in out
 
     def test_configured_wal_keeps_the_informational_line(self, tmp_path, capsys, monkeypatch):

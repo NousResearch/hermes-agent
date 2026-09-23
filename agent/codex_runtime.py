@@ -793,6 +793,7 @@ class _CodexResponseAssembler:
                 self.pending_function_calls[item_id] = {
                     "item": item, "arguments": str(_event_field(item, "arguments", "") or ""),
                     "output_index": announced_index, "sequence": announced_sequence,
+                    "item_ids": {item_id},
                 }
 
     def _on_text_delta(self, event: Any, event_type: str) -> None:
@@ -828,9 +829,10 @@ class _CodexResponseAssembler:
 
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
-        pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
-        if pending is None:
+        pending_key = self._pending_call_key(event)
+        if pending_key is None:
             return  # the item itself lands on output_item.done
+        pending = self.pending_function_calls[pending_key]
         if "delta" in event_type:
             pending["arguments"] += _event_field(event, "delta", "") or ""
         elif event_type.endswith("function_call_arguments.done"):
@@ -850,21 +852,55 @@ class _CodexResponseAssembler:
             self.active_summary_index = summary_index
         self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
 
+    def _pending_call_key(self, event: Any, item: Any = None) -> str | None:
+        """Match aliases without letting an index override a contradictory call identity.
+
+        Copilot can rotate item IDs on every frame. Argument events have no call_id,
+        so their response-local output_index is the continuity key in that case.
+        """
+        item_id = str(_event_field(item, "id", "") if item is not None else _event_field(event, "item_id", ""))
+        call_id = _event_field(item, "call_id")
+        output_index = _event_field(event, "output_index")
+        matches = []
+        for key, pending in self.pending_function_calls.items():
+            pending_call_id = _event_field(pending["item"], "call_id")
+            pending_index = pending["output_index"]
+            if not (item_id in pending["item_ids"]
+                    or (call_id and call_id == pending_call_id)
+                    or (output_index is not None and output_index == pending_index)):
+                continue
+            if ((call_id and pending_call_id and call_id != pending_call_id)
+                    or (output_index is not None and pending_index is not None and output_index != pending_index)):
+                raise ValueError("Conflicting Responses function call identity")
+            matches.append(key)
+        if len(matches) > 1:
+            raise ValueError("Conflicting Responses function call identity")
+        if not matches:
+            return None
+        key = matches[0]
+        pending = self.pending_function_calls[key]
+        if item_id:
+            pending["item_ids"].add(item_id)
+        if pending["output_index"] is None:
+            pending["output_index"] = output_index
+        return key
+
     def _on_item_done(self, event: Any, event_type: str) -> None:
         done_item = _event_field(event, "item")
         if done_item is None:
             return
+        pending_key = self._pending_call_key(event, done_item) if _event_field(done_item, "type") == "function_call" else None
+        pending = self.pending_function_calls.pop(pending_key) if pending_key is not None else None
         self.output_items.append(done_item)
-        # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
-        # event's own output_index wins over the announced one.
+        # A completed alias keeps its announced position; .done arguments remain authoritative.
         done_id = str(_event_field(done_item, "id", ""))
-        announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
+        announced_sequence, announced_index = (
+            (pending["sequence"], pending["output_index"]) if pending is not None
+            else self.announced_output_order.get(done_id, (None, None)))
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
-        # Confirmed by the authoritative done event; never settle it twice.
-        self.pending_function_calls.pop(done_id, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
             commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
             if commentary_text:
@@ -933,9 +969,9 @@ class _CodexResponseAssembler:
         if not output and self.text_deltas and not self.has_tool_calls:
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
             output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
-        # Done items stay authoritative; settlement only fills the gap left by backends that omit
-        # per-item done events on a successful completion.
-        if self.pending_function_calls and self.saw_response_completed:
+        # Successful completions keep announced order even when every item received
+        # .done; pending calls only fill gaps left by omitted per-item completions.
+        if self.saw_response_completed and (self.output_items or self.pending_function_calls):
             output = self._settled_output()
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:

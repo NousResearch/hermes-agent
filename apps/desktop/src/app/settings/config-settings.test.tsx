@@ -18,6 +18,7 @@ const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
 const getElevenLabsVoices = vi.fn()
+const { setAutoSpeakReplies } = vi.hoisted(() => ({ setAutoSpeakReplies: vi.fn() }))
 
 // Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
 // config hook reaches them through the barrel, and a bare mock would throw.
@@ -59,6 +60,10 @@ vi.mock('@/store/projects', () => ({
   scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
 }))
 
+vi.mock('@/store/voice-prefs', () => ({
+  setAutoSpeakReplies
+}))
+
 // The module graph behind ConfigSettings is large (1.5s cold here, >10s on a
 // saturated CI runner); load it once under the hook timeout so the 15s test
 // budget is spent on the autosave behaviour, not on transform + import.
@@ -96,6 +101,22 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('syncs the Voice auto-TTS setting to Desktop read-aloud without a separate config write', async () => {
+    getHermesConfigRecord.mockResolvedValue({ voice: { auto_tts: false } })
+    getHermesConfigSchema.mockResolvedValue({
+      fields: {
+        'voice.auto_tts': { type: 'boolean' }
+      }
+    })
+
+    renderConfigSettings('voice')
+
+    ;(await screen.findByRole('switch')).click()
+
+    expect(setAutoSpeakReplies).toHaveBeenCalledWith(true)
+    expect(saveHermesConfig).not.toHaveBeenCalled()
+  })
+
   it('renders and saves the Codex compression auto-raise setting', async () => {
     getHermesConfigRecord.mockResolvedValue({
       compression: { codex_gpt55_autoraise: true }

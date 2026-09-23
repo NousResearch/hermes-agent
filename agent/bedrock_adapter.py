@@ -1184,8 +1184,11 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     **dict.fromkeys((
         "meta.llama4-maverick", "meta.llama4-scout", "meta.llama3-3-70b-instruct", "mistral.mistral-large", "deepseek.v3",
     ), 128_000),
-    # OpenAI on Bedrock (Mantle/Responses route): docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
-    **dict.fromkeys(BEDROCK_OPENAI_RESPONSES_MODEL_IDS, 272_000),
+    # OpenAI on Bedrock (Mantle/Responses route): each model card's "Context window: 1M tokens" field
+    # (model-card-openai-gpt-55.html and the -56-sol/-terra/-luna cards). 272K is only the pricing-tier
+    # boundary — "short context (272K input tokens or fewer)" vs "long context (more than 272K input
+    # tokens)" — not a request limit: docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+    **dict.fromkeys(BEDROCK_OPENAI_RESPONSES_MODEL_IDS, 1_000_000),
 }
 
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000  # unknown Bedrock models

@@ -629,7 +629,7 @@ const en: BotsMessages = {
     youControl: 'You are in control',
     otherControls: 'Another viewer is in control',
     agentControls: 'Bot is in control',
-    controlTaken: 'Another viewer took control. Watching only.',
+    controlTaken: 'Another viewer took control. Watching only.'
   },
   cron: {
     filterHint:
@@ -894,10 +894,13 @@ const ja: BotsMessages = {
     title: '画面',
     menu: '画面を開く',
     unsupportedTitle: 'このホストにはボット画面がありません',
-    unsupportedBody: 'ボット画面は Linux のゲートウェイホストで動作します。このボットはホスト自身のディスプレイを使います。',
+    unsupportedBody:
+      'ボット画面は Linux のゲートウェイホストで動作します。このボットはホスト自身のディスプレイを使います。',
     notInstalledTitle: '画面パッケージが不足しています',
-    notInstalledBody: 'このボットに画面を与えるには、ゲートウェイホストに TigerVNC と Xfce コアが必要です。ホストで実行:',
-    installHint: 'Hermes を実行しているユーザーとしてゲートウェイホスト上で実行されます。sudo は Hermes 経由で一度だけ求められます。',
+    notInstalledBody:
+      'このボットに画面を与えるには、ゲートウェイホストに TigerVNC と Xfce コアが必要です。ホストで実行:',
+    installHint:
+      'Hermes を実行しているユーザーとしてゲートウェイホスト上で実行されます。sudo は Hermes 経由で一度だけ求められます。',
     install: 'ホストにインストール',
     installing: 'インストール中…',
     installCancelled: 'インストールを中止しました: sudo パスワードが入力されませんでした。',
@@ -938,7 +941,7 @@ const ja: BotsMessages = {
     youControl: 'あなたが操作中',
     otherControls: '別のビューアが操作中',
     agentControls: 'ボットが操作中',
-    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。',
+    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。'
   },
   cron: {
     filterHint:
@@ -1240,7 +1243,7 @@ const zh: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位查看者正在控制',
     agentControls: '机器人正在控制',
-    controlTaken: '另一位查看者已接管控制。仅可观看。',
+    controlTaken: '另一位查看者已接管控制。仅可观看。'
   },
   cron: {
     filterHint:
@@ -1542,7 +1545,7 @@ const zhHant: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位檢視者正在控制',
     agentControls: '機器人正在控制',
-    controlTaken: '另一位檢視者已接手控制。僅可觀看。',
+    controlTaken: '另一位檢視者已接手控制。僅可觀看。'
   },
   cron: {
     filterHint:

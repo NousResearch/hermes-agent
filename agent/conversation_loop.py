@@ -822,6 +822,12 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         current = str(getattr(agent, attr, "") or "").strip()
         if stored and current and stored != current:
             return False
+    # A prompt stamped for another session (a /branch child copies its parent's bytes) must not
+    # tell the model a foreign Session ID.  Checked only when the trailer is on: with it off, a
+    # "Session ID:" line in project text would read as a mismatch and rebuild every turn.
+    stored_sid = identity_line_value(prompt, "Session ID")
+    if stored_sid and getattr(agent, "pass_session_id", False) and stored_sid != agent.session_id:
+        return False
     # Compare against resolve_agent_cwd() — the SAME resolver used to build the
     # prompt — so TERMINAL_CWD sessions are not falsely rejected.
     stored_cwd = runtime_host_value(prompt, "Current working directory")

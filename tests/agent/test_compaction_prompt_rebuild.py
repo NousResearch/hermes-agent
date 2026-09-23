@@ -283,6 +283,27 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_persisted_prompt_without_a_snapshot_does_not_pin_an_empty_one(self):
+        """A session row built where no workspace block was emitted (a messaging surface) and
+        resumed in the same repo must capture a real snapshot, not pin "no workspace" for good."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-"))
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            stored = f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}\n\nBODY"
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints",
+                       return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                self.assertIn(f"- Root: {repo}", build_system_prompt(resumed))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

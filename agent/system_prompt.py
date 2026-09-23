@@ -650,9 +650,9 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     if stored_cwd and stored_cwd != key:
         return
     block = _persisted_workspace_block(prompt, key)
-    # "" is only trustworthy when the prompt names this cwd: a legacy prompt without the
-    # runtime line might have been built with tools off.
-    if block or (block == "" and stored_cwd):
+    # Only a real snapshot is adopted: a prompt without one (built on a surface without the
+    # coding posture, or with tools off) leaves the pin open so this build captures one.
+    if block:
         agent._frozen_workspace_snapshot = (key, block)
 
 

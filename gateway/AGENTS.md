@@ -69,6 +69,10 @@ Canonical local CLI/TUI/Desktop sessions admit completion and watch events into 
 FIFO as human input (private launch policy, `internal_notification` display kind); observers never
 own or consume those turns, and an interrupted started turn stays unknown and pauses its followers.
 
+Cron mirrors are inactive pending references attached to the next admitted user input. Busy
+follow-ups queue until that boundary; acknowledgment commits with the user carrier
+(`cron/AGENTS.md`).
+
 ## `/login` (off-turn, paired DM only)
 
 `GatewayLoginCommandsMixin` refuses outside a real paired DM (ntfy, raft and a2a report `dm` for

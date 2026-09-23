@@ -430,18 +430,27 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_dir = _resolve_skill_dir(name, category)
     occupied_error = (f"Cannot create skill '{name}': refusing to adopt or delete an existing path "
                       f"at {skill_dir}.")
-    if skill_dir.exists() or skill_dir.is_symlink():
+    # Only a directory create made (or an EMPTY leftover, e.g. from an earlier create whose
+    # SKILL.md write failed) may be used; anything with an entry is someone else's and is refused.
+    if skill_dir.is_symlink() or (skill_dir.exists() and (not skill_dir.is_dir() or any(skill_dir.iterdir()))):
         return _err(occupied_error)
     from hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(skill_dir)
-    try:
-        skill_dir.mkdir(parents=True, exist_ok=False)
-    except FileExistsError:
-        return _err(occupied_error)
+    created_dir = False
+    if not skill_dir.exists():
+        try:
+            skill_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            return _err(occupied_error)
+        created_dir = True
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
+        # Undo only what this call wrote: the SKILL.md, plus the directory if create made it.
+        # An adopted (empty) directory stays in place — never rmtree a dir create did not make.
+        skill_md.unlink(missing_ok=True)
+        if created_dir:
+            shutil.rmtree(skill_dir, ignore_errors=True)
         return _err(scan_error)
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir

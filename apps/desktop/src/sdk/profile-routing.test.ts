@@ -837,6 +837,36 @@ describe('profile-aware plugin session opens', () => {
     expect(requestSessionResume).not.toHaveBeenCalled()
   })
 
+  it('expires a wedged Bot Chat tile refresh instead of leaving the wake overlay forever (#120112)', async () => {
+    const resumeTile = vi.fn(() => new Promise<string>(() => undefined))
+
+    vi.mocked(sessionTileDelegate).mockReturnValue({ resumeTile } as never)
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($sessionTiles, [{ storedSessionId: 'orphaned-bot-chat' }] as never)
+    setMockAtom($focusedStoredSessionId, 'orphaned-bot-chat')
+    setMockAtom($focusedRuntimeId, 'runtime-reaped')
+    setMockAtom($focusedSessionState, { messages: [{ id: 'saved-history', parts: [], role: 'assistant' }] } as never)
+
+    await host.openSession('orphaned-bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      forceResume: true,
+      hydrationTimeoutMs: 1,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'hyoseob'
+    })
+
+    expect(resumeTile).toHaveBeenCalledWith('orphaned-bot-chat', { refreshTranscript: true })
+    expect(requestSessionResume).toHaveBeenCalledWith('orphaned-bot-chat', {
+      connectionId: 'local',
+      mode: 'local',
+      profile: 'hyoseob'
+    })
+    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
   it('forces a resume on an explicit bot switch even when a cached transcript looks healthy (#93604)', async () => {
     // Bot-switch shape from the field: the previous visit left a non-empty
     // snapshot in the session-states cache, so the surface passes every

@@ -607,17 +607,12 @@ function waitForFocusedSessionHydration({
 // routing decision (a workspace switch moves chrome; a plain bot navigation
 // only opens the gateway) while the deadline enforced here is the same either
 // way.
-async function awaitProfileActivation(
-  dial: () => Promise<void>,
-  targetProfile: string,
-  timeoutMs: number
-): Promise<void> {
-  const activation = dial()
+async function awaitWakeStep<T>(step: Promise<T>, targetProfile: string, timeoutMs: number): Promise<T> {
   let timer: number | undefined
 
   try {
     await Promise.race([
-      activation,
+      step,
       new Promise<never>((_resolve, reject) => {
         // Same message shape as the hydration timeout on purpose: openSession's
         // catch keys the core stranded-session surface off this prefix, and a
@@ -635,12 +630,20 @@ async function awaitProfileActivation(
     }
   }
 
-  // No extra catch on the abandoned dial: an in-flight activation has no
-  // cancellation handle and keeps running after the budget expires, but
+  // No extra catch on the abandoned step: in-flight work has no cancellation
+  // handle and keeps running after the budget expires, but
   // Promise.race subscribes to every input, so a rejection that lands after the
   // race has settled is already handled and cannot escape as an unhandled
-  // rejection. An explicit `activation.catch()` here was dead code - verified
+  // rejection. An explicit `step.catch()` here was dead code - verified
   // by mutation: removing it changed no test outcome.
+}
+
+async function awaitProfileActivation(
+  dial: () => Promise<void>,
+  targetProfile: string,
+  timeoutMs: number
+): Promise<void> {
+  await awaitWakeStep(dial(), targetProfile, timeoutMs)
 }
 
 export const host = {
@@ -1119,7 +1122,17 @@ export const host = {
 
             if (tileDelegate) {
               try {
-                await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
+                // Hydration's timer normally starts below, after this refresh.
+                // A half-open socket can leave resumeTile pending forever,
+                // which used to keep the Bot Chat wake overlay alive forever
+                // after ws_orphan_reap. Give this prerequisite the same
+                // caller-provided wake budget so the usual retry/error surface
+                // remains reachable.
+                await awaitWakeStep(
+                  tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true }),
+                  targetProfile,
+                  hydrationTimeoutMs
+                )
               } catch {
                 requestSessionResume(storedSessionId, ownerRoute || undefined)
               }

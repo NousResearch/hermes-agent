@@ -41,6 +41,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ListRow, Pill, SectionHeading } from './primitives'
+import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -185,6 +186,7 @@ export function staleAuxAssignments(
 
 interface StaleAuxWarningProps {
   applying: boolean
+  onDismiss?: () => void
   onReset: () => void
   slots: readonly StaleAuxAssignment[]
   taskLabel: (key: string) => string
@@ -194,7 +196,9 @@ interface StaleAuxWarningProps {
 // current main. Surfaces the silent credit-burn path (e.g. aux pinned to a
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
-function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
+// `onDismiss` is only wired for the persistent variant — the post-switch
+// notice announces a change that just happened and must not be silenced.
+function StaleAuxWarning({ applying, onDismiss, onReset, slots, taskLabel }: StaleAuxWarningProps) {
   if (!slots.length) {
     return null
   }
@@ -213,6 +217,17 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
         Reset all to main
       </Button>
+      {onDismiss && (
+        <Button
+          aria-label="Don't show again"
+          disabled={applying}
+          onClick={onDismiss}
+          size="sm"
+          variant="textStrong"
+        >
+          Don't show again
+        </Button>
+      )}
     </div>
   )
 }
@@ -553,6 +568,20 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
     [auxiliary, mainModel]
   )
+
+  // A dismissal acknowledges one exact pin configuration; any change to a slot
+  // or the main provider produces a different fingerprint and re-arms the
+  // banner. The stored fingerprint is compared during render (seeded at mount,
+  // before the data can paint) so an acknowledged banner never flashes.
+  const mainProvider = mainModel?.provider ?? ''
+  const [dismissedFingerprint, setDismissedFingerprint] = useState<null | string>(null)
+
+  useEffect(() => {
+    setDismissedFingerprint(readStaleAuxDismissal(scopeProfile))
+  }, [scopeProfile])
+
+  const staleAuxDismissed =
+    persistentStaleAux.length > 0 && dismissedFingerprint === staleAuxFingerprint(mainProvider, persistentStaleAux)
 
   // Capabilities of the APPLIED main model — gates the profile-default
   // reasoning/speed controls the same way the composer picker gates per-model
@@ -1027,10 +1056,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             </Button>
           </div>
           <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
-          {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && (
+          {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && !staleAuxDismissed && (
             <div className="mb-2.5">
               <StaleAuxWarning
                 applying={applying}
+                onDismiss={() => {
+                  dismissStaleAux(scopeProfile, mainProvider, persistentStaleAux)
+                  setDismissedFingerprint(staleAuxFingerprint(mainProvider, persistentStaleAux))
+                }}
                 onReset={() => void resetAuxiliaryModels()}
                 slots={persistentStaleAux}
                 taskLabel={auxiliaryTaskLabel}

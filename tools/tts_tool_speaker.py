@@ -358,16 +358,17 @@ def stream_tts_to_speaker(
         chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)
 
-        def _speak_sentence(sentence: str) -> None:
+        def _speak_sentence(sentence: str, *, whole: bool = True) -> None:
             if stop_event.is_set():
                 return
             cleaned = _strip_markdown_for_tts(sentence).strip()
             if not cleaned:
                 return
-            cleaned_lower = cleaned.lower().rstrip(".!,")
-            if any(prev.lower().rstrip(".!,") == cleaned_lower for prev in spoken_sentences):
-                return
-            spoken_sentences.append(cleaned)
+            if whole:  # a fragment cut before a held word is not a sentence, so never a repeat of one
+                cleaned_lower = cleaned.lower().rstrip(".!,")
+                if any(prev.lower().rstrip(".!,") == cleaned_lower for prev in spoken_sentences):
+                    return
+                spoken_sentences.append(cleaned)
             if display_callback is not None:
                 display_callback(sentence)  # raw sentence on screen before TTS processing
             if sync_pipeline is not None:
@@ -377,15 +378,17 @@ def stream_tts_to_speaker(
                 cleaned = cleaned[:stream_max_len]
             playback.speak(cleaned)
         while not stop_event.is_set():
+            fragment = False
             try:
                 delta = text_queue.get(timeout=0.5)
             except queue.Empty:
-                delta = ""  # idle producer: flush a long buffer instead of sitting on it
-                sentences = chunker.flush() if len(chunker.buf) > 100 else ()
+                delta = ""  # idle producer: speak a long buffer's whole words instead of sitting on it
+                sentences = chunker.flush_complete_words() if len(chunker.buf) > 100 else ()
+                fragment = bool(sentences) and bool(chunker.buf.strip())  # a word was held back
             else:
                 sentences = chunker.flush() if delta is None else chunker.feed(delta)
             for sentence in sentences:
-                _speak_sentence(sentence)
+                _speak_sentence(sentence, whole=not fragment)
             if delta is None:
                 break
         with contextlib.suppress(queue.Empty):

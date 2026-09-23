@@ -158,3 +158,25 @@ def test_split_text_respects_cap_and_preserves_content():
         assert word in joined
 
 
+
+
+def test_idle_flush_never_splits_a_word_across_requests(stream_client, monkeypatch):
+    """A producer stall mid-word must not ship the half word as its own synthesis request:
+    halves synthesized separately do not reassemble ("regress" + "ion" is heard as two words)."""
+    streamer = _FakeStreamer([b"\x00\x00"])
+    _patch_provider(monkeypatch, streamer)
+    head, rest = "The rehearsal covers regress", "ion tests and nothing else."
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": head}))
+        time.sleep(2.6)  # past the ~2s idle force-flush window
+        conn.send_text(json.dumps({"text": rest, "done": True}))
+        assert conn.receive_json()["type"] == "start"
+        while True:
+            message = conn.receive()
+            if message.get("bytes") is None:
+                assert json.loads(message["text"]) == {"type": "end"}
+                break
+
+    assert len(streamer.requests) >= 2, streamer.requests  # the idle flush did fire
+    assert " ".join(streamer.requests).split() == (head + rest).split(), streamer.requests

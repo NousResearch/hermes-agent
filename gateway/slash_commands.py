@@ -885,11 +885,15 @@ class GatewaySlashCommandsMixin(
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         from tools.memory_tool import load_on_disk_store
-        # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
-        # the store persists to the same MEMORY/USER.md and honors the configured char limits).
-        out = handle_pending_subcommand(
-            wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
-            set_mode_fn=self._write_approval_setter("memory", event))
+        from gateway.run import _profile_runtime_scope
+        # Slash-command dispatch can run outside the inbound turn scope. Bind every review operation
+        # here so pending records, approved memory writes, and approval config use the routed home.
+        with _profile_runtime_scope(self._resolve_profile_home_for_source(event.source)):
+            # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
+            # the store persists to the same MEMORY/USER.md and honors the configured char limits).
+            out = handle_pending_subcommand(
+                wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
+                set_mode_fn=self._write_approval_setter("memory", event))
         return out if out is not None else (
             "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>."
         )
@@ -900,15 +904,18 @@ class GatewaySlashCommandsMixin(
         (never stranded). ``diff`` is truncated for chat."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
-        args = event.get_command_args().strip().split()
-        sub = args[0].lower() if args else ""
-        gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
-        if gate_off and wa.pending_count(wa.SKILLS) == 0:
-            return ("Skill write approval is off (skills.write_approval). "
-                    "Enable it with /skills approval on, then review staged "
-                    "writes here with /skills pending.")
-        out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
+        from gateway.run import _profile_runtime_scope
+        # Keep the gate check and every pending-file operation in the same routed scope.
+        with _profile_runtime_scope(self._resolve_profile_home_for_source(event.source)):
+            args = event.get_command_args().strip().split()
+            sub = args[0].lower() if args else ""
+            gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
+            if gate_off and wa.pending_count(wa.SKILLS) == 0:
+                return ("Skill write approval is off (skills.write_approval). "
+                        "Enable it with /skills approval on, then review staged "
+                        "writes here with /skills pending.")
+            out = handle_pending_subcommand(
+                wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "
                     "approve <id>, reject <id>, diff <id>, approval <on|off>. "

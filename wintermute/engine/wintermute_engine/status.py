@@ -283,16 +283,25 @@ def acknowledge(items: List[str]) -> str:
 
 
 def live(period: float = 10.0) -> None:
+    """Redraw in the terminal's alternate screen (like top): no frames left in the scrollback,
+    and the previous screen comes back on exit."""
     start = time.monotonic()
+    tty = sys.stdout.isatty()
+    if tty:
+        sys.stdout.write("\033[?1049h\033[?25l")   # alternate screen, hide cursor
     try:
         while True:
             panel = int((time.monotonic() - start) // max(1.0, period))
             screen = render_live(snapshot(), panel)
-            sys.stdout.write("\033[H\033[2J" + screen + "\n")
+            sys.stdout.write(("\033[H\033[J" if tty else "") + screen + "\n")
             sys.stdout.flush()
             time.sleep(2)
     except KeyboardInterrupt:
-        sys.stdout.write("\n")
+        pass
+    finally:
+        if tty:
+            sys.stdout.write("\033[?25h\033[?1049l")  # show cursor, back to the normal screen
+            sys.stdout.flush()
 
 
 def main(args: List[str]) -> int:

@@ -121,6 +121,10 @@ hermes config set agent.task_completion_guidance false
 # reads Hermes' own documentation as if it were about himself.
 hermes config set platform_toolsets.telegram '["wintermute","memory","web","file","terminal","session_search"]'
 
+# `hermes update` offers to add NousResearch as an "upstream" remote and sync this fork's main
+# with it, which would pull their code over Wintermute's. This marker makes Hermes never ask.
+touch "$HERMES_HOME/.skip_upstream_prompt"
+
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"
 

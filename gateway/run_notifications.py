@@ -380,6 +380,10 @@ class GatewayNotificationsMixin:
                     await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    for _image_path in image_paths:
+                        with suppress(Exception):
+                            await adapter._notify_media_delivery_failure(
+                                chat_id, _image_path, metadata=_thread_meta)
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
@@ -393,6 +397,9 @@ class GatewayNotificationsMixin:
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    with suppress(Exception):
+                        await adapter._notify_media_delivery_failure(
+                            chat_id, media_path, is_voice=is_voice, metadata=_thread_meta)
 
 
     async def _deliver_queued_first_response(

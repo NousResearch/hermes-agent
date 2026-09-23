@@ -2940,10 +2940,12 @@ class BasePlatformAdapter(ABC):
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    await self._notify_media_delivery_failure(chat_id, image_url, metadata=metadata)
                 else:
                     delivered = True
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                await self._notify_media_delivery_failure(chat_id, image_url, metadata=metadata)
         if not images:
             return SendResult(success=False, error="no images to send")
         return SendResult(
@@ -4235,6 +4237,10 @@ class BasePlatformAdapter(ABC):
                     logger.warning("[%s] Error sending media: %s", self.name, err)
                 else:
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
+                # The MEDIA tag was already stripped from the visible reply, so an
+                # exception here would drop the attachment without any signal.
+                await self._notify_media_delivery_failure(
+                    chat_id, path, is_voice=is_voice, metadata=metadata)
 
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
@@ -4247,6 +4253,9 @@ class BasePlatformAdapter(ABC):
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+            for image_url, _alt_text in images:
+                await self._notify_media_delivery_failure(
+                    event.source.chat_id, image_url, metadata=metadata)
             record_delivery(SendResult(success=False, error=str(batch_err)))
             return
         record_delivery(result)

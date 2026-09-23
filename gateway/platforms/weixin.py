@@ -1044,6 +1044,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     await getattr(self, sender)(chat_id=chat_id, metadata=metadata, **{key: path})
                 except Exception as exc:
                     logger.warning("[%s] %s delivery failed for %s: %s", self.name, label, path, exc)
+                    await self._notify_media_delivery_failure(
+                        chat_id, path, is_voice=is_voice, metadata=metadata)
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"

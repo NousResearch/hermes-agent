@@ -2508,17 +2508,25 @@ class GatewayTurnMixin:
                     chat_id=source.chat_id, content=header + "(No response generated)", metadata=_thread_metadata,
                 )
             for image_url, alt_text in (images or []):
-                with suppress(Exception):
+                try:
                     await adapter.send_image(
                         chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
                     )
+                except Exception as _img_err:
+                    logger.warning(
+                        "[%s] Background-task image delivery failed: %s", adapter.name, _img_err,
+                    )
+                    with suppress(Exception):
+                        await adapter._notify_media_delivery_failure(
+                            source.chat_id, image_url, metadata=_thread_metadata,
+                        )
             # Route each media file by type (voice bubble / video / image / document), as the
             # streaming + kanban paths do.
             from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
             from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
             for media_path, _is_voice in (media_files or []):
                 _ext = os.path.splitext(media_path)[1].lower()
-                with suppress(Exception):
+                try:
                     if _should_send_media_as_audio(source.platform, _ext, _is_voice):
                         await adapter.send_voice(
                             chat_id=source.chat_id, audio_path=media_path, metadata=_thread_metadata,
@@ -2531,6 +2539,14 @@ class GatewayTurnMixin:
                             else (adapter.send_document, "file_path")
                         )
                         await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                except Exception as _media_err:
+                    logger.warning(
+                        "[%s] Background-task media delivery failed: %s", adapter.name, _media_err,
+                    )
+                    with suppress(Exception):
+                        await adapter._notify_media_delivery_failure(
+                            source.chat_id, media_path, is_voice=_is_voice, metadata=_thread_metadata,
+                        )
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)

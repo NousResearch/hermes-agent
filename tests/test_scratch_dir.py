@@ -1,5 +1,6 @@
 """Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
 
+import json
 import os
 import stat
 import subprocess
@@ -62,6 +63,45 @@ def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), check=True)
     expected = str(tmp_path / "cache" / "scratch")
     assert out.stdout.split() == [expected, expected]
+
+
+@pytest.mark.windows_only
+def test_git_bash_bootstrap_exports_scratch_to_process_and_children(tmp_path):
+    """Git Bash's inherited defaults must pass through boot and child inheritance."""
+    home = tmp_path / "home"
+    scratch = str(home / "cache" / "scratch")
+    child_code = (
+        "import json, os; "
+        "print(json.dumps({k: os.environ.get(k) for k in "
+        "('TMPDIR', 'TMP', 'TEMP', 'HERMES_SCRATCH_DIR', 'MSYSTEM')}))"
+    )
+    code = (
+        "import hermes_bootstrap, json, os, subprocess, sys, tempfile; "
+        f"child = subprocess.run([sys.executable, '-c', {child_code!r}], "
+        "capture_output=True, text=True, check=True); "
+        "print(json.dumps({'env': {k: os.environ.get(k) for k in "
+        "('TMPDIR', 'TMP', 'TEMP', 'HERMES_SCRATCH_DIR')}, "
+        "'tempdir': tempfile.gettempdir(), 'child': json.loads(child.stdout)}))"
+    )
+    base_env = {**os.environ, "HERMES_HOME": str(home), "MSYSTEM": "MINGW64",
+                "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
+    base_env.pop("HERMES_SCRATCH_DIR", None)
+    for custom_temp in (None, str(tmp_path / "custom")):
+        env = {**base_env}
+        if custom_temp is not None:
+            env["TEMP"] = custom_temp
+        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                             text=True, check=True,
+                             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        result = json.loads(out.stdout)
+        expected = ({key: scratch for key in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}
+                    if custom_temp is None else
+                    {"TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": custom_temp,
+                     "HERMES_SCRATCH_DIR": None})
+        assert result["env"] == expected
+        assert result["child"] == {**expected, "MSYSTEM": "MINGW64"}
+        if custom_temp is None:
+            assert result["tempdir"] == scratch
 
 
 def test_prune_removes_only_stale_top_level_entries(tmp_path):

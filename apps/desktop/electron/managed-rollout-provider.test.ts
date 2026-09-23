@@ -298,7 +298,8 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
     evidence,
     now: () => NOW,
     nowMono: () => NOW_MONO,
-    processGeneration: 1
+    processGeneration: 1,
+    measuredMaxInstallations: () => 1
   }
 
   return { dependencies, journalDirectory, launchCalls }

@@ -75,6 +75,7 @@ import type {
 } from './managed-ssh-update-service'
 
 export const MANAGED_ROLLOUT_UNAVAILABLE_REASON = 'trusted-rollout-dependencies-unavailable'
+export const MANAGED_ROLLOUT_UNVERIFIED_CAPACITY_REASON = 'unverified-capacity'
 export const MAX_PROVIDER_PAGE_SIZE = 50
 
 const TERMINAL_PHASES = new Set<RolloutPhase>([
@@ -129,6 +130,8 @@ export interface ManagedRolloutProviderDependencies {
   observe: ManagedRolloutObservationReader
   evidence: ManagedRolloutEvidenceAdapter
   ready?: () => boolean
+  /** Supported host count from an approved disposable SSH measurement. */
+  measuredMaxInstallations?: () => number | null
   now?: () => number
   nowMono?: () => number
   processGeneration?: number
@@ -436,10 +439,14 @@ function createDeferred(): Deferred {
   }
 }
 
-function capabilities(available: boolean): ManagedRolloutIpcCapabilities {
+function capabilities(
+  available: boolean,
+  maxInstallations = 0,
+  unavailableReason = MANAGED_ROLLOUT_UNAVAILABLE_REASON
+): ManagedRolloutIpcCapabilities {
   return available
-    ? { protocol: 1, available: true, reason: null, maxConcurrency: 4, maxInstallations: 500 }
-    : { protocol: 1, available: false, reason: MANAGED_ROLLOUT_UNAVAILABLE_REASON, maxConcurrency: 0, maxInstallations: 0 }
+    ? { protocol: 1, available: true, reason: null, maxConcurrency: 1, maxInstallations }
+    : { protocol: 1, available: false, reason: unavailableReason, maxConcurrency: 0, maxInstallations: 0 }
 }
 
 function targetResolutionOutput(entry: ResolvedEntry): Record<string, unknown> {
@@ -830,6 +837,27 @@ export function createManagedRolloutProvider(
   const nowMono = deps.nowMono ?? deps.sourceReader.nowMono
   let startQueue = Promise.resolve()
 
+  const currentCapabilities = (): ManagedRolloutIpcCapabilities => {
+    try {
+      if (deps.ready && !deps.ready()) {return capabilities(false)}
+      const measured = deps.measuredMaxInstallations?.()
+
+      return typeof measured === 'number' && Number.isSafeInteger(measured) && measured >= 1 && measured <= 500
+        ? capabilities(true, measured)
+        : capabilities(false, 0, MANAGED_ROLLOUT_UNVERIFIED_CAPACITY_REASON)
+    } catch {
+      return capabilities(false, 0, MANAGED_ROLLOUT_UNVERIFIED_CAPACITY_REASON)
+    }
+  }
+
+  const requireMeasuredCapacity = (installations?: number): void => {
+    const current = currentCapabilities()
+
+    if (!current.available) {throw new Error(current.reason ?? MANAGED_ROLLOUT_UNVERIFIED_CAPACITY_REASON)}
+
+    if (installations !== undefined && installations > current.maxInstallations) {throw new Error('measured-capacity-exceeded')}
+  }
+
   const currentRecord = (id: string): JournalRecord => deps.journal.read(id)
 
   const currentSnapshot = (id: string): RolloutSnapshot => validateRolloutSnapshot(currentRecord(id).snapshot)
@@ -1217,6 +1245,15 @@ export function createManagedRolloutProvider(
 
       for (const installId of runtime.plan.waves[wave]) {
         if (runtime.coordinator.snapshot.phase !== 'running') {return}
+        const capacity = currentCapabilities()
+
+        if (!capacity.available || runtime.plan.rows.length > capacity.maxInstallations) {
+          const paused = await runtime.coordinator.command({ kind: 'pause' })
+          await persist(runtime, `capacity-lost:${randomUUID()}`, { kind: 'capacity-lost', installId }, paused.state, [event('pause-requested', installId, capacity.reason ?? 'measured-capacity-exceeded')])
+
+          return
+        }
+
         const authorizationTransition = await runtime.coordinator.authorize(installId)
 
         if (!authorizationTransition.ok) {
@@ -1303,6 +1340,7 @@ export function createManagedRolloutProvider(
   }
 
   const startInternal = async (request: { token: string; requestId: string }): Promise<unknown> => {
+    requireMeasuredCapacity()
     const session = sessions.get(request.token)
 
     if (!session) {throw new Error('preflight-token-invalid')}
@@ -1321,6 +1359,8 @@ export function createManagedRolloutProvider(
       const failed = revalidated as { ok: false; code: string }
       throw new Error(`preflight-${failed.code}`)
     }
+
+    requireMeasuredCapacity(session.plan.rows.length)
 
     const active = deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE }).items.find(item => activePhase(item.phase) && !item.archived)
 
@@ -1420,6 +1460,16 @@ export function createManagedRolloutProvider(
 
       if (parsed.expectedRevision !== liveCurrent.revision) {return staleAck(parsed.id, liveCurrent.revision, 'stale-revision', 'managed rollout revision is stale.')}
 
+      if (parsed.action === 'resume' || parsed.action === 'promote') {
+        const capacity = currentCapabilities()
+
+        if (!capacity.available || runtime.plan.rows.length > capacity.maxInstallations) {
+          const reason = capacity.reason ?? 'measured-capacity-exceeded'
+
+          return staleAck(parsed.id, liveCurrent.revision, reason, 'measured fleet capacity is unavailable for this rollout.')
+        }
+      }
+
       let transition: { ok: boolean; state: ManagedRolloutState; reason?: string }
 
       switch (parsed.action) {
@@ -1477,7 +1527,7 @@ export function createManagedRolloutProvider(
   }
 
   const provider: ManagedRolloutProvider = {
-    capabilities: async () => capabilities(deps.ready ? deps.ready() : true),
+    capabilities: async () => currentCapabilities(),
     inventory: async () => {
       const snapshot = await deps.inventoryReader.capture()
 
@@ -1486,11 +1536,14 @@ export function createManagedRolloutProvider(
       return inventoryOutput(snapshot)
     },
     resolveTarget: async request => {
+      requireMeasuredCapacity()
+
       if (!Array.isArray(request.connectionIds) || request.connectionIds.length === 0 || request.connectionIds.length > 500) {throw new Error('target-connection-list-invalid')}
 
       if (typeof request.inventoryRevision !== 'string' || !request.inventoryRevision || request.inventoryRevision.length > 256) {throw new Error('inventory-revision-invalid')}
       const resolved = await deps.resolveTarget(request)
       const plan = validateRolloutPlan(resolved.plan)
+      requireMeasuredCapacity(plan.rows.length)
       const resolution = validateTargetResolution(resolved.resolution)
 
       if (plan.inventoryRevision !== request.inventoryRevision || plan.retryOf !== request.retryOf || !exactConnectionSet(plan, request.connectionIds) || JSON.stringify(plan.target) !== JSON.stringify(resolution.target)) {
@@ -1506,6 +1559,8 @@ export function createManagedRolloutProvider(
       return targetResolutionOutput({ plan, resolution })
     },
     preflight: async (rawDraft: unknown) => {
+      requireMeasuredCapacity()
+
       if (!rawDraft || typeof rawDraft !== 'object' || Array.isArray(rawDraft)) {throw new Error('preflight-draft-invalid')}
       const draft = rawDraft as Record<string, unknown>
       const keys = ['inventoryRevision', 'targetResolutionId', 'waves', 'concurrency', 'promotionPolicy', 'retryOf']
@@ -1540,6 +1595,8 @@ export function createManagedRolloutProvider(
         retryOf: draft.retryOf,
         exclusions
       })
+
+      requireMeasuredCapacity(plan.rows.length)
 
       if (plan.inventoryRevision !== entry.plan.inventoryRevision || plan.retryOf !== entry.plan.retryOf) {throw new Error('preflight-plan-provenance-mismatch')}
       const admission = await validateAdmission(plan)

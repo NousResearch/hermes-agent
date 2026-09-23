@@ -12,17 +12,18 @@ describe('detectTrigger', () => {
   })
 
   it('keeps the slash trigger live for digit-prefixed command queries', () => {
-    expect(detectTrigger('/0')).toEqual({ kind: '/', query: '0', tokenLength: 2 })
-    expect(detectTrigger('/03-gh-go')).toEqual({ kind: '/', query: '03-gh-go', tokenLength: 9 })
+    expect(detectTrigger('/0')).toEqual({ kind: '/', query: '0', tokenLength: 2, value: '0' })
+    expect(detectTrigger('/03-gh-go')).toEqual({ kind: '/', query: '03-gh-go', tokenLength: 9, value: '03-gh-go' })
   })
 
   it('keeps the slash trigger live for digit-prefixed inline queries', () => {
-    expect(detectTrigger('use /0')).toEqual({ inline: true, kind: '/', query: '0', tokenLength: 2 })
+    expect(detectTrigger('use /0')).toEqual({ inline: true, kind: '/', query: '0', tokenLength: 2, value: '0' })
     expect(detectTrigger('use /03-gh-go')).toEqual({
       inline: true,
       kind: '/',
       query: '03-gh-go',
-      tokenLength: 9
+      tokenLength: 9,
+      value: '03-gh-go'
     })
   })
 

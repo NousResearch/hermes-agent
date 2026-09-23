@@ -648,6 +648,30 @@ channel. To give one person a privileged profile and everyone else a restricted 
 the privileged sender route first, add a platform-wide catch-all route to the restricted
 profile after it, and keep the platform's own ingress allowlist in place.
 
+A route discriminator may be a guild/channel **name** or a **regex pattern**
+instead of an opaque id — handy when ids change or a naming convention applies
+to many channels:
+
+```yaml
+  profile_routes:
+    - name: all-work-channels
+      platform: discord
+      chat_id: "^work-.*_project-"     # pattern over channel names
+      profile: work-profile
+
+    - name: acme-server
+      platform: discord
+      guild_id: "Acme HQ"              # guild name instead of a numeric id
+      profile: acme
+```
+
+Matching tries the exact id first and only then resolves the inbound chat/guild
+name from the cached channel directory (`~/.hermes/channel_directory.json`,
+rebuilt every 5 minutes), so id-based routes read nothing extra. A value
+containing regex metacharacters (`^ $ + ? [ ] ( ) { } | \`) is a pattern
+anchored at the **start** of the resolved name; a channel the bot has not
+discovered yet cannot match by name.
+
 A route applies only to messages received by the **default profile's bot**
 unless it names another bot with `bot_profile: <profile>`. Telegram DMs use the
 same `chat_id` for every bot (the user's id), so without this a

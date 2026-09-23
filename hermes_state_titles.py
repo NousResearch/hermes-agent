@@ -105,12 +105,12 @@ class SessionTitlesMixin:
                     # user, so transfer it onto the tip (uniqueness + lineage kept).
                     if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
                         conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
-                    # A deliberately archived hidden Bot Chat is a retired registry
-                    # entry, not a live identity. Retire its name in the same title
-                    # transaction so a replacement can become the sole canonical row;
-                    # the old session remains archived and otherwise untouched.
-                    elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-                          and bool(conflict["hidden"])):
+                    # An archived Bot Chat is a retired registry entry, not a live
+                    # identity. Older cleanup paths could leave it visible, but that
+                    # malformed presentation state must not retain the unique title.
+                    # Retire its name in this transaction so a replacement becomes the
+                    # sole canonical row; the archived session otherwise stays intact.
+                    elif title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"]):
                         conn.execute(
                             "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
                             (conflict_id,),

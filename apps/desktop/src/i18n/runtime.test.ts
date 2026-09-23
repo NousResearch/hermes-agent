@@ -59,6 +59,14 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('common.bots')).toBe('Боты')
   })
 
+  it('translates Portuguese (Brazil) catalog copy', () => {
+    setRuntimeI18nLocale('pt')
+
+    expect(translateNow('boot.ready')).toBe('O Hermes Desktop está pronto')
+    expect(translateNow('common.save')).toBe('Salvar')
+    expect(translateNow('connectorsPage.tools.title')).toBe('Ferramentas')
+  })
+
   it('keeps translated settings field copy addressable from schema keys', () => {
     const field = ['display', 'show_reasoning'].join('.')
 

@@ -80,6 +80,7 @@ import {
   $yoloActive,
   getCurrentModelSource,
   getSessionOwnerHint,
+  idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
   sessionPinId,
@@ -123,6 +124,7 @@ import {
   type SessionProfileRoute
 } from '@/store/session-request-router'
 import {
+  $focusedStoredSessionId,
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
@@ -500,12 +502,24 @@ export function useSessionActions({
 
     const selectedStoredSessionId = selectedStoredSessionIdRef.current
     const routedStoredSessionId = getRoutedStoredSessionId()
+    const previousId = storedIdRotation.previousStoredSessionId
+    const nextId = storedIdRotation.nextStoredSessionId
+    const sessions = $sessions.get()
+    const focusedStoredSessionId = $focusedStoredSessionId.get()
+
+    // A tile can adopt the exact successor before the refreshed sessions list
+    // contains it. The rotation itself proves that this focus is the same live
+    // runtime; unrelated focused chats still fail the foreground check.
+    const focusedOnRotatedLineage = Boolean(
+      focusedStoredSessionId &&
+      (focusedStoredSessionId === nextId || idsShareLineage(focusedStoredSessionId, nextId, sessions))
+    )
 
     if (
       activeSessionIdRef.current !== storedIdRotation.runtimeSessionId ||
-      selectedStoredSessionId !== storedIdRotation.previousStoredSessionId ||
-      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId) ||
-      !isSessionInForeground(storedIdRotation.previousStoredSessionId)
+      selectedStoredSessionId !== previousId ||
+      (routedStoredSessionId !== null && routedStoredSessionId !== previousId) ||
+      (!isSessionInForeground(previousId) && !focusedOnRotatedLineage)
     ) {
       return
     }
@@ -516,9 +530,6 @@ export function useSessionActions({
     // live editor text on a brief remount. If the new tip row is not in
     // $sessions yet, resolveComposerSessionKey falls back to the tip id — prefer
     // the previous id (usually the lineage root) in that gap.
-    const previousId = storedIdRotation.previousStoredSessionId
-    const nextId = storedIdRotation.nextStoredSessionId
-    const sessions = $sessions.get()
     const resolvedNext = resolveComposerSessionKey(nextId, sessions)
 
     const durableKey =

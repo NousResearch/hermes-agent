@@ -1469,6 +1469,45 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     )
 
 
+_FENCE_LANG = (
+    r"txt|text|bash|sh|shell|console|python|py|md|markdown|json|yaml|yml|"
+    r"ts|tsx|js|jsx|diff|html|css|sql|toml|ini|xml|go|rs|c|cpp|java|"
+    r"rb|php|swift|kt|lua|dockerfile"
+)
+
+
+def _repair_glued_markdown_block_boundaries(text: str) -> str:
+    """Restore markdown block separators lost by streamed reconstruction."""
+    if not isinstance(text, str) or not text:
+        return text
+
+    text = re.sub(
+        rf"(?<!`)```({_FENCE_LANG})(?=[^\n`])",
+        r"```\1\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"([^`\n])```(?=\S)", r"\1\n```\n\n", text)
+    parts = re.split(r"(```.*?```)", text, flags=re.DOTALL)
+
+    for index, part in enumerate(parts):
+        if index % 2:
+            parts[index] = re.sub(r"([^`\n])```$", r"\1\n```", part)
+            continue
+
+        part = re.sub(r"---(?=#{1,6}\s)", "---\n\n", part)
+        part = re.sub(r"([.!?`*])(?=#{1,6}\s)", r"\1\n\n", part)
+        part = re.sub(r"(?m)^(#{1,6}\s+[^\n|]+)\|(?=\s*[^\n]*\|)", r"\1\n\n|", part)
+        part = re.sub(
+            r"(?m)^(\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|)\|(?=\s*\S)",
+            r"\1\n|",
+            part,
+        )
+        parts[index] = part
+
+    return "".join(parts)
+
+
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode.
 
@@ -1550,6 +1589,12 @@ def _assistant_content_for_storage(agent, assistant_message):
     if isinstance(content, str) and content:
         content = agent._strip_think_blocks(content).strip()
         if content:
+            # Streamed/interim reconstruction collapses whitespace, gluing code-fence
+            # openers, rules, headings and table separators onto the previous line.
+            # Newlines are semantic in markdown, so repair before the text is
+            # persisted: API replay, transcript, gateway delivery and every renderer
+            # downstream then see real block boundaries.
+            content = _repair_glued_markdown_block_boundaries(content)
             from agent.redact import redact_sensitive_text
             content = redact_sensitive_text(content)
     return content

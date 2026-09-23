@@ -11,6 +11,7 @@ export {
   normalizeWs,
   reasoningPart,
   renderMediaTags,
+  repairGluedMarkdownBlockBoundaries,
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'

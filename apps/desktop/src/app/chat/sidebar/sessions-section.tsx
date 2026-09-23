@@ -29,6 +29,7 @@ import {
 } from '@/store/layout'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionListDensity } from '@/store/session-list-density'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -240,6 +241,7 @@ export function SidebarSessionsSection({
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
   const showAllSessions = useStore($sidebarShowAllSessions)
+  const density = useStore($sessionListDensity)
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
@@ -631,7 +633,7 @@ export function SidebarSessionsSection({
         open={sectionOpen}
       />
       {sectionOpen && (
-        <SidebarGroupContent className={resolvedContentClassName}>
+        <SidebarGroupContent className={resolvedContentClassName} key={density}>
           {inner}
           {footer}
         </SidebarGroupContent>

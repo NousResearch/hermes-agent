@@ -429,9 +429,11 @@ describe('Inbox-style session card', () => {
     const workspace = screen.getByText('pursuit-support-agent')
     const title = screen.getByText('Ruff lint and pytest verification').parentElement
     const footer = screen.getByText('GPT-4.1').parentElement
+    const body = screen.getByText('Ruff lint and pytest verification').closest('button')
 
     expect(title).toBeTruthy()
     expect(footer).toBeTruthy()
+    expect(body).toBeTruthy()
 
     for (const el of [workspace, title!, footer!]) {
       expect(el.className).not.toMatch(/\bleading-none\b/)
@@ -440,6 +442,7 @@ describe('Inbox-style session card', () => {
 
     expect(workspace.className).toMatch(/\btruncate\b/)
     expect(screen.getByText('133 messages')).toBeTruthy()
+    expect(body!.className).toMatch(/\bh-auto\b/)
   })
 })
 

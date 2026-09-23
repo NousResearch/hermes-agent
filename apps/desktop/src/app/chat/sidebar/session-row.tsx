@@ -425,7 +425,7 @@ function SidebarSessionRowImpl({
             // The card is a grid with ONE spacing knob: --card-gap. Every row
             // gap is gap-y-(--card-gap); the title/preview group opts out
             // with its own tighter internal flex gap.
-            card && 'flex-col items-stretch justify-center py-1.5 [--card-gap:0.4rem] gap-(--card-gap)'
+            card && 'h-auto flex-col items-stretch justify-center py-1.5 [--card-gap:0.4rem] gap-(--card-gap)'
           )}
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {

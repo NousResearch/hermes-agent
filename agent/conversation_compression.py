@@ -3581,6 +3581,35 @@ class _CommitOutcome:
     made_progress: bool = False
 
 
+def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
+    """The in-place archive watermark, capped at the newest durable row the compressor was handed.
+
+    The lease watermark is the newest row in state.db, but a surface compacts the history it holds, and that
+    can be older: a Desktop/TUI or CLI /compress, or a long-lived CLI, does not hold turns another surface
+    appended to the same session since. Archived under the watermark, those rows would leave every surface's
+    history and search, and the summary never saw them. Above the cap they take the concurrent-append path
+    instead (cloned after the compacted set).
+
+    Only while the held history is a live prefix of the session: its newest durable row names its ``_row_id``
+    (one held without it could sit above the cap and be cloned beside its own carried copy), and that row is
+    still active (after another surface compacted, the held rows are archived and every live row would be
+    cloned beside the new summary).
+    """
+    if watermark is None:
+        return None
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    rows = [*((m, False) for m in messages), *((m, True) for m in verbatim_tail or ())]
+    held = [m.get("_row_id") for m, _ in rows if isinstance(m, dict)]
+    held = [rid for rid in held if isinstance(rid, int) and not isinstance(rid, bool) and rid > 0]
+    newest = next((m for m, kept in reversed(rows) if isinstance(m, dict)
+                   and (kept or "_row_id" in m or m.get(_DB_PERSISTED_MARKER))), None)
+    if newest is None or newest.get("_row_id") not in held or max(held) >= watermark:
+        return watermark
+    if agent._session_db.get_message_role(agent.session_id, max(held)) is None:
+        return watermark
+    return max(held)
+
+
 def _commit_compaction(
     agent: Any, messages: list, compressed: list, *, in_place: bool, lease: _CompressionLease,
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
@@ -3647,8 +3676,8 @@ def _commit_compaction(
                     tail_count += len(verbatim_tail)
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
-                    watermark=lease.watermark, lock_holder=lease.holder, tail_count=tail_count,
-                    carried_messages=carried_messages,
+                    watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
+                    lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"

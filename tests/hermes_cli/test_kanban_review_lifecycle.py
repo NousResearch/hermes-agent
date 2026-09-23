@@ -329,6 +329,30 @@ def test_complete_task_closes_review_to_done(kanban_home: Path) -> None:
         assert _events(conn, tid, kind="completed")
 
 
+def test_never_dispatched_triage_worktree_can_complete_without_materializing_it(
+    kanban_home: Path, tmp_path: Path,
+) -> None:
+    """A triage verification can close without moving to Ready and spawning a worker."""
+    missing_worktree = tmp_path / "worktrees" / "triage-verification"
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Verify repaired scan",
+            assignee="maintenance-steward",
+            workspace_kind="worktree",
+            workspace_path=str(missing_worktree),
+            triage=True,
+        )
+        assert kb.get_task(conn, tid).status == "triage"
+        assert not missing_worktree.exists()
+
+        assert kb.complete_task(
+            conn, tid, summary="Two scheduled scan receipts confirm the repair."
+        ) is True
+        assert kb.get_task(conn, tid).status == "done"
+        assert _events(conn, tid, kind="completed")
+
+
 # ---------------------------------------------------------------------------
 # Wake plumbing: review_requested is a claimable terminal event for a sub
 # ---------------------------------------------------------------------------

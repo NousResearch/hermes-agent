@@ -2726,7 +2726,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
+    """``triage|running|ready|blocked|review -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
     approval. A ``running`` task under a live claim is only completed with
@@ -2785,9 +2785,16 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND status IN ('triage', 'running', 'ready', 'blocked', 'review')
                 """
         params: tuple = (result, now, task_id)
+        if prior_status == "triage":
+            # Triage cards need a direct evidence-backed close path. Keep it
+            # claim-free so completion cannot race a task being dispatched.
+            sql += (
+                " AND status = 'triage' AND claim_lock IS NULL "
+                "AND current_run_id IS NULL AND worker_pid IS NULL"
+            )
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))

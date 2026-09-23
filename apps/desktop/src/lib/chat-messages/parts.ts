@@ -10,6 +10,47 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
+/** Extract display text from a provider reasoning-details envelope. */
+export function reasoningTextFromDetails(details: unknown): string {
+  let blocks = details
+
+  if (typeof blocks === 'string') {
+    const trimmed = blocks.trim()
+
+    // Some persisted rows contain plain reasoning text rather than a JSON envelope.
+    if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) {
+      return trimmed
+    }
+
+    try {
+      blocks = JSON.parse(trimmed) as unknown
+    } catch {
+      // A malformed structured envelope is replay metadata, not display text.
+      return ''
+    }
+  }
+
+  const text: string[] = []
+
+  for (const block of Array.isArray(blocks) ? blocks : [blocks]) {
+    if (typeof block === 'string') {
+      if (block.trim()) text.push(block)
+      continue
+    }
+
+    if (!block || typeof block !== 'object') continue
+
+    const record = block as Record<string, unknown>
+    const value = [record.summary, record.thinking, record.content, record.text].find(
+      candidate => typeof candidate === 'string' && candidate.trim()
+    )
+
+    if (typeof value === 'string') text.push(value)
+  }
+
+  return text.join('\n\n').trim()
+}
+
 /**
  * Known deliverable file extensions — mirrors the Python-side
  * `MEDIA_DELIVERY_EXTS` in `gateway/platforms/base.py` so the two surfaces

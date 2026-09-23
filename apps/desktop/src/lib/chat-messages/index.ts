@@ -10,6 +10,7 @@ export {
   mergeFinalAssistantText,
   normalizeWs,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'

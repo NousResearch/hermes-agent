@@ -3814,3 +3814,13 @@ html[data-hud-window] [data-slot='popover-content'] {
 [data-pane-hidden] * {
   visibility: inherit !important;
 }
+
+/* Collapsed notification cards never outgrow the viewport (48dvh leaves the
+   titlebar and the "+N more" row visible); the card body scrolls instead of
+   pushing its action buttons off screen. Expanded stacks scroll themselves,
+   so the clamp is not applied there. */
+.notification-collapsed-clamp {
+  max-height: 48dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

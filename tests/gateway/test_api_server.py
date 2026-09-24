@@ -931,6 +931,7 @@ class TestSkillsEndpoint:
         ]
         with patch(
             "tools.skills_tool._find_all_skills",
+            autospec=True,
             return_value=list(fake_skills),
         ):
             app = _create_app(adapter)

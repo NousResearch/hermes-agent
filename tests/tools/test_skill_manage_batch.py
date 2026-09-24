@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -105,6 +106,14 @@ class TestSkillManageBatch(unittest.TestCase):
             {"action": "create", "content": SK.format(n="x")},
         ])
         self.assertFalse(r["success"])
+        # a non-string create category is a JSON error (never a TypeError) and, rejected
+        # pre-effect, leaves no skill_batch_ snapshot tempdir behind.
+        with tempfile.TemporaryDirectory(prefix="skmbatch_tmp_") as tmp, \
+                patch.dict(os.environ, {"TMPDIR": tmp}), patch.object(tempfile, "tempdir", None):
+            r = self._call("x", [{"action": "create", "content": SK.format(n="x"), "category": 5}])
+            self.assertFalse(r["success"])
+            self.assertIn("Category must be a string", r["error"])
+            self.assertEqual(os.listdir(tmp), [])
         # empty / capped
         r = self._call("x", [])
         self.assertFalse(r["success"])
@@ -183,8 +192,7 @@ class TestSkillManageBatch(unittest.TestCase):
                 open(os.path.join(gamma, "dropped.txt"), "w").write("keep me")
             return real_from(payload, **kw)
 
-        from unittest.mock import patch as _patch
-        with _patch.object(self.smt, "_skill_manage_from", side_effect=drop_file_before_failing_op):
+        with patch.object(self.smt, "_skill_manage_from", side_effect=drop_file_before_failing_op):
             r = json.loads(self.smt.skill_manage(action="", name="", operations=[
                 {"name": "alpha", "action": "patch",
                  "old_string": "Step 1.", "new_string": "Step A."},

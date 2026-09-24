@@ -86,6 +86,7 @@ def _op_shape_error(action: str, args: dict):
 def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
     from tools.skill_manager_guards import _background_review_preflight
+    from tools.skill_manager_tool import _validate_category
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
@@ -103,6 +104,10 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # op[1] would first apply op[0] and then roll the whole batch back.
         if (shape_err := _op_shape_error(act, op)) is not None:
             return fail(i, f" ({act} on '{nm}'): {shape_err}")
+        # create's category is resolved to a target dir before the snapshot: reject a bad one here
+        # so it returns a JSON error (not a TypeError) and never leaks the snapshot tempdir.
+        if act == "create" and (cat_err := _validate_category(op.get("category"))) is not None:
+            return fail(i, f" ({act} on '{nm}'): {cat_err}")
         names.append(nm)
         if act == "create" and nm in names[:-1]:
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")

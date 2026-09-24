@@ -169,6 +169,28 @@ def _background_review_write_guard(
         return None
     refuse = f"Refusing background curator {action} for"
     if _is_pinned(name, "pinned skill guard"):
+        return _refusal(f"{refuse} pinned skill '{name}'.")
+    if action in {"patch", "edit", "write_file", "remove_file"} and "/" in name:
+        # Creation records ownership under the directory's bare name. Resolve
+        # the already-located target, not the caller's category-qualified alias.
+        # A shared bare key cannot prove which of two same-named skills is owned.
+        from agent.skill_utils import get_all_skills_dirs
+        from tools import skill_manager_tool as _smt
+        try:
+            matches = {
+                candidate.resolve()
+                for root in get_all_skills_dirs() if root.exists()
+                for candidate in _smt._iter_skill_dirs(root)
+                if candidate.name == skill_dir.name
+            }
+            if matches != {skill_dir.resolve()}:
+                return _refusal(
+                    f"{refuse} skill '{name}': the bare ownership identity is ambiguous.")
+            name = skill_dir.name
+        except Exception:
+            return _refusal(
+                f"{refuse} skill '{name}': the ownership identity could not be resolved.")
+    if _is_pinned(name, "pinned skill guard"):
         return _refusal(
             f"{refuse} pinned skill '{name}': pinned skills "
             f"are off-limits to autonomous maintenance. Ask the user to run `hermes curator "

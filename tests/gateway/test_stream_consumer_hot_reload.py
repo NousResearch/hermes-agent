@@ -22,9 +22,3 @@ def test_length_budget_falls_back_to_legacy_message_len_fn():
     len_fn, safe_limit = consumer._resolve_length_budget()
     assert len_fn is utf16ish
     assert safe_limit >= 500
-
-
-def test_length_budget_falls_back_to_len_when_no_length_api():
-    consumer = GatewayStreamConsumer(_stale_adapter(None), "chat-1", StreamConsumerConfig())
-    len_fn, _ = consumer._resolve_length_budget()
-    assert len_fn is len

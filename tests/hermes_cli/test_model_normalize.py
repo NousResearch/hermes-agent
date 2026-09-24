@@ -7,9 +7,7 @@ import pytest
 
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
-    _DOT_TO_HYPHEN_PROVIDERS,
     _normalize_for_deepseek,
-    detect_vendor,
 )
 
 
@@ -29,27 +27,14 @@ class TestIssue5211OpenCodeGoDotPreservation:
         result = normalize_model_for_provider(model, "opencode-go")
         assert result == expected, f"Expected {expected!r}, got {result!r}"
 
-    def test_opencode_go_not_in_dot_to_hyphen_set(self):
-        """opencode-go must NOT be in the dot-to-hyphen provider set."""
-        assert "opencode-go" not in _DOT_TO_HYPHEN_PROVIDERS
-
 
 # ── Anthropic dot-to-hyphen conversion (regression) ────────────────────
-
-class TestAnthropicDotToHyphen:
-    """Anthropic API still needs dots→hyphens."""
 
 
 # ── OpenCode Zen regression ────────────────────────────────────────────
 
-class TestOpenCodeZenModelNormalization:
-    """OpenCode Zen preserves dots for most models, but Claude stays hyphenated."""
-
 
 # ── Copilot dot preservation (regression) ──────────────────────────────
-
-class TestCopilotDotPreservation:
-    """Copilot preserves dots in model names."""
 
 
 # ── Copilot model-name normalization (issue #6879 regression) ──────────
@@ -64,29 +49,12 @@ class TestCopilotModelNormalization:
     the request with HTTP 400 "model_not_supported".
     """
 
-
     def test_openai_codex_still_strips_openai_prefix(self):
         """Regression: openai-codex must still strip the openai/ prefix."""
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
 
 # ── Aggregator providers (regression) ──────────────────────────────────
-
-class TestAggregatorProviders:
-    """Aggregators need vendor/model slugs."""
-
-
-class TestCustomProviderIsNotAVendorIdentity:
-    """``custom`` is a generic bucket, not a vendor -- an alias that merely
-    *resolves to* ``custom`` (e.g. ``ollama`` -> ``custom`` in
-    ``_PROVIDER_ALIASES``) must not be treated as a redundant prefix the
-    way ``zai/``, ``gemini/``, etc. are for their own native providers.
-
-    Regression for: a named custom provider (e.g. a LiteLLM proxy fronting
-    Ollama) registers its own routing name as ``ollama/glm-5.2``. Stripping
-    the ``ollama/`` prefix because it happens to alias to ``custom``
-    produced a bare ``glm-5.2`` the proxy doesn't recognise.
-    """
 
 
 # ── detect_vendor ──────────────────────────────────────────────────────
@@ -102,7 +70,6 @@ class TestDeepseekVSeriesPassThrough:
     aggregators (Nous portal, OpenRouter via DeepInfra) routes to V3 —
     silently downgrading users who picked V4.
     """
-
 
     def test_deepseek_provider_preserves_v4_pro(self):
         """End-to-end via normalize_model_for_provider — user selecting
@@ -197,7 +164,6 @@ class TestIssue78796NvidiaPrefixRepair:
             normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
             == "anthropic/claude-sonnet-4.6"
         )
-
 
 
 class TestColonProviderPrefixIsStrippedLikeSlash:

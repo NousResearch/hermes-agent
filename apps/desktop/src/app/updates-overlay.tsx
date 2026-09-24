@@ -49,7 +49,15 @@ const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
 function splitDetails(text: string): [string, string | null] {
   const marker = text.search(/\s*Details:\s*/)
 
-  return marker < 0 ? [text, null] : [text.slice(0, marker).trim(), text.slice(marker).replace(/^\s*Details:\s*/, '').trim()]
+  return marker < 0
+    ? [text, null]
+    : [
+        text.slice(0, marker).trim(),
+        text
+          .slice(marker)
+          .replace(/^\s*Details:\s*/, '')
+          .trim()
+      ]
 }
 
 function totalItems(groups: readonly CommitGroup[]) {
@@ -265,7 +273,17 @@ function IdleView({
     )
   }
 
-  const groups = buildCommitChangelog(commits)
+  const groups = buildCommitChangelog(commits, {
+    labels: {
+      new: u.changeLogNew,
+      fixed: u.changeLogFixed,
+      faster: u.changeLogFaster,
+      improved: u.changeLogImproved,
+      other: u.changeLogOther
+    },
+    fallback: { label: u.changeLogFallbackLabel, item: u.changeLogFallbackItem }
+  })
+
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)
 
@@ -287,7 +305,7 @@ function IdleView({
       <div className="grid gap-3">
         {groups.map(group => (
           <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
             <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>

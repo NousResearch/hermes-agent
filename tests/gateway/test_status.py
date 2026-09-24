@@ -2,7 +2,6 @@
 
 import json
 import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -384,6 +383,43 @@ class TestGatewayRuntimeStatus:
         cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
         assert status._command_line_belongs_to_profile(cmdline, home) is True
 
+    def test_command_line_belongs_to_profile_rejects_sibling_homes(self):
+        """A substring test let ``HERMES_HOME=/root/profiles/ops2`` satisfy the ``ops`` profile's
+        predicate, so a stale state record could borrow the sibling's live gateway identity (same
+        shape as the ``-p ops`` vs ``-p ops-2`` token rule) -- on the named AND the default branch
+        (#115031). An exact or absent assignment still matches."""
+        home = Path("/fixture/profiles/ops")
+        for cmdline in (
+            "HERMES_HOME=/fixture/profiles/ops2 hermes gateway run",
+            "HERMES_HOME=/fixture/profiles/ops-backup hermes gateway run",
+            "HERMES_HOME=/fixture/profiles/ops/2 hermes gateway run",
+        ):
+            assert not status._command_line_belongs_to_profile(cmdline, home), cmdline
+        default_home = Path("/opt/hermes-data")
+        assert not status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data2 hermes gateway run", default_home)
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data hermes gateway run", default_home)
+        assert status._command_line_belongs_to_profile("hermes gateway run", default_home)
+
+    def test_command_line_belongs_to_profile_matches_own_home_spellings_only(self):
+        """Token-bounded value AND name: quoted values (ps/wmic re-quoting) and a trailing separator
+        (systemd ``Environment=``, ``sh -c`` wrappers) are the same home; ``FOO=hermes_home=/x``
+        embeds the name inside another token and is not an assignment."""
+        home = Path("/opt/data/profiles/coder with space")
+        assert status._command_line_belongs_to_profile(
+            'hermes_home="/opt/data/profiles/coder with space" hermes gateway run', home)
+        # /proc and psutil hand argv back space-joined, so an unquoted value with a space is cut at
+        # the space by the token parser; the whole-home literal match must still claim it.
+        assert status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with space hermes gateway run", home)
+        assert status._command_line_belongs_to_profile(
+            r"HERMES_HOME=C:\Users\John Doe\.hermes hermes gateway run", Path(r"C:\Users\John Doe\.hermes"))
+        assert not status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with spaces hermes gateway run", home)
+        home = Path("/fixture/profiles/ops")
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/fixture/profiles/ops/ hermes gateway run", home)
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data/ hermes gateway run", Path("/opt/hermes-data"))
+        assert not status._command_line_belongs_to_profile("FOO=hermes_home=/fixture/profiles/ops hermes gateway run", home)
+
 
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -535,7 +571,6 @@ class TestGetProcessStartTime:
 
     def test_live_process_is_stable_int(self):
         import subprocess
-        import time
         p = subprocess.Popen(["sleep", "20"])
         try:
             a = status._get_process_start_time(p.pid)
@@ -574,8 +609,8 @@ class TestTerminatePid:
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
+    @pytest.mark.windows_only
     def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
 
@@ -584,8 +619,8 @@ class TestTerminatePid:
 
         assert calls == []
 
+    @pytest.mark.windows_only
     def test_windows_force_refuses_reused_pid(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
@@ -594,6 +629,40 @@ class TestTerminatePid:
             status.terminate_pid(123, force=True, expected_start_time=456)
 
         assert calls == []
+
+
+class TestPidExistsZombieProbe:
+    """#115578: the psutil ``status()`` zombie probe is POSIX-only. On Windows it costs ~7 ms per
+    pid, runs once per registry entry inside the session-registry file lock, and can never
+    report a zombie (Windows has no such state), so pollers starve at a handful of leases."""
+
+    @staticmethod
+    def _spy_status(monkeypatch):
+        psutil = pytest.importorskip("psutil")
+        calls = []
+        real_status = psutil.Process.status
+
+        def spy(self):
+            calls.append(self.pid)
+            return real_status(self)
+
+        monkeypatch.setattr(psutil.Process, "status", spy)
+        return calls
+
+    @pytest.mark.windows_only
+    def test_windows_skips_zombie_status_probe(self, monkeypatch):
+        # Faking os.name on POSIX proves nothing about the cost on the real host; the wine2e
+        # runner receipt (red on main, green on the fix) is the live repro for this test.
+        calls = self._spy_status(monkeypatch)
+        assert status._pid_exists(os.getpid()) is True
+        assert calls == []
+
+    @pytest.mark.linux_only
+    def test_posix_still_probes_zombie_status(self, monkeypatch):
+        # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.
+        calls = self._spy_status(monkeypatch)
+        assert status._pid_exists(os.getpid()) is True
+        assert calls == [os.getpid()]
 
 
 class TestScopedLocks:
@@ -1536,12 +1605,15 @@ class TestResolveGatewayLiveness:
         assert calls == {"health": 0, "runtime_pid": 0}
 
 
-    def test_probe_exception_degrades_instead_of_raising(self):
+    def test_probe_exception_degrades_instead_of_raising(self, tmp_path, monkeypatch):
         """A raising rung must fall through, never propagate.
 
         Status endpoints poll this constantly; an exotic /proc or a
         permissions error must not turn into a 500.
         """
+        # Empty rendezvous dir: no host gateway owns the role, so the multiplexer rung stays quiet.
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path))
+
         def _boom(*a, **k):
             raise RuntimeError("probe exploded")
 

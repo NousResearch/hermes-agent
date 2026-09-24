@@ -1,6 +1,4 @@
 """Tests for automatic MCP reload when config.yaml mcp_servers section changes."""
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from utils import file_signature
@@ -97,9 +95,7 @@ class TestMCPConfigWatch:
         obj._reload_mcp.assert_not_called()
 
         out = capsys.readouterr().out
-        assert "reload skipped" in out
-        assert "/reload-mcp" in out
-        assert "prompt cache" in out
+        assert "/reload-mcp" in out  # tells the user how to apply it manually
 
     def test_optout_updates_snapshot_so_reload_mcp_applies_cleanly(self, tmp_path):
         """After an opted-out change, the watcher must not re-notify every

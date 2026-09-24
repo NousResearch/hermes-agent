@@ -15,7 +15,7 @@ from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_guard import TRUSTED_REPOS
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _dedupe_by_trust,
-    _hermes_tags, _matches_query, _parse_frontmatter, _referenced_support_paths,
+    _hermes_tags, _matches_query, _parse_frontmatter, _referenced_support_paths, hub,
     _validate_bundle_rel_path,
 )
 
@@ -161,6 +161,13 @@ def _split_repo_id(identifier: str) -> Optional[Tuple[str, str]]:
     return (f"{parts[0]}/{parts[1]}", parts[2]) if len(parts) >= 3 else None
 
 
+def _skill_file_path(skill_path: str, filename: str = "SKILL.md") -> str:
+    """Path of ``filename`` inside a skill directory. An empty ``skill_path`` means the skill
+    directory IS the repo root — the single-skill layout some skills.sh repos use (``SKILL.md``
+    and its ``references/``/``scripts/`` next to ``README.md``)."""
+    return f"{skill_path}/{filename}" if skill_path else filename
+
+
 def _skip_bundle_file(rel_path: str) -> bool:
     """Dotfiles, bytecode and __pycache__ never ship in a bundle."""
     base = rel_path.rsplit("/", 1)[-1]
@@ -265,7 +272,7 @@ class GitHubSource(SkillSource):
         # than the tree the paths were validated against (TOCTOU). Idempotent + cached.
         tree = self._get_repo_tree(repo)
         pinned_ref = self._tree_revisions.get(repo)
-        skill_md = self._fetch_file_content(repo, f"{skill_dir}/SKILL.md", ref=pinned_ref)
+        skill_md = self._fetch_file_content(repo, _skill_file_path(skill_dir), ref=pinned_ref)
         if skill_md is None:
             return None
         referenced = _referenced_support_paths(skill_md)
@@ -281,11 +288,12 @@ class GitHubSource(SkillSource):
             revision = (pinned_ref or tree[0]) if complete else ""
         else:
             for rel_path in referenced:
-                self._add_support_file(repo, f"{skill_dir}/{rel_path}", rel_path, files, rel_path)
+                self._add_support_file(repo, _skill_file_path(skill_dir, rel_path), rel_path, files, rel_path)
             revision = ""
-        url = f"https://github.com/{repo}/" + (f"tree/{revision}/{skill_path}" if revision else skill_path)
+        url = (f"https://github.com/{repo}/tree/{revision}" + (f"/{skill_path}" if skill_path else "")
+               if revision else f"https://github.com/{repo}/{skill_path}")
         return SkillBundle(
-            name=skill_dir.split("/")[-1], files=files, source="github", identifier=identifier,
+            name=skill_dir.split("/")[-1] or repo.split("/")[-1], files=files, source="github", identifier=identifier,
             trust_level=self.trust_level_for(identifier), metadata={"source_url": url, "source_revision": revision},
         )
 
@@ -318,8 +326,9 @@ class GitHubSource(SkillSource):
         Returns None (bundle rejected) on an unsafe path or a SKILL.md-linked path that exists in the
         tree as a symlink/non-blob — that shape is an escape attempt. A linked path that is simply absent
         is a dangling link (repo-only dev tool, prose over-match): warn and install without it. Returns
-        False when a blob fetch failed (installed with a gap the next update check must be able to fill)."""
-        prefix = f"{skill_path}/"
+        False when a blob fetch failed (installed with a gap the next update check must be able to fill).
+        An empty ``skill_path`` is the repo-root skill layout, so the whole repo root is its directory."""
+        prefix = f"{skill_path}/" if skill_path else ""
         symlinked: set = set()
         complete = True
         for rel_path, item_path, regular in _tree_members(entries, prefix):
@@ -354,14 +363,15 @@ class GitHubSource(SkillSource):
         if (split := _split_repo_id(identifier)) is None:
             return None
         repo, skill_path = split[0], split[1].rstrip("/")
-        content = self._fetch_file_content(repo, f"{skill_path}/SKILL.md")
+        content = self._fetch_file_content(repo, _skill_file_path(skill_path))
         if not content:
             return None
         fm = _parse_frontmatter(content)
         tags = _hermes_tags(fm) or (fm["tags"] if isinstance(fm.get("tags"), list) else [])
         provider = github_provider_for(repo)
         return SkillMeta(
-            name=fm.get("name", skill_path.split("/")[-1]), description=str(fm.get("description", "")),
+            name=fm.get("name", skill_path.split("/")[-1] or repo.split("/")[-1]),
+            description=str(fm.get("description", "")),
             source="github", identifier=identifier, trust_level=self.trust_level_for(identifier),
             repo=repo, path=skill_path, tags=[str(t) for t in tags],
             extra={"provider": provider} if provider else {},
@@ -450,7 +460,9 @@ class GitHubSource(SkillSource):
             last_attempt = attempt >= max_retries - 1
             wait = backoff
             try:
-                resp = httpx.get(url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True)
+                resp = hub()._skills_hub_http_get(
+                    url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True
+                )
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
                 if last_attempt:
@@ -493,6 +505,21 @@ class GitHubSource(SkillSource):
             if entry.get("type") == "blob" and (path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]):
                 return f"{repo}/{path[: -len('/SKILL.md')]}"
         return None
+
+    def _find_repo_root_skill(self, repo: str) -> Optional[str]:
+        """Identifier for a single-skill repo whose ``SKILL.md`` sits at the repo ROOT (no skill
+        directory) — e.g. ``orzcls/win-disk-cleaner``. The empty path segment (``owner/repo/``)
+        denotes the skill directory being the repo root. Only repos with EXACTLY ONE SKILL.md in
+        the whole tree qualify, so a categorized multi-skill repo never resolves here."""
+        tree = self._get_repo_tree(repo)
+        if tree is None:
+            return None
+        skill_mds = [
+            entry.get("path", "") for entry in tree[1]
+            if entry.get("type") == "blob" and entry.get("mode") != "120000"
+            and (entry.get("path", "") == "SKILL.md" or entry.get("path", "").endswith("/SKILL.md"))
+        ]
+        return f"{repo}/" if skill_mds == ["SKILL.md"] else None
 
     def _fetch_file_content(self, repo: str, path: str, ref: Optional[str] = None) -> Optional[str]:
         """Fetch a single text file from GitHub (None on miss or non-UTF-8)."""

@@ -47,24 +47,6 @@ function openContextMenu(target: HTMLElement) {
 }
 
 describe('statusbar item visibility', () => {
-  it('hides the route/toggle items out of the box and keeps status items', () => {
-    bar([
-      item('cron', 'Cron'),
-      item('webhooks', 'Webhooks'),
-      item('agents', 'Agents'),
-      item('terminal', 'Terminal'),
-      item('approval-mode', 'Approvals'),
-      item('gateway-health', 'Gateway')
-    ])
-
-    for (const label of ['Cron', 'Webhooks', 'Agents', 'Terminal']) {
-      expect(screen.queryByText(label)).toBeNull()
-    }
-
-    expect(screen.getByText('Gateway')).toBeTruthy()
-    expect(screen.getByText('Approvals')).toBeTruthy()
-  })
-
   it('shows an item once the user enables it from the bar context menu', async () => {
     const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
 

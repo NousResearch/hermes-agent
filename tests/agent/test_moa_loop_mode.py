@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -536,24 +535,24 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 def test_references_run_in_parallel(monkeypatch):
     """References fan out concurrently (delegate-batch semantics), not serially.
 
-    Each reference sleeps; wall-time must approximate the slowest single call,
-    not the sum. Order is preserved and a failing reference is isolated.
+    The two dispatched references rendezvous on a barrier: a serial fan-out
+    could never release it, so the call would fail instead of returning
+    ``resp-p1``. Order is preserved and a failing reference is isolated.
     """
-    import time
+    import threading
 
     from agent import moa_loop
 
     # Force _extract_text down its fallback path (no transport normalize).
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
 
-    barrier_hits = []
+    both_in_flight = threading.Barrier(2, timeout=10)
 
     def slow_call_llm(**kwargs):
-        barrier_hits.append(time.monotonic())
         model = kwargs["model"]
         if model == "boom":
             raise RuntimeError("kaboom")
-        time.sleep(0.5)
+        both_in_flight.wait()
         return _response(f"resp-{kwargs['provider']}")
 
     monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
@@ -565,48 +564,18 @@ def test_references_run_in_parallel(monkeypatch):
         {"provider": "p3", "model": "ok"},
     ]
 
-    start = time.monotonic()
     out = moa_loop._run_references_parallel(
         refs, [{"role": "user", "content": "hi"}], temperature=0.6, max_tokens=64
     )
-    elapsed = time.monotonic() - start
 
-    # Two 0.5s sleeps run concurrently → well under the 1.0s serial floor.
-    # Threshold sits at 0.95s (not tight against 0.5s) to tolerate CI
-    # thread-pool startup jitter while still failing hard if the two calls
-    # ran serially (which would be ≥1.0s).
-    assert elapsed < 0.95, f"references did not run in parallel (took {elapsed:.2f}s)"
     # Output order matches input order (stable Reference N labelling).
     assert [label for label, _, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
     assert "recursively reference MoA" in out[1][1]
     assert out[2][1].startswith("[failed:")
     assert out[0][1] == "resp-p1"
+    assert out[3][1] == "resp-p3"
 
 
-def test_references_parallel_without_agent_is_unaffected(monkeypatch):
-    """No agent passed (the pre-fix call shape) must behave exactly as
-    before: block until every reference completes, no interrupt check."""
-    import time
-
-    from agent import moa_loop
-
-    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
-    # Poll interval shorter than the reference's own sleep so the assertion
-    # below would catch a regression that waits a whole poll cycle extra.
-    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
-
-    def slow_call_llm(**kwargs):
-        time.sleep(0.2)
-        return _response(f"resp-{kwargs['provider']}")
-
-    monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
-
-    refs = [{"provider": "p1", "model": "ok"}]
-    out = moa_loop._run_references_parallel(
-        refs, [{"role": "user", "content": "hi"}],
-    )
-
-    assert out[0][1] == "resp-p1"
 
 
 def test_references_parallel_interrupt_aborts_wait(monkeypatch):
@@ -627,9 +596,6 @@ def test_references_parallel_interrupt_aborts_wait(monkeypatch):
 
     def fake_call_llm(**kwargs):
         if kwargs["provider"] == "fast":
-            # Simulate the interrupt arriving right after the fast reference
-            # finishes, while the wedged one is still in flight.
-            fake_agent._interrupt_requested = True
             return _response("fast output")
         # "wedged" — never returns within the test unless released, standing
         # in for a reference whose own (possibly very long) timeout hasn't
@@ -647,6 +613,9 @@ def test_references_parallel_interrupt_aborts_wait(monkeypatch):
         start = time.monotonic()
         out = moa_loop._run_references_parallel(
             refs, [{"role": "user", "content": "hi"}], agent=fake_agent,
+            # The interrupt arrives right after the fast reference is recorded,
+            # while the wedged one is still in flight.
+            progress_callback=lambda done, total, label: setattr(fake_agent, "_interrupt_requested", True),
         )
         elapsed = time.monotonic() - start
 
@@ -659,26 +628,6 @@ def test_references_parallel_interrupt_aborts_wait(monkeypatch):
         release_wedged.set()  # don't leak a blocked thread past the test
 
 
-def _ref_config(home, fanout: str | None = None):
-    home.mkdir()
-    fanout_line = f"\n      fanout: {fanout}" if fanout else ""
-    (home / "config.yaml").write_text(
-        f"""
-moa:
-  default_preset: review
-  presets:
-    review:
-      reference_models:
-        - provider: openai-codex
-          model: gpt-5.5
-        - provider: openrouter
-          model: anthropic/claude-opus-4.8
-      aggregator:
-        provider: openrouter
-        model: anthropic/claude-opus-4.8{fanout_line}
-""".strip(),
-        encoding="utf-8",
-    )
 
 
 
@@ -1016,58 +965,6 @@ def test_aggregate_skips_aggregator_when_all_references_failed(monkeypatch):
 
 
 
-def _facade_all_failed_fixture(monkeypatch, tmp_path, policy):
-    """Common scaffolding: a 'review' preset whose references ALL fail."""
-    from agent import moa_loop
-    from agent.usage_pricing import CanonicalUsage
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    (home / "config.yaml").write_text(
-        f"""
-moa:
-  default_preset: review
-  presets:
-    review:
-      degraded_reference_policy: {policy}
-      reference_models:
-        - provider: openrouter
-          model: bad-model-a
-        - provider: openrouter
-          model: bad-model-b
-      aggregator:
-        provider: openrouter
-        model: aggregator
-""".strip(),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    outputs = [
-        (
-            "bad-model-a",
-            "[failed: HTTP 401 key=super-secret]",
-            moa_loop._RefAccounting(CanonicalUsage(input_tokens=5), 0.05),
-        ),
-        (
-            "bad-model-b",
-            "[failed: timeout after 900s]",
-            moa_loop._RefAccounting(CanonicalUsage(input_tokens=3), 0.03),
-        ),
-    ]
-    aggregator_calls = []
-
-    def fake_call_llm(**kwargs):
-        aggregator_calls.append(kwargs)
-        return _response("aggregator acted alone")
-
-    monkeypatch.setattr(moa_loop, "_run_references_parallel", lambda *a, **k: outputs)
-    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
-    monkeypatch.setattr(
-        moa_loop,
-        "_slot_runtime",
-        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
-    )
-    return moa_loop, outputs, aggregator_calls
 
 
 
@@ -1122,7 +1019,6 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
     """A reference still in flight at interrupt time gets a placeholder in
     the results, but its eventual REAL accounting must reach the sink."""
     import threading
-    import time
 
     from agent import moa_loop
 
@@ -1313,6 +1209,84 @@ def test_reference_trim_caches_resolution_failures(monkeypatch):
     assert stub.calls == 1
     assert cache == {("openrouter", "small-window"): None}
 
+
+def _naive_reference_trim(messages, budget):
+    """The original pop-and-re-estimate loop, kept as the spec for equivalence."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    head = [messages[0]] if has_system else []
+    body = list(messages[1:] if has_system else messages)
+    while len(body) > 2 and estimate_messages_tokens_rough(head + body) > budget:
+        body.pop(0)
+        while len(body) > 2 and body[0].get("role") == "assistant":
+            body.pop(0)
+    while len(body) > 1 and body[0].get("role") == "assistant":
+        body.pop(0)
+    return head + body
+
+
+def test_reference_trim_matches_naive_pop_loop(monkeypatch):
+    """Running-total trim returns the same frames as the naive loop."""
+    import random
+
+    from agent import moa_loop
+
+    rng = random.Random(20260802)
+    for _ in range(60):
+        pairs = rng.randint(1, 30)
+        msgs = []
+        if rng.random() < 0.8:
+            msgs.append({"role": "system", "content": "advisory " + "s" * rng.randint(0, 200)})
+        for _i in range(pairs):
+            msgs.append({"role": "user", "content": "u" * rng.randint(0, 800)})
+            msgs.append({"role": "assistant", "content": "a" * rng.randint(0, 800)})
+            # Occasional assistant runs to exercise the user-first sweep.
+            if rng.random() < 0.2:
+                msgs.append({"role": "assistant", "content": "extra"})
+        msgs.append({"role": "user", "content": "judge the state above"})
+
+        window = rng.choice([800, 1500, 3000, 6000])
+        reserve = rng.choice([0, 50, 500])
+        reserve_eff = reserve if reserve > 0 else moa_loop._REFERENCE_DEFAULT_OUTPUT_RESERVE
+        budget = int(window * (1.0 - moa_loop._REFERENCE_TRIM_SAFETY_FRACTION)) - reserve_eff
+
+        # The real function returns the messages untouched when the budget
+        # is not positive; the naive loop has no such early exit.
+        expected = (
+            _naive_reference_trim(list(msgs), budget)
+            if budget > 0
+            else list(msgs)
+        )
+        got = _trim(
+            list(msgs),
+            window=window,
+            reserve=reserve if reserve > 0 else None,
+            monkeypatch=monkeypatch,
+        )
+        assert got == expected
+
+
+def test_reference_trim_weighs_each_message_once(monkeypatch):
+    """Heavy trims stay O(n): no full re-estimate per dropped frame."""
+    from agent import model_metadata
+
+    weighed = {"n": 0}
+    real = model_metadata.estimate_messages_tokens_rough
+
+    def counting(msgs):
+        weighed["n"] += len(msgs)
+        return real(msgs)
+
+    monkeypatch.setattr(
+        model_metadata, "estimate_messages_tokens_rough", counting
+    )
+    msgs = _advisory_view(100)
+    out = _trim(list(msgs), window=3000, reserve=50, monkeypatch=monkeypatch)
+    assert len(out) < len(msgs)
+    # One full-list estimate plus one single-message weigh per frame: 2n.
+    # The naive loop would weigh ~n^2/2 for a trim this deep.
+    assert weighed["n"] <= 2 * len(msgs)
 
 
 

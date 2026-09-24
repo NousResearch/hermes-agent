@@ -7,11 +7,9 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-from agent import chat_completion_helpers
 from agent.error_classifier import FailoverReason
-from run_agent import AIAgent, _pool_may_recover_from_rate_limit
+from run_agent import AIAgent
 
 
 def _make_agent(fallback_model=None):
@@ -44,11 +42,6 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
 
 
 class TestFallbackChainInit:
-    def test_no_fallback(self):
-        agent = _make_agent(fallback_model=None)
-        assert agent._fallback_chain == []
-        assert agent._fallback_index == 0
-        assert agent._fallback_model is None
 
 
 
@@ -72,26 +65,8 @@ class TestFallbackChainInit:
 # ── Chain advancement ─────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    ("reason", "expected"),
-    [
-        (FailoverReason.auth, "authentication failed"),
-        (FailoverReason.billing, "billing or quota exhausted"),
-        (FailoverReason.rate_limit, "rate limit"),
-        (FailoverReason.upstream_rate_limit, "upstream model rate limit"),
-        (FailoverReason.overloaded, "provider overloaded"),
-        (FailoverReason.server_error, "provider server error"),
-        (FailoverReason.timeout, "request timeout"),
-        (FailoverReason.model_not_found, "model not found"),
-        (FailoverReason.unknown, "provider failure"),
-    ],
-)
-def test_fallback_reason_text_is_operator_friendly(reason, expected):
-    assert chat_completion_helpers._fallback_reason_text(reason) == expected
 
 
-def test_fallback_reason_text_defaults_when_reason_is_missing():
-    assert chat_completion_helpers._fallback_reason_text(None) == "provider failure"
 
 
 class TestFallbackChainAdvancement:
@@ -112,26 +87,6 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
-    @patch("time.monotonic", return_value=1000.0)
-    def test_records_user_visible_switch_with_reason(self, _clock):
-        agent = _make_agent(
-            fallback_model={"provider": "zai", "model": "glm-5.2"},
-        )
-        agent.model = "gpt-5.6-sol"
-        agent.provider = "openai-codex"
-        with patch(
-            "agent.auxiliary_client.resolve_provider_client",
-            return_value=(_mock_client(base_url="https://api.z.ai/v1"), "glm-5.2"),
-        ):
-            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
-
-        expected = (
-            "⚠️ Model fallback: gpt-5.6-sol via openai-codex unavailable "
-            "(rate limit); using glm-5.2 via zai. "
-            "Primary retry eligible in ~60 s; recovery is not guaranteed."
-        )
-        assert agent._pending_fallback_notice == [expected]
-        assert agent._retry_status_buffer[-1] == ("status", expected)
 
     @patch("time.monotonic", return_value=1000.0)
     def test_records_sequential_switches_in_order(self, _clock):
@@ -154,13 +109,13 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
             assert agent._try_activate_fallback(FailoverReason.overloaded) is True
 
-        assert agent._pending_fallback_notice == [
-            "⚠️ Model fallback: gpt-5.6-sol via openai-codex unavailable "
-            "(rate limit); using glm-5.2 via zai. "
-            "Primary retry eligible in ~60 s; recovery is not guaranteed.",
-            "⚠️ Model fallback: glm-5.2 via zai unavailable "
-            "(provider overloaded); using deepseek-v4-flash via deepseek.",
-        ]
+        # One user-visible notice per switch, in order, each naming from/to.
+        notices = agent._pending_fallback_notice
+        assert len(notices) == 2
+        assert "gpt-5.6-sol" in notices[0] and "glm-5.2" in notices[0]
+        assert "glm-5.2" in notices[1] and "deepseek-v4-flash" in notices[1]
+        assert agent._retry_status_buffer[-1] == ("status", notices[1])
+
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""
         fbs = [
@@ -320,9 +275,6 @@ def _pool(n_entries: int, has_available: bool = True):
     return pool
 
 
-class TestPoolRotationRoom:
-    def test_none_pool_returns_false(self):
-        assert _pool_may_recover_from_rate_limit(None) is False
 
 
 

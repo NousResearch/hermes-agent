@@ -134,6 +134,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
   // Unbound: the rail is a one-time preference, not something to flip mid-chat.
   { id: 'view.toggleProfileRail', category: 'view', defaults: [] },
+  // Unbound for the same reason: Simple ↔ Advanced is a stance, not a view
+  // toggle; ⌘K, the layout editor and Settings → Appearance are its doors.
+  { id: 'view.toggleSimpleMode', category: 'view', defaults: [] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
@@ -209,7 +212,9 @@ export interface KeybindContribution {
 // React consumers pass their `useContributions(KEYBINDS_AREA)` snapshot in:
 // with React Compiler enabled, an independently-called `contributedKeybinds()`
 // can stay memoized across a late registration the subscription DID deliver.
-export function contributedKeybinds(contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)): KeybindContribution[] {
+export function contributedKeybinds(
+  contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)
+): KeybindContribution[] {
   return contributions
     .map(c => c.data as KeybindContribution)
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))

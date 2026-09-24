@@ -188,6 +188,30 @@ lsp:
   # projects (tsserver, rust-analyzer mid-indexing).
   wait_timeout: 5.0
 
+  # Budget for the FIRST request against a workspace whose server is
+  # not running yet — spawn, initialize and the server's initial program
+  # build all happen inside it (tsserver on a 10k-file project can need
+  # a minute). Once the client is up, wait_timeout applies again.
+  # 0 = no extra grace (same as wait_timeout).
+  warmup_timeout: 0
+
+  # After a server fails for a workspace (spawn error, or the request
+  # outran its budget) that (server, root) pair is skipped. 0 = for the
+  # rest of the process (until `hermes lsp restart`); N = retried after
+  # N seconds, so one transient stall does not silence a workspace
+  # forever. Skips are logged once per root at INFO with the retry time.
+  broken_retry_seconds: 0
+
+  # Workspace roots where no language server runs at all — glob
+  # patterns matched against the resolved project root (~ expanded; a
+  # bare path also matches everything beneath it). Use it for the one
+  # huge monorepo whose server cannot finish in budget while every other
+  # workspace keeps its diagnostics — unlike servers.<id>.disabled,
+  # which switches the server off everywhere. Must be a list; any other
+  # shape logs a warning and skips LSP for every workspace until fixed.
+  exclude_roots: []
+  # exclude_roots: ["~/work/huge-monorepo", "/srv/checkouts/*/vendor"]
+
   # How to handle missing server binaries.
   #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin
   #   manual  — only use binaries already on PATH
@@ -292,6 +316,21 @@ tens of milliseconds for pyright/tsserver and a few seconds for
 rust-analyzer mid-indexing. Each edit waits twice (a pre-edit
 baseline snapshot for the delta, then the post-edit re-check), so a
 server that never answers costs at most `2 × wait_timeout` per edit.
+The very first request against a workspace also pays the spawn and the
+server's initial program build; give large projects room with
+`lsp.warmup_timeout` (only that first, cold request uses it — the
+steady-state budget is unchanged) rather than raising `wait_timeout`,
+which would let every later edit block for the cold-build duration.
+
+A server that fails for a workspace — spawn error, or a request that
+outran its budget — marks that `(server, root)` pair broken and every
+later request for it is skipped (logged once per root at INFO). By
+default the pair stays broken until `hermes lsp restart` or process
+exit; `lsp.broken_retry_seconds: N` retries it after N seconds so one
+transient stall does not cost the workspace its diagnostics for good.
+A root you never want served — one monorepo whose server cannot finish
+in any budget — goes in `lsp.exclude_roots`; other workspaces keep
+their servers.
 
 Diagnostics are **freshness-gated**: a result only counts when the
 server produced it for the content of the current edit (a

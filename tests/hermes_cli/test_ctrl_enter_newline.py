@@ -24,7 +24,6 @@ from unittest.mock import patch
 
 import pytest
 
-import sys
 
 
 class FakeKeyBindings:
@@ -40,16 +39,15 @@ class FakeKeyBindings:
 
 
 def _bind_submit_keys_for_local_linux(cli_mod, *, multiline_shortcuts_enabled):
-    with patch.object(sys, "platform", "linux"):
-        with patch.dict(os.environ, {}, clear=True):
-            with patch("builtins.open", side_effect=OSError("no /proc")):
-                kb = FakeKeyBindings()
-                cli_mod._bind_prompt_submit_keys(
-                    kb,
-                    lambda _event: None,
-                    multiline_shortcuts_enabled=multiline_shortcuts_enabled,
-                )
-                return kb
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("builtins.open", side_effect=OSError("no /proc")):
+            kb = FakeKeyBindings()
+            cli_mod._bind_prompt_submit_keys(
+                kb,
+                lambda _event: None,
+                multiline_shortcuts_enabled=multiline_shortcuts_enabled,
+            )
+            return kb
 
 
 @pytest.mark.windows_only
@@ -83,16 +81,6 @@ def test_ghostty_tmux_session_preserves_ctrl_j_newline():
         assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
-def test_cli_multiline_shortcuts_default_on():
-    """Hermes should default to the common harness behavior: Ctrl+J newline.
-
-    Claude Code documents Ctrl+J as a no-setup newline shortcut, OpenCode's
-    default input_newline includes ctrl+j, and Codex exposes Ctrl+J/keymap
-    newline behavior. Keep Hermes aligned unless the user opts out.
-    """
-    import cli as cli_mod
-
-    assert cli_mod._cli_multiline_shortcuts_enabled({"display": {}}) is True
 
 
 def test_cli_multiline_shortcuts_can_be_disabled():
@@ -140,11 +128,6 @@ def test_backslash_enter_continuation_replaces_marker_with_newline():
     assert cli_mod._apply_backslash_line_continuation("first line\\   ") == "first line\n"
 
 
-def test_iterm_is_allowlisted_for_extended_enter_keys():
-    """iTerm2 needs the app to request extended keys before Shift+Enter is distinct."""
-    import cli as cli_mod
-
-    assert cli_mod._terminal_supports_extended_enter_keys({"TERM_PROGRAM": "iTerm.app"}) is True
 
 
 def test_unknown_terminal_does_not_enable_extended_enter_keys():

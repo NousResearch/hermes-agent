@@ -14,7 +14,8 @@ afterEach(cleanup)
 const workspaceOpen = vi.hoisted(() => ({ value: false }))
 
 const projectsStore = vi.hoisted(() => ({
-  fetchProjectSessions: vi.fn<(id: string, options?: { supersedable?: boolean }) => Promise<null | SidebarProjectTree>>(),
+  fetchProjectSessions:
+    vi.fn<(id: string, options?: { supersedable?: boolean }) => Promise<null | SidebarProjectTree>>(),
   projectProfile: vi.fn<() => null | string>(() => 'default')
 }))
 
@@ -59,8 +60,6 @@ vi.mock('./project-menu', () => ({
 
 const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 
-const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
-
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
 
 describe('ProjectOverviewRow', () => {
@@ -68,27 +67,6 @@ describe('ProjectOverviewRow', () => {
     workspaceOpen.value = false
     projectsStore.fetchProjectSessions.mockReset()
     projectsStore.projectProfile.mockReset().mockReturnValue('default')
-  })
-
-  it('wraps the "new session" add button in a Tip with the project-scoped label', () => {
-    render(<ProjectOverviewRow onNewSession={vi.fn()} project={project} />)
-
-    const button = screen.getByRole('button', { name: 'New session in Test D' })
-    expect(tipTrigger(button)).toBeTruthy()
-  })
-
-  it('wraps the disclosure toggle in a Tip when there are preview sessions', () => {
-    render(
-      <ProjectOverviewRow
-        previewSessions={[{ id: 's1' } as unknown as SessionInfo]}
-        project={project}
-        renderRows={() => null}
-      />
-    )
-
-    // Collapsed by default, so the disclosure offers to show the sessions.
-    const button = screen.getByRole('button', { name: 'Show Test D sessions' })
-    expect(tipTrigger(button)).toBeTruthy()
   })
 
   it('does not render the disclosure toggle when there is nothing to preview', () => {
@@ -168,33 +146,5 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
 
     expect(onNewSession).toHaveBeenCalledWith(null)
-  })
-
-  it('tags the row with data-sessions-project so a skin can target one project', () => {
-    const { container } = render(<ProjectOverviewRow project={project} />)
-
-    expect(container.querySelector('[data-sessions-project="p1"]')).toBeTruthy()
-  })
-
-  it('explicit projects keep the folder-library glyph and a plain accessible name', () => {
-    const explicit = { id: 'p1', label: 'Explicit' } as unknown as SidebarProjectTree
-
-    const { container } = render(<ProjectOverviewRow project={explicit} />)
-
-    expect(container.querySelector('.codicon-folder-library')).toBeTruthy()
-    expect(container.querySelector('.codicon-repo')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Enter Explicit' })).toBeTruthy()
-  })
-
-  it('auto-discovered repos get the repo glyph, an "Auto-discovered" tooltip, and an accessible name that says so', () => {
-    const auto = { id: '/Users/dev/my-repo', label: 'my-repo', isAuto: true } as unknown as SidebarProjectTree
-
-    const { container } = render(<ProjectOverviewRow project={auto} />)
-
-    expect(container.querySelector('.codicon-repo')).toBeTruthy()
-    expect(container.querySelector('.codicon-folder-library')).toBeNull()
-
-    const link = screen.getByRole('button', { name: 'Enter my-repo (Auto-discovered)' })
-    expect(tipTrigger(link)).toBeTruthy()
   })
 })

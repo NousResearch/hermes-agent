@@ -15,6 +15,12 @@ _DISCORD_TRIGGERING_NOTE_RE = re.compile(
 )
 
 
+def _bridged_tool_labels(name: str, args: dict) -> list[dict]:
+    from agent.display import tool_labels_for_call
+
+    return [label.as_payload() for label in tool_labels_for_call(name, args)]
+
+
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
     """Return the live provider/model, falling back before agent startup."""
     from agent.auxiliary_client import _read_main_model, _read_main_provider
@@ -173,6 +179,11 @@ _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted m
 def _legacy_display_kind(role: str, text: str) -> str | None:
     """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
     this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
+    # Imported functions are not rebound onto server.py (method_ctx.bind_module): import here.
+    from agent.turn_failure_copy import untyped_failed_turn_display_kind
+
+    if failed_turn := untyped_failed_turn_display_kind(role, text):
+        return failed_turn
     return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
 
 
@@ -186,7 +197,9 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
-def _history_to_messages(history: list[dict]) -> list[dict]:
+def _history_to_messages(history: list[dict], *, profile_home=None) -> list[dict]:
+    from agent.history_commentary import project_history_commentary
+
     messages = []
     tool_call_args = {}
     for m in history:
@@ -222,7 +235,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             name = tc_name or m.get("tool_name") or "tool"
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
-            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
+            labels = _bridged_tool_labels(name, args)
+            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
+                             **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
         has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)
@@ -250,7 +265,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if m.get("display_metadata"):
             msg["display_metadata"] = m["display_metadata"]
         messages.append(msg)
-    return messages
+    return project_history_commentary(messages, home=profile_home)
 
 
 def _coerce_seed_history(value: Any) -> list[dict]:

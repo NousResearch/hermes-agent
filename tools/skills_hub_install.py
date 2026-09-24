@@ -74,7 +74,9 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         if isinstance(file_content, bytes):
             file_dest.write_bytes(file_content)
         else:
-            file_dest.write_text(file_content, encoding="utf-8")
+            # newline="" keeps the bundle's LF bytes verbatim; the default None mode would
+            # translate to os.linesep on Windows and desync content_hash from bundle_content_hash.
+            file_dest.write_text(file_content, encoding="utf-8", newline="")
     return dest
 
 

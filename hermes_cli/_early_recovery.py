@@ -8,6 +8,7 @@ the known-fragile core packages, using the pins from pyproject.toml).
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import shutil
@@ -208,6 +209,211 @@ def _marker_owner_is_live(marker: Path) -> bool:
             except ValueError:
                 return False
     return False
+
+
+# ``hermes update`` writes this into the git dir right before git moves the checkout and removes it
+# once git has exited (a kill is the only exit that keeps it). Git rewrites the tree file by file and
+# moves HEAD last, so an update killed in between leaves HEAD on the old commit with a prefix of the
+# files already new; that mixed tree fails at import in every entry point, ``hermes update`` included.
+INTERRUPTED_PULL_MARKER = "hermes-update-pull"
+# A fast-forward takes seconds; past this a "live" owner pid is a recycled one.
+_INTERRUPTED_PULL_MAX_AGE_SECONDS = 10 * 60
+# The user (or a killed updater) is mid-operation: its own state files own the tree.
+_GIT_OPERATION_IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
+_REGULAR_FILE_MODES = ("100644", "100755")
+
+
+def _git_dir(root: Path) -> Path:
+    """``root``'s git dir: ``.git`` itself, or where a linked worktree's ``.git`` file points."""
+    dot_git = root / ".git"
+    if dot_git.is_file():
+        text = dot_git.read_text(encoding="utf-8").strip()
+        if text.startswith("gitdir:"):
+            return root / text[len("gitdir:"):].strip()
+    return dot_git
+
+
+def interrupted_pull_marker(root: Path) -> Path:
+    return _git_dir(root) / INTERRUPTED_PULL_MARKER
+
+
+def _trees_git_could_write(git, pre: str, target: str) -> tuple[list[str], set[str]]:
+    """The trees the killed git was moving the checkout to, and the paths whose new content is unknowable.
+
+    A fast-forward or ``reset --hard`` writes ``target``. On a custom branch the updater runs
+    ``git merge``, whose files are the merge of both sides: ``merge-tree`` computes the same tree. A
+    conflicted path (its markers carry other labels) and, on git < 2.38 (no ``--write-tree``), every
+    path both sides changed count as git's whatever their content.
+    """
+    base = git("merge-base", pre, target).stdout.strip()
+    if not base or base == pre:  # fast-forward, or unrelated histories (only a reset can land those)
+        return [target], set()
+    merged = git("merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", pre, target)
+    if merged.returncode in (0, 1):  # 1: conflicts
+        tree, *conflicted = merged.stdout.split("\0")
+        return [target, tree], set(filter(None, conflicted))
+    changed = [set(filter(None, git("diff", "--name-only", "-z", "--no-renames", base, side).stdout.split("\0")))
+               for side in (pre, target)]
+    return [target], changed[0] & changed[1]
+
+
+def _hash_worktree(git, paths: list[str]) -> dict[str, str]:
+    """Blob ids of the checkout's files, through the repo's clean filters, like ``git add`` would store."""
+    listed = [p for p in paths if "\n" not in p]  # --stdin-paths is newline-delimited
+    blobs = {}
+    if listed:
+        hashed = git("hash-object", "--stdin-paths", stdin="\n".join(listed) + "\n")
+        if hashed.returncode != 0:
+            raise subprocess.SubprocessError(hashed.stderr.strip())
+        blobs.update(zip(listed, hashed.stdout.split()))
+    for path in set(paths) - set(listed):
+        blobs[path] = git("hash-object", "--", path).stdout.strip()
+    return blobs
+
+
+def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str], list[str]] | None:
+    """Paths the killed git already touched on the way to ``target``: (restore from HEAD, delete as added).
+
+    Git rewrites a file as unlink, create, write, so a kill leaves it missing, empty or cut short:
+    all of those count as git's, like the full new blob. Content that matches neither side and is not
+    the start of a new blob is the user's own edit (e.g. a re-applied stash) and is left alone.
+    ``None``: git no longer knows ``target``.
+    """
+    if git("rev-parse", "-q", "--verify", f"{target}^{{commit}}").returncode != 0:
+        return None
+    trees, unknown = _trees_git_could_write(git, pre, target)
+    entries = {}  # path -> (pre mode, pre blob or None when git adds it, [(new mode, new blob or None)])
+    for tree in trees:
+        diff = git("diff", "--raw", "-z", "--no-renames", "--no-abbrev", pre, tree)
+        if diff.returncode != 0:
+            raise subprocess.SubprocessError(diff.stderr.strip())
+        parts = diff.stdout.split("\0")
+        for meta, path in zip(parts[::2], parts[1::2]):
+            old_mode, new_mode, old_blob, new_blob, status = meta.lstrip(":").split()
+            if (old_mode if status == "D" else new_mode) not in _REGULAR_FILE_MODES:
+                continue
+            entry = entries.setdefault(path, (old_mode, None if status == "A" else old_blob, []))
+            entry[2].append((new_mode, None if status == "D" else new_blob))
+    worktree_blob = _hash_worktree(git, [path for path in entries if (root / path).is_file()])
+    restore, added = [], []
+    for path, (old_mode, old_blob, new) in entries.items():
+        file, blobs = root / path, {blob for _mode, blob in new if blob}
+        if path not in worktree_blob:
+            written = old_blob is not None  # unlinked (or deleted), not yet recreated
+        elif worktree_blob[path] == old_blob:  # only a mode change tells whether git got here
+            written = (sys.platform != "win32" and any(b == old_blob and m != old_mode for m, b in new)
+                       and bool(file.stat().st_mode & 0o100) != (old_mode == "100755"))
+        elif worktree_blob[path] in blobs or path in unknown:
+            written = True
+        else:  # git's own file cut short starts one of the new blobs
+            content = file.read_bytes()
+            written = any(subprocess.run(["git", "-C", str(root), "cat-file", "--filters", f"--path={path}", blob],
+                                         capture_output=True, check=True, timeout=120,
+                                         stdin=subprocess.DEVNULL).stdout.startswith(content) for blob in blobs)
+        if written:
+            (added if old_blob is None else restore).append(path)
+    return restore, added
+
+
+def restore_interrupted_pull(project_root: Path | None = None) -> bool:
+    """Put back the files a killed ``hermes update`` had half-moved to the new commit.
+
+    Returns True when files were restored: modules this process already imported may be the
+    half-written ones, so the caller must relaunch (``relaunch_after_restore``).
+
+    Fast path (no marker) is one or two ``stat`` calls. Acts only when the marker's owner is gone,
+    HEAD is still the pre-pull commit and no merge/rebase is in progress; then every path git wrote
+    (the target's content, or torn on the way there) returns to HEAD (the commit the venv was built
+    for), so the install is whole again and ``hermes update`` redoes the update from the start. Local
+    edits are never touched; the updater's autostash (if any) stays in ``git stash list``.
+
+    Limits, by design: a torn ``hermes_cli/__init__.py`` or ``hermes_bootstrap.py`` fails before this
+    runs (``git -C <root> reset --hard <pre>`` from the marker repairs it). A file git also changes
+    that the user deleted, emptied or cut to a prefix of git's version looks exactly like git's own
+    half-written file and is restored too, as is a user edit to a conflicted path or, on git < 2.38, to a
+    path both sides of a custom-branch merge changed.
+    """
+    try:
+        root = _project_root() if project_root is None else project_root
+        marker = interrupted_pull_marker(root)
+        if not marker.is_file() or _pytest_owns_live_checkout(root):
+            return False
+        git_dir = marker.parent
+        fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8").splitlines())
+        try:
+            owner = int(fields.get("pid", ""))
+        except ValueError:
+            owner = -1
+        # Our own pid is never the owner: this runs at startup, and containers hand a retry the
+        # killed updater's pid.
+        if (owner != os.getpid() and _pid_is_running(owner)
+                and time.time() - marker.stat().st_mtime < _INTERRUPTED_PULL_MAX_AGE_SECONDS):
+            return False
+        if any((git_dir / name).exists() for name in _GIT_OPERATION_IN_PROGRESS):
+            return False
+
+        def git(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+            return subprocess.run(["git", "--literal-pathspecs", "-C", str(root), *args], input=stdin,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=120, stdin=None if stdin is not None else subprocess.DEVNULL)
+
+        pre, target = fields.get("pre", "").strip(), fields.get("target", "").strip()
+        if not pre or not target or git("rev-parse", "HEAD").stdout.strip() != pre:
+            marker.unlink()  # git finished (HEAD moved) or the marker is unusable
+            return False
+        written = _paths_git_wrote(git, root, pre, target)
+        if written is None:  # after a gc or re-clone: nothing left to compare against
+            marker.unlink()
+            print(f"⚠ Ignoring a stale interrupted-update marker: commit {target[:10]} is gone.", file=sys.stderr)
+            return False
+        restore, added = written
+        if not restore and not added:
+            marker.unlink()  # the killed git never reached the tree: nothing to put back
+            return False
+        print("⚠ A previous `hermes update` was killed while git was writing the new code — "
+              f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
+        # The dead git's index lock would refuse every command below.
+        (git_dir / "index.lock").unlink(missing_ok=True)
+        ok = True
+        if restore:
+            ok = git("restore", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=-",
+                     "--pathspec-file-nul", stdin="\0".join(restore)).returncode == 0
+        if added and ok:
+            ok = git("rm", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
+                     "--pathspec-file-nul", stdin="\0".join(added)).returncode == 0
+            for rel in added:
+                path = root / rel
+                path.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    os.removedirs(path.parent)  # stops at the first non-empty dir
+        if ok:
+            marker.unlink()
+            print("  ✓ Checkout restored; `hermes update` updates it again.", file=sys.stderr)
+            if fields.get("stash", "").strip():
+                print(f"  Your local changes are still in the update's stash ({fields['stash'].strip()}).",
+                      file=sys.stderr)
+            return True
+        print(f"  ✗ Could not restore it automatically. Recover with: git -C {root} reset --hard {pre}",
+              file=sys.stderr)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        # Never block launch: the import that follows surfaces any real breakage.
+        print(f"⚠ Could not check for an interrupted `hermes update`: {exc}", file=sys.stderr)
+    return False
+
+
+def relaunch_after_restore() -> None:
+    """Re-run this command from the restored tree; never returns.
+
+    Everything imported so far (this package, ``hermes_bootstrap``, ``hermes_cli.main`` itself) may
+    be the killed git's new files, and they would run against the restored old tree.
+    """
+    argv = [sys.executable, *sys.orig_argv[1:]]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if sys.platform == "win32":
+        # os.execv on Windows spawns and exits, detaching the console's wait on us.
+        sys.exit(subprocess.call(argv))  # windows-footgun: ok — interactive child keeps our console
+    os.execv(sys.executable, argv)
 
 
 def _pinned_specs(packages: list[str], project_root: Path) -> list[str]:

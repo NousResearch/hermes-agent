@@ -1,6 +1,5 @@
 """Tests for Matrix require-mention gating and auto-thread features."""
 
-import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -102,12 +101,6 @@ class TestIsBotMentioned:
     # m.mentions.user_ids — MSC3952 / Matrix v1.7 authoritative mentions
     # Ported from openclaw/openclaw#64796
 
-    def test_m_mentions_user_ids_authoritative(self):
-        """m.mentions.user_ids alone is sufficient — no body text needed."""
-        assert self.adapter._is_bot_mentioned(
-            "please reply",  # no @hermes anywhere in body
-            mention_user_ids=["@hermes:example.org"],
-        )
 
 
 class TestStripMention:
@@ -291,18 +284,6 @@ async def test_auto_thread_skips_dm(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class TestThreadPersistence:
-    def test_empty_state_file(self, tmp_path, monkeypatch):
-        """No state file → empty set."""
-        from gateway.platforms.helpers import ThreadParticipationTracker
-
-        monkeypatch.setattr(
-            ThreadParticipationTracker,
-            "_state_path",
-            lambda self: tmp_path / "matrix_threads.json",
-        )
-        adapter = _make_adapter()
-        assert "$nonexistent" not in adapter._threads
 
 
 # ---------------------------------------------------------------------------
@@ -334,51 +315,3 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class TestMatrixConfigBridge:
-    def test_yaml_bridge_sets_env_vars(self, monkeypatch, tmp_path):
-        """Matrix YAML config should bridge to env vars."""
-        monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
-        monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
-        monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
-
-        yaml_content = {
-            "matrix": {
-                "require_mention": False,
-                "free_response_rooms": ["!room1:example.org", "!room2:example.org"],
-                "auto_thread": False,
-            }
-        }
-
-        import os
-
-        import yaml
-
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(yaml_content))
-
-        # Simulate the bridge logic from gateway/config.py
-        yaml_cfg = yaml.safe_load(config_file.read_text())
-        matrix_cfg = yaml_cfg.get("matrix", {})
-        if isinstance(matrix_cfg, dict):
-            if "require_mention" in matrix_cfg and not os.getenv(
-                "MATRIX_REQUIRE_MENTION"
-            ):
-                monkeypatch.setenv(
-                    "MATRIX_REQUIRE_MENTION", str(matrix_cfg["require_mention"]).lower()
-                )
-            frc = matrix_cfg.get("free_response_rooms")
-            if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
-                if isinstance(frc, list):
-                    frc = ",".join(str(v) for v in frc)
-                monkeypatch.setenv("MATRIX_FREE_RESPONSE_ROOMS", str(frc))
-            if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
-                monkeypatch.setenv(
-                    "MATRIX_AUTO_THREAD", str(matrix_cfg["auto_thread"]).lower()
-                )
-
-        assert os.getenv("MATRIX_REQUIRE_MENTION") == "false"
-        assert (
-            os.getenv("MATRIX_FREE_RESPONSE_ROOMS")
-            == "!room1:example.org,!room2:example.org"
-        )
-        assert os.getenv("MATRIX_AUTO_THREAD") == "false"

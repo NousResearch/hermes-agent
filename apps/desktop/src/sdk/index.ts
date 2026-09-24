@@ -363,6 +363,13 @@ export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
  *  needs a bound of its own or it outlives the wake it describes. */
 export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
+/** Which generation's wake most recently set $gatewaySwapTarget. Clearing it
+ *  keys off this, not off `generation === openSessionGeneration`, so a
+ *  superseded wake still clears the overlay IT put up — the generation
+ *  counter has already moved on by the time its `finally` runs, and a later
+ *  wake that never sets the target (e.g. a paint-first open without
+ *  awaitHydration) would otherwise leave it stuck forever (#115844). */
+let gatewaySwapTargetOwnerGeneration: number | null = null
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
@@ -1049,6 +1056,7 @@ export const host = {
         // Keep the target-specific overlay visible through transcript hydration,
         // not merely through the gateway/profile activation that precedes it.
         $gatewaySwapTarget.set(targetProfile)
+        gatewaySwapTargetOwnerGeneration = generation
       }
 
       // Only the HYDRATION half retries. Activation already failed its own
@@ -1191,8 +1199,13 @@ export const host = {
 
       throw error
     } finally {
-      if (options.awaitHydration && generation === openSessionGeneration) {
+      // Clear the overlay THIS wake set, even when a later open superseded
+      // it: `generation === openSessionGeneration` is false by then, but
+      // nothing else is coming to clear it. Skip only when a newer wake has
+      // since taken ownership of the target.
+      if (gatewaySwapTargetOwnerGeneration === generation) {
         $gatewaySwapTarget.set(null)
+        gatewaySwapTargetOwnerGeneration = null
       }
     }
   },
@@ -1444,17 +1457,22 @@ export const host = {
    *  a non-retained secondary socket closes at refcount 0 between calls — and
    *  the gateway reaps any runtime session that socket minted, failing the
    *  next RPC with 4001. Acquire before the first session-scoped RPC, release
-   *  (idempotent) in a `finally`. Feature-detect: older hosts lack this. */
-  retainProfile: async (route: PluginProfileRoute | string): Promise<() => void> => {
+   *  (idempotent) in a `finally`. An explicit user action can mark the retain
+   *  foreground so a retired route takes the pool's reserved interactive
+   *  slot. Feature-detect: older hosts lack this. */
+  retainProfile: async (
+    route: PluginProfileRoute | string,
+    options?: PluginProfileRequestOptions
+  ): Promise<() => void> => {
     if (typeof route !== 'string') {
       if (!route.connectionId.trim() || !route.profile.trim()) {
         throw new Error('Profile route must include connectionId and profile')
       }
 
-      return retainGatewayForAgent(route.connectionId, route.profile)
+      return retainGatewayForAgent(route.connectionId, route.profile, options)
     }
 
-    return retainGatewayForAgent(null, route.trim() || 'default')
+    return retainGatewayForAgent(null, route.trim() || 'default', options)
   },
 
   /** Read persisted sessions from a profile's owning source without dialing
@@ -1517,20 +1535,22 @@ export const host = {
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
-   *  the app itself uses. Lazy: resolves the LIVE socket per call. */
-  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+   *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
+   *  overrides the socket's 30 s default for RPCs that legitimately run longer
+   *  (session.compress); unset keeps the default. */
+  request: async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> => {
     const gateway = $gateway.get()
 
     if (!gateway) {
       throw new Error('Hermes gateway unavailable')
     }
 
-    return gateway.request<T>(method, params)
+    return timeoutMs === undefined ? gateway.request<T>(method, params) : gateway.request<T>(method, params, timeoutMs)
   },
 
   /** The LIVE gateway instance for the active profile (null before the first
    *  socket opens). Most plugins want `host.request`; this exists for SDK
-   *  components that take a `HermesGateway` prop directly (e.g. `McpTab`),
+   *  components that take a `HermesGateway` prop directly (e.g. `ConnectorsTab`),
    *  which need the instance, not just a JSON-RPC door. Re-read per use — the
    *  active instance changes on a profile swap. */
   getGateway: (): HermesGateway | null => $gateway.get()
@@ -1551,11 +1571,12 @@ export { CapabilitiesView } from '@/app/capabilities'
 
 // -- ui: the design language --------------------------------------------------
 
-/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
- *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
- *  renders anywhere (a plugin dialog); pass a live `gateway` (see
- *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
-export { McpTab } from '@/app/capabilities/mcp/mcp-tab'
+/** THE Connectors tab core Capabilities renders — managed apps, the user's
+ *  own MCP servers, plugin servers and the catalog, with per-server enable,
+ *  sign-in and live probes. Renders anywhere under the app router (a plugin
+ *  dialog); pass a live `gateway` (see `host.getGateway()`) and the `profile`
+ *  to scope it to one bot. */
+export { ConnectorsTab } from '@/app/capabilities/connectors/connectors-tab'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -1617,9 +1638,12 @@ export {
   PanelSectionLabel
 } from '@/app/overlays/panel'
 export {
+  type ProfileGroupHeaderContribution,
+  type ProfileGroupRoute,
   type RouteContribution,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
@@ -1669,6 +1693,7 @@ export { ColorSwatches } from '@/components/ui/color-swatches'
 export { ConfirmDialog } from '@/components/ui/confirm-dialog'
 export {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -1747,7 +1772,7 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 // -- contracts ----------------------------------------------------------------
 
 export type { Contribution } from '@/contrib/types'
-/** The live gateway instance type — for typing the `gateway` prop `McpTab`
+/** The live gateway instance type — for typing the `gateway` prop `ConnectorsTab`
  *  takes; obtain the instance from `host.getGateway()`. */
 export type { HermesGateway } from '@/hermes'
 /** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
@@ -1759,9 +1784,12 @@ export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
  *  `translateNow` is the one-shot form for the places a hook can't reach —
  *  notably a `ctx.register` pane `title`, which is read at registration time
  *  and is why plugin pane titles otherwise strand as hardcoded English. It
- *  samples the locale at call time, so React should still use the hooks. */
+ *  samples the locale at call time, so React should still use the hooks. A
+ *  pane whose label must track the locale pairs that `title` with
+ *  `data.tabTitle: () => <LocalizedTabTitle select={t => ...} />`. */
 export {
   type Locale,
+  LocalizedTabTitle,
   type PluginI18n,
   type PluginLocaleBundles,
   type PluginMessages,
@@ -1831,6 +1859,9 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+/** A sibling WebSocket beside the route's `/api/ws` (voice PCM, Bot Screen RFB):
+ *  same origin, same auth resolution as chat. */
+export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'
 /** Canonical time formatting — every surface pulls from here so timestamps read
  *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
  *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the
@@ -1893,6 +1924,8 @@ export { THEMES_AREA } from '@/themes/user-themes'
 export type { StatusResponse } from '@/types/hermes'
 /** Public SDK name for the shared gateway wire event; kept stable for plugins. */
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
+/** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
+export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'

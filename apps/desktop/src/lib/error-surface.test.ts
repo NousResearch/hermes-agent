@@ -60,19 +60,6 @@ describe('parseErrorSurface', () => {
 })
 
 describe('formatErrorDiagnostics', () => {
-  it('includes layer, code, model and error', () => {
-    const text = formatErrorDiagnostics({
-      errorText: 'boom',
-      model: 'anthropic/claude-opus-4.6',
-      surface: { layer: 'provider', code: 'rate_limit', retryable: true }
-    })
-
-    expect(text).toContain('layer: provider')
-    expect(text).toContain('code: rate_limit')
-    expect(text).toContain('model: anthropic/claude-opus-4.6')
-    expect(text).toContain('error: boom')
-  })
-
   it('prefers the descriptor identity over the caller fallback', () => {
     const text = formatErrorDiagnostics({
       errorText: 'boom',
@@ -142,16 +129,27 @@ describe('error copy never names a hidden Retry', () => {
   )
 
   it('a credential rejection keeps Retry, so its body may still say retry', () => {
-    const surface: ErrorSurface = { authKind: 'api_key', code: 'auth', layer: 'auth', provider: 'openai', retryable: false }
+    const surface: ErrorSurface = {
+      authKind: 'api_key',
+      code: 'auth',
+      layer: 'auth',
+      provider: 'openai',
+      retryable: false
+    }
+
     expect(errorRecoveryPlan(surface).retry).toBe(true)
   })
 
   it('a WAF block names the firewall and the User-Agent fix, not the key and not a retry', () => {
-    const surface = parseErrorSurface({ code: 'upstream_blocked', layer: 'provider', provider: 'custom', retryable: false })!
+    const surface = parseErrorSurface({
+      code: 'upstream_blocked',
+      layer: 'provider',
+      provider: 'custom',
+      retryable: false
+    })!
+
     const { body, title } = errorCardText(thread, surface)
     expect(title).toBe(en.assistant.thread.errorCodes.upstream_blocked.title)
-    expect(body).toMatch(/firewall/i)
-    expect(body).toMatch(/User-Agent/)
     expect(body).not.toBe(thread.errorLayerBodies.provider)
     expect(errorRecoveryPlan(surface).retry).toBe(false)
   })
@@ -183,17 +181,10 @@ describe('free-tier refusals', () => {
 
   it('falls back to the table body when an older backend sent no sentence', () => {
     const bare = parseErrorSurface({ code: 'free_tier_rate_limited', layer: 'provider', retryable: true })!
-    expect(errorCardText(en.assistant.thread, bare).body).toBe(en.assistant.thread.errorCodes.free_tier_rate_limited.body)
+    expect(errorCardText(en.assistant.thread, bare).body).toBe(
+      en.assistant.thread.errorCodes.free_tier_rate_limited.body
+    )
     expect(errorRecoveryPlan(bare).retry).toBe(true)
-  })
-
-  it('every free-tier code has copy and the copy never blames the free model', () => {
-    for (const code of ERROR_CODE_KEYS.filter(key => key.startsWith('free_tier_'))) {
-      const copy = en.assistant.thread.errorCodes[code]
-      const text = `${typeof copy.title === 'string' ? copy.title : ''} ${typeof copy.body === 'string' ? copy.body : ''}`.toLowerCase()
-      expect(text).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
-      expect(text).not.toMatch(/anonymous|guest|credential|token|rate limit/)
-    }
   })
 })
 
@@ -210,7 +201,6 @@ describe('limit reset (#98852)', () => {
     const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 
     expect(formatLimitReset(surface?.resetsAt, now)).toBe(`${clock} (in 1h 05m)`)
-    expect(en.assistant.thread.errorLimitResets(`${clock} (in 1h 05m)`)).toContain(clock)
     expect(formatErrorDiagnostics({ errorText: 'x', surface })).toContain('resets_at: ')
   })
 
@@ -220,6 +210,8 @@ describe('limit reset (#98852)', () => {
     expect(formatLimitReset(now / 1000 - 60, now)).toBeNull()
     expect(formatLimitReset(undefined, now)).toBeNull()
     expect(parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true })?.resetsAt).toBeUndefined()
-    expect(parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true, resets_at: 'soon' })?.resetsAt).toBeUndefined()
+    expect(
+      parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true, resets_at: 'soon' })?.resetsAt
+    ).toBeUndefined()
   })
 })

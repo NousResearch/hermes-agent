@@ -12,7 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -31,9 +30,6 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestNormalizeWorkdir:
-    def test_none_returns_none(self):
-        from cron.jobs import _normalize_workdir
-        assert _normalize_workdir(None) is None
 
     def test_empty_string_returns_none(self):
         from cron.jobs import _normalize_workdir
@@ -123,14 +119,6 @@ class TestUpdateJobWorkdir:
 # tools.cronjob_tools: end-to-end JSON round-trip
 # ---------------------------------------------------------------------------
 
-class TestCronjobToolWorkdir:
-
-
-    def test_schema_advertises_workdir(self):
-        from tools.cronjob_tools import CRONJOB_SCHEMA
-        assert "workdir" in CRONJOB_SCHEMA["parameters"]["properties"]
-        desc = CRONJOB_SCHEMA["parameters"]["properties"]["workdir"]["description"]
-        assert "absolute" in desc.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +130,6 @@ class TestTickWorkdirPartition:
 
     def test_workdir_jobs_overlap_on_parallel_pool(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
         import threading
 
         workdir_a = tmp_path / "a"
@@ -258,7 +245,6 @@ class TestRunJobTerminalCwd:
         """
         import os
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
 
         # Pin TERMINAL_CWD to a sentinel via monkeypatch so we control both
         # the before-value and the after-value regardless of cross-test state.
@@ -293,7 +279,6 @@ class TestRunJobTerminalCwd:
     ):
         import os
         import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
         from tools.terminal_tool import get_session_cwd
 
         baseline = str(tmp_path / "baseline")

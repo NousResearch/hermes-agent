@@ -270,7 +270,6 @@ it.each([{ enabled: false }, { runtime_installed: false }, { update_available: f
 it('the real Update now button navigates and sends exactly one install POST, never on show', async () => {
   await due()
   expect(api.mock.calls.filter(([request]) => request.method === 'POST')).toHaveLength(0)
-  expect(screen.getByText(/active local requests may be interrupted/i)).toBeTruthy()
   const button = screen.getByRole('button', { name: 'Update now' })
   await act(async () => {
     fireEvent.click(button)

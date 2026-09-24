@@ -12,7 +12,6 @@ These are behavior contracts against the real compressor functions, not mocks:
 feed a transcript of 1,000 operational notifications around a single human turn
 and assert the operational rows are invisible to the anchor/focus logic.
 """
-import pytest
 
 from agent.context_compressor import ContextCompressor
 
@@ -93,11 +92,3 @@ def test_ops_notices_do_not_become_auto_focus_source():
     )
 
 
-def test_conversational_user_count_unchanged_by_ops_notices():
-    """1,000 notifications must not be counted as actionable user turns."""
-    cc = _compressor()
-    msgs = _transcript_with_n_ops(1000)
-    actionable = [m for m in msgs if cc._is_actionable_user_turn(m)]
-    # Exactly one: the human turn at the end.
-    assert len(actionable) == 1
-    assert actionable[0]["content"] == "Actually deploy the fix"

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.lsp.client import LSPClient
-from agent.lsp.protocol import LSPProtocolError
+from agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -74,6 +74,48 @@ async def test_client_receives_published_errors(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_aborted_start_reports_exit_status_and_stderr_tail(tmp_path: Path):
+    """A server that dies mid-initialize must not fail as an opaque protocol error.
+
+    A Node language server that exhausts its heap aborts (SIGABRT) before answering
+    ``initialize``; the failure the caller logs should carry the exit status and the
+    stderr trace instead of a bare JSON-RPC error text.
+    """
+    client = _client(tmp_path, "oom_abort")
+
+    with pytest.raises(LSPProtocolError) as excinfo:
+        await client.start()
+
+    assert client.state == "error"
+    assert client._proc is None
+    message = str(excinfo.value)
+    # negative returncode rendered as a signal, not a bare code
+    assert "signal" in message
+    # stderr tail reached the failure report
+    assert "JavaScript heap out of memory" in message
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_initialize_error_response_keeps_its_exception_type(tmp_path: Path):
+    """A JSON-RPC error to ``initialize`` must surface as the LSPRequestError the server sent,
+    with the exit details appended -- not as a TypeError from re-instantiating an exception
+    class whose constructor is not ``(message)``."""
+    client = _client(tmp_path, "init_error")
+
+    with pytest.raises(LSPRequestError) as excinfo:
+        await client.start()
+
+    assert excinfo.value.code == -32602
+    message = str(excinfo.value)
+    assert "bad init" in message
+    assert "server exited" in message
+    await client.shutdown()
+
+
+
+
+@pytest.mark.asyncio
 async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Path):
     client = _client(tmp_path, "crash")
 
@@ -90,6 +132,61 @@ async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Pat
     assert not client.is_running
     assert client._proc is None
     await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_start_terminates_spawned_server(tmp_path: Path):
+    """An outer startup budget may cancel initialize before the manager registers the client."""
+    client = _client(tmp_path, "slow")
+    start = asyncio.create_task(client.start())
+    while client._proc is None:
+        await asyncio.sleep(0)
+    proc = client._proc
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(start, timeout=0.05)
+
+    assert proc is not None
+    await asyncio.wait_for(proc.wait(), timeout=3.0)
+    assert client.state == "error"
+    assert client._proc is None
+
+
+@pytest.mark.linux_only
+@pytest.mark.asyncio
+async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: Path):
+    """A launcher exiting on SIGTERM must not let an ignoring server child escape cleanup."""
+    import psutil
+
+    child_pid_file = tmp_path / "child.pid"
+    client = _client(tmp_path, "slow_tree")
+    assert client._env is not None
+    client._env["MOCK_LSP_CHILD_PID"] = str(child_pid_file)
+    start = asyncio.create_task(client.start())
+    child = None
+    try:
+        # Generous deadlines: CI runners under load took >3 s here (PR-blocking flake).
+        ready_deadline = asyncio.get_running_loop().time() + 15.0
+        while not child_pid_file.exists():
+            assert asyncio.get_running_loop().time() < ready_deadline
+            await asyncio.sleep(0.01)
+        child = psutil.Process(int(child_pid_file.read_text(encoding="utf-8")))
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(start, timeout=0.05)
+
+        deadline = asyncio.get_running_loop().time() + 15.0
+        while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+        assert client.state == "error"
+        assert client._proc is None
+    finally:
+        if not start.done():
+            start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        if child is not None and child.is_running():
+            child.kill()
 
 
 @pytest.mark.asyncio

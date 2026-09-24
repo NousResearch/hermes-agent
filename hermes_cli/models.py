@@ -1154,13 +1154,11 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Accepts the Anthropic Fast Mode ``speed`` param (Opus 4.8 / Opus 5 only) — deliberately NOT a
-    general "fast model" check: Opus 4.7 hard-400s on it, and dedicated ``…-fast`` ids select fast
-    inference via the model field and must not also get it."""
-    base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
-    if not base.startswith("claude-") or "-fast" in base:
-        return False
-    return any(v in base for v in ("opus-4-8", "opus-4.8", "opus-5"))
+    """Accepts the Anthropic Fast Mode ``speed`` param (Opus 4.8 / Opus 5 / Opus 5.5 only) —
+    deliberately NOT a general "fast model" check. The list lives in ``agent.model_metadata``."""
+    from agent.model_metadata import is_anthropic_fast_mode_model
+
+    return is_anthropic_fast_mode_model(model_id)
 
 
 def _fast_mode_route_supported(
@@ -1344,6 +1342,11 @@ def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
     return live
 
 
+class CuratedFallbackModels(list[str]):
+    """A curated list served because the provider's live catalog was unavailable. The disk cache
+    treats it as a placeholder, never as the account's real catalog (#107391)."""
+
+
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
         return live
@@ -1353,7 +1356,7 @@ def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
             return live
     except Exception:
         pass
-    return list(_PROVIDER_MODELS.get("copilot", [])) if normalized == "copilot-acp" else None
+    return CuratedFallbackModels(_PROVIDER_MODELS.get("copilot", []))
 
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -1521,7 +1524,9 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 # and the promo it delisted without removing from ``/models`` (``deepseek-v4-flash-free``). The
 # live-first keyed Zen/Go pickers filter through this so a stale live listing can never route
 # into a 400/403 (#111749).
-_OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
+_OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
+    {"ox-alpha-free", "deepseek-v4-flash-free", "x-preview-f-free"}
+)
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
@@ -1548,7 +1553,9 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         except Exception as exc:  # a failed subprocess launch degrades to the curated list, like api_key below
             logger.debug("external_process catalog fetch failed for %s: %s", normalized, exc)
             live = None
-        return list(live) if live else (list(profile.fallback_models) or None)
+        # Same merge as setup (`_model_flow_plugin_provider`) so /model, the Desktop picker and
+        # `hermes model` offer one list: live ids plus any pinned id the probe omitted.
+        return merge_profile_catalog(normalized, profile, list(live) if live else None)
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)
@@ -1571,17 +1578,26 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
     picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
-    if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
-        # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
-        # live-first, so it filters them out here (#111749).
-        live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
     if not live:
-        return list(profile.fallback_models) if profile.fallback_models else None
-    curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
-    if not curated:
-        return live
-    primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
-    return _merge_unique(primary, secondary, key=_model_dedup_key)
+        rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
+    else:
+        curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
+        if not curated:
+            rows = live
+        else:
+            primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
+            rows = _merge_unique(primary, secondary, key=_model_dedup_key)
+    return _drop_delisted_opencode_models(normalized, rows)
+
+
+def _drop_delisted_opencode_models(normalized: str, rows: Optional[list[str]]) -> Optional[list[str]]:
+    """The relay still LISTS delisted ids it no longer serves, and the curated floor (merged back in
+    as the secondary half, or served alone when there is no key) carries retired ids too. Filter the
+    FINAL rows for the live-first Zen/Go pickers so no path can offer a slug that 401s (#111749,
+    #115496)."""
+    if rows and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+        return type(rows)(m for m in rows if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS)
+    return rows
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
@@ -1612,10 +1628,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # _PROVIDER_MODELS entry fall back to the profile's curated fallback_models so their agentic picks lead
     # the picker instead of whatever the live catalog happens to return first (e.g. Fireworks lists an image
     # model, flux-*, ahead of its chat models).
-    curated_static = list(_PROVIDER_MODELS.get(normalized, []))
+    # A provider with a live fetcher that declined is serving a placeholder; one without any live
+    # source is serving its authoritative catalog.
+    curated_static = (CuratedFallbackModels if fetcher is not None else list)(_PROVIDER_MODELS.get(normalized, []))
     if normalized not in _MODELS_DEV_PREFERRED:
-        return curated_static
-    merged = _merge_with_models_dev(normalized, curated_static)
+        return _drop_delisted_opencode_models(normalized, curated_static)
+    # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
+    merged = _drop_delisted_opencode_models(normalized, _merge_with_models_dev(normalized, curated_static))
     return _xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged
 
 
@@ -1632,6 +1651,9 @@ _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
 # daemon thread refreshes the disk cache; beyond this bound the caller blocks on a live fetch.
 # Catalogs change on release timescales, so hour-old data beats stalling every picker surface.
 _PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
+# A curated fallback row is a placeholder for an outage, not a catalog: re-probe soon and never
+# serve it through the stale window.
+_PROVIDER_MODELS_FALLBACK_TTL = 60
 
 # Cache keys with a background SWR refresh in flight — dedupes concurrent refreshes.
 _swr_refresh_inflight: set = set()
@@ -1641,6 +1663,17 @@ _swr_refresh_lock = threading.Lock()
 def _cache_entry(fp: str, models: list[str], at: Optional[float] = None) -> dict:
     """One provider row of the disk cache: credential fingerprint, write time, model ids."""
     return {"fp": fp, "at": time.time() if at is None else at, "models": list(models)}
+
+
+def _live_result_entry(fp: str, live: list[str], existing: Any, at: Optional[float] = None) -> Optional[dict]:
+    """Row to store for a ``provider_model_ids`` result, or ``None`` to keep *existing*: a curated
+    fallback never replaces the account's real catalog for the same credentials, and when it is
+    stored it is flagged so it expires on the short fallback TTL."""
+    if not isinstance(live, CuratedFallbackModels):
+        return _cache_entry(fp, live, at)
+    if _cache_entry_valid(existing, fp) and not existing.get("fallback"):
+        return None
+    return {**_cache_entry(fp, live, at), "fallback": True}
 
 
 def _ollama_native_probe_reachable() -> bool:
@@ -1670,7 +1703,8 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
         if live or (cache_key == "ollama" and _ollama_native_probe_reachable()):
-            return _cache_entry(_credential_fingerprint(cache_key), live or [])
+            fp = _credential_fingerprint(cache_key)
+            return _live_result_entry(fp, live or [], _load_provider_models_cache().get(cache_key))
         return None
 
     def _refresh() -> None:
@@ -1698,9 +1732,12 @@ def _provider_models_cache_path() -> Path:
 
 
 def _credential_fingerprint(provider: str) -> str:
-    """Short hash of the credentials ``provider_model_ids(provider)`` would see right now: api-key /
-    base-url env vars from ``PROVIDER_REGISTRY`` plus the mtimes of ``auth.json`` and external
-    credential files (OAuth re-auth busts the cache without parsing every file shape)."""
+    """Short hash of the credentials ``provider_model_ids(provider)`` would see right now.
+
+    API-key providers include their configured values and credential-file mtimes. Codex uses the
+    stable principal selected by its read-only resolver: routine token and pool-state writes must
+    not discard an account-scoped catalog, while a real account switch must invalidate it.
+    """
     import hashlib
 
     parts: list[str] = []
@@ -1772,16 +1809,21 @@ def _credential_fingerprint(provider: str) -> str:
         except Exception:
             pass
 
-    try:
-        from hermes_constants import get_hermes_home
-        for rel in ("auth.json", "credentials.json"):
-            _mtime_part(rel, get_hermes_home() / rel)
-    except Exception:
-        pass
-    for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
-        path = os.path.expanduser(rel)
-        _mtime_part(path, path)
+    if provider == "openai-codex":
+        from hermes_cli.codex_models import codex_catalog_credential_identity
+
+        parts.append(f"codex_identity={codex_catalog_credential_identity()}")
+    else:
+        try:
+            from hermes_constants import get_hermes_home
+            for rel in ("auth.json", "credentials.json"):
+                _mtime_part(rel, get_hermes_home() / rel)
+        except Exception:
+            pass
+        for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
+                    "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
+            path = os.path.expanduser(rel)
+            _mtime_part(path, path)
 
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b, not sha256: fingerprint only (collisions = a harmless cache miss), and CodeQL's
@@ -1855,23 +1897,17 @@ def cached_provider_model_ids(
     if not normalized:
         return []
     is_ollama = normalized == "ollama"
-    if is_ollama:
-        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
     entry = cache.get(normalized)
     now = time.time()
 
-    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
-        age = now - entry["at"]
-        if age < ttl_seconds:
-            return list(entry["models"])
-        # Empty native catalogs are authoritative only for the short native TTL — never served
-        # through the stale window. Non-empty stale rows are served immediately (SWR) so picker
-        # opens never block on serial /v1/models round-trips.
-        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
-            _spawn_swr_refresh(normalized)
+    if not force_refresh:
+        tier = _disk_serve_tier(entry, fp, now, is_ollama=is_ollama, ttl_seconds=ttl_seconds)
+        if tier is not None:
+            if tier == "stale":
+                _spawn_swr_refresh(normalized)
             return list(entry["models"])
 
     if non_blocking and not force_refresh:
@@ -1886,7 +1922,11 @@ def cached_provider_model_ids(
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
+        fresh = _live_result_entry(fp, live, entry, now)
+        if fresh is None:
+            # The live fetch degraded to the curated list; the account's real catalog is on disk.
+            return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
+        _store_cache_entry(normalized, fresh, cache)
         return list(live)
 
     if is_ollama:
@@ -2643,6 +2683,27 @@ def _cache_entry_valid(
         and (allow_empty or bool(entry["models"]))
         and isinstance(entry.get("at"), (int, float))
         and not isinstance(entry.get("at"), bool))
+
+
+def _disk_serve_tier(entry: Any, fp: str, now: float, *, is_ollama: bool,
+                     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> Optional[str]:
+    """How :func:`cached_provider_model_ids` serves *entry* without the network.
+
+    ``"fresh"`` inside the row's TTL (a curated fallback row only for
+    ``_PROVIDER_MODELS_FALLBACK_TTL``), ``"stale"`` for a non-empty, non-fallback row inside
+    ``_PROVIDER_MODELS_STALE_SERVE_MAX`` (served while an SWR thread revalidates), else ``None``:
+    the call would block on a live fetch. Empty native catalogs are authoritative only inside the
+    short native TTL, never through the stale window."""
+    if is_ollama:
+        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
+    if not _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+        return None
+    age = now - entry["at"]
+    if age < (_PROVIDER_MODELS_FALLBACK_TTL if entry.get("fallback") else ttl_seconds):
+        return "fresh"
+    if entry["models"] and not entry.get("fallback") and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        return "stale"
+    return None
 
 
 def cached_fetch_api_models(

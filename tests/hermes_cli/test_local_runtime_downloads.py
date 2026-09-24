@@ -1,5 +1,6 @@
 """Runtime downloads must not turn a transient transfer failure into a poisoned cache."""
 
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -94,3 +95,43 @@ def test_failed_request_preserves_another_active_download(tmp_path, asset_server
     assert dest.read_bytes() == payload
     assert not list(tmp_path.glob("*.part"))
     assert len(requests) == 2
+
+
+def test_replace_waits_out_a_transient_hold(tmp_path, monkeypatch):
+    """A rename refused while another process still holds the finished file (antivirus and
+    indexing scans on Windows) must be retried, not degraded to a copy or reported as a
+    failed download."""
+    tmp = tmp_path / "model.part"
+    dest = tmp_path / "model.gguf"
+    tmp.write_bytes(b"weights")
+    real_replace = os.replace
+    refusals = []
+
+    def held_twice(src, dst):
+        if len(refusals) < 2:
+            refusals.append(src)
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", held_twice)
+    binaries.replace_when_released(tmp, dest, timeout=5)
+    assert len(refusals) == 2
+    assert dest.read_bytes() == b"weights"
+    assert not tmp.exists()
+
+
+def test_replace_gives_up_with_a_plain_language_error(tmp_path, monkeypatch):
+    tmp = tmp_path / "model.part"
+    dest = tmp_path / "model.gguf"
+    tmp.write_bytes(b"weights")
+
+    def always_held(src, dst):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(os, "replace", always_held)
+    with pytest.raises(RuntimeError) as failed:
+        binaries.replace_when_released(tmp, dest, timeout=0.3)
+    assert "model.part" in str(failed.value)
+    assert "try again" in str(failed.value).lower()
+    assert isinstance(failed.value.__cause__, PermissionError)
+    assert not dest.exists()

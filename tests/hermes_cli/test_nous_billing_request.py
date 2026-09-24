@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import io
 import json
-import socket
-from contextlib import contextmanager
 
 import pytest
 
@@ -71,53 +69,6 @@ def _sequence(monkeypatch, *outcomes, resolver=None):
 
     monkeypatch.setattr(nb.urllib.request, "urlopen", _fake_urlopen)
     return seen
-
-
-@contextmanager
-def _stub(monkeypatch, body: bytes, status: int = 200):
-    # Bypass auth/token resolution entirely — we only exercise response parsing.
-    monkeypatch.setattr(nb, "_resolve_token_and_base", lambda **kw: ("tok", "https://portal.example"))
-    monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
-    monkeypatch.setattr(nb.urllib.request, "urlopen", lambda req, timeout=None: _FakeResp(body, status))
-    yield
-
-
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# Subscription change (V3): the request the client actually puts on the wire.
-# ---------------------------------------------------------------------------
-
-
-@contextmanager
-def _capture(monkeypatch, body: bytes = b"{}", status: int = 200):
-    """Stub urlopen, recording the urllib.request.Request the client built."""
-    seen: dict[str, object] = {}
-    monkeypatch.setattr(
-        nb, "_resolve_token_and_base", lambda **kw: ("tok", "https://portal.example")
-    )
-
-    def _fake_urlopen(req, timeout=None):
-        seen["method"] = req.get_method()
-        seen["url"] = req.full_url
-        seen["data"] = json.loads(req.data.decode()) if req.data else None
-        seen["headers"] = {k.lower(): v for k, v in req.header_items()}
-        return _FakeResp(body, status)
-
-    monkeypatch.setattr(nb.urllib.request, "urlopen", _fake_urlopen)
-    yield seen
-
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------

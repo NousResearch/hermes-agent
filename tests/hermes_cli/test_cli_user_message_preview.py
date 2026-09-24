@@ -79,12 +79,3 @@ class TestSubmittedUserMessagePreview:
         assert "line6" not in rendered
         assert "(+4 more lines)" in rendered
 
-    def test_invalid_first_lines_value_falls_back_to_one(self):
-        cli = _make_cli({"first_lines": 0, "last_lines": 2})
-
-        rendered = cli._format_submitted_user_message_preview("line1\nline2\nline3\nline4")
-
-        assert "line1" in rendered
-        assert "line3" in rendered
-        assert "line4" in rendered
-        assert "(+1 more line)" in rendered

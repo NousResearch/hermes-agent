@@ -2722,13 +2722,12 @@ class GatewayTurnMixin:
         if _scfg is None:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
+        # Global master switch first: skips the config.yaml re-read on the default (off) path.
+        if not _scfg.globally_enabled:
+            return None
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(_load_gateway_config(), _platform_config_key(source.platform), "streaming")
-        _global_streaming_enabled = bool(_scfg.enabled) and _scfg.transport != "off"
-        _streaming_enabled = _global_streaming_enabled and (
-            True if _plat_streaming is None else bool(_plat_streaming)
-        )
-        if not _streaming_enabled:
+        if not _scfg.enabled_for(_plat_streaming):
             return None
         try:
             from gateway.stream_consumer import GatewayStreamConsumer

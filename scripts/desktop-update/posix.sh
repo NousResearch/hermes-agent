@@ -19,7 +19,7 @@
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
-#     [--self-test-marker]
+#     [--self-test-marker] [--self-test-pid-alive <pid>]
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
@@ -41,6 +41,7 @@ INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+SELF_TEST_PID_ALIVE=0
 SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
@@ -56,6 +57,7 @@ while [ $# -gt 0 ]; do
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
+    --self-test-pid-alive) SELF_TEST_PID_ALIVE="$2"; shift 2 ;;
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
@@ -63,7 +65,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
-[ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$SELF_TEST_UI" -eq 1 ] || [ "$SELF_TEST_PID_ALIVE" -gt 0 ] 2>/dev/null || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERMES_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
@@ -610,7 +612,47 @@ tcc_pick_update_invoke() { # sets UPDATE_INVOKE; safety net past a failed heal
   fi
 }
 
+# A PID that still answers `kill -0` is not necessarily RUNNING. A process whose
+# parent never reaps it stays a zombie, keeping its PID alive indefinitely, so
+# a Desktop launched from a non-reaping parent (app launchers, Stream Deck /
+# OpenDeck plugin hosts, some IDE and file-manager spawners) leaves a PID that
+# answers `kill -0` forever after the window is gone. The exit gate below then
+# burns its full 30s and aborts an update that was safe to run.
+#
+# The abort path relaunches through setsid, which reparents the new Desktop to
+# init — and init DOES reap — so the retry sees a real exit. That is the
+# "fails every time, works on the second try" report.
+#
+# Same contract as hermes_cli/kanban_db_dispatch.py::_pid_alive: existence
+# first, then treat state Z as dead (Linux /proc, macOS `ps -o stat=`). This
+# TIGHTENS the check rather than weakening it — a genuinely running Desktop is
+# still alive and still blocks the update, which is the safety property the
+# gate exists for.
+pid_alive() { # pid -> 0 iff running (a zombie counts as DEAD)
+  local pid="$1" state=""
+  kill -0 "$pid" 2>/dev/null || return 1
+  if [ -r "/proc/$pid/status" ]; then
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null)"
+  elif [ "$(uname)" = "Darwin" ]; then
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  fi
+  # An unreadable/absent probe keeps the kill -0 answer: this can only ever
+  # resolve a false "still running", never invent one.
+  case "$state" in
+    Z*) return 1 ;;   # exited, awaiting reap — the window is gone
+    *) return 0 ;;
+  esac
+}
+
 # ── self-tests: no update, touch nothing ────────────────────────────────────
+if [ "$SELF_TEST_PID_ALIVE" -gt 0 ] 2>/dev/null; then
+  # Reports the REAL gate predicate for a pid; tests/scripts/desktop_update/
+  # test_desktop_update_zombie_gate.py drives real processes through it.
+  trap - EXIT
+  pid_alive "$SELF_TEST_PID_ALIVE" && echo alive || echo dead
+  exit 0
+fi
+
 if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   # Runs the REAL heal + invoke selection against --install-root and reports;
   # tests/scripts/desktop_update/test_desktop_update_tcc_heal.py drives the state matrix through it.
@@ -700,8 +742,8 @@ fi
 
 # Wait out the Desktop (FAIL CLOSED: updating under live backends bricks).
 if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then
-  for _ in $(seq 1 100); do kill -0 "$DESKTOP_PID" 2>/dev/null || break; sleep 0.3; done
-  if kill -0 "$DESKTOP_PID" 2>/dev/null; then
+  for _ in $(seq 1 100); do pid_alive "$DESKTOP_PID" || break; sleep 0.3; done
+  if pid_alive "$DESKTOP_PID"; then
     FINAL_CODE=4 FINAL_MSG="Update aborted: the Hermes window (pid $DESKTOP_PID) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
     log "$FINAL_MSG"; exit "$FINAL_CODE"
   fi

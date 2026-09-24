@@ -1429,6 +1429,15 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     with contextlib.suppress(Exception):
         from providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)
+        if _profile is None:
+            # A bare key from config.yaml's ``providers:`` block identifies a
+            # custom OpenAI-compatible route just like ``custom:<key>``.
+            # Delegate children and restored desktop sessions retain that bare
+            # label, so resolve it here at the shared wire builder instead of
+            # silently taking the profile-less reasoning path.
+            from hermes_cli.runtime_provider_custom import has_named_custom_provider
+            if has_named_custom_provider(agent.provider):
+                _profile = get_provider_profile("custom")
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     # Strip image parts for non-vision models on BOTH paths (registered

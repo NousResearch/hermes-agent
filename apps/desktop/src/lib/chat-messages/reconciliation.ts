@@ -46,6 +46,84 @@ const userTurnMatch = (stored: ChatMessage, local: ChatMessage) =>
   normalizedTimelineText(stored) === normalizedTimelineText(local) &&
   (stored.attachmentRefs ?? []).join('\n') === (local.attachmentRefs ?? []).join('\n')
 
+const attachmentRewriteCaption = (message: ChatMessage) =>
+  chatMessageText(message)
+    .replace(/<memory-context>[\s\S]*?(?:<\/memory-context>|$)/gi, ' ')
+    .replace(/\[Image attached at:[^\]]*\]/gi, ' ')
+    .replace(/\[(?:screenshot|image|attachment|file)\]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const pastedAttachmentTurnMatch = (stored: ChatMessage, local: ChatMessage) =>
+  stored.role === 'user' &&
+  local.role === 'user' &&
+  /\[Image attached at:[^\]]*\]|\[(?:screenshot|image|attachment|file)\]/i.test(chatMessageText(stored)) &&
+  (local.attachmentRefs ?? []).some(ref => ref.startsWith('data:')) &&
+  attachmentRewriteCaption(stored) === attachmentRewriteCaption(local)
+
+const pastedAttachmentAssistantMatchIndex = (
+  storedMessages: ChatMessage[],
+  localMessages: ChatMessage[],
+  localAssistantIndex: number
+) => {
+  const localUser = [...localMessages.slice(0, localAssistantIndex)]
+    .reverse()
+    .find(message => message.role === 'user' && !message.hidden)
+
+  if (!localUser) {
+    return -1
+  }
+
+  const localBoundary = localMessages
+    .slice(localAssistantIndex + 1)
+    .find(message => !message.hidden && message.rowId !== undefined)
+  const storedBoundaryIndex =
+    localBoundary?.rowId === undefined ? -1 : storedMessages.findIndex(message => message.rowId === localBoundary.rowId)
+  if (localBoundary && storedBoundaryIndex === -1) {
+    return -1
+  }
+
+  const matchingStoredUsers = storedMessages.filter(
+    message => !message.hidden && pastedAttachmentTurnMatch(message, localUser)
+  )
+  if (storedBoundaryIndex === -1 && matchingStoredUsers.length !== 1) {
+    return -1
+  }
+
+  const storedUserIndex = storedMessages.findLastIndex(
+    (message, index) =>
+      (storedBoundaryIndex === -1 || index < storedBoundaryIndex) &&
+      !message.hidden &&
+      pastedAttachmentTurnMatch(message, localUser)
+  )
+
+  if (storedUserIndex === -1) {
+    return -1
+  }
+
+  for (let index = storedUserIndex + 1; index < storedMessages.length; index += 1) {
+    const message = storedMessages[index]
+
+    if (index === storedBoundaryIndex) {
+      return -1
+    }
+
+    if (message.hidden) {
+      continue
+    }
+
+    if (message.role === 'user') {
+      return -1
+    }
+
+    if (message.role === 'assistant') {
+      return index
+    }
+  }
+
+  return -1
+}
+
 /**
  * Find the hydrated assistant representing a local failed tail turn.
  *
@@ -246,7 +324,13 @@ export function preserveLocalAssistantErrors(
 
     const hydratedAssistantIndex =
       hydratedId === undefined
-        ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+        ? (() => {
+            const tailMatch = tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+
+            return tailMatch === -1
+              ? pastedAttachmentAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+              : tailMatch
+          })()
         : mergedNextMessages.findIndex(candidate => candidate.id === hydratedId && candidate.role === 'assistant')
 
     if (hydratedAssistantIndex !== -1) {

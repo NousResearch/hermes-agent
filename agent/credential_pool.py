@@ -979,6 +979,15 @@ class _RefreshDone(Exception):
         self.result = result
 
 
+class _DeadRefreshGrant(Exception):
+    """Raised under ``_refresh_entry``'s auth-store flock: retire ``entry``'s grant once it is released."""
+
+    def __init__(self, entry: "PooledCredential", exc: Exception):
+        super().__init__()
+        self.entry = entry
+        self.exc = exc
+
+
 class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
@@ -1238,7 +1247,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         return entry
 
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
-        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth).
+        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth, Codex manual rows).
 
         Re-reads the exact persisted row from the credential-pool store while
         the shared cross-process auth-store lock is held. Direct integrations
@@ -1252,7 +1261,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         the pool store, is token authority for those sources; a row with no
         token material at all is refused for the same reason.
         """
-        if self.provider not in ("anthropic", "xai-oauth") and plugin_refresh_hook(self.provider) is None:
+        if self.provider not in ("anthropic", "xai-oauth", "openai-codex") and plugin_refresh_hook(self.provider) is None:
             return entry
         is_anthropic = self.provider == "anthropic"
         is_xai = self.provider == "xai-oauth"
@@ -1486,31 +1495,43 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # there was no recovery path at all). Serialize through the shared
         # cross-process auth-store flock; a waiter's in-lock re-sync picks up
         # the winner's rotated token and skips the POST.
-        with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
-            if self.provider == "openai-codex":
-                synced = self._sync_entry_from_auth_store(entry)
-                if synced is not entry and not force and not self._entry_needs_refresh(synced):
-                    return synced
-                return self._refresh_entry_impl(synced, force=force)
-            synced = self._sync_entry_from_pool_store(entry)
-            if self.provider == "anthropic" and synced.source == "claude_code":
-                # claude_code entries are NOT profile-owned: the refresh token
-                # lives in one shared ~/.claude/.credentials.json (or Keychain)
-                # every profile reads. The profile-scoped lock above only covers
-                # THIS profile's auth.json, so take the dedicated shared-file
-                # lock (inner, per the ordering invariant on ``_auth_store_lock``)
-                # and re-read that authoritative file before any
-                # adopt-and-return shortcut fires. The official ``claude`` CLI
-                # rotating out-of-band is handled by the sync-and-retry-once
-                # fallback in ``_recover_failed_refresh``.
-                with self._claude_code_credentials_lock():
-                    synced = self._sync_anthropic_entry_from_credentials_file(synced)
-                    if synced.refresh_token != entry.refresh_token:
+        try:
+            with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
+                if self.provider == "openai-codex":
+                    # A manual row has no singleton shadow: a peer's rotation lands only in its persisted
+                    # row, so adopt that before spending the refresh token (replaying it is a dead grant).
+                    # That rotation is proven; a singleton that cannot prove it is newer (a legacy writer
+                    # stamps no ``last_refresh``) is the consumed pair and must not replace it.
+                    pooled = self._sync_entry_from_pool_store(entry) if _is_manual_source(entry.source) else entry
+                    synced = pooled if pooled is not entry else self._sync_entry_from_auth_store(entry)
+                    if synced is not entry and not force and not self._entry_needs_refresh(synced):
                         return synced
                     return self._refresh_entry_impl(synced, force=force)
-            if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
-                return synced
-            return self._refresh_entry_impl(synced, force=force)
+                synced = self._sync_entry_from_pool_store(entry)
+                if self.provider == "anthropic" and synced.source == "claude_code":
+                    # claude_code entries are NOT profile-owned: the refresh token
+                    # lives in one shared ~/.claude/.credentials.json (or Keychain)
+                    # every profile reads. The profile-scoped lock above only covers
+                    # THIS profile's auth.json, so take the dedicated shared-file
+                    # lock (inner, per the ordering invariant on ``_auth_store_lock``)
+                    # and re-read that authoritative file before any
+                    # adopt-and-return shortcut fires. The official ``claude`` CLI
+                    # rotating out-of-band is handled by the sync-and-retry-once
+                    # fallback in ``_recover_failed_refresh``.
+                    with self._claude_code_credentials_lock():
+                        synced = self._sync_anthropic_entry_from_credentials_file(synced)
+                        if synced.refresh_token != entry.refresh_token:
+                            return synced
+                        return self._refresh_entry_impl(synced, force=force)
+                if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
+                    return synced
+                return self._refresh_entry_impl(synced, force=force)
+        except _DeadRefreshGrant as dead:
+            # The singleton was cleared inside the flock; the pool rows are retired only now, in
+            # pool -> auth order. Taking the pool lock under the flock deadlocks against a selector
+            # that persists (takes the flock) while holding the pool lock.
+            self._retire_dead_refresh_grant(dead.entry, dead.exc)
+            return None
 
     def _claude_code_credentials_lock(self):
         """Cross-process lock keyed to the shared claude_code credentials file.
@@ -1665,7 +1686,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if self.provider == "anthropic":
                 updated = self._refresh_anthropic(entry)
             elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
-                entry = self._sync_entry_from_auth_store(entry)
+                # Codex already consulted both token authorities under this flock in ``_refresh_entry``.
+                if self.provider != "openai-codex":
+                    entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
             elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
                 rotated = plugin_refresh(entry)
@@ -1692,7 +1715,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return done.result
         except Exception as exc:
             logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
-            return self._recover_failed_refresh(entry, exc)
+            return self._recover_failed_refresh(entry, exc, from_refresh=True)
 
         updated = replace(updated, **_MARK_OK)
         self._replace_entry(entry, updated)
@@ -1705,12 +1728,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._sync_device_code_entry_to_auth_store(updated)
         return updated
 
-    def _recover_failed_refresh(self, entry: PooledCredential, exc: Exception) -> Optional[PooledCredential]:
+    def _recover_failed_refresh(
+        self, entry: PooledCredential, exc: Exception, *, from_refresh: bool = False,
+    ) -> Optional[PooledCredential]:
         """After a failed refresh POST: adopt a peer's rotation, quarantine a dead grant, or bench.
 
         Another process may have consumed the refresh token between our
         pre-POST sync and the HTTP call; re-read the provider's token
         authority once more and adopt fresher tokens before giving up.
+        *from_refresh*: called by ``_refresh_entry_impl``, which for Codex runs inside the flock
+        ``_refresh_entry`` holds (see the Codex branch below).
         """
         if self.provider == "anthropic":
             if entry.source == "claude_code":
@@ -1762,14 +1789,17 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 return None
         elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
-            synced = self._sync_entry_from_auth_store(entry)
+            # Under ``_refresh_entry``'s flock Codex already consulted both token authorities, so a
+            # re-read can only resurface a singleton it declined (older, or unproven over a row a peer
+            # rotated) — adopting that would replay a consumed refresh token.
+            in_codex_refresh = from_refresh and self.provider == "openai-codex"
+            synced = entry if in_codex_refresh else self._sync_entry_from_auth_store(entry)
             if synced.refresh_token != entry.refresh_token:
                 logger.debug("%s OAuth refresh failed but auth.json has newer tokens — adopting", display)
                 return self._adopt(synced, **_MARK_OK)
             # Terminal error with no newer tokens: the stored refresh_token is
             # dead. Clear it from auth.json so the next session does not
-            # re-seed the revoked credentials, and drop singleton-seeded
-            # entries from the pool (mirrors the Nous quarantine path).
+            # re-seed the revoked credentials, and drop it from the pool.
             if getattr(auth_mod, terminal_fn_name)(exc):
                 # WARNING, not debug: this is the moment a login is lost. At the default log level a
                 # silent quarantine looked like "I logged in once and Hermes keeps failing" (#113023).
@@ -1777,8 +1807,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     "%s OAuth refresh token is terminally invalid (%s); clearing local token state. "
                     "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
-                self._quarantine_sources(entry, {"device_code"})
-                self._mark_dead_refresh_grant(entry, exc)
+                if self.provider != "openai-codex":
+                    self._quarantine_sources(entry, {"device_code"})
+                    self._mark_dead_refresh_grant(entry, exc)
+                elif in_codex_refresh:
+                    raise _DeadRefreshGrant(entry, exc)
+                else:
+                    self._retire_dead_refresh_grant(entry, exc)
                 return None
         elif self.provider == "nous":
             synced = self._sync_nous_entry_from_auth_store(entry)
@@ -1833,6 +1868,44 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 last_error_message=str(exc),
             )
 
+    def _retire_dead_refresh_grant(self, entry: PooledCredential, exc: Exception) -> None:
+        """Retire exactly the Codex rows still holding *entry*'s rejected refresh token.
+
+        The unit that died is one refresh-token chain, not a source: dropping every ``device_code``
+        row deleted an independent account whenever another account's grant died, while a same-grant
+        ``manual:*`` alias stayed selectable. Rows are first reconciled with their persisted copies,
+        so a row a peer rotated or re-authed after this pool loaded keeps its new pair instead of being
+        retired or overwritten by this process's stale snapshot, and a row a peer added still holding
+        the dead token is retired too (``_persist`` would otherwise merge it back as-is). Matching
+        ``device_code`` rows are dropped (their singleton was just cleared); other matches go DEAD
+        until a re-auth. Pool lock first, then the auth-store flock — never the reverse.
+        """
+        dead_refresh = (entry.refresh_token or "").strip()
+
+        def holds_dead_grant(item: PooledCredential) -> bool:
+            return (item.refresh_token or "").strip() == dead_refresh if dead_refresh else item.id == entry.id
+
+        with self._lock, _auth_store_lock():
+            persisted = {row.get("id"): row for row in read_credential_pool(self.provider) if isinstance(row, dict)}
+            reconciled = []
+            for item in self._entries:
+                row = persisted.pop(item.id, None) or {}
+                stored = (row.get("access_token"), row.get("refresh_token"))
+                if any(stored) and stored != (item.access_token, item.refresh_token):
+                    item = PooledCredential.from_dict(self.provider, row)
+                reconciled.append(item)
+            peer_added = (PooledCredential.from_dict(self.provider, row) for row in persisted.values() if row.get("id"))
+            reconciled.extend(item for item in peer_added if holds_dead_grant(item))
+            removed_ids = [item.id for item in reconciled if item.source == "device_code" and holds_dead_grant(item)]
+            self._entries = sorted(
+                (item for item in reconciled if item.id not in removed_ids), key=lambda item: item.priority)
+            if self._current_id in removed_ids:
+                self._current_id = None
+            # Persist the removal before marking survivors: a plain persist merges disk-only rows back.
+            self._persist(removed_ids=removed_ids)
+            for item in [item for item in self._entries if holds_dead_grant(item)]:
+                self._mark_dead_refresh_grant(item, exc)
+
     def _clear_terminal_tokens_state(self, entry: PooledCredential, exc: Exception) -> None:
         """Drop the dead Codex/xAI token pair from auth.json unless a peer already rotated it."""
         display = _TOKENS_SINGLETON_PROVIDERS[self.provider][1]
@@ -1843,7 +1916,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 tokens = (state.get("tokens") or {}) if isinstance(state, dict) else None
                 if isinstance(tokens, dict):
                     store_refresh = str(tokens.get("refresh_token") or "").strip()
-                    if not store_refresh or store_refresh == str(entry.refresh_token or "").strip():
+                    store_access = str(tokens.get("access_token") or "").strip()
+                    if store_refresh:
+                        same_grant = store_refresh == str(entry.refresh_token or "").strip()
+                    elif self.provider == "openai-codex":
+                        # An access-only Codex singleton is this grant only if it carries this row's
+                        # bearer; a different one is another login (A's, while independent B's died).
+                        same_grant = not store_access or store_access == str(entry.access_token or "").strip()
+                    else:
+                        same_grant = True
+                    if same_grant:
                         tokens.pop("access_token", None)
                         tokens.pop("refresh_token", None)
                         state["tokens"] = tokens

@@ -29,3 +29,11 @@ def test_a_failed_turn_still_raises_so_the_job_is_marked_failed():
               "turn_exit_reason": "repeated_outer_errors(x)", "messages": [], "api_calls": 3}
     with pytest.raises(RuntimeError):
         _final_response_from_result(result, "job1", "Morning brief", _AIAgent)
+
+
+def test_a_turn_carrying_only_error_raises_instead_of_delivering_ok():
+    # ``error`` is a failure carrier on its own (the codex app-server runtime reports a failed
+    # turn as ``result["error"]`` text); without the flag fields the job must still not read ok.
+    result = {"final_response": "", "error": "provider unavailable", "messages": [], "api_calls": 1}
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        _final_response_from_result(result, "job1", "Morning brief", _AIAgent)

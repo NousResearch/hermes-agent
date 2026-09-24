@@ -82,7 +82,7 @@ class StreamJsonEmitter:
     def emit_result(self, result: Any, session_id: str = "", exit_code: int = 0) -> int:
         """Write the terminal ``result`` record (once) and return the process exit code it reports."""
         data = result if isinstance(result, dict) else {"final_response": "" if result is None else str(result)}
-        exit_code = exit_code or (1 if data.get("failed") else 0)
+        exit_code = exit_code or (1 if data.get("failed") or data.get("error") else 0)
         payload = {"type": "result", "session_id": session_id or self._session_id, "exit_code": exit_code,
                    "text": data.get("final_response") or "",
                    "tokens": {"input": data.get("input_tokens") or 0, "output": data.get("output_tokens") or 0,

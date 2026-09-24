@@ -316,7 +316,7 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
     # No visible response AND a real error: the assistant slot carries a plain account of the
     # failure (title from ``error_surface``, raw provider detail on a ``Details:`` line, next
     # step) rather than the bare provider body.  An empty successful turn still renders as empty.
-    if (not raw) and result.get("error") and (result.get("failed") or result.get("partial")):
+    if (not raw) and result.get("error"):
         raw = turn_error_text(result.get("error"), error_surface)
     # "Operation interrupted: waiting for model response (…)" is cancellation
     # metadata, not assistant prose (gateway/run.py and ACP suppress it too).

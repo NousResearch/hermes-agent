@@ -146,8 +146,9 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -
     """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
-    partway (`partial`, `completed: False`) or never ran at all (credentials / agent init
-    failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
+    partway (`partial`, `completed: False`), carried an ``error`` (the shape runtimes like the
+    codex app-server report before flag normalization) or never ran at all (credentials /
+    agent init failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
     failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
     (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
     WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
@@ -164,7 +165,8 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -
         return 1
     if result.get("interrupted"):
         return 130
-    if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
+    if not (result.get("failed") or result.get("partial") or result.get("completed") is False
+            or result.get("error")):
         return 0
     if os.environ.get("HERMES_KANBAN_TASK"):
         reason = result.get("failure_reason")
@@ -264,10 +266,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     # -> provider 4xx) on stderr so piped stdout stays clean.
     if emitter is not None:
         pass  # the result record below carries text/error; nothing else may touch stdout
-    elif (
-        not response and isinstance(result, dict) and result.get("error")
-        and (result.get("failed") or result.get("partial"))
-    ):
+    elif not response and isinstance(result, dict) and result.get("error"):
         print(f"Error: {result['error']}", file=sys.stderr)
     elif response:
         print(response)

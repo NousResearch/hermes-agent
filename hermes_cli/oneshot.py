@@ -100,7 +100,8 @@ def _oneshot_exit_code(response: Optional[str], result: dict) -> int:
     """
     if result.get("interrupted"):
         return _INTERRUPTED_EXIT_CODE
-    if result.get("failed") or result.get("partial") or result.get("completed") is False:
+    if result.get("failed") or result.get("partial") or result.get("completed") is False \
+            or result.get("error"):
         return 2
     if not (response or "").strip():
         return 1
@@ -224,7 +225,7 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         return
     try:
         report = {key: result.get(key) for key in _USAGE_KEYS}
-        report["failed"] = bool(result.get("failed")) or failure is not None
+        report["failed"] = bool(result.get("failed")) or failure is not None or bool(result.get("error"))
         report["service_tier"] = result.get("service_tier")
         if isinstance(result.get("auxiliary_usage"), dict):
             _auxiliary_report(report, result["auxiliary_usage"])

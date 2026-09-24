@@ -2013,7 +2013,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
-    if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
+    if (result.get("failed") is True or result.get("error")
+            or (result.get("completed") is False and not max_iteration_summary)):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if max_iteration_summary:
         logger.warning(

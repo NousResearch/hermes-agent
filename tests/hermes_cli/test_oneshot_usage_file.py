@@ -52,6 +52,14 @@ class TestWriteUsageFile:
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
 
+    def test_a_result_carrying_only_error_marks_failed(self, tmp_path):
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), _result(error="provider unavailable"))
+        report = json.loads(path.read_text())
+        # The run exits nonzero through ``_oneshot_exit_code``; the report must not contradict it.
+        assert report["failed"] is True
+        assert "failure" not in report
+
 
 class TestAuxiliaryLedger:
     """#112848: auxiliary LLM spend (title generation, vision, ...) recorded in session_model_usage

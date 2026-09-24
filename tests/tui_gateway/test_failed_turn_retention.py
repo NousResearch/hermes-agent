@@ -171,6 +171,25 @@ def test_returned_error_result_retains_snapshot_and_emits_terminal_frame(
     assert session["running"] is False
 
 
+def test_returned_error_only_result_renders_error_text(emits, turn_env):
+    """``error`` alone already sets ``status: "error"`` (``_result_status``); without a
+    ``failed``/``partial`` flag the assistant slot used to stay empty — an invisible failure."""
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda *a, **k: {"final_response": "", "error": "provider unavailable"},
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["status"] == "error"
+    assert payload["error"] == "provider unavailable"
+    assert "provider unavailable" in payload["text"]
+
+
 def test_returned_error_result_carries_error_surface(emits, turn_env):
     """A classified failure_reason rides the terminal frame AND the retained
     snapshot as a structured {layer, code, retryable} descriptor, so the

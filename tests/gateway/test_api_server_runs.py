@@ -27,6 +27,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.platforms.api_server_runs import terminal_run_status
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
 
@@ -34,6 +35,16 @@ from tools import approval_gateway_wait
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_terminal_run_status_marks_an_error_only_result_failed():
+    """``error`` is a failure carrier on its own (the codex app-server runtime reports a failed
+    turn as ``result["error"]`` text); the wire must not report ``completed`` next to it."""
+    status, fields = terminal_run_status({"final_response": "", "error": "provider unavailable"})
+    assert status == "failed" and fields["completed"] is False
+
+    status, fields = terminal_run_status({"final_response": "done", "completed": True})
+    assert status == "completed" and fields["completed"] is True
 
 
 @pytest.mark.parametrize(

@@ -35,6 +35,18 @@ def test_incomplete_run_with_text_exits_nonzero_and_reports_why(monkeypatch, tmp
     code, _ = _run(monkeypatch, tmp_path, "Provider returned 401.", failed)
     assert code == 2
 
+    # ``error`` is a failure carrier too (the codex app-server runtime reports a failed turn as
+    # ``result["error"]`` text): it must not exit 0 even when the flag fields are absent.
+    errored = {"final_response": "", "error": "provider unavailable"}
+    code, usage = _run(monkeypatch, tmp_path, "", errored)
+    assert code == 2  # a failure, not a completed-but-empty turn (1)
+    assert json.loads(usage.read_text(encoding="utf-8"))["failed"] is True
+
+    # The sharpest case: error text riding next to a non-empty reply used to exit 0.
+    errored_with_text = {"final_response": "Provider returned 401.", "error": "provider 401"}
+    code, _ = _run(monkeypatch, tmp_path, "Provider returned 401.", errored_with_text)
+    assert code == 2
+
 
 def test_completed_run_still_exits_zero(monkeypatch, tmp_path):
     code, _ = _run(monkeypatch, tmp_path, "Paris.", {"final_response": "Paris.", "completed": True, "failed": False})

@@ -43,11 +43,16 @@ def test_emitter_event_stream_is_valid_jsonl(capsys):
     assert all("timestamp" in e for e in events)
 
 
-def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=True):
-    """parser → cmd_chat → cli.main → quiet single-query path with a deterministic fake agent."""
+def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=True,
+                          argv=None, chat_result=None, resolves_tui=False):
+    """parser → cmd_chat → cli.main → single-query path with a deterministic fake agent/CLI."""
     import cli
     import hermes_cli.main as cli_entry
     from hermes_cli._parser import build_top_level_parser
+
+    class _Console:
+        def print(self, *_a, **_k):
+            pass
 
     class FakeAgent:
         model = "test-model"
@@ -63,6 +68,8 @@ def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=
             self.agent = None
             self._active_agent_route_signature = None
             self.tool_progress_mode = None
+            self._last_turn_result = None
+            self.console = _Console()
 
         def _claim_active_session(self, *_a, **_k):
             return True
@@ -77,8 +84,16 @@ def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=
             self.agent = FakeAgent()
             return True
 
+        def _show_security_advisories(self):
+            pass
+
+        def _print_exit_summary(self, **_k):
+            pass
+
         def chat(self, _query, images=None):
             print("human output")  # must never reach stdout under stream-json
+            self._last_turn_result = chat_result
+            return (chat_result or {}).get("final_response") or ""
 
     monkeypatch.setattr(cli, "HermesCLI", FakeCLI)
     monkeypatch.setattr(cli, "_finalize_single_query", lambda _cli: None)
@@ -86,7 +101,9 @@ def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=
     monkeypatch.setattr(cli, "_start_worktree_setup", lambda *_a, **_k: None)
     monkeypatch.setattr(cli.atexit, "register", lambda *_a, **_k: None)
     monkeypatch.setattr(signal, "signal", lambda *_a, **_k: None)
-    monkeypatch.setattr(cli_entry, "_resolve_use_tui", lambda _args: pytest.fail("TUI resolution consulted"))
+    monkeypatch.setattr(cli_entry, "_resolve_use_tui",
+                        (lambda _args: False) if resolves_tui
+                        else (lambda _args: pytest.fail("TUI resolution consulted")))
     monkeypatch.setattr(cli_entry, "_has_any_provider_configured", lambda: True)
     monkeypatch.setattr(cli_entry, "_start_chat_background_prefetch", lambda: None)
     monkeypatch.setattr(cli_entry, "_pin_kanban_board_env", lambda: None)
@@ -96,10 +113,12 @@ def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=
     monkeypatch.setattr("hermes_cli.quiet_single_query.continue_quiet_notify_completions", lambda *_a, **_k: None)
 
     parser, _, _ = build_top_level_parser()
-    args = parser.parse_args(["chat", "-q", "hello", "--format", "stream-json"])
+    args = parser.parse_args(argv or ["chat", "-q", "hello", "--format", "stream-json"])
     with pytest.raises(SystemExit) as exc_info:
         cli_entry.cmd_chat(args)
-    return exc_info.value.code, _events(capsys)
+    if args.output_format == "stream-json":
+        return exc_info.value.code, _events(capsys)
+    return exc_info.value.code, capsys.readouterr()
 
 
 def _ok_turn(agent):
@@ -109,6 +128,41 @@ def _ok_turn(agent):
     return {"final_response": "hello", "failed": False}
 
 
+def _error_only_turn(_agent):
+    """A turn that carries an ``error`` without a ``failed`` flag: the shape runtimes like the
+    codex app-server report (``result["error"]`` text) before flag normalization."""
+    return {"final_response": "", "error": "provider unavailable"}
+
+
+def test_emit_result_never_reports_success_for_an_errored_result(capsys):
+    """The terminal envelope must not carry ``error`` while reporting ``exit_code: 0``;
+    CI consumers key success off that field."""
+    emitter = StreamJsonEmitter(model="m", session_id="s-err")
+    code = emitter.emit_result({"final_response": "", "error": "provider unavailable"})
+    events = _events(capsys)
+    assert code != 0
+    assert events[-1]["exit_code"] == code and events[-1]["exit_code"] != 0
+    assert events[-1]["error"] == "provider unavailable"
+
+
+def test_emit_result_explicit_exit_code_wins(capsys):
+    """An explicit nonzero exit code is never folded down by the error heuristic."""
+    emitter = StreamJsonEmitter(model="m", session_id="s-1")
+    assert emitter.emit_result({"error": "boom"}, exit_code=5) == 5
+    emitter2 = StreamJsonEmitter(model="m", session_id="s-2")
+    assert emitter2.emit_result({"final_response": "ok"}) == 0
+    results = [e for e in _events(capsys) if e["type"] == "result"]
+    assert [e["exit_code"] for e in results] == [5, 0]
+
+
+def test_single_query_exit_code_treats_a_bare_error_as_failure():
+    """``_single_query_exit_code`` feeds the plain ``-q``/``-Q`` process exit and the turn
+    report's exit_code field; an ``error``-carrying result is not a clean completion."""
+    from cli import _single_query_exit_code
+    assert _single_query_exit_code({"final_response": "", "error": "provider unavailable"}) == 1
+    assert _single_query_exit_code({"final_response": "ok", "completed": True}) == 0
+
+
 def _interrupted_turn(_agent):
     raise KeyboardInterrupt
 
@@ -116,6 +170,7 @@ def _interrupted_turn(_agent):
 @pytest.mark.parametrize("turn, credentials_ok, exit_code, types", [
     (_ok_turn, True, 0, ["system", "text", "tool_use", "tool_result", "result"]),
     (_interrupted_turn, True, 130, ["system", "result"]),
+    (_error_only_turn, True, 1, ["system", "result"]),  # error without a failed flag still fails
     (_ok_turn, False, 1, ["system", "result"]),  # credentials fail before the agent exists
 ])
 def test_chat_stream_json_implies_quiet_and_closes_with_result(monkeypatch, capsys, turn, credentials_ok, exit_code,
@@ -125,6 +180,27 @@ def test_chat_stream_json_implies_quiet_and_closes_with_result(monkeypatch, caps
     assert code == exit_code
     assert [e["type"] for e in events] == types
     assert events[-1]["exit_code"] == exit_code and events[-1]["session_id"] == "session-123"
+
+
+def test_chat_plain_single_query_exits_nonzero_on_an_errored_turn(monkeypatch, capsys):
+    """The plain ``-q`` path maps ``_last_turn_result`` through ``_single_query_exit_code``;
+    a turn carrying ``error`` must not exit 0 (scripts and the Kanban dispatcher read it)."""
+    code, _ = _run_stream_json_chat(
+        monkeypatch, capsys, _ok_turn, argv=["chat", "-q", "hello"],
+        chat_result={"final_response": "", "error": "provider unavailable"}, resolves_tui=True,
+    )
+    assert code == 1
+
+
+def test_chat_quiet_single_query_surfaces_an_errored_turn_on_stderr(monkeypatch, capsys):
+    """``-Q`` (no emitter): an ``error``-carrying result with no reply exits nonzero AND prints the
+    error on stderr; without the surfacing the failure would be invisible outside the exit code."""
+    code, captured = _run_stream_json_chat(
+        monkeypatch, capsys, _error_only_turn, argv=["chat", "-q", "hello", "-Q"],
+        resolves_tui=True,
+    )
+    assert code == 1
+    assert "provider unavailable" in captured.err
 
 
 @pytest.mark.parametrize("argv, message", [

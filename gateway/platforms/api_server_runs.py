@@ -137,7 +137,7 @@ def terminal_run_status(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     interrupted = bool(result.get("interrupted"))
     finished = (
         not interrupted and not result.get("failed") and not result.get("partial")
-        and result.get("completed") is not False
+        and result.get("completed") is not False and not result.get("error")
     )
     status = "cancelled" if interrupted else "completed" if finished else "failed"
     fields: Dict[str, Any] = {

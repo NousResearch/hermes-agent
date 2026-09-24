@@ -258,13 +258,35 @@ def parallel_search_sources(
     return all_results, source_counts, timed_out_ids
 
 
+def _rerank_setting() -> dict:
+    """``skills.hub_relevance_rerank`` mapping from config.yaml ({} when absent/malformed)."""
+    try:
+        from agent.skill_utils import _load_raw_config
+        section = _load_raw_config().get("skills", {}).get("hub_relevance_rerank", {})
+    except Exception:
+        return {}
+    return section if isinstance(section, dict) else {}
+
+
 def unified_search(query: str, sources: List[SkillSource],
-                   source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
-    """Search all sources (in parallel) and merge results."""
+                   source_filter: str = "all", limit: int = 10,
+                   relevance_scorer: Optional[Any] = None) -> List[SkillMeta]:
+    """Search all sources (in parallel) and merge results.
+
+    When ``skills.hub_relevance_rerank.enabled`` is true in config.yaml, the
+    trust-sorted merge is re-ordered by query relevance (Jev Score; opt-in,
+    disabled by default) before the limit cut. ``relevance_scorer`` injects
+    the ``(query, candidates) -> {identifier: score}`` callable (tests/CI use
+    a stub so no network is needed); any scorer failure fails open to trust
+    order.
+    """
     all_results, _, _ = parallel_search_sources(sources, query=query, source_filter=source_filter, overall_timeout=30)
     deduped = _dedupe_by_trust(all_results)
     # Stable-sort by trust before truncating so the limit cut never drops a
     # builtin/official entry because a high-volume community source finished
     # first; insertion order is preserved within each rank.
     deduped.sort(key=lambda r: -TRUST_RANK.get(r.trust_level, 0))
+    if relevance_scorer is not None or _rerank_setting().get("enabled"):
+        from tools.skills_hub_rerank import rerank_by_relevance
+        deduped = rerank_by_relevance(query, deduped, scorer=relevance_scorer)
     return deduped[:limit]

@@ -28,7 +28,7 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
-read_raw_config = late("read_raw_config", "hermes_cli.config")
+require_readable_config_before_write = late("require_readable_config_before_write", "hermes_cli.config")
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -237,12 +237,12 @@ def _preset_dict(preset) -> dict:
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
+        from hermes_cli import config as config_mod
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
-        # load→mutate→save runs on a worker thread (sync-def endpoint); the
-        # desktop's debounced PUT /api/config autosave races it, so the whole
-        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
-        with config_write_scope(body.profile or profile):
+        # Serialize the full RMW with dashboard autosaves and with non-HTTP
+        # save_config callers, which only hold the config module's reentrant lock.
+        with config_write_scope(body.profile or profile), config_mod._CONFIG_LOCK:
             legacy_flat_update = not body.presets
             if not legacy_flat_update:
                 raw = {
@@ -266,7 +266,9 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             # ``merge_existing=True`` deep-merges dicts, which resurrects omitted preset names.
             # Keep unknown MoA keys and sibling sections by rebuilding only the MoA section on
             # the raw document, while treating the submitted named map as authoritative.
-            raw_cfg = read_raw_config()
+            # Strict read: the merge below builds a new dict and would discard the
+            # failed-read marker, allowing a transient fallback to replace the file.
+            raw_cfg = require_readable_config_before_write()
             existing_moa = raw_cfg.get("moa")
             if isinstance(existing_moa, dict) and "privacy_filter" in existing_moa:
                 # ``privacy_filter`` is emitted by the normalizer but is not declared by
@@ -292,7 +294,6 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     existing_active = existing_moa.get("active_preset")
                     if isinstance(existing_active, str) and existing_active in existing_presets:
                         normalized["active_preset"] = existing_active
-            from hermes_cli import config as config_mod
             updated = config_mod._merge_partial_save(raw_cfg, {"moa": normalized})
             if not legacy_flat_update:
                 # ``_merge_partial_save`` retains undeclared metadata on surviving presets;

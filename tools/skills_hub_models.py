@@ -55,7 +55,9 @@ def _skill_meta_to_dict(meta: SkillMeta) -> dict:
 def _cached_metas(key: str) -> Optional[List[SkillMeta]]:
     """SkillMeta list from the shared index cache, or None on miss/expiry."""
     cached = hub()._read_index_cache(key)
-    return None if cached is None else [SkillMeta(**item) for item in cached]
+    if not isinstance(cached, list) or not all(isinstance(item, dict) for item in cached):
+        return None
+    return [SkillMeta(**item) for item in cached]
 
 
 def _cache_metas(key: str, metas: List[SkillMeta]) -> None:

@@ -323,7 +323,8 @@ class LobeHubSource(SkillSource):
         return self._agent_meta(agent, agent_id, agent.get("meta", agent).get("description", "")) if agent else None
 
     def _fetch_index(self) -> Optional[Any]:
-        return _memo_json("lobehub_index", lambda: _get_json(self.INDEX_URL, timeout=30))
+        return _memo_json("lobehub_index", lambda: _get_json(self.INDEX_URL, timeout=30),
+                          valid=lambda c: isinstance(c, (dict, list)))
 
     def _fetch_agent(self, agent_id: str) -> Optional[dict]:
         return _get_json(f"https://chat-agents.lobehub.com/{agent_id}.json", timeout=15)
@@ -365,7 +366,7 @@ class BrowseShSource(SkillSource):
             skills = data.get("skills", []) if isinstance(data, dict) else []
             return skills if isinstance(skills, list) else None
 
-        return _memo_json(self._CACHE_KEY, compute) or []
+        return _memo_json(self._CACHE_KEY, compute, valid=lambda c: isinstance(c, list)) or []
 
     def _item_to_meta(self, item: Dict) -> Optional[SkillMeta]:
         slug = item.get("slug", "")

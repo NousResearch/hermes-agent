@@ -944,9 +944,10 @@ class GatewayShutdownMixin:
                 with _log_suppressed(logging.DEBUG, "Cron interrupt notice to %s:%s raised: %s", platform.value, chat_id):
                     metadata = self._thread_metadata_for_target(platform, chat_id, thread_id, adapter=adapter)
                     async def send_notice():
+                        from gateway.run import _interim_metadata  # races live turns too (#98432)
                         if await self._send_notice_logged(
                             adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
-                            "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
+                            "Cron interrupt notice to %s:%s raised: %s", metadata=_interim_metadata(metadata),
                         ):
                             notified.add(dedup_key)
                     from gateway.warning_notifications import present_notification

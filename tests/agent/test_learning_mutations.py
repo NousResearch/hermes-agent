@@ -65,6 +65,15 @@ def test_edit_memory_refuses_an_entry_over_the_memory_tools_limit(home):
     assert (home / "memories" / "USER.md").read_text(encoding="utf-8") == "user profile note"
     assert MemoryStore().remove("user", "user profile note")["success"]
 
+    # The cap gates what an edit adds, never a delete: pruning is the way out of a file that is
+    # already over its total (lowered memory_char_limit, well-formed hand edits).
+    from tools.memory_tool import ENTRY_DELIMITER
+
+    path = home / "memories" / "USER.md"
+    path.write_text(ENTRY_DELIMITER.join(f"entry {i} " + "y" * 500 for i in range(4)), encoding="utf-8")
+    assert lm.delete_node("memory:profile:2")["ok"]
+    assert len(MemoryStore._read_file(path)) == 3
+
 
 
 

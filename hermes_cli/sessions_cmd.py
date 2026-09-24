@@ -1021,9 +1021,9 @@ def _print_empty_store(action: str, args) -> None:
         print("No sessions found.")
 
 
-# VACUUM, the FTS-layout rebuild and bulk deletes rewrite the store; underneath a live gateway/Desktop/cron
-# writer that is the second-writer class behind the retired-WAL refusal (#110054). `--force` is the override.
-_HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
+# VACUUM and the FTS-layout rebuild require a quiet store. Ordinary prune uses a normal delete transaction,
+# so it can run beside a live gateway/Desktop/cron writer (#110054, #121330). `--force` is the override.
+_HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage"})
 
 
 def cmd_sessions(args, sessions_parser=None):

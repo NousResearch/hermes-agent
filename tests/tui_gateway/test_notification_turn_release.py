@@ -17,8 +17,26 @@ from types import SimpleNamespace
 import pytest
 
 from tui_gateway import server
+from tools.process_registry import ProcessRegistry, ProcessSession
 
 DELEGATION = {"type": "async_delegation", "delegation_id": "deleg-1", "session_key": "stored"}
+
+
+def test_exited_process_heartbeat_cannot_claim_desktop_turn(monkeypatch):
+    registry = ProcessRegistry()
+    process = ProcessSession(id="proc_stopped", command="dev server", started_at=10.0, exited=True)
+    registry._finished[process.id] = process
+    event = {"type": "heartbeat", "session_id": process.id, "started_at": 10.0,
+             "seq": 4, "command": process.command}
+    session = {"history_lock": threading.RLock(), "running": False, "history": []}
+    emitted, dispatched = set(), []
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_notif_dispatch_event", lambda *args: dispatched.append(args))
+
+    assert server._notif_handle_event("sid", session, event, emitted, registry,
+                                      lambda evt: "still running", None, owned=True)
+    assert not emitted and not dispatched
+    assert session["running"] is False
 
 
 def _claimed_session() -> dict:

@@ -8766,9 +8766,10 @@ const cloudAgentAuth = createCloudAgentAuth({
 // there is no usable portal session. Only this portal result feeds the agent
 // registry that decides which URLs may receive exchanged agent bearers.
 async function discoverCloudAgents() {
+  const orgAtStart = cloudAgentRegistry.orgId()
   const result = await discoverCloudAgentsRaw()
 
-  cloudAgentAuth.rememberDiscovered(result.agents)
+  cloudAgentAuth.rememberDiscovered(result.agents, orgAtStart)
 
   return result
 }

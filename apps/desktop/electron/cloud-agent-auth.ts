@@ -188,8 +188,22 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
   let rediscovery: null | Promise<void> = null
   let lastRediscoveryAt = Number.NEGATIVE_INFINITY
 
-  /** Record portal discovery rows; a malformed row is skipped on its own. */
-  function rememberDiscovered(agents: Array<{ id: string; dashboardUrl: null | string }>): void {
+  /**
+   * Record portal discovery rows; a malformed row is skipped on its own.
+   * `orgAtStart` is the registry org when the discovery was STARTED: if a
+   * sign-in to another org landed meanwhile, the rows belong to the old org
+   * and are dropped rather than filed under the new one.
+   */
+  function rememberDiscovered(
+    agents: Array<{ id: string; dashboardUrl: null | string }>,
+    orgAtStart: null | string = deps.registry.orgId()
+  ): void {
+    if (deps.registry.orgId() !== orgAtStart) {
+      log('[cloud] dropped a discovery result that started under a different org')
+
+      return
+    }
+
     for (const agent of agents) {
       if (!agent?.id || !agent.dashboardUrl) {
         continue
@@ -222,7 +236,9 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     }
 
     if (deps.discoverAgents) {
-      rememberDiscovered(await deps.discoverAgents())
+      const orgAtStart = deps.registry.orgId()
+
+      rememberDiscovered(await deps.discoverAgents(), orgAtStart)
       const discovered = deps.registry.agentIdFor(baseUrl)
 
       if (discovered) {
@@ -256,8 +272,10 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
       const discoverAgents = deps.discoverAgents
 
       rediscovery = (async () => {
+        const orgAtStart = deps.registry.orgId()
+
         try {
-          rememberDiscovered(await discoverAgents())
+          rememberDiscovered(await discoverAgents(), orgAtStart)
         } catch (error) {
           log(`[cloud] background agent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
         } finally {

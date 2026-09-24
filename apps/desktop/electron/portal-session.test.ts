@@ -74,6 +74,7 @@ function makeSession(opts: {
   store?: ReturnType<typeof makeStore>
   postJson?: any
   now?: number | (() => number)
+  monotonic?: () => number
   createServer?: any
   onSignedIn?: (orgId: null | string) => void
 }) {
@@ -92,6 +93,7 @@ function makeSession(opts: {
     createServer: opts.createServer,
     loginTimeoutMs: 5_000,
     nowSeconds: () => (typeof opts.now === 'function' ? opts.now() : (opts.now ?? 1_000)),
+    monotonicSeconds: opts.monotonic,
     onSignedIn: opts.onSignedIn
   })
 
@@ -557,4 +559,33 @@ test('N1: a 429 never triggers the forced portal refresh, and a missing Retry-Af
   now = 1_059
   await expect(session.exchangeForAgent('agt_1')).rejects.toMatchObject({ statusCode: 429 })
   expect(grants).toHaveLength(1)
+})
+
+test('N1: the backoff runs on a monotonic clock, so a wall-clock rollback cannot stretch it', async () => {
+  let wall = 1_000
+  let mono = 50
+  const exchanges: string[] = []
+
+  const { session } = makeSession({
+    store: makeStore({ [PORTAL]: fresh() }),
+    now: () => wall,
+    monotonic: () => mono,
+    postJson: async (_url: string, body: any) => {
+      exchanges.push(body.audience)
+
+      if (exchanges.length === 1) {
+        throw rateLimited('30')
+      }
+
+      return { access_token: 'AGENT-AT', expires_in: 900 }
+    }
+  })
+
+  await expect(session.exchangeForAgent('agt_1')).rejects.toMatchObject({ statusCode: 429 })
+
+  // The system clock jumps back an hour while 30 monotonic seconds pass.
+  wall = 1_000 - 3_600
+  mono = 80
+  await expect(session.exchangeForAgent('agt_1')).resolves.toMatchObject({ accessToken: 'AGENT-AT' })
+  expect(exchanges).toEqual(['agent:agt_1', 'agent:agt_1'])
 })

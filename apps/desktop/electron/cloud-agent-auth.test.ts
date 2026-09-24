@@ -584,6 +584,24 @@ test("N2: an org change also clears the old org's stored agent bearers", async (
   expect([...stored.keys()]).toEqual(['https://gw.example.test'])
 })
 
+test('N2: a discovery that started under org A and lands after a sign-in to org B is dropped', async () => {
+  let release: (rows: any[]) => void = () => undefined
+
+  const { auth, registry } = makeAuth({
+    discover: () => new Promise(resolve => (release = resolve))
+  })
+
+  auth.adoptSessionOrg('org_a')
+  const pending = auth.rediscoverAgentId(AGENT_URL)
+  await Promise.resolve()
+
+  auth.adoptSessionOrg('org_b')
+  release([{ id: 'agt_a', dashboardUrl: AGENT_URL }])
+
+  await expect(pending).resolves.toBeNull()
+  expect(registry.urls()).toEqual([])
+})
+
 // --- N3: throttled background rediscovery ---
 
 test('N3: rediscoverAgentId shares one discovery between concurrent callers and throttles repeats', async () => {

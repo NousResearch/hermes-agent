@@ -67,6 +67,12 @@ export interface PortalSessionDependencies {
   createServer?: typeof http.createServer
   loginTimeoutMs?: number
   nowSeconds?: () => number
+  /**
+   * Monotonic seconds for the §5 rate-limit backoff, so a wall-clock
+   * rollback cannot stretch it. Defaults to `nowSeconds` when that is
+   * injected (tests), else `performance.now()`.
+   */
+  monotonicSeconds?: () => number
   rememberLog?: (message: string) => void
   /**
    * Every successful sign-in reports the org the new desktop token is pinned
@@ -95,6 +101,7 @@ function isRefreshRejection(error: unknown): boolean {
 
 export function createPortalSession(deps: PortalSessionDependencies) {
   const nowSeconds = () => deps.nowSeconds?.() ?? Math.floor(Date.now() / 1_000)
+  const monotonicSeconds = deps.monotonicSeconds ?? (deps.nowSeconds ? nowSeconds : () => performance.now() / 1_000)
   const portal = () => deps.resolvePortalBaseUrl()
   const log = deps.rememberLog ?? (() => undefined)
 
@@ -227,7 +234,7 @@ export function createPortalSession(deps: PortalSessionDependencies) {
   }
 
   // §5 is rate limited per desktop session: after a 429 no exchange (for any
-  // agent) is sent before this time (epoch seconds).
+  // agent) is sent before this time (monotonic seconds).
   let exchangeNotBefore = 0
 
   /**
@@ -239,7 +246,7 @@ export function createPortalSession(deps: PortalSessionDependencies) {
    * Never loops.
    */
   async function exchangeForAgent(agentId: string): Promise<NativeTokenSet> {
-    const backoff = exchangeNotBefore - nowSeconds()
+    const backoff = Math.ceil(exchangeNotBefore - monotonicSeconds())
 
     if (backoff > 0) {
       throw cloudExchangeRateLimitedError(backoff)
@@ -261,7 +268,7 @@ export function createPortalSession(deps: PortalSessionDependencies) {
         if (isPortalRateLimited(error)) {
           const wait = retryAfterSeconds(error, nowSeconds() * 1_000)
 
-          exchangeNotBefore = nowSeconds() + wait
+          exchangeNotBefore = monotonicSeconds() + wait
           log(`[cloud] Hermes Cloud token exchange rate limited; backing off ${wait}s`)
 
           throw cloudExchangeRateLimitedError(wait, error)

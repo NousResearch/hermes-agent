@@ -145,6 +145,9 @@ class MCPServerRunMixin:
                     # Clear the rapid-drop budget (#62212).
                     self._mark_session_proven()
         finally:
+            # Retire the pointer before asynchronous waiter cleanup can suspend;
+            # a late tools/list_changed must not start on the closing transport.
+            self.session = None
             await self._cancel_waiters(*waiters)
         if self._shutdown_event.is_set():
             self._fail_inflight_calls("shutdown")
@@ -527,7 +530,7 @@ class MCPServerRunMixin:
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
-        self._session_generation += 1
+        self.session = None
         self._shutdown_event.set()
         # Also set reconnect: closes any race where _wait_for_lifecycle_event misses the
         # shutdown flag after returning "reconnect".

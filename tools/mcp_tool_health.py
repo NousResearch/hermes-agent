@@ -56,11 +56,10 @@ class MCPServerHealthMixin:
     def _mark_stdio_recycled(self, reason: str) -> None:
         """Mark a stdio session dormant before its transport finishes closing."""
         self._recycled_reason = reason
-        self._session_generation += 1
         self.session = None
 
-    def _refresh_generation_stale(self, generation: int, session) -> bool:
-        return generation != self._session_generation or session is not self.session
+    def _refresh_session_stale(self, session) -> bool:
+        return session is not self.session
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
         """Schedule a background tool refresh (failures logged) and keep it strongly referenced."""
@@ -145,7 +144,6 @@ class MCPServerHealthMixin:
                 # (#109824). Skipping is correct — the reconnect's own discovery re-lists tools
                 # and the next tools/list_changed re-arms this refresh against the live session.
                 session = self.session
-                generation = self._session_generation
                 if session is None:
                     logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
                     return
@@ -154,11 +152,11 @@ class MCPServerHealthMixin:
                 try:
                     new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
                 except Exception as exc:
-                    if _is_session_expired_error(exc) and self._refresh_generation_stale(generation, session):
+                    if _is_session_expired_error(exc) and self._refresh_session_stale(session):
                         logger.debug("MCP server '%s': skipping refresh from a closing session", self.name)
                         return
                     raise
-            if self._refresh_generation_stale(generation, session):
+            if self._refresh_session_stale(session):
                 logger.debug("MCP server '%s': discarding refresh from a superseded session", self.name)
                 return
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call

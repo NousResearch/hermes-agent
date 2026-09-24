@@ -196,9 +196,15 @@ class TestRefreshTools:
             server._shutdown_event.set()
             # The run loop returns before ClientSession.__aexit__ clears the pointer.
             assert await asyncio.wait_for(serving, 2) == "shutdown"
-            assert server.session is session
+            # Session withdrawal must happen before transport __aexit__; otherwise
+            # a refresh arriving *after* this return reuses the dying pointer.
+            assert server.session is None
             finish.set()
             await task
+            assert "dynamic tool refresh failed" not in caplog.text
+            caplog.clear()
+            late = server._schedule_tools_refresh()
+            await late
         assert "dynamic tool refresh failed" not in caplog.text
         assert server._registered_tool_names == ["mcp__retiring_srv__old"]
         assert "mcp__retiring_srv__old" in mock_registry.get_all_tool_names()
@@ -212,9 +218,45 @@ class TestRefreshTools:
             await live._schedule_tools_refresh()
         assert "dynamic tool refresh failed" in caplog.text
 
+        # Cancellation cleanup can suspend before _serve_session's finally runs.
+        waiting = MCPServerTask("waiting_srv")
+        waiting._config = config
+        entered, resume = asyncio.Event(), asyncio.Event()
+
+        async def held_cleanup(*waiters):
+            entered.set()
+            await resume.wait()
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+
+        with patch.object(MCPServerTask, "_negotiate_session", new_callable=AsyncMock), \
+             patch.object(MCPServerTask, "_discover_tools", new_callable=AsyncMock), \
+             patch.object(MCPServerTask, "_cancel_waiters", side_effect=held_cleanup):
+            serving = asyncio.create_task(waiting._serve_session(session, 1))
+            await asyncio.wait_for(waiting._ready.wait(), 2)
+            waiting._shutdown_event.set()
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                assert waiting.session is None
+            finally:
+                resume.set()
+                await asyncio.wait_for(serving, 2)
+
+        # Failed discovery must withdraw its newly published pointer before
+        # unwinding the ClientSession context, not only bump a generation.
+        discovering = MCPServerTask("discovery_srv")
+        with patch.object(MCPServerTask, "_negotiate_session", new_callable=AsyncMock), \
+             patch.object(MCPServerTask, "_discover_tools", new_callable=AsyncMock,
+                          side_effect=RuntimeError("discovery failed")):
+            with pytest.raises(RuntimeError, match="discovery failed"):
+                await discovering._serve_session(session, 1)
+        assert discovering.session is None
+
     @pytest.mark.asyncio
-    async def test_superseded_refresh_keeps_replacement_surface(self, mock_registry):
-        """An old response must not overwrite tools published by a replacement session."""
+    async def test_superseded_refresh_is_discarded_before_later_refresh(self, mock_registry):
+        """An old response must not publish; a subsequent live refresh can publish."""
         server = MCPServerTask("swap_srv")
         started, finish = asyncio.Event(), asyncio.Event()
 
@@ -228,7 +270,8 @@ class TestRefreshTools:
         with patch("tools.registry.registry", mock_registry):
             task = asyncio.create_task(server._refresh_tools())
             await asyncio.wait_for(started.wait(), 2)
-            # Reconnect publishes a replacement while the previous RPC is still pending.
+            # Simulate pointer replacement; reconnect's authoritative registry
+            # publication is a separate concern (#111227).
             replacement = SimpleNamespace(list_tools=AsyncMock(
                 return_value=SimpleNamespace(tools=[_make_mcp_tool("replacement")])
             ))

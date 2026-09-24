@@ -117,11 +117,13 @@ class TestKeepaliveProbe:
             send_ping=AsyncMock(),
         )
 
+        session = task.session
         reason = await self._run_one_keepalive_cycle(task)
 
         assert reason == "shutdown"
-        task.session.send_ping.assert_awaited_once()
-        task.session.list_tools.assert_not_called()
+        assert task.session is None
+        session.send_ping.assert_awaited_once()
+        session.list_tools.assert_not_called()
 
 
     async def test_keepalive_uses_ping_legacy_fallback(self):
@@ -134,11 +136,13 @@ class TestKeepaliveProbe:
             send_ping=AsyncMock(),
         )
 
+        session = task.session
         reason = await self._run_one_keepalive_cycle(task)
 
         assert reason == "shutdown"
-        task.session.send_ping.assert_awaited_once()
-        task.session.list_tools.assert_not_called()
+        assert task.session is None
+        session.send_ping.assert_awaited_once()
+        session.list_tools.assert_not_called()
 
 
 class TestKeepaliveInterval:
@@ -151,11 +155,11 @@ class TestKeepaliveInterval:
         """Run two lifecycle cycles on a server with the *full* ``config``: the first
         ``asyncio.wait`` times out (no event fired) and the loop's clock is advanced by
         that timeout, the second is ended by shutdown.
-        Returns ``(task, [timeout_of_cycle_1, timeout_of_cycle_2])``."""
+        Returns ``(task, timeouts, retired_session)`` for post-exit RPC assertions."""
         task = MCPServerTask("test")
         task._config = config
         task._idle_timeout_seconds = idle_timeout
-        task.session = SimpleNamespace(send_ping=AsyncMock())
+        session = task.session = SimpleNamespace(send_ping=AsyncMock())
         timeouts = []
         real_wait = asyncio.wait
         elapsed = [0.0]
@@ -179,11 +183,11 @@ class TestKeepaliveInterval:
             assert await task._wait_for_lifecycle_event() == "shutdown"
         finally:
             mcp_mod.asyncio.wait, run_mod.time = orig, orig_time
-        return task, timeouts
+        return task, timeouts, session
 
     async def _captured_interval(self, config):
         """Capture the first ``asyncio.wait`` timeout of a remote (HTTP) server."""
-        _task, timeouts = await self._run_lifecycle_cycles(
+        _task, timeouts, _session = await self._run_lifecycle_cycles(
             {"url": "https://example.test/mcp", **config})
         return timeouts[0]
 
@@ -192,7 +196,7 @@ class TestKeepaliveInterval:
         from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
         assert await self._captured_interval({}) == _DEFAULT_KEEPALIVE_INTERVAL
         # An explicit interval is honoured on stdio too (where there is no default).
-        _task, timeouts = await self._run_lifecycle_cycles(
+        _task, timeouts, _session = await self._run_lifecycle_cycles(
             {"command": "example-mcp", "keepalive_interval": 42})
         assert timeouts[0] == 42
 
@@ -212,17 +216,17 @@ class TestKeepaliveInterval:
         once proven, the loop waits without any timeout. An earlier wake caused by a shorter
         idle limit is NOT proof: the budget stays armed until the full interval has passed."""
         from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
-        task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"})
+        task, timeouts, session = await self._run_lifecycle_cycles({"command": "example-mcp"})
 
         assert timeouts[0] == pytest.approx(_DEFAULT_KEEPALIVE_INTERVAL, abs=0.05)
         assert timeouts[1] is None
         assert task._session_proven is True
-        task.session.send_ping.assert_not_called()
+        session.send_ping.assert_not_called()
 
-        task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"}, idle_timeout=60)
+        task, timeouts, session = await self._run_lifecycle_cycles({"command": "example-mcp"}, idle_timeout=60)
         assert timeouts[0] == pytest.approx(60, abs=0.05)  # woke for the idle deadline, not the proof
         assert task._session_proven is False
-        task.session.send_ping.assert_not_called()
+        session.send_ping.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stdio_recycle_wakes_after_active_rpc(self):

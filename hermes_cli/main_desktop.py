@@ -652,7 +652,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
     me = os.getpid()
     victims = []
     try:
-        proc_iter = psutil.process_iter(["pid", "exe"])
+        proc_iter = psutil.process_iter(["pid", "ppid", "exe"])
     except Exception:
         return []
     for proc in proc_iter:
@@ -668,8 +668,19 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
         if release_dir in exe_path.parents:
             victims.append(proc)
 
+    # Signal only the ROOTS of the matched tree — the browser processes — and let each
+    # reap its own renderers/GPU/utility children. Signalling every Chromium process in
+    # `process_iter` order instead races the browser's own teardown against its children
+    # dying underneath it, and the browser answers with a hard trap
+    # (`std::__throw_out_of_range("string_view::substr")`, which a -fno-exceptions build
+    # turns into int3 → SIGTRAP → core dump) instead of exiting 0. Reproduced on
+    # Linux/Electron 40: flat terminate dumps core, root-only terminate brings the whole
+    # tree down cleanly.
+    victim_pids = {proc.pid for proc in victims}
+    roots = [proc for proc in victims if proc.info.get("ppid") not in victim_pids]
+
     stopped: list[int] = []
-    for proc in victims:
+    for proc in roots:
         try:
             proc.terminate()
             stopped.append(int(proc.pid))
@@ -679,6 +690,15 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
         # Wait for the handles (and thus the file locks) to actually release.
         with contextlib.suppress(Exception):
             _, alive = psutil.wait_procs(victims, timeout=5)
+            # Children a dying browser failed to reap: now safe to signal directly,
+            # nothing is racing their teardown any more.
+            for proc in alive:
+                try:
+                    proc.terminate()
+                    stopped.append(int(proc.pid))
+                except Exception:
+                    continue
+            _, alive = psutil.wait_procs(alive, timeout=5)
             killed = []
             for proc in alive:
                 try:

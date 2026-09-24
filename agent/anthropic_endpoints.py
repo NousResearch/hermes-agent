@@ -13,6 +13,13 @@ from urllib.parse import urlparse
 from utils import base_url_host_matches, base_url_hostname
 
 _MINIMAX_ANTHROPIC_PREFIXES = ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
+_DATABRICKS_WORKSPACE_HOSTS = (
+    "cloud.databricks.com",
+    "azuredatabricks.net",
+    "gcp.databricks.com",
+    "cloud.databricks.us",
+    "cloud.databricks.mil",
+)
 
 
 def _normalize_base_url_text(base_url) -> str:
@@ -120,6 +127,11 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
     return bool(override_host) and base_url_hostname(base_url or "") == override_host
 
 
+def _is_databricks_workspace_endpoint(base_url: str | None) -> bool:
+    """Databricks workspace hosts supported by AI Gateway."""
+    return any(base_url_host_matches(base_url or "", host) for host in _DATABRICKS_WORKSPACE_HOSTS)
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
     Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use
@@ -131,6 +143,8 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")
         or base_url_host_matches(normalized, "api.commandcode.ai")
+        # Databricks AI Gateway rejects x-api-key and requires bearer auth.
+        or _is_databricks_workspace_endpoint(normalized)
     )
 
 

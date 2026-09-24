@@ -538,7 +538,10 @@ test('no-mux open() does not classify a signal death with empty stderr as unreac
   const spawnFn = scriptedSpawn([{ signal: 'SIGTERM', stderr: '' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
 
-  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGTERM'))
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGTERM')
+  )
 })
 
 test('mux open() does not classify a signal-killed master with empty stderr as unreachable', async () => {
@@ -549,27 +552,38 @@ test('mux open() does not classify a signal-killed master with empty stderr as u
 
     return { signal: 'SIGHUP', stderr: '' }
   })
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
-  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGHUP'))
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGHUP')
+  )
 })
 
 test('exec() does not classify a signal death with empty stderr as unreachable', async () => {
   const spawnFn = scriptedSpawn([{ signal: 'SIGKILL', stderr: '' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
-  await assert.rejects(() => conn.exec('uname -s'), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGKILL'))
+  await assert.rejects(
+    () => conn.exec('uname -s'),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGKILL')
+  )
 })
 
 test('forward() does not classify a signal death with empty stderr as unreachable', async () => {
   const spawnFn = scriptedSpawn([{ signal: 'SIGPIPE', stderr: '' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
-  await assert.rejects(() => conn.forward(5000, 6000), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGPIPE'))
+  await assert.rejects(
+    () => conn.forward(5000, 6000),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGPIPE')
+  )
 })
 
 test('close() does not report a signal-killed -O exit with empty stderr as unreachable', async () => {
   const logs: string[] = []
+
   const spawnFn = scriptedSpawn(args => {
     if (args.includes('check')) {
       return { code: 255 }
@@ -581,6 +595,7 @@ test('close() does not report a signal-killed -O exit with empty stderr as unrea
 
     return { signal: 'SIGINT', stderr: '' }
   })
+
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
     { spawnFn, controlDir: '/tmp/d', rememberLog: line => logs.push(line) }
@@ -616,6 +631,7 @@ test('a signal death that already printed an unreachable ssh error stays unreach
       stderr: 'ssh: connect to host box port 22: Connection refused'
     }
   ])
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
 
   await assert.rejects(

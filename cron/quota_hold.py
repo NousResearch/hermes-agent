@@ -89,6 +89,27 @@ def _window_end(hold_seconds: float) -> datetime:
     return _seconds_after(_hermes_now(), float(hold_seconds) + HOLD_SLACK_SECONDS)
 
 
+def _recovery_worthwhile(
+    job: Dict[str, Any], schedule: Dict[str, Any], natural_next: Optional[datetime],
+    window_end: datetime, scheduled: bool,
+) -> bool:
+    """One off-lattice recovery fire, and only for a sparse schedule.
+
+    Bounded: a job already carrying ``quota_hold_until`` IS the recovery fire failing again, so
+    it waits for the natural schedule instead of re-parking at every hold boundary (the
+    probe-per-window cost the hold exists to prevent). Sparse: the natural occurrence must be at
+    least half a cadence period past the boundary — the same half-period rule as
+    ``cron.jobs._compute_grace_seconds`` — otherwise the recovery fire is a near-duplicate of the
+    natural one (hourly job, hold ending at :58, would fire :58 AND :00).
+    """
+    from cron.jobs import _schedule_cadence_seconds
+
+    if not scheduled or job.get(STATE_KEY) or natural_next is None:
+        return False
+    cadence = _schedule_cadence_seconds(schedule)
+    return bool(cadence) and (natural_next - window_end).total_seconds() >= cadence / 2
+
+
 def plan_hold(
     job: Dict[str, Any], hold_seconds: float, *, recover_consumed_fire: bool = False,
 ) -> bool:
@@ -115,7 +136,7 @@ def plan_hold(
         job.pop(SCHEDULE_EXPR_KEY, None)
     else:
         if not blocked:
-            if not recover_consumed_fire:
+            if not _recovery_worthwhile(job, schedule, natural_next, window_end, recover_consumed_fire):
                 clear_state(job)
                 return False
             parked = window_end.isoformat()

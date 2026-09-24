@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from hermes_cli.gitlock import (
     STALE_TMP_PACK_MIN_AGE_SECONDS,
+    TMP_PACK_GC_TIMEOUT_SECONDS,
     clear_stale_tmp_packs,
+    run_gc_after_tmp_pack_cleanup,
 )
 
 
@@ -98,6 +102,51 @@ def test_bare_repo_pack_dir_is_swept(tmp_path, monkeypatch):
 
 def test_no_git_dir_is_a_noop(tmp_path):
     assert clear_stale_tmp_packs(tmp_path) == []
+
+
+def test_cleanup_runs_bounded_auto_gc_when_it_removed_debris(tmp_path, monkeypatch):
+    """The update path gets maintenance only after this sweep made real progress."""
+    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+    run = MagicMock(return_value=MagicMock(returncode=0, stderr=""))
+    monkeypatch.setattr("hermes_cli.gitlock.subprocess.run", run)
+
+    assert run_gc_after_tmp_pack_cleanup(tmp_path, ["tmp_pack_old"])
+    assert run.call_args.args[0] == ["git", "gc", "--auto"]
+    assert run.call_args.kwargs["timeout"] == TMP_PACK_GC_TIMEOUT_SECONDS
+
+
+def test_cleanup_skips_gc_when_a_git_process_is_active(tmp_path, monkeypatch):
+    """A fetch that starts after the sweep must not race maintenance gc."""
+    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: True)
+    run = MagicMock()
+    monkeypatch.setattr("hermes_cli.gitlock.subprocess.run", run)
+
+    assert not run_gc_after_tmp_pack_cleanup(tmp_path, ["tmp_pack_old"])
+    run.assert_not_called()
+
+
+def test_cleanup_gc_failure_is_non_blocking(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.gitlock.subprocess.run",
+        MagicMock(return_value=MagicMock(returncode=1, stderr="lock busy")),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.gitlock"):
+        assert not run_gc_after_tmp_pack_cleanup(tmp_path, ["tmp_pack_old"])
+    assert "lock busy" in caplog.text
+
+
+def test_cleanup_gc_timeout_is_non_blocking(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.gitlock.subprocess.run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(["git", "gc", "--auto"], 300)),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.gitlock"):
+        assert not run_gc_after_tmp_pack_cleanup(tmp_path, ["tmp_pack_old"])
+    assert "timed out" in caplog.text
 
 
 

@@ -296,7 +296,13 @@ def _field_value(field: Dict[str, Any], data: Dict[str, Any]) -> Any:
         value = str(value)
         return value if value in allowed else str(_field_default(field))
     if field["kind"] == "boolean":
-        return _coerce_bool(value, default=_coerce_bool(_field_default(field), default=False))
+        default = _field_default(field)
+        try:
+            return _coerce_bool(value, default=default)
+        except ValueError:
+            # A hand-edited or migrated value that is not a recognized boolean reads as the
+            # field default, the same degrade the select branch applies to unknown options.
+            return default
     return str(value)
 
 
@@ -374,8 +380,13 @@ def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
         missing = row["missing"]
         provider = None if missing else _load_memory_provider(name)
         setup = _memory_provider_setup_info(name)
-        configured = False if missing else _memory_provider_is_configured(name, provider)
-        schema_fields = [] if missing else _normalize_memory_provider_schema(name, provider)
+        try:
+            configured = False if missing else _memory_provider_is_configured(name, provider)
+            schema_fields = [] if missing else _normalize_memory_provider_schema(name, provider)
+        except Exception:
+            # One provider's bad stored value or broken schema must not 500 the whole listing.
+            _log.exception("memory provider %s readiness evaluation failed", name)
+            configured, schema_fields = False, []
         providers.append({
             "name": name,
             "description": row["description"],

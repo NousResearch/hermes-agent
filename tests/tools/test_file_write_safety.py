@@ -479,6 +479,25 @@ class TestBomHandling:
         assert not res.success
         assert target.read_bytes() == precious
 
+    def test_move_refuses_a_destination_it_could_not_read_before_any_op_applies(
+            self, tmp_path: Path, monkeypatch):
+        # Validation must keep "the read failed" apart from "the path is absent" for a Move
+        # destination too, and the apply must re-check it before `mv` replaces whatever is there.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        dst = tmp_path / "dst.txt"
+        dst.write_bytes(b"PRECIOUS DESTINATION\n")
+        ops = ShellFileOperations(self._env_without("base64", "od")(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        res = ops.patch_v4a(
+            "*** Begin Patch\n"
+            f"*** Add File: {tmp_path / 'new-src.txt'}\n+SOURCE\n"
+            f"*** Move File: {tmp_path / 'new-src.txt'} -> {dst}\n"
+            "*** End Patch")
+        assert not res.success
+        assert dst.read_bytes() == b"PRECIOUS DESTINATION\n"
+        assert not (tmp_path / "new-src.txt").exists()
+
     def test_native_byte_exact_read_never_opens_a_non_regular_file(self, tmp_path: Path, monkeypatch):
         # The native fast path bypasses the backend timeout, so a blocking open there hangs the
         # thread with nothing to interrupt it. The shell path below has a timeout and is allowed

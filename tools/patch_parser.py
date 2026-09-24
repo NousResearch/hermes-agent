@@ -161,6 +161,20 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
         r = file_ops.read_file_raw(path)
         return (None, r.error) if r.error else (r.content, None)
 
+    def _occupied(path: str) -> Optional[str]:
+        """Why an Add target or Move destination is not free, or None. Only a read that reports
+        the path absent (``not_found``) frees it: a read that FAILED (no byte transport, a
+        directory, an unreadable file) says nothing about what is there, and taking it as free
+        writes over the file the check exists to protect."""
+        if path in pending_content:
+            return "exists"
+        if path in removed_paths:
+            return None
+        r = file_ops.read_file_raw(path)
+        if not r.error:
+            return "exists"
+        return None if getattr(r, "not_found", False) else f"could not confirm the path is free — {r.error}"
+
     def _validate_update(op: PatchOperation) -> None:
         nonlocal real_change_count
         simulated, read_err = _read(op.file_path)
@@ -219,8 +233,11 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             src_content, src_err = _read(op.file_path)
             if src_err:
                 errors.append(f"{op.file_path}: source file not found for move")
-            if not _read(op.new_path)[1]:
+            dst_taken = _occupied(op.new_path)
+            if dst_taken == "exists":
                 errors.append(f"{op.new_path}: destination already exists — move would overwrite")
+            elif dst_taken:
+                errors.append(f"{op.new_path}: {dst_taken}")
             elif not src_err:  # only a cleanly-validated move updates the overlay
                 pending_content[op.new_path] = src_content if src_content is not None else ""
                 _remove(op.file_path)
@@ -232,8 +249,11 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             # the MOVE destination guard. Overlay-aware: an Add after a Delete of the
             # same path in this patch stays legal, and the added content enters the
             # overlay so later hunks against it validate.
-            if not _read(op.file_path)[1]:
+            add_taken = _occupied(op.file_path)
+            if add_taken == "exists":
                 errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
+            elif add_taken:
+                errors.append(f"{op.file_path}: {add_taken}")
             else:
                 removed_paths.discard(op.file_path)
                 pending_content[op.file_path] = '\n'.join(
@@ -349,6 +369,13 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> ApplyResult:
 
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
+    """Move, re-checking the destination first: validation's answer is stale once earlier ops of
+    this patch have applied, and ``mv`` replaces whatever is there."""
+    dst = file_ops.read_file_raw(op.new_path)
+    if not dst.error:
+        return _fail(f"{op.new_path}: destination already exists — move would overwrite")
+    if not getattr(dst, "not_found", False):
+        return _fail(f"{op.new_path}: could not confirm the destination is free — {dst.error}")
     result = file_ops.move_file(op.file_path, op.new_path)
     return _fail(result.error) if result.error else (
         True, f"# Moved: {op.file_path} -> {op.new_path}", None, None)

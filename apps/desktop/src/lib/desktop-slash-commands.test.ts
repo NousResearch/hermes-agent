@@ -167,6 +167,25 @@ describe('desktop slash command curation', () => {
     expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
   })
 
+  it('fails closed when the live catalog declares an empty skills review slice', () => {
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: []
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    expect(desktopSubcommandAllowlist('/skills')).toEqual([])
+    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBe(
+      '/skills is not available in the desktop app — use the terminal for it.'
+    )
+  })
+
   it('preserves nested completions after an allowed skills review subcommand', () => {
     const values = [{ text: 'on' }, { text: 'off' }]
 

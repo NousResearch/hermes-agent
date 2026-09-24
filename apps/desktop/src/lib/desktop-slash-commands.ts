@@ -470,13 +470,11 @@ function specFromCatalog(command: string): DesktopCommandSpec | null {
 }
 
 function asSubcommandList(value: unknown): readonly string[] | undefined {
-  if (!Array.isArray(value) || value.length === 0) {
+  if (!Array.isArray(value)) {
     return undefined
   }
 
-  const subs = value.filter((sub): sub is string => typeof sub === 'string' && sub.trim() !== '')
-
-  return subs.length > 0 ? subs : undefined
+  return value.filter((sub): sub is string => typeof sub === 'string' && sub.trim() !== '')
 }
 
 function isAliasCommand(command: string): boolean {
@@ -557,6 +555,11 @@ export function desktopSubcommandUnavailableMessage(command: string, arg: string
   }
 
   const display = command.trim().startsWith('/') ? command.trim() : `/${command.trim()}`
+
+  if (allowed.length === 0) {
+    return `${display} is not available in the desktop app — use the terminal for it.`
+  }
+
   const first = arg.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
 
   if (!first) {
@@ -686,7 +689,7 @@ export function isDesktopSlashSuggestion(command: string): boolean {
   const spec = resolveDesktopCommand(normalized)
 
   if (spec) {
-    return spec.surface.kind !== 'unavailable' && !spec.hidden
+    return spec.surface.kind !== 'unavailable' && !spec.hidden && spec.desktopSubcommands?.length !== 0
   }
 
   // Skill / quick commands the backend provides.

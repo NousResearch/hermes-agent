@@ -77,6 +77,15 @@ class _NoFtsExistingTableConnection(sqlite3.Connection):
 class _NoTrigramCursor(sqlite3.Cursor):
     """Simulate a SQLite build with FTS5 but without the trigram tokenizer."""
 
+    def execute(self, sql, parameters=()):
+        # DDL reaches the cursor statement-by-statement (#121882 fix removed the
+        # executescript hop from _ensure_fts_schema), so the tokenizer refusal
+        # must hold on this path too — a real pre-3.34 build rejects the
+        # trigram CREATE VIRTUAL TABLE regardless of how it is executed.
+        if "tokenize='trigram'" in sql:
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().execute(sql, parameters)
+
     def executescript(self, sql_script):
         if "tokenize='trigram'" in sql_script:
             raise sqlite3.OperationalError("no such tokenizer: trigram")

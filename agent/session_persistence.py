@@ -352,8 +352,12 @@ class SessionPersistenceMixin:
         list used by the API call (#48677 is thus closed for every persist caller, not just this one).
         """
         from agent.agent_runtime_helpers import note_turn_persisted
+        from agent.message_sanitization import close_interrupted_tool_sequence
         with _persist_lock(self):
-            self._drop_trailing_empty_response_scaffolding(messages)
+            # Scaffolding is only on the tail when the turn leaves mid-recovery; close the tool tail it
+            # uncovers so the next user turn does not land as ``tool → user``.
+            if self._drop_trailing_empty_response_scaffolding(messages):
+                close_interrupted_tool_sequence(messages)
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
@@ -361,27 +365,19 @@ class SessionPersistenceMixin:
                 self._session_db.flush_token_counts()
             note_turn_persisted(self)
 
-    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Pop empty-response retry scaffolding from the tail, then (only if any was present) rewind the
-        tool-result / assistant(tool_calls) pair the failed iteration left hanging — otherwise the next user
-        turn lands as ``...tool, user`` and providers return empty content forever."""
+    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> bool:
+        """Pop empty-response retry scaffolding from the tail; True when any was present. The
+        assistant(tool_calls) / tool rows before it stay: they were saved before the tools ran, so
+        dropping them from the live history only makes the model repeat a side effect the durable
+        transcript already records."""
         def tail(*keys: str) -> bool:
             return bool(messages) and isinstance(messages[-1], dict) and any(messages[-1].get(k) for k in keys)
-
-        def tail_role(role: str) -> bool:
-            return bool(messages) and isinstance(messages[-1], dict) and messages[-1].get("role") == role
 
         dropped_scaffolding = False
         while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
             messages.pop()
             dropped_scaffolding = True
-        if not dropped_scaffolding:
-            return
-        while tail_role("tool"):
-            messages.pop()
-        # Providers reject a dangling assistant(tool_calls) whose results were just popped.
-        if tail_role("assistant") and tail("tool_calls"):
-            messages.pop()
+        return dropped_scaffolding
 
     _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")
 

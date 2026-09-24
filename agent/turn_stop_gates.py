@@ -91,6 +91,35 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+def _promise_stop_nudge(agent, final_response) -> tuple[Optional[str], bool]:
+    """``(nudge, budget_exhausted_on_promise)``. Text-only stops that announce an
+    immediate action instead of performing it get one bounded re-prompt; the second
+    element reports the refusal case where the reply still promises after the budget
+    is spent (the caller must not let it read as a clean completion). Policy lives
+    in ``agent.promise_stop``; imports stay lazy like the sibling gates (tests patch
+    it at the origin module)."""
+    try:
+        from agent.promise_stop import (
+            build_promise_stop_nudge, promise_stop_guard_enabled, tool_surface_can_act,
+        )
+
+        if not promise_stop_guard_enabled(agent) or not tool_surface_can_act(agent):
+            return None, False
+        attempts = getattr(agent, "_promise_stop_nudges", 0)
+        nudge = build_promise_stop_nudge(final_text=final_response, attempts=attempts)
+        if nudge:
+            return nudge, False
+        from agent.promise_stop import MAX_PROMISE_STOP_NUDGES, looks_like_immediate_action_promise
+
+        exhausted = attempts >= MAX_PROMISE_STOP_NUDGES and looks_like_immediate_action_promise(
+            final_response
+        )
+        return None, exhausted
+    except Exception:
+        logger.debug("promise stop-loop check failed", exc_info=True)
+        return None, False
+
+
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
@@ -106,11 +135,12 @@ def apply_stop_gates(
     agent: Any, final_msg: Dict[str, Any], *, final_response: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
+    api_call_count: int = 0,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
-    are user-role rows appended only after the assistant answer row, so role alternation
-    holds. Hook lookups are imported lazily from their origin modules (tests patch them
-    there)."""
+    """Run verify-on-stop → pre_verify hook → kanban stop guard → promise stop guard,
+    in that order. Nudges are user-role rows appended only after the assistant answer
+    row, so role alternation holds. Hook lookups are imported lazily from their origin
+    modules (tests patch them there)."""
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
@@ -168,6 +198,38 @@ def apply_stop_gates(
             "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+
+    _promise_nudge, _promise_exhausted = _promise_stop_nudge(agent, final_response)
+    if _promise_nudge:
+        from agent.promise_stop import MAX_PROMISE_STOP_NUDGES
+
+        agent._promise_stop_nudges = getattr(agent, "_promise_stop_nudges", 0) + 1
+        final_msg["finish_reason"] = "promise_unfulfilled"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history, "promise-stop interim flush failed"
+        )
+        verdict = _continue(_promise_nudge, "_promise_stop_synthetic")
+        logger.info(
+            "promise stop-loop nudge issued (attempt %d/%d) api_calls=%d",
+            agent._promise_stop_nudges, MAX_PROMISE_STOP_NUDGES, api_call_count,
+        )
+        agent._emit_diagnostic_status(
+            "↻ Model ended the turn promising an action with no tool call — "
+            f"re-prompting ({agent._promise_stop_nudges}/{MAX_PROMISE_STOP_NUDGES})"
+        )
+        return verdict
+    if _promise_exhausted:
+        from agent.promise_stop import MAX_PROMISE_STOP_NUDGES
+
+        # The bounded continuations were spent and the model still only promises:
+        # the candidate answer is delivered, but never as a clean completion.
+        agent._promise_stop_unfulfilled = True
+        logger.warning(
+            "promise stop-loop budget exhausted (%d/%d) — delivering the answer as "
+            "an explicit incomplete turn (api_calls=%d)",
+            getattr(agent, "_promise_stop_nudges", 0), MAX_PROMISE_STOP_NUDGES, api_call_count,
+        )
+
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

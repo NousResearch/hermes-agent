@@ -159,6 +159,14 @@ DEFAULT_CONFIG = {
         # exempt); (2) continue-intent extension of empty-response recovery re-prompts once when the
         # model says it will continue but takes no action. False disables both.
         "stall_guards": True,
+        # Premature-action-promise stop guard: when a text-only stop (finish_reason=stop, no tool
+        # calls) ENDS on an announced immediate action ("Running the full verification battery now:",
+        # "Fixing all of it now."), append a bounded synthetic re-prompt (max 2/turn) so the model
+        # executes instead of stopping; sibling of verify-on-stop / kanban stop guards. Questions,
+        # plans, quotes, completed reports, and background/delegated phrasing never trigger it.
+        # At exhaustion the turn is delivered as explicitly incomplete, never as a clean completion.
+        # False disables. Kill-switch: HERMES_PROMISE_STOP=0.
+        "promise_stop_guard": True,
         # "Finish the job" prompt block for all models: don't stop at a stub, never fabricate output
         # when the real path is blocked. ~80 cached tokens. False disables.
         "task_completion_guidance": True,

@@ -30,3 +30,11 @@ post_install: |
   On first connection Hermes opens a browser to authorize with
   WordPress.com (or run `hermes mcp login wordpress-com`). Approve access,
   then restart the session so tools load.
+
+  This connector is for WordPress.com only; it does not configure self-hosted
+  WordPress sites or cPanel/Softaculous installations. For self-hosted sites,
+  do not treat XML-RPC `wp.setOptions` success as proof that a static front
+  page was saved: verify the front page through a browser or host-supported
+  API. If a hardened shared host silently discards those options, use its
+  supported automation or a reviewed, site-owned deployment such as a
+  must-use plugin to update them.

@@ -956,6 +956,19 @@ class TestToolsConfigIncludeMode:
 
 class TestShippedCatalog:
 
+    def test_wordpress_com_manifest_distinguishes_self_hosted_xmlrpc(self):
+        """The catalog must not imply it configures self-hosted WordPress sites."""
+        manifest = (
+            Path(__file__).parents[2]
+            / "optional-mcps"
+            / "wordpress-com"
+            / "manifest.yaml"
+        ).read_text(encoding="utf-8").lower()
+
+        assert "wordpress.com only" in manifest
+        assert "xml-rpc" in manifest
+        assert "verify the front page" in manifest
+
     def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
         from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
 

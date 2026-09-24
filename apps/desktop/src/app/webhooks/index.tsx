@@ -238,7 +238,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         skills: skillsList.length ? skillsList : undefined
       })
 
-      notify({ kind: 'success', message: w.created })
+      notify({ kind: res.warning ? 'error' : 'success', message: res.warning || w.created })
       setCreated({ secret: res.secret, url: res.url })
       resetForm()
       void reload(true)
@@ -262,8 +262,8 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       )
 
       try {
-        await setWebhookEnabled(subName, nextEnabled)
-        notify({ kind: 'success', message: nextEnabled ? w.enabled(subName) : w.disabled(subName) })
+        const res = await setWebhookEnabled(subName, nextEnabled)
+        notify({ kind: res.warning ? 'error' : 'success', message: res.warning || (nextEnabled ? w.enabled(subName) : w.disabled(subName)) })
         void reload(true)
       } catch (err) {
         await reload(true)
@@ -282,8 +282,8 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     }
 
     try {
-      await deleteWebhook(pendingDelete)
-      notify({ kind: 'success', title: w.deleted, message: pendingDelete })
+      const res = await deleteWebhook(pendingDelete)
+      notify({ kind: res.warning ? 'error' : 'success', title: w.deleted, message: res.warning || pendingDelete })
       void reload(true)
     } catch (err) {
       notifyError(err, w.deleteFailed(pendingDelete))

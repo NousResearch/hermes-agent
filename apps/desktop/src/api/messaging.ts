@@ -175,8 +175,8 @@ export function createWebhook(body: WebhookCreatePayload): Promise<WebhookCreate
   })
 }
 
-export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+export function deleteWebhook(name: string): Promise<{ ok: boolean; durable: boolean; warning?: string }> {
+  return hermesApi<{ ok: boolean; durable: boolean; warning?: string }>({
     ...profileScoped(),
     path: `/api/webhooks/${encodeURIComponent(name)}`,
     method: 'DELETE'
@@ -186,8 +186,8 @@ export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
 export function setWebhookEnabled(
   name: string,
   enabled: boolean
-): Promise<{ enabled: boolean; name: string; ok: boolean }> {
-  return hermesApi<{ enabled: boolean; name: string; ok: boolean }>({
+): Promise<{ enabled: boolean; name: string; ok: boolean; durable: boolean; warning?: string }> {
+  return hermesApi<{ enabled: boolean; name: string; ok: boolean; durable: boolean; warning?: string }>({
     ...profileScoped(),
     path: `/api/webhooks/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',

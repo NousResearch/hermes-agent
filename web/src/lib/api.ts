@@ -1228,17 +1228,17 @@ export const api = {
   enableWebhooks: () =>
     fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
-    fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
+    fetchJSON<WebhookRoute & WebhookMutation & { secret: string }>("/api/webhooks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
   deleteWebhook: (name: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/webhooks/${encodeURIComponent(name)}`, {
+    fetchJSON<WebhookMutation & { ok: boolean }>(`/api/webhooks/${encodeURIComponent(name)}`, {
       method: "DELETE",
     }),
   setWebhookEnabled: (name: string, enabled: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+    fetchJSON<WebhookMutation & { ok: boolean; name: string; enabled: boolean }>(
       `/api/webhooks/${encodeURIComponent(name)}/enabled`,
       {
         method: "PUT",
@@ -1741,6 +1741,11 @@ export interface WebhooksResponse {
   enabled: boolean;
   base_url: string;
   subscriptions: WebhookRoute[];
+}
+
+export interface WebhookMutation {
+  durable: boolean;
+  warning?: string;
 }
 
 export interface WebhookEnableResponse {

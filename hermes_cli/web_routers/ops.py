@@ -229,13 +229,20 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
 
     def _save():
-        with wh._subscription_transaction() as subs:
-            existing = wh._existing_route(subs, name) if name in subs else {}
-            # A replacement must not silently re-enable a disabled route.
-            # Only PUT /api/webhooks/{name}/enabled changes that flag.
-            subs[name] = wh._replace_route(existing, route)
-            persisted = subs[name]
-        return _webhook_route_summary(name, persisted, wh._get_webhook_base_url())
+        try:
+            with wh._subscription_transaction() as subs:
+                existing = wh._existing_route(subs, name) if name in subs else {}
+                # Only PUT /api/webhooks/{name}/enabled changes that flag.
+                subs[name] = wh._replace_route(existing, route)
+                persisted = subs[name]
+        except wh.PublishedButNotDurable:
+            durable = False
+        else:
+            durable = True
+        return {**_webhook_route_summary(name, persisted, wh._get_webhook_base_url()),
+                "durable": durable,
+                **({"warning": "Route published, but directory sync failed; crash durability is unconfirmed."}
+                   if not durable else {})}
 
     summary = await _webhook_write(profile, _save)
     summary["secret"] = secret  # surfaced exactly once, on create
@@ -268,11 +275,17 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
 
     def _run():
         import hermes_cli.webhook as wh
-        with wh._subscription_transaction() as subs:
-            del subs[_webhook_subs_with(subs, name)]
+        try:
+            with wh._subscription_transaction() as subs:
+                del subs[_webhook_subs_with(subs, name)]
+        except wh.PublishedButNotDurable:
+            return False
+        return True
 
-    await _webhook_write(profile, _run)
-    return {"ok": True}
+    durable = await _webhook_write(profile, _run)
+    return {"ok": True, "durable": durable,
+            **({"warning": "Removal published, but directory sync failed; crash durability is unconfirmed."}
+               if not durable else {})}
 
 
 @router.put("/api/webhooks/{name}/enabled")
@@ -281,13 +294,18 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
     their events with 403; it hot-reloads the file, so no restart is needed."""
     def _run():
         import hermes_cli.webhook as wh
-        with wh._subscription_transaction() as subs:
-            key = _webhook_subs_with(subs, name)
-            subs[key]["enabled"] = bool(body.enabled)
-            return key
+        try:
+            with wh._subscription_transaction() as subs:
+                key = _webhook_subs_with(subs, name)
+                subs[key]["enabled"] = bool(body.enabled)
+        except wh.PublishedButNotDurable:
+            return key, False
+        return key, True
 
-    key = await _webhook_write(profile, _run)
-    return {"ok": True, "name": key, "enabled": bool(body.enabled)}
+    key, durable = await _webhook_write(profile, _run)
+    return {"ok": True, "name": key, "enabled": bool(body.enabled), "durable": durable,
+            **({"warning": "Change published, but directory sync failed; crash durability is unconfirmed."}
+               if not durable else {})}
 
 
 # --- Gateway lifecycle: spawn the real `hermes gateway <verb>` so behaviour

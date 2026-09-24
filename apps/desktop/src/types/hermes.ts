@@ -425,6 +425,8 @@ export interface WebhookCreatePayload {
 // Create echoes the route summary plus the one-time secret.
 export interface WebhookCreateResponse extends WebhookRoute {
   secret: string
+  durable: boolean
+  warning?: string
 }
 
 export interface WebhookEnableResponse {

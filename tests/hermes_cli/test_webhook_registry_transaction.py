@@ -1,6 +1,7 @@
 """Registry writers share the plugin's persistent flock, not merely an atomic rename."""
 
 import asyncio
+import errno
 import json
 import os
 import stat
@@ -23,7 +24,7 @@ def _cli(action, name, **kw):
                 prompt="", skills="", deliver="log", deliver_chat_id="", route_profile=None,
                 script="")
     args.update(kw)
-    wh.webhook_command(Namespace(**args))
+    return wh.webhook_command(Namespace(**args))
 
 
 @pytest.mark.linux_only
@@ -171,17 +172,67 @@ def test_dashboard_overwrite_reports_persisted_enabled_state(tmp_path, monkeypat
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync")
-def test_transaction_surfaces_directory_fsync_error(tmp_path, monkeypatch):
+def test_transaction_surfaces_directory_fsync_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
-    def fail_directory_sync(_path):
-        raise OSError("directory fsync failed")
-    monkeypatch.setattr(wh, "_sync_registry_directory", fail_directory_sync)
+    real_fsync = os.fsync
+    def fail_directory_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory fsync failed")
+        return real_fsync(fd)
+    monkeypatch.setattr(os, "fsync", fail_directory_sync)
+    result = asyncio.run(ops.create_webhook(WebhookCreate(name="route")))
+    assert result["durable"] is False and "warning" in result
+    assert result["secret"] == json.loads(wh._subscriptions_path().read_text())["route"]["secret"]
+    assert asyncio.run(ops.list_webhooks())["subscriptions"][0]["secret_set"] is True
+    updated = asyncio.run(ops.create_webhook(WebhookCreate(name="route", secret="rotated")))
+    assert updated["durable"] is False and updated["secret"] == "rotated"
+    assert json.loads(wh._subscriptions_path().read_text())["route"]["secret"] == "rotated"
+    assert _cli("subscribe", "cli", secret="cli-key") is None
+    output = capsys.readouterr().out
+    assert "Secret: cli-key" in output and "WARNING" in output
+    assert json.loads(wh._subscriptions_path().read_text())["cli"]["secret"] == "cli-key"
+    toggled = asyncio.run(ops.set_webhook_enabled("route", WebhookEnabledToggle(enabled=False)))
+    assert toggled["durable"] is False and toggled["enabled"] is False
+    assert json.loads(wh._subscriptions_path().read_text())["route"]["enabled"] is False
+    deleted = asyncio.run(ops.delete_webhook("route"))
+    assert deleted["durable"] is False and "route" not in json.loads(wh._subscriptions_path().read_text())
+    _cli("remove", "cli")
+    assert "WARNING" in capsys.readouterr().out
+    assert "cli" not in json.loads(wh._subscriptions_path().read_text())
+
+
+def test_webhook_main_forwards_mutation_exit_status(monkeypatch):
+    from hermes_cli import main
+    monkeypatch.setattr(wh, "webhook_command", lambda _args: 1)
+    assert main.cmd_webhook(Namespace()) == 1
+    monkeypatch.setattr(wh, "webhook_command", lambda _args: 0)
+    assert main.cmd_webhook(Namespace()) == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file fsync")
+def test_prepublication_fsync_eio_does_not_publish_or_disclose_secret(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    path.write_text('{"kept": {"secret": "old"}}')
+    before = path.read_bytes()
+    real_fsync = os.fsync
+    def fail_file_sync(fd):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "file fsync failed")
+        return real_fsync(fd)
+    monkeypatch.setattr(os, "fsync", fail_file_sync)
     with pytest.raises(HTTPException) as error:
-        asyncio.run(ops.create_webhook(WebhookCreate(name="route")))
+        asyncio.run(ops.create_webhook(WebhookCreate(name="new", secret="not-written")))
     assert error.value.status_code == 500
-    # The rename already occurred; this is a durability warning, not rollback.
-    assert "route" in json.loads(wh._subscriptions_path().read_text())
+    assert "not-written" not in str(error.value.detail)
+    assert wh.webhook_command(Namespace(name="cli", webhook_action="subscribe", secret="not-written",
+                                        events="", description="", prompt="", skills="", deliver="log",
+                                        deliver_chat_id="", route_profile=None, script="")) == 1
+    assert "not-written" not in capsys.readouterr().out
+    assert path.read_bytes() == before
+    assert "new" not in json.loads(path.read_text())
 
 
 @pytest.mark.parametrize("bad", ["{broken", "[]", '{"bad": "not-a-route"}'])

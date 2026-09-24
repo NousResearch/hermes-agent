@@ -22,6 +22,14 @@ from hermes_cli.config import cfg_get
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 _SUBSCRIPTIONS_FILE_MODE = 0o600
+
+
+class PublishedButNotDurable(OSError):
+    """The registry rename succeeded, but directory durability was not confirmed."""
+
+    published = True
+
+
 # Replacement routes keep plugin/custom metadata, but omitted optional fields
 # from the old command/form must not remain active after an update.
 _ROUTE_FORM_FIELDS = frozenset({
@@ -136,8 +144,13 @@ def _subscription_transaction():
             original = deepcopy(data)
             yield data
             if data != original:
-                atomic_json_write(path, data, mode=_SUBSCRIPTIONS_FILE_MODE, fsync_dir=True)
-                _sync_registry_directory(path)
+                atomic_json_write(path, data, mode=_SUBSCRIPTIONS_FILE_MODE)
+                try:
+                    _sync_registry_directory(path)
+                except OSError as exc:
+                    raise PublishedButNotDurable(
+                        f"Webhook registry was published, but directory sync failed: {exc}"
+                    ) from exc
         finally:
             if os.name == "nt":
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -214,7 +227,7 @@ def webhook_command(args):
         return
     handler = _ACTIONS.get(sub)
     if handler is not None:
-        handler(args)
+        return handler(args)
 
 
 def _cmd_subscribe(args):
@@ -280,6 +293,8 @@ def _cmd_subscribe(args):
         route["script"] = script
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
+    is_update = False
+    secret = ""
     try:
         with _subscription_transaction() as subs:
             is_update = name in subs
@@ -289,14 +304,20 @@ def _cmd_subscribe(args):
             route["profile"] = profile
             route["secret"] = secret
             subs[name] = _replace_route(existing, route)
+    except PublishedButNotDurable:
+        durable = False
     except (ValueError, OSError) as exc:
         print(f"Error: Could not update webhook subscriptions: {exc}")
-        return
+        return 1
+    else:
+        durable = True
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
     print(f"  Profile: {profile}")
     print(f"  Secret: {secret}")
+    if not durable:
+        print("  WARNING: Route was published, but directory sync failed; crash durability is unconfirmed.")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
@@ -360,9 +381,13 @@ def _cmd_remove(args):
                 return
             _existing_route(subs, name)
             del subs[name]
+    except PublishedButNotDurable:
+        print(f"  Removed webhook subscription: {name}")
+        print("  WARNING: Removal was published, but directory sync failed; crash durability is unconfirmed.")
+        return 0
     except (ValueError, OSError) as exc:
         print(f"Error: Could not update webhook subscriptions: {exc}")
-        return
+        return 1
     print(f"  Removed webhook subscription: {name}")
 
 

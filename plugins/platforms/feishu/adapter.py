@@ -1059,6 +1059,31 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
             overrides = getattr(_ws_isolation_state, "connect_kwargs", None) or {}
             for key, value in overrides.items():
                 kwargs.setdefault(key, value)
+            # lark_oapi's WS client passes proxy=None (see its _ws_connect_kwargs),
+            # and websockets 15 treats that as "no proxy" — it does NOT fall back
+            # to environment discovery. On hosts where feishu.cn is only reachable
+            # through a proxy this surfaces as "timed out during opening handshake",
+            # leaving the bot unable to receive any event. Mirror the qqbot adapter
+            # (gateway/platforms/qqbot/adapter.py) and inject the proxy explicitly
+            # when the caller left it unset. WSL setups need this.
+            if kwargs.get("proxy") is None:
+                _proxy = next(
+                    (
+                        v
+                        for v in (
+                            os.getenv("WSS_PROXY"),
+                            os.getenv("wss_proxy"),
+                            os.getenv("HTTPS_PROXY"),
+                            os.getenv("https_proxy"),
+                            os.getenv("ALL_PROXY"),
+                            os.getenv("all_proxy"),
+                        )
+                        if v
+                    ),
+                    None,
+                )
+                if _proxy:
+                    kwargs["proxy"] = _proxy
             return real_connect(*args, **kwargs)
 
         # Keep inspect.signature(websockets.connect) honest — the SDK probes it for ``proxy`` support.

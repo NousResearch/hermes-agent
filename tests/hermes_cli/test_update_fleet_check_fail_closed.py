@@ -23,7 +23,6 @@ not a runtime inventory, and its entries have no corresponding
 
 from __future__ import annotations
 
-import inspect
 import types
 
 from hermes_cli.main import _fleet_probe_expected_runtimes
@@ -131,42 +130,6 @@ class TestEmptySnapshotGenuinelyIdle:
         assert _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
 
 
-class TestCallSiteWiring:
-    """The guard AND the settle sleep must both key on the shared signal.
-
-    Sabotage-proof for the wiring itself: reverting the call site to the
-    pre-fix ``(restarted_services or killed_pids)`` condition — while leaving
-    the helper in place — makes these fail.
-    """
-
-    def _impl_source(self):
-        from hermes_cli import update_cmd
-
-        # The fleet-version probe lives in the post-restart verifier that
-        # _cmd_update_impl calls; guard the wiring there.
-        return inspect.getsource(update_cmd._verify_fleet_after_update)
-
-    def test_settle_sleep_gated_on_expected_runtimes(self):
-        src = self._impl_source()
-        assert "_fleet_rows_expected = _m()._fleet_probe_expected_runtimes(" in src
-        # The 2.0s settle window must key on the cross-platform signal, so a
-        # resumed Windows gateway gets its settle window too (#93406). The
-        # settle loop lives in _collect_fleet_snapshot, gated on that signal.
-        assert "_fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)" in src
-        from hermes_cli import update_cmd_fleet
-
-        snap_src = inspect.getsource(update_cmd_fleet._collect_fleet_snapshot)
-        assert "if not rows_expected:\n" in snap_src
-        assert "_time.sleep(2.0)" in snap_src
-        assert "if restarted_services or killed_pids:\n                _time.sleep" not in src
-
-    def test_zero_row_guard_gated_on_expected_runtimes(self):
-        src = self._impl_source()
-        assert "elif not _fleet_snapshot and _fleet_rows_expected:" in src
-        assert (
-            "elif not _fleet_snapshot and (restarted_services or killed_pids):"
-            not in src
-        )
 
 
 

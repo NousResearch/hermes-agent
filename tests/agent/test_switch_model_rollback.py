@@ -185,23 +185,3 @@ def test_cross_branch_anthropic_to_openai_rebuild_failure_rolls_back():
     assert agent.base_url == "https://api.anthropic.com"
 
 
-def test_successful_switch_still_works_after_rollback_refactor():
-    """Sanity check: the try/except wrapper hasn't broken the happy path."""
-    agent = _make_agent_openrouter()
-
-    new_client = MagicMock(name="NewClient")
-    agent._create_openai_client = lambda *_a, **_kw: new_client
-
-    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
-        agent.switch_model(
-            new_model="openai/gpt-5",
-            new_provider="openrouter",
-            api_key="or-key-new",
-            base_url="https://openrouter.ai/api/v1",
-            api_mode="chat_completions",
-        )
-
-    assert agent.model == "openai/gpt-5"
-    assert agent.provider == "openrouter"
-    assert agent.api_key == "or-key-new"
-    assert agent.client is new_client

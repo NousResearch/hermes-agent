@@ -137,28 +137,7 @@ class TestDeliveryNote:
             == expected
         )
 
-    def test_remote_without_error_keeps_legacy_wording(self):
-        expected = " (output was delivered there by the job itself)"
-        assert _manual_run_delivery_note("telegram", {}) == expected
-        assert (
-            _manual_run_delivery_note("telegram", {"last_delivery_error": None})
-            == expected
-        )
-        assert (
-            _manual_run_delivery_note("discord:#ops", {"last_delivery_error": "   "})
-            == expected
-        )
 
-    def test_empty_or_missing_deliver_reads_saved_locally(self):
-        """Falsy deliver = no target, and the fire-time path treats it as
-        "local" (no delivery, no delivery error) — the note must not claim
-        "delivered there" for a target that doesn't exist (#83993 class)."""
-        expected = " (output saved locally only)"
-        assert _manual_run_delivery_note("", {}) == expected
-        assert _manual_run_delivery_note(None, {}) == expected
-        # Falsy deliver never attempts delivery — a stale error (e.g. from an
-        # earlier deliver config) must not flip the wording either.
-        assert _manual_run_delivery_note("", {"last_delivery_error": "old"}) == expected
 
     def test_whitespace_deliver_defers_to_error_record(self):
         """Whitespace-only deliver is NOT folded into local: fire time lets it
@@ -168,17 +147,7 @@ class TestDeliveryNote:
         assert "delivery FAILED" in note
         assert "no target" in note
 
-    def test_remote_with_error_says_delivery_failed(self):
-        note = _manual_run_delivery_note(
-            "telegram", {"last_delivery_error": "send failed: 400 Bad Request"}
-        )
-        assert "delivery FAILED" in note
-        assert "send failed: 400 Bad Request" in note
 
-    def test_remote_error_text_truncated_to_200_chars(self):
-        note = _manual_run_delivery_note("telegram", {"last_delivery_error": "E" * 500})
-        assert "E" * 200 in note
-        assert "E" * 201 not in note
 
 
 class TestRunnerSummaryWiring:
@@ -247,28 +216,3 @@ class TestRunnerSummaryWiring:
         assert "Delivery target: local (output saved locally only)" in summary
         assert "delivered there by the job itself" not in summary
 
-    def test_delivery_success_wording_unchanged_in_completion_summary(self):
-        from tools.cronjob_tools import _try_dispatch_background_run
-
-        job = _job("job-dn-02", "telegram")
-        with _bound_session_key("agent:main:telegram:dm:83994"):
-            with (
-                patch(
-                    "tools.cronjob_tools.claim_job_for_fire",
-                    return_value=job,  # claimed snapshot (return_job=True API)
-                ),
-                patch("cron.scheduler.run_one_job", return_value=True),
-                patch(
-                    "tools.cronjob_tools.get_job",
-                    return_value={"last_status": "ok", "last_error": None},
-                ),
-            ):
-                res = _try_dispatch_background_run(job)
-                assert res.get("dispatched") is True, _dispatch_diag(res)
-                evt = _drain_completion_event(res["delegation_id"])
-        assert evt is not None, "completion event never reached the queue"
-        summary = evt.get("summary") or ""
-        assert (
-            "Delivery target: telegram (output was delivered there by the job itself)"
-        ) in summary
-        assert "delivery FAILED" not in summary

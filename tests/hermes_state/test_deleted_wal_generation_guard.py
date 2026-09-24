@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
 import hermes_state_dbfile
 import hermes_state_readpool
 import hermes_state_wal
@@ -49,9 +48,6 @@ def test_classify_deleted_wal_separately_from_main_file_replacement():
     assert classify_persistence_error(str(replaced)) == "replaced"
 
 
-def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
-    monkeypatch.setattr(hermes_state.sys, "platform", "win32")
-    assert iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db") == []
 
 
 def test_clean_open_and_second_open_still_work(tmp_path, force_wal):

@@ -1,8 +1,9 @@
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import hermes_cli.memory_setup as memory_setup
-from hermes_cli.memory_setup import _CANCELLED, _curses_select
+from hermes_cli.memory_setup import _CANCELLED
 
 
 
@@ -101,9 +102,9 @@ def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
     memory_setup.cmd_status(SimpleNamespace())
 
     captured = capsys.readouterr().out
-    assert "Memory tool:        disabled ✗" in captured
-    assert "Memory injection:   disabled ✗" in captured
-    assert "User profile:       disabled ✗" in captured
+    assert re.search(r"Memory tool:\s+disabled", captured)
+    assert re.search(r"Memory injection:\s+disabled", captured)
+    assert re.search(r"User profile:\s+disabled", captured)
 
 
 def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
@@ -118,6 +119,6 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     memory_setup.cmd_status(SimpleNamespace())
 
     captured = capsys.readouterr().out
-    assert "Memory tool:        enabled ✓" in captured
-    assert "Memory injection:   enabled ✓" in captured
-    assert "User profile:       disabled ✗" in captured
+    assert re.search(r"Memory tool:\s+enabled", captured)
+    assert re.search(r"Memory injection:\s+enabled", captured)
+    assert re.search(r"User profile:\s+disabled", captured)

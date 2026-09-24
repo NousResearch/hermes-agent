@@ -607,7 +607,7 @@ export async function ensureGatewayProfile(
   // renderer-side $activeGatewayProfile mirror is not proof of the socket:
   // applyActive can decline an epoch-losing publication while call sites
   // publish the atom anyway, leaving "atom says X, socket serves Y" (the
-  // #89206 split-brain — observed live as atom 'default' over a hermes-setup
+  // #89206 split-brain — observed live as atom 'default' over a setup-profile
   // socket during the guided-onboarding handoff). Verify the leg we're about
   // to rely on; on disagreement fall through to the full ensure path, which
   // re-activates the socket and leaves the atom and route agreeing. The one

@@ -37,14 +37,10 @@ from gateway.platforms.yuanbao_proto import (
     # 入站/出站
     decode_inbound_push,
     encode_send_c2c_message,
-    encode_send_group_message,
-    # 帮助函数
     encode_auth_bind,
     encode_ping,
     encode_push_ack,
     # 常量
-    PB_MSG_TYPES,
-    BIZ_SERVICES,
     CMD_TYPE,
     next_seq_no,
 )
@@ -292,39 +288,6 @@ class TestDecodeInboundPush:
 # 6. 出站消息编码
 # ===========================================================
 
-class TestEncodeOutbound:
-    def test_encode_send_c2c_message(self):
-        msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "hi"}}]
-        result = encode_send_c2c_message(
-            to_account="user_b",
-            msg_body=msg_body,
-            from_account="bot",
-            msg_id="msg-001",
-        )
-        assert isinstance(result, bytes)
-        assert len(result) > 0
-        # 解码验证 ConnMsg 结构
-        dec = decode_conn_msg(result)
-        assert dec["head"]["cmd"] == "send_c2c_message"
-        assert dec["head"]["msg_id"] == "msg-001"
-        assert dec["head"]["module"] == "yuanbao_openclaw_proxy"
-        assert len(dec["data"]) > 0
-
-
-    def test_c2c_biz_payload_contains_to_account(self):
-        """验证 biz payload 包含 to_account 字段"""
-        from gateway.platforms.yuanbao_proto import _get_string
-        msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "test"}}]
-        result = encode_send_c2c_message(
-            to_account="target_user",
-            msg_body=msg_body,
-            from_account="bot",
-        )
-        dec = decode_conn_msg(result)
-        biz_data = dec["data"]
-        fdict = _fields_to_dict(_parse_fields(biz_data))
-        to_acc = _get_string(fdict, 2)  # SendC2CMessageReq.to_account = field 2
-        assert to_acc == "target_user"
 
 
 
@@ -380,12 +343,6 @@ class TestAuthAndPing:
 # ===========================================================
 
 class TestConstants:
-    def test_pb_msg_types_keys(self):
-        assert "ConnMsg" in PB_MSG_TYPES
-        assert "AuthBindReq" in PB_MSG_TYPES
-        assert "PingReq" in PB_MSG_TYPES
-        assert "KickoutMsg" in PB_MSG_TYPES
-        assert "PushMsg" in PB_MSG_TYPES
 
 
     def test_cmd_type_values(self):

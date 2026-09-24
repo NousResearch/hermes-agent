@@ -433,6 +433,7 @@ class TestMaybeAutoTitle:
             ("custom:gptoss-local", {"provider": "openrouter"}, False),
             ("custom:gptoss-local", {"provider": "nous"}, False),
             ("custom", {"provider": "ollama"}, True),  # alias of custom
+            ("custom", {"provider": "vllm"}, True),  # normalises to `local`: the same local server
             ("lmstudio", {"provider": "lm-studio"}, True),
             ("lmstudio", {"provider": "lmstudio", "base_url": "http://10.0.0.2:1234/v1"}, False),
             ("lmstudio", {"provider": "openrouter"}, False),

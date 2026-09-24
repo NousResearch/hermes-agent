@@ -72,6 +72,10 @@ class StreamDeliveryMixin:
         if think_scrubber is not None:
             think_tail = think_scrubber.flush()
             deliver(ctx_scrubber.feed(think_tail) if think_tail and ctx_scrubber is not None else think_tail)
+            # Inline reasoning recovered for reasoning_content is per model response (#89647).
+            clear_reasoning = getattr(think_scrubber, "clear_reasoning", None)
+            if callable(clear_reasoning):
+                clear_reasoning()
         if ctx_scrubber is not None:
             deliver(ctx_scrubber.flush())
         self._current_streamed_assistant_text = ""

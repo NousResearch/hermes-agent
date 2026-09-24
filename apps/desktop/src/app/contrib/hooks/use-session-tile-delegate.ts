@@ -50,7 +50,6 @@ function mergeTileTranscript(
   prefetched: ChatMessage[],
   streamId?: null | string
 ): ChatMessage[] {
-
   if (!prefetched.length) {
     return previous
   }

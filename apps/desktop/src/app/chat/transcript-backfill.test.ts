@@ -242,7 +242,6 @@ describe('extendRefreshPageToOverlap', () => {
     expect(readOlderPage).toHaveBeenCalledTimes(1)
     expect(graftRefreshedTailOntoBackfill(extended, previous).map(message => message.rowId)).toEqual([1, 2, 3, 4, 5, 6])
   })
-
 })
 
 describe('backfillOlderTranscriptPage', () => {

@@ -6,8 +6,10 @@ Split out of :mod:`hermes_cli.plugins`; validation warns and never fails a load.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import importlib.util
 import logging
+import re
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +36,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
+    "requires_hermes", "python_runtime",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -43,6 +46,9 @@ _CONFIG_SCHEMA_TYPES: Dict[str, tuple] = {
     "str": (str,), "string": (str,), "int": (int,), "integer": (int,), "float": (int, float),
     "number": (int, float), "bool": (bool,), "boolean": (bool,), "list": (list,), "array": (list,),
     "dict": (dict,), "object": (dict,),
+    # ``secret`` values live in ``.env`` (see hermes_cli.plugins_settings), so a config.yaml copy is
+    # only ever a stray string.
+    "secret": (str,),
 }
 
 
@@ -53,10 +59,25 @@ def _plugins_debug() -> bool:
 
 def _portable_skill_namespace(key: str) -> str:
     """Return a readable, collision-resistant namespace for a portable plugin."""
-    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
-    slug = slug.strip("-_") or "plugin"
+    slug = _portable_slug(key)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
     return f"agent-plugin-{slug}-{digest}"
+
+
+def _portable_slug(key: str) -> str:
+    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
+    return slug.strip("-_") or "plugin"
+
+
+def portable_mcp_server_name(key: str, server: str) -> str:
+    """Internal name of a portable plugin's MCP server: exactly the name its ``mcp.json`` gives it, the same
+    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's skill namespace
+    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data and skill names collision-free
+    without coordination, but here it cost ~40 chars of every ``mcp__<server>__<tool>`` name, which providers
+    cap at 64, so the tool verb was hash-clamped away. A duplicate is refused at load (native config first,
+    then first-loaded plugin) with a warning naming both owners; that beats hiding it behind a digest."""
+    del key  # one signature for loader and card; the plugin identity is deliberately not part of the name
+    return _portable_slug(server)
 
 
 def _display_author(value: object) -> str:
@@ -246,10 +267,12 @@ def resolve_plugin_load_order(manifests: Mapping[str, "PluginManifest"]) -> List
 
 
 def _detect_kind_from_source(source_text: str) -> Optional[str]:
-    """Kind implied by source markers (mirrors plugins/memory ``_is_memory_provider_dir``): memory-provider
-    markers -> ``exclusive``; ``register_provider`` + ``ProviderProfile`` -> ``model-provider``; else
-    ``None``. Keeps both kinds out of the general manager's eager import."""
-    if "register_memory_provider" in source_text or "MemoryProvider" in source_text:
+    """Kind implied by source markers (mirrors plugins/memory ``_is_memory_provider_dir`` and
+    plugins/cron_providers ``_is_cron_provider_dir``): memory- or cron-provider markers -> ``exclusive``;
+    ``register_provider`` + ``ProviderProfile`` -> ``model-provider``; else ``None``. Keeps these kinds out
+    of the general manager's eager import (its PluginContext has no ``register_cron_scheduler``, #62951)."""
+    if any(marker in source_text for marker in (
+            "register_memory_provider", "MemoryProvider", "register_cron_scheduler", "CronScheduler")):
         return "exclusive"
     if "register_provider" in source_text and "ProviderProfile" in source_text:
         return "model-provider"
@@ -336,6 +359,9 @@ class PluginManifest:
     # Path-derived registry key used by plugins.enabled/disabled and `hermes plugins list`: ``disk-cleanup``
     # for a flat plugin, ``image_gen/openai`` for a category plugin. Empty -> name.
     key: str = ""
+    # Hermes version requirement (``">=0.19"``, comma-separated clauses allowed). Unsatisfied plugins are
+    # recorded with an error and skipped before import — see ``requires_hermes_error``.
+    requires_hermes: str = ""
     portable: bool = False
     skill_namespace: str = ""
     # Declared capability ids, normalized to KNOWN ids. Declaration is consent metadata, NOT a grant: live
@@ -362,6 +388,68 @@ class PluginManifest:
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: List[str] = field(default_factory=list)
     listens: List[str] = field(default_factory=list)
+
+
+# ── requires_hermes version gate ─────────────────────────────────────────────
+_VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
+
+
+def running_hermes_version() -> str:
+    """Version of the Hermes code that is running: ``hermes_cli.__version__``. Distribution metadata is only
+    a fallback — on an editable/source install it is frozen at ``pip install -e`` time and drifts from the
+    checkout after every ``git pull`` (dist said 0.21.0 while the code was 0.21.4), so gating on it skipped
+    plugins that required exactly the release the user was running."""
+    try:
+        from hermes_cli import __version__
+        if __version__:
+            return str(__version__)
+    except Exception:
+        pass
+    return importlib.metadata.version("hermes-agent")
+
+
+_VERSION_SEGMENT_RE = re.compile(r"^\d+")
+
+
+def _version_tuple(v: str) -> Optional[tuple]:
+    """``v1.2.3-rc1`` / ``1.2.3rc1`` / ``1.2.3.post1`` → ``(1, 2, 3)``; ``None`` when a segment has no
+    leading digits. PEP 440 pre/post/dev suffixes glued to a segment (``0rc1``) are dropped so an rc
+    *target* still gates and an rc *running* version does not disable every gate."""
+    parts = re.split(r"[-+]", str(v).strip().lstrip("v"), 1)[0].split(".")
+    parts += ["0"] * (3 - len(parts))
+    out = []
+    for x in parts[:3]:
+        m = _VERSION_SEGMENT_RE.match(x.strip())
+        if m is None:
+            return None
+        out.append(int(m.group(0)))
+    return tuple(out)
+
+
+def version_satisfies(spec: str, current: str) -> bool:
+    """``>=``/``>``/``<=``/``<``/``==``/``!=`` clauses (comma = AND; bare version = ``>=``). Unparseable
+    versions are permissive — no PEP 440 dependency for a one-field manifest gate."""
+    cur = _version_tuple(current)
+    if cur is None:
+        return True
+    ops = {">=": cur.__ge__, "<=": cur.__le__, "==": cur.__eq__, "!=": cur.__ne__, ">": cur.__gt__, "<": cur.__lt__}
+    for clause in filter(None, (c.strip() for c in spec.split(","))):
+        m = _VERSION_COMPARATOR_RE.match(clause)
+        op, target = (m.group(1), m.group(2)) if m else (">=", clause)
+        tgt = _version_tuple(target)
+        if tgt is not None and not ops[op](tgt):
+            return False
+    return True
+
+
+def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
+    """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
+    if not manifest.requires_hermes:
+        return None
+    current = running_hermes_version()
+    if version_satisfies(manifest.requires_hermes, current):
+        return None
+    return f"requires hermes {manifest.requires_hermes}, running {current}"
 
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
@@ -409,6 +497,10 @@ def parse_manifest_file(
             logger.warning("PyYAML not installed – cannot load %s", manifest_file)
             return None
         data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, Mapping):
+            logger.warning("Failed to parse %s: top level must be a mapping, got %s (#14066)",
+                           manifest_file, type(data).__name__)
+            return None
         name = data.get("name", plugin_dir.name)
         key = f"{prefix}/{plugin_dir.name}" if prefix else name
         kind = _manifest_kind(data, key, plugin_dir)
@@ -419,8 +511,10 @@ def parse_manifest_file(
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
             provides_tools=data.get("provides_tools", []),
-            provides_hooks=data.get("provides_hooks", []), source=source, path=str(plugin_dir),
-            kind=kind, key=key,
+            # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
+            # must keep declaring the same thing (#108371).
+            provides_hooks=data.get("provides_hooks", data.get("hooks", [])), source=source, path=str(plugin_dir),
+            kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],
             listens=data.get("listens") or [],

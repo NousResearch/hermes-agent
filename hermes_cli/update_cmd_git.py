@@ -6,6 +6,7 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
+import shlex
 from contextlib import suppress
 import subprocess
 import sys
@@ -21,6 +22,46 @@ _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
 _GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 _BAR = "=" * 68
 _UPSTREAM_ADD_CMD = "git remote add upstream https://github.com/NousResearch/hermes-agent.git"
+
+
+def _update_index_lock_path(project_root: Path) -> Path | None:
+    """Return the checkout's index lock path, including linked worktrees."""
+    git_marker = project_root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "index.lock"
+    if not git_marker.is_file():
+        return None
+    try:
+        marker = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not marker.lower().startswith(prefix):
+        return None
+    git_dir = Path(marker[len(prefix):].strip())
+    if not git_dir.is_absolute():
+        git_dir = (project_root / git_dir).resolve()
+    return git_dir / "index.lock"
+
+
+def _abort_if_update_index_locked(project_root: Path) -> None:
+    """Refuse to update while Git's index lock exists; never delete it."""
+    from hermes_cli.update_cmd import _m
+
+    lock_path = _update_index_lock_path(project_root)
+    if lock_path is None or not lock_path.exists():
+        return
+    if _m()._is_windows():
+        quoted_path = str(lock_path).replace("'", "''")
+        recovery = f"Remove-Item -LiteralPath '{quoted_path}'"
+    else:
+        recovery = f"rm -f -- {shlex.quote(str(lock_path))}"
+    print(f"✗ Git index lock exists: {lock_path}")
+    print("  Another Git operation may still be using this repository.")
+    print("  Close or wait for it to finish, then retry `hermes update`.")
+    print("  If no Git operation is running, remove the orphaned lock:")
+    print(f"    {recovery}")
+    sys.exit(2)
 
 
 def _git_ok(git_cmd, args, cwd, **kw) -> bool:
@@ -421,17 +462,55 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     return [str(real_git)] + list(git_cmd[1:])
 
 
+def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
+    """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
+    workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
+    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
+    owners = {Path(".")}
+    try:
+        import json
+        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+        workspaces = package.get("workspaces", [])
+        if isinstance(workspaces, dict):
+            workspaces = workspaces.get("packages", [])
+        if not isinstance(workspaces, list):
+            return owners
+        for pattern in workspaces:
+            # One bad glob (absolute pattern -> NotImplementedError) degrades to "not an owner"
+            # instead of aborting the whole churn cleanup through the caller's suppress(Exception).
+            with suppress(Exception):
+                for directory in repo_root.glob(str(pattern)):
+                    if (directory / "package.json").is_file():
+                        owners.add(directory.relative_to(repo_root))
+    except (OSError, ValueError, TypeError):
+        pass
+    return owners
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
-    instead of autostashing every run. Only touches lockfiles whose package.json is NOT also dirty. Best-effort."""
+    instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
+    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
+    manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
+    with its sibling manifest. Best-effort."""
     from hermes_cli.update_cmd import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
         if diff.returncode != 0:
             return
         changed = [line.strip() for line in diff.stdout.splitlines()]
-        dirty_package_dirs = {Path(p).parent for p in changed if p.endswith("package.json")}
-        dirty = [p for p in changed if p.endswith("package-lock.json") and Path(p).parent not in dirty_package_dirs]
+        dirty_manifests = {Path(p).parent for p in changed if p.endswith("package.json")}
+        root_owners = _npm_lockfile_owners(Path(repo_root))
+        dirty = []
+        for path in changed:
+            if not path.endswith("package-lock.json"):
+                continue
+            lock_dir = Path(path).parent
+            protected = (lock_dir == Path(".") and bool(dirty_manifests & root_owners)) or (
+                lock_dir != Path(".") and lock_dir in dirty_manifests
+            )
+            if not protected:
+                dirty.append(path)
         if not dirty:
             return
         _git_run(git_cmd, ["checkout", "--", *dirty], repo_root)

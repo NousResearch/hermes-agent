@@ -2,7 +2,6 @@
 
 from plugins.platforms.slack.block_kit import (
     MAX_BLOCKS,
-    MAX_HEADER_TEXT,
     MAX_SECTION_TEXT,
     render_blocks,
     sanitize_blocks,
@@ -39,12 +38,34 @@ class TestNestedLists:
 
 
 class TestInlineFormatting:
-    def test_link_becomes_link_element(self):
-        blocks = render_blocks("see [docs](https://example.com/x) now")
-        # link lives in a section (paragraph) — but a bulleted link is a
-        # rich_text link element; assert the URL survives somewhere.
-        blob = str(blocks)
-        assert "https://example.com/x" in blob
+
+    def test_slack_mrkdwn_link_in_bullet_becomes_link_element(self):
+        """rich_text lists must parse Slack <url|label>, not emit it as text.
+
+        rich_blocks turns markdown bullets into rich_text_list. rich_text does
+        not interpret mrkdwn, so <url|text> has to become type=link.
+        """
+        blocks = render_blocks(
+            "- <https://example.com/x|GitLab #1> — allow `in_progress`"
+        )
+        assert blocks is not None
+        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        els = rich["elements"][0]["elements"][0]["elements"]
+        links = [e for e in els if e.get("type") == "link"]
+        assert len(links) == 1
+        assert links[0]["url"] == "https://example.com/x"
+        assert links[0]["text"] == "GitLab #1"
+        assert not any("<https://" in (e.get("text") or "") for e in els)
+        assert any(e.get("style", {}).get("code") for e in els)
+
+    def test_slack_mentions_in_bullet_are_not_links(self):
+        blocks = render_blocks("- ping <@U123> in <#C456>")
+        assert blocks is not None
+        els = blocks[0]["elements"][0]["elements"][0]["elements"]
+        assert all(e.get("type") != "link" for e in els)
+        blob = "".join(e.get("text") or "" for e in els)
+        assert "<@U123>" in blob
+        assert "<#C456>" in blob
 
 
     def test_blank_line_separated_ordered_items_stay_in_one_list(self):

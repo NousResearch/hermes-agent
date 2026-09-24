@@ -16,7 +16,7 @@ import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
-import { $layoutEditMode } from '../../edit-mode'
+import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
 import type { LayoutNode, SplitNode } from '../model'
 import { allPaneIds } from '../model'
 import {
@@ -24,6 +24,7 @@ import {
   $hiddenTreePanes,
   $narrowViewport,
   isCollapsePane,
+  paneRootSide,
   persistTree,
   presetSplitWeights,
   setTreeGroupMinimized,
@@ -42,7 +43,6 @@ import {
   paneChrome,
   type PaneSizing,
   resolveCssPx,
-  rootChildSide,
   shownPaneIds,
   subtreeGone,
   type TrackContext
@@ -87,7 +87,21 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   return useSyncExternalStore(cb => $paneStates.listen(cb), snapshot, snapshot)
 }
 
-export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boolean; rootRow?: boolean }) {
+export function TreeSplit({
+  node,
+  root,
+  rootRow,
+  topEdge = false,
+  leftEdge = false,
+  rightEdge = false
+}: {
+  node: SplitNode
+  root?: boolean
+  rootRow?: boolean
+  topEdge?: boolean
+  leftEdge?: boolean
+  rightEdge?: boolean
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -97,6 +111,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   // re-render — not every split in the tree.
   const overrides = useSubtreeOverrides(useMemo(() => allPaneIds(node), [node]))
   const editMode = useStore($layoutEditMode)
+  const revealsHidden = useStore($layoutEditRevealsHidden)
   const collapsedSides = useStore($collapsedTreeSides)
   const horizontal = node.orientation === 'row'
   const axis = node.orientation
@@ -122,11 +137,12 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   // is narrow and the pane is collapsible (edge overlay instead).
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
-  // Layout-edit mode forces toggle-hidden panes (terminal off, review/preview
-  // closed) visible so they're rearrangeable — only truly-absent (unregistered)
-  // or narrow-collapsed panes stay gone. Restores itself on exit (render-only).
+  // Layout-edit mode (in Advanced) forces toggle-hidden panes (terminal off,
+  // review/preview closed) visible so they're rearrangeable — only truly-absent
+  // (unregistered) or narrow-collapsed panes stay gone. Restores itself on exit
+  // (render-only).
   const paneGone = (id: string) =>
-    !paneFor(id) || (!editMode && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
+    !paneFor(id) || (!revealsHidden && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
 
@@ -510,7 +526,19 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      editMode,
+      revealsHidden,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // Double-click a sash: every neighbor returns to its DEFAULT size.
@@ -587,7 +615,19 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       setTreeSplitWeights(node.id, !preset && !pinned ? weights.map(() => 1) : weights)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      editMode,
+      revealsHidden,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // A run of ONLY fixed tracks can't fill the container (grow-0 all around
@@ -596,10 +636,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   // leftover; capped sidebars (review/files) keep their max and stay put.
   const isMinimized = (child: LayoutNode) => child.type === 'group' && Boolean(child.minimized)
 
-  // SEMANTIC side collapse (titlebar toggles / ⌘B / ⌘J): at the ROOT row,
-  // ⌘B owns the sessions column and ⌘J the other side columns — by pane
-  // placement, NOT position, so a ⌘\ flip moves the columns without
-  // rewiring the toggles (main parity). In edit mode sides stay visible.
+  // Side toggles own physical sides of the root row, including after a flip.
+  // In edit mode sides stay visible.
   // `rootRow` covers both a row root (Default, Focus) and a row nested inside
   // a column root (Terminal deck, Quad) — wherever the side columns live.
   const semanticSides = rootRow && horizontal && collapsedSides.size > 0 && !editMode
@@ -609,7 +647,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       return false
     }
 
-    const side = rootChildSide(node.children[i], paneFor)
+    const side = paneRootSide(allPaneIds(node.children[i])[0])
 
     return side !== null && collapsedSides.has(side)
   }
@@ -639,6 +677,17 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const absorberIndex = allFixed
     ? allFixedAbsorberIndex(growable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
     : -1
+
+  // A capped all-fixed run leaves slack. When every track left standing is
+  // END-placed chrome (a bottom terminal whose column-mates ⌘J folded away),
+  // the slack goes BEFORE it so the zone keeps hugging its edge — a terminal
+  // deck belongs at the bottom of its column, not floating at the top.
+  const endPlacement = horizontal ? 'right' : 'bottom'
+
+  const anchorsEnd =
+    allFixed &&
+    absorberIndex < 0 &&
+    growable.every(i => allPaneIds(tracks[i].child).every(id => paneChrome(paneFor(id)).placement === endPlacement))
 
   // Weights are RATIOS, but CSS flex-grow is absolute: a run whose grows sum
   // below 1 fills only that fraction of the leftover (normalize's flatten
@@ -674,7 +723,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
   return (
     <div
-      className={cn('flex min-h-0 min-w-0 flex-1', horizontal ? 'flex-row' : 'flex-col')}
+      className={cn('flex min-h-0 min-w-0 flex-1', horizontal ? 'flex-row' : 'flex-col', anchorsEnd && 'justify-end')}
       data-tree-split={node.id}
       ref={containerRef}
     >
@@ -690,7 +739,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
               collapsed
                 ? { display: 'none' }
                 : minimized
-                  ? { flex: `0 0 ${MINIMIZED_TRACK}` }
+                  ? { flex: `0 0 ${horizontal ? MINIMIZED_TRACK : 'auto'}` }
                   : {
                       // One flexbox formula for everything: a sized zone is
                       // grow-0 shrink-1 from its preferred basis (it yields
@@ -720,10 +769,13 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
             )}
             {!narrowCollapsed && (
               <TreeNode
+                leftEdge={leftEdge && (!horizontal || i === visibleOrder[0])}
                 node={child}
                 parentAxis={axis}
                 railSide={horizontal ? railSideFor(i) : undefined}
+                rightEdge={rightEdge && (!horizontal || i === visibleOrder[visibleOrder.length - 1])}
                 rootRow={rootRow || childRootRow(child)}
+                topEdge={topEdge && (horizontal || i === visibleOrder[0])}
               />
             )}
           </div>
@@ -749,7 +801,7 @@ function Sash({
       className={cn(
         'group absolute z-20 [-webkit-app-region:no-drag]',
         // Asymmetric grab band: only 1px reaches into the leading pane so its
-        // edge-hugging 4px scrollbar stays clickable (the old centered 9px band
+        // edge-hugging 8px scrollbar stays clickable (the old centered 9px band
         // swallowed it entirely — the pointer got col-resize instead of the
         // thumb). The trailing side keeps a generous 7px reach; total grab
         // width stays ~8px so the sash is no harder to hit.

@@ -678,19 +678,81 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
     assert (root / ".anthropic_oauth.json").read_text() == before
 
 
-def test_heal_same_store_skip_is_memoized_off_the_hot_path(fleet, monkeypatch):
-    """The shared-store skip must record the clean mark so load_pool()'s
-    per-call heal does not re-stat/resolve both paths every model call."""
-    from hermes_cli import auth as auth_mod
+
+
+# ── E. the clean mark outlives the process ──────────────────────────────
+#
+# The in-memory mark only silences the heal for one process, so every fresh
+# `hermes` invocation re-paid its two nested EXCLUSIVE auth-store locks to
+# rediscover a store it had already cleared. Persisting the mark removes that,
+# but a mark that outlives the process must also invalidate on anything the
+# heal reads -- including the ROOT store, which the in-memory fingerprint
+# could safely ignore precisely because it died with the process.
+
+def _new_process(auth_mod):
+    """Simulate a fresh `hermes` invocation: in-memory state gone, disk kept."""
+    auth_mod._oauth_heal_clean_marks.clear()
+    auth_mod._global_auth_store_cache = None
+
+
+
+
+def _kid_with_api_key_only(fleet, name="kid"):
+    """Profile whose store exists and is genuinely fork-free, so the heal has
+    to run its locked body to find that out (not the no-files fast path)."""
+    pdir = _profile(fleet, name)
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+        "credential_pool": {"openai": [{
+            "id": "k1", "label": "static", "auth_type": "api_key",
+            "priority": 0, "source": "manual", "access_token": "sk-local",
+        }]},
+    }))
+    return pdir
+
+
+
+
+def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
+    """The mark may not outlive the facts. Root acquiring a counterpart turns
+    a row the heal deliberately KEPT into a fork it must strip -- with the
+    profile's own files untouched, so only root's stamp can catch it."""
+    import hermes_cli.auth as auth_mod
+    from hermes_cli import auth_oauth_grants as grants
 
     root = fleet["root"]
-    _seed_codex_grant(root)
-    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
-    fleet["use"](shared)
+    store = json.loads((root / "auth.json").read_text())
+    store["credential_pool"].pop("anthropic")
+    (root / "auth.json").write_text(json.dumps(store))
 
-    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
-    assert "openai-codex" in auth_mod._oauth_heal_clean_marks
-    calls = []
-    monkeypatch.setattr(auth_mod, "_is_same_auth_store", lambda *a: calls.append(a) or True)
-    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
-    assert calls == [], "same-store check ran again despite the clean mark"
+    kid = _kid_with_api_key_only(fleet, "kid2")
+    fork = {
+        "id": "abc123", "label": "team-grant", "auth_type": "oauth",
+        "priority": 0, "source": "manual:hermes_pkce",
+        "access_token": "sk-ant-oat01-AT0", "refresh_token": "sk-ant-ort-RT0",
+        "expires_at_ms": int((time.time() + 3600) * 1000),
+        "base_url": "https://api.anthropic.com",
+    }
+    kid_store = json.loads((kid / "auth.json").read_text())
+    kid_store["credential_pool"]["anthropic"] = [dict(fork)]
+    (kid / "auth.json").write_text(json.dumps(kid_store))
+
+    fleet["use"](kid)
+    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
+    assert fleet["rows"](kid), "the only surviving copy must not be stripped"
+    marked = grants._oauth_heal_clean_mark_path().read_text()
+
+    store["credential_pool"]["anthropic"] = [dict(fork)]
+    (root / "auth.json").write_text(json.dumps(store))
+    _new_process(auth_mod)
+    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is not None, (
+        "the persisted mark skipped a heal that had become necessary")
+    assert not fleet["rows"](kid), "the fork survived in the profile store"
+
+    # A heal that actually did work writes no mark, so the one on disk is now
+    # stale -- it describes the pre-heal files and can no longer match. The
+    # next process re-checks, finds the store clean, and re-stamps.
+    _new_process(auth_mod)
+    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
+    assert grants._oauth_heal_clean_mark_path().read_text() != marked

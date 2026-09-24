@@ -11,9 +11,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Collection, Optional
 
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_constants import project_venv_dir
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -21,7 +22,19 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
 
 # Single source of truth for entries the ZIP swap preserves — used by the dirty-tree filter and the swap loop.
-_ZIP_PRESERVED_TOP_LEVEL = {"venv", "node_modules", ".git", ".env"}
+_ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
+
+# Gitignored build outputs the source ZIP never ships, nested under top-level entries the swap replaces
+# (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them): the packaged Desktop app, its renderer bundle and
+# its own node_modules (electron itself), and the dashboard assets. The dirty-tree guard admits them and
+# `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
+_ZIP_PRESERVED_NESTED = {
+    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules", "desktop/build"),
+    "hermes_cli": ("web_dist",),
+    "scripts": ("whatsapp-bridge/node_modules",),
+    "ui-tui": ("dist", "node_modules", "packages/hermes-ink/dist"),
+    "web": ("node_modules",),
+}
 
 _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
 
@@ -115,13 +128,17 @@ def _commit_staged_replacements(staged) -> None:
             _remove_path(backup, ignore_errors=True)
 
 
-def _zip_overlay_block_reason(root: Path, *, ignore_staging_artifacts: bool = False) -> Optional[str]:
+def _zip_overlay_block_reason(
+    root: Path, *, ignore_staging_artifacts: bool = False, shipped: Optional[Collection[str]] = None,
+) -> Optional[str]:
     """Why overlaying a ZIP onto ``root`` would destroy work, or None if safe.
 
     The swap replaces every top-level entry (minus a tiny preserve set) and deletes backups, so uncommitted
     edits and untracked files are gone. Fails closed when git status cannot run. ``ignore_staging_artifacts``
     is for the pre-swap re-check: phase 1 leaves our own ``*.hermes-update-staging`` siblings that git
-    reports as untracked; without the filter the re-check always refuses.
+    reports as untracked; without the filter the re-check always refuses. ``shipped`` is the extracted
+    ZIP's top-level entry set once known (the re-check); before the download the tracked root entries stand
+    in for it. A gitignored path under a root entry the ZIP does not ship is never touched by the swap.
 
     Fail closed when git status cannot run: unknown dirtiness is not a license to clobber the tree (#87304).
     """
@@ -137,6 +154,15 @@ def _zip_overlay_block_reason(root: Path, *, ignore_staging_artifacts: bool = Fa
         git_cmd + ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
         cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
+    if result.returncode == 0 and shipped is None:
+        # Before the download the ZIP's entry set is unknown; the tracked root entries stand in for it (the
+        # pre-swap re-check gets the real set), so an ignored root entry the swap never touches cannot refuse.
+        tracked = subprocess.run(
+            git_cmd + ["ls-tree", "--name-only", "HEAD"],
+            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        shipped = set(tracked.stdout.splitlines()) if tracked.returncode == 0 else None
+        result.returncode = tracked.returncode
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         return f"could not check the working tree{f' ({detail[0]})' if detail else ''}"
@@ -144,7 +170,7 @@ def _zip_overlay_block_reason(root: Path, *, ignore_staging_artifacts: bool = Fa
     # swap, so they must not cause a false refusal. Everything else — including ignored files — blocks.
     dirty = any(
         line.strip()
-        and not _is_zip_preserved_entry_status_line(line)
+        and not _is_zip_preserved_entry_status_line(line, shipped)
         and not (ignore_staging_artifacts and _is_zip_staging_artifact_status_line(line))
         for line in (result.stdout or "").splitlines()
     )
@@ -155,8 +181,14 @@ def _status_top_level(path: str) -> str:
     return path.strip().strip('"').replace("\\", "/").rstrip("/").split("/", 1)[0]
 
 
-def _is_zip_preserved_entry_status_line(line: str) -> bool:
-    """True when every path on a porcelain status line sits under a preserved top-level entry.
+def _is_zip_preserved_entry_status_line(line: str, shipped: Optional[Collection[str]] = None) -> bool:
+    """True when the swap would not destroy what a porcelain status line names: every path sits under a
+    preserved top-level entry; or the line is gitignored (``!!``) and under a root entry the ZIP does not
+    ship (``.bytecode-fingerprint``, ``.hermes-bootstrap-complete``, ``hermes_agent.egg-info/`` — the swap
+    replaces ``shipped`` entries only); or a ``!!`` build output nested under a shipped dir that the swap
+    keeps (`_ZIP_PRESERVED_NESTED`) or regenerates (``__pycache__``, ``node_modules``). Every real install
+    has all of these, and blocking on them made the ZIP fallback refuse every install. Tracked edits,
+    renames and other untracked/ignored user files still block.
 
     The ``" -> "`` split applies ONLY to R/C codes: porcelain v1 doesn't quote plain names with spaces, so
     ``venv -> node_modules`` on a ``!!``/``??`` line is ONE path and splitting would fail-open. Requiring
@@ -164,7 +196,16 @@ def _is_zip_preserved_entry_status_line(line: str) -> bool:
     """
     status, payload = (line[:2], line[3:]) if len(line) >= 3 else ("", line)
     paths = payload.split(" -> ") if any(code in "RC" for code in status) else [payload]
-    return all(_status_top_level(path) in _ZIP_PRESERVED_TOP_LEVEL for path in paths)
+    if all(_status_top_level(path) in _ZIP_PRESERVED_TOP_LEVEL for path in paths):
+        return True
+    if status != "!!":
+        return False
+    path = payload.strip().strip('"').replace("\\", "/").rstrip("/")
+    top, _, nested = path.partition("/")
+    if shipped is not None and top not in shipped:
+        return True
+    return path.rsplit("/", 1)[-1] in ("__pycache__", "node_modules") or any(
+        nested == keep or nested.startswith(f"{keep}/") for keep in _ZIP_PRESERVED_NESTED.get(top, ()))
 
 
 def _is_zip_staging_artifact_status_line(line: str) -> bool:
@@ -241,6 +282,28 @@ def _require_staging_space(extracted: str, entries: list[str], project_root: str
         )
 
 
+def _link_or_copy_artifact(source: str, destination: str) -> None:
+    """Hardlink where the filesystem allows (apps/desktop/node_modules is hundreds of MB, and a link stays
+    valid after the swap unlinks the old tree; on Windows a link also succeeds on a locked Hermes.exe
+    where copy2 raises); byte copy otherwise."""
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _graft_nested_artifacts(item: str, live: str, staging: str) -> None:
+    """Clone the live build outputs under *item* into its staged copy so the swap keeps them.
+    A path the ZIP ships wins over the live copy; a never-built install has nothing to graft."""
+    for nested in _ZIP_PRESERVED_NESTED.get(item, ()):
+        source = os.path.join(live, *nested.split("/"))
+        destination = os.path.join(staging, *nested.split("/"))
+        if os.path.lexists(destination) or not os.path.isdir(source):
+            continue
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.copytree(source, destination, symlinks=True, copy_function=_link_or_copy_artifact)
+
+
 def _stage_entries(extracted: str, entries: list[str], project_root: str) -> list[tuple[str, str]]:
     """Phase 1 for every entry; on failure nothing is live yet, so drop partial staging copies so a retry
     starts from the same free space."""
@@ -249,17 +312,10 @@ def _stage_entries(extracted: str, entries: list[str], project_root: str) -> lis
         for item in entries:
             dst = os.path.join(project_root, item)
             staged.append((_stage_replacement(os.path.join(extracted, item), dst), dst))
-            # The source ZIP lacks apps/desktop/release/ (the BUILT desktop app); swapping `apps` without
-            # it deletes the build and breaks the shortcut. Graft the live release dir in BEFORE the swap.
-            # #70337/#87331: the GitHub source ZIP contains only source — apps/desktop/release/ (the BUILT
-            # desktop app, win-unpacked/ Hermes.exe) exists only in the LIVE tree. Graft the live release
-            # dir into the staged copy BEFORE the swap so the commit preserves it atomically.
-            if item == "apps":
-                live_release = os.path.join(dst, "desktop", "release")
-                staged_release = os.path.join(staged[-1][0], "desktop", "release")
-                if os.path.isdir(live_release) and not os.path.exists(staged_release):
-                    os.makedirs(os.path.dirname(staged_release), exist_ok=True)
-                    shutil.copytree(live_release, staged_release)
+            # The source ZIP carries only source; the built outputs (#70337/#87331 release/, then
+            # dist/, apps/desktop/node_modules and web_dist — #90495) exist only in the LIVE tree. Graft
+            # them into the staged copy BEFORE the swap so the commit preserves them atomically.
+            _graft_nested_artifacts(item, dst, staged[-1][0])
     except Exception:
         _discard_staged(staged)
         raise
@@ -291,7 +347,8 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         try:
             # TOCTOU re-check right before the swap: download + extract + staging can take minutes and
             # work created meanwhile would be destroyed. Our own staging siblings are filtered out.
-            recheck_reason = _zip_overlay_block_reason(_m().PROJECT_ROOT, ignore_staging_artifacts=True)
+            recheck_reason = _zip_overlay_block_reason(
+                _m().PROJECT_ROOT, ignore_staging_artifacts=True, shipped=entries)
             if recheck_reason is not None:
                 _discard_staged(staged)
                 print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
@@ -333,7 +390,7 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
         # from unrelated software must not steer which interpreter uv resolves here.
         from hermes_cli.managed_uv import managed_python_env
         uv_env = managed_python_env()
-        uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
+        uv_env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -353,19 +410,18 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=install_env)
     # Parity with git-pull path: heal the active memory provider's bridge packages after the reinstall.
     _m()._refresh_active_memory_provider_dependencies()
+    _m()._reapply_plugin_python_dependencies()
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windows_gateway_resume=None) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
-    drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed."""
-    from hermes_cli.update_cmd import (
-        _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
-        _print_curator_recent_run_notice, _print_update_summary, _read_project_version, _rebuild_desktop_after_update,
-        _sweep_bytecode_after_update, _update_node_dependencies, _validate_critical_modules_import,
-        _verify_and_restore_state_dbs_post_update,
-    )
-    active_tool_dependencies = _m()._capture_active_tool_dependencies()
-    pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
+    drivers causing 'Invalid argument'). Swaps the tree, then hands the rest of the run to an
+    interpreter born on the new code (never returns; the child owns the receipt and exit code)."""
+    from hermes_cli.update_cmd import _hand_off_post_swap, _m, _read_project_version, _resolve_update_options, _sweep_bytecode_after_update
+    gateway_mode = bool(getattr(args, "gateway", False))
+    opts = _resolve_update_options(args, gateway_mode)
+    # Snapshot before files are replaced, for the completion line.
+    pre_update_version = _read_project_version()
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -381,12 +437,31 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     _abort_zip_update_if_dirty_tree()
     _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
     _sweep_bytecode_after_update(branch)
+    from dataclasses import replace as _replace
+    _hand_off_post_swap(
+        args, swap="zip", branch=branch, opts=_replace(opts, pre_update_version=pre_update_version),
+        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
+        _windows_gateway_resume=_windows_gateway_resume)
+    return True  # unreachable: _hand_off_post_swap exits with the child's code
+
+
+def _finish_zip_update(
+    *, active_tool_dependencies, pre_update_version, had_desktop_app_before_update: bool,
+    _windows_gateway_resume=None) -> bool:
+    """Post-swap tail of the ZIP path (runs in the interpreter born on the new tree). Returns
+    ``False`` when a Desktop rebuild ran and failed."""
+    from hermes_cli.update_cmd import (
+        _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
+        _print_curator_recent_run_notice, _print_update_summary, _rebuild_desktop_after_update,
+        _update_node_dependencies, _validate_critical_modules_import,
+        _verify_and_restore_state_dbs_post_update,
+    )
     # Self-lock deferral: the code swap is committed; defer only the dependency sync when this process
     # holds a native extension the sync must rewrite.
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra breaks on this machine, keep
     # base deps and reinstall the remaining extras individually so update does not silently strip working
     # capabilities. See #86735.
-    _m()._abort_dependency_sync_if_self_locked()
+    _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
     print("→ Updating Python dependencies...")
     _reinstall_python_deps_after_zip(active_tool_dependencies)
     # Verify the tree imports (catches the parse-OK-but-skewed tree an interrupted copy leaves). Runs

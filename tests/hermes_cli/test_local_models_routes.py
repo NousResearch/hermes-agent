@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 from pathlib import Path
 
@@ -54,6 +55,18 @@ def test_status_shape_and_defaults(client):
     assert isinstance(data["models"], list)
 
 
+def test_status_renders_degraded_when_config_cannot_be_read(client, monkeypatch):
+    """The status pane is garnish: an unreadable/uninitialized config renders defaults, never a 500."""
+    from hermes_cli import config as config_mod
+
+    def _boom():
+        raise FileNotFoundError("profile home is gone")
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", _boom)
+    r = client.get("/api/local-models/status")
+    assert r.status_code == 200 and r.json()["enabled"] is False
+
+
 def test_status_lists_staged_models_with_labels(client, tmp_path):
     from hermes_cli.local_runtime.bootstrap import models_dir
 
@@ -64,6 +77,61 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
     row = data["models"][ids.index("Some-Model")]
     assert row["size_bytes"] > 0
     assert row["size_label"].endswith("GB")
+
+
+def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import bootstrap, presets
+    from hermes_cli.local_runtime.binaries import runtimes_root
+    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
+    from hermes_cli.local_runtime.growth import save_window_override
+    from hermes_cli.web_routers import local_models
+
+    # Dense spill has no override-tensor flag: status must use the recorded decision.
+    profile = ModelProfile("status-mtp", 16 << 30, 0, 262144,
+                           [(LayerKind.FULL, 4096)] * 32, n_vocab=151936)
+    model_id = profile.name
+    _write_fake_gguf(bootstrap.models_dir() / f"{model_id}.gguf")
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
+    monkeypatch.setattr(local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1"})
+
+    server_window = FLOOR
+
+    def router_response(running, route, **kwargs):
+        if route == "/models":
+            return {"data": [{"id": model_id, "status": {"value": "loaded"}}]}
+        assert route == f"/props?model={model_id}"
+        return {"default_generation_settings": {"n_ctx": server_window}}
+
+    monkeypatch.setattr(local_models, "_router_request", router_response)
+    floor_need = profile.weights_bytes + ctx_bytes(replace(profile, kv_scale=1.2), FLOOR)
+    lean = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
+    stacked = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
+    ini = runtimes_root() / "presets.ini"
+    grown = 73728
+    for device, override, spilled in ((floor_need + lean - 1, FLOOR, True),
+                                      (floor_need + stacked, grown, False)):
+        save_window_override(model_id, override)
+        preset = presets.generate_presets(bootstrap.models_dir(),
+                                         HardwareBudget(device, device, 8 << 30), ini, {model_id})[0]
+        assert preset.window == override and preset.spilled is spilled
+        assert preset.keys["spec-type"] == "draft-mtp"
+        assert "ubatch-size" not in preset.keys and "override-tensor" not in preset.keys
+        # Deliberately differ from the plan to prove the server remains the grant authority.
+        server_window = preset.window - 1024
+        response = client.get("/api/local-models/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["loaded_models"][model_id] == "loaded"
+        placement = data["placement"][model_id]
+        assert placement["spilled"] is spilled
+        assert placement["window"] == preset.window
+        assert placement["granted_window"] == server_window
+        assert placement["granted_window_label"] == local_models._k_label(server_window)
 
 
 # ── hardware ─────────────────────────────────────────────────
@@ -291,3 +359,97 @@ def test_download_tolerates_stale_catalog_size(client, monkeypatch):
             break
         time.sleep(0.05)
     assert status is not None and status["status"] == "done", status.get("error")
+
+
+def test_download_survives_a_held_finished_file(client, monkeypatch):
+    """The finished .part is often still open to an antivirus scan when the rename runs (Windows),
+    which refuses it with a permission error. The job must wait the hold out and land the file —
+    not copy it, and not report a complete download as failed."""
+
+    body = b"x" * 48
+
+    class FakeResponse(io.BytesIO):
+        headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResponse(body))
+
+    real_replace = os.replace
+    refusals = []
+
+    def held_at_first(src, dst):
+        if str(src).endswith(".part") and len(refusals) < 2:
+            refusals.append(src)
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", held_at_first)
+
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(usable_vram_bytes=64 << 30, total_device_bytes=64 << 30,
+                            ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget", lambda **kw: budget)
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.refresh_local_runtime", lambda: False)
+
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.local_runtime.catalog import CATALOG
+
+    entry_id = CATALOG[0].id
+    r = client.post("/api/local-models/download", json={"model_id": entry_id})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+
+    deadline = time.time() + 10
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        if status["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert status is not None and status["status"] == "done", status.get("error")
+    assert len(refusals) == 2
+    assert not list(models_dir().glob("*.part"))
+    assert any(p.read_bytes() == body for p in models_dir().glob("*.gguf"))
+
+
+def test_download_failure_is_not_masked_by_a_stuck_leftover(tmp_path, monkeypatch):
+    """When the rename gives up, the user must see that message — not the error from the
+    cleanup that could not remove the still-held .part either."""
+    from hermes_cli.web_routers import local_models
+
+    body = b"x" * 48
+
+    class FakeResponse(io.BytesIO):
+        headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResponse(body))
+
+    def still_held(tmp, dest, **kw):
+        raise RuntimeError("could not be renamed into place")
+
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.replace_when_released", still_held)
+    real_unlink = Path.unlink
+
+    def stuck_part(self, missing_ok=False):
+        if self.suffix == ".part":
+            raise PermissionError(13, "Access is denied")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", stuck_part)
+
+    dest = tmp_path / "models" / "model.gguf"
+    with pytest.raises(RuntimeError, match="could not be renamed"):
+        local_models.download_file("http://example.invalid/model.gguf", dest, {})
+    assert not dest.exists()

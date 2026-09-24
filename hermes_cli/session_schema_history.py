@@ -203,6 +203,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'compression_recovery_deadline', 'compression_ineffective_count'),
         )),
         ('26 2026-09-02T14:22Z 8e4366d358', (('+', 'tool_names', 'last_read_at'),)),
+        ('27 2026-09-19T00:10Z 922a0c3c87', (('+', 'transport_profile', 'profile_name'),)),
         ),
     ),
     "messages": _TableHistory(
@@ -232,6 +233,10 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'display_metadata', 'display_kind'),
         )),
         ('14 2026-08-25T10:55Z 1104ffe0b9', (('+', '_compressed_summary', 'observed'),)),
+        ('15 2026-09-09T17:05Z 1c6683e8e0', (
+            ('+', 'display_identity', 'display_metadata'),
+            ('+', 'display_order', 'display_identity'),
+        )),
         ),
     ),
     "session_model_usage": _TableHistory(

@@ -79,14 +79,36 @@ describe('browserTabExternalUrl', () => {
   })
 })
 
-type DockData = { dock?: { pane?: string; pos?: string } } | undefined
+type DockData = { dock?: { pane?: string; pos?: string }; lifecycleKeepAlive?: boolean } | undefined
+
+function paneDataOf(paneId: string) {
+  return registry.getArea('panes').find(entry => entry.id === paneId)?.data as DockData
+}
 
 function dockOf(paneId: string) {
-  return (registry.getArea('panes').find(entry => entry.id === paneId)?.data as DockData)?.dock
+  return paneDataOf(paneId)?.dock
 }
 
 const fileTarget = (path: string) =>
   ({ kind: 'file', label: path.split('/').at(-1) ?? path, path, source: path, url: path }) as const
+
+// The zone reads this flag off the registered pane to offer Hide (kept-mounted,
+// inert body) instead of Minimize — so it has to come through the mirror, not
+// just be declared on the tile.
+describe('preview tiles keep a live page alive across Hide', () => {
+  it('registers a Browser tab with lifecycleKeepAlive while a text peek stays evictable', () => {
+    openPreview(
+      { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' },
+      'explicit-link'
+    )
+    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
+
+    const browserId = $previewTabs.get().find(tab => tab.target.kind === 'url')!.id
+
+    expect(paneDataOf(`preview-tile:${browserId}`)?.lifecycleKeepAlive).toBe(true)
+    expect(paneDataOf('preview-tile:file:/tmp/a.ts')?.lifecycleKeepAlive).toBeFalsy()
+  })
+})
 
 describe('preview tiles stack, not split (#93610)', () => {
   it('docks the first preview right and stacks the second as a center tab in the same zone', () => {

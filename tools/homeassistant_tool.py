@@ -145,8 +145,10 @@ def _run_async(coro):
         loop = None
     if loop and loop.is_running():  # already inside a loop: asyncio.run() needs its own thread
         import concurrent.futures
+        import contextvars
+        # Carry the caller's Context: the coroutine reads HASS_* via get_secret, which is profile-scoped.
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result(timeout=30)
+            return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result(timeout=30)
     return asyncio.run(coro)
 
 

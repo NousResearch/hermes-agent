@@ -4,22 +4,15 @@ detect_audio_environment() honors forwarded audio (has_forwarded_audio =
 PULSE_SERVER or PIPEWIRE_REMOTE or a reachable socket) in the SSH and container
 blocks, but the WSL block previously checked only PULSE_SERVER — so a WSL user
 with PipeWire forwarding (PIPEWIRE_REMOTE) was wrongly blocked from voice mode.
-These tests mock /proc/version so they reproduce the WSL path on any host.
+These tests patch the voice module's WSL predicate so they reproduce the WSL path on any host.
 """
-import builtins
-import io
 from unittest.mock import MagicMock
 
-WSL = "Linux version 5.15.0-microsoft-standard-WSL2 (oe-user@oe-host)"
 
+def _force_wsl(monkeypatch):
+    import tools.voice_mode as voice_mode
 
-def _force_wsl(monkeypatch, content=WSL):
-    real_open = builtins.open
-    def fake_open(file, *a, **k):
-        if str(file) == "/proc/version":
-            return io.StringIO(content)
-        return real_open(file, *a, **k)
-    monkeypatch.setattr(builtins, "open", fake_open)
+    monkeypatch.setattr(voice_mode, "is_wsl", lambda: True)
 
 
 def _base(monkeypatch):

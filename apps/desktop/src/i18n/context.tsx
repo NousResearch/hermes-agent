@@ -1,9 +1,16 @@
+import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { getHermesConfigRecord, type HermesConfigRecord, retainConfigReadOrigin, saveHermesConfig } from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
+import {
+  DEFAULT_LOCALE,
+  isSupportedLocaleValue,
+  localeConfigValue,
+  normalizeLocale,
+  resolveInitialLocale
+} from './languages'
 import { setRuntimeI18nLocale } from './runtime'
 import type { Locale, Translations } from './types'
 
@@ -20,19 +27,20 @@ const defaultConfigClient: I18nConfigClient = {
       return Promise.resolve({})
     }
 
-    return getHermesConfigRecord()
+    // Merged defaults make an unset language indistinguishable from saved English.
+    // Older backends ignore the option and keep returning English as before.
+    return getHermesConfigRecord(undefined, { includeDefaults: false })
   },
   saveConfig: config => {
     if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
       return Promise.resolve({ ok: true })
     }
 
-    return saveHermesConfig(config)
+    // No explicit scope: saveHermesConfig resolves the record's captured read
+    // origin itself (resolveConfigWriteScope), and withConfigDisplayLanguage
+    // retains that origin onto the derived record.
+    return saveHermesConfig(config, undefined, { preserveLanguage: true })
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
@@ -42,28 +50,20 @@ export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
 export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
   const display = isRecord(config.display) ? config.display : {}
 
-  return {
-    ...config,
-    display: {
-      ...display,
-      language: localeConfigValue(locale)
-    }
-  }
+  return retainConfigReadOrigin(
+    {
+      ...config,
+      display: {
+        ...display,
+        language: localeConfigValue(locale)
+      }
+    },
+    config
+  )
 }
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
-}
-
-const RTL_LOCALES = new Set<Locale>(['ar'])
-
-function applyDocumentLocale(locale: Locale) {
-  if (typeof document === 'undefined') {
-    return
-  }
-
-  document.documentElement.lang = locale
-  document.documentElement.dir = RTL_LOCALES.has(locale) ? 'rtl' : 'ltr'
 }
 
 export interface I18nContextValue {
@@ -134,9 +134,26 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
 
       return configClient
         .getConfig()
-        .then(config => {
+        .then(async config => {
+          if (cancelled || userLocaleRef.current) {
+            return
+          }
+
+          const saved = getConfigDisplayLanguage(config)
+
+          // A saved choice needs no machine probe and always takes precedence.
+          if (isSupportedLocaleValue(saved)) {
+            setLocaleState(normalizeLocale(saved))
+
+            return
+          }
+
+          // Keep inference unsaved so OS language changes apply on the next boot
+          // until the user explicitly picks a language.
+          const machineProfile = await window.hermesDesktop?.getMachineProfile?.().catch(() => null)
+
           if (!cancelled && !userLocaleRef.current) {
-            setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+            setLocaleState(resolveInitialLocale(undefined, machineProfile?.locale))
           }
         })
         .catch(error => {

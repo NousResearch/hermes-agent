@@ -111,6 +111,23 @@ def is_qwen_model(model: str) -> bool:
     return "qwen" in (model or "").lower()
 
 
+# ``prompt_caching.cache_ttl: auto`` picks the tier by who paces the session. The 1h tier
+# writes at 2x base vs 1.25x for 5m and only pays off when turns are more than five minutes
+# apart — a person stepping away and coming back. Machine-paced sessions call every few
+# seconds until they finish and never collect the retention, so they stay on 5m.
+# Measured on one install (2 days of per-call logs): 63% of interactive cache-write tokens
+# were cold re-writes after a 5–60 min idle gap (1h saves ~42% of write cost there), while
+# 1h on subagents/cron would have cost ~49% more.
+AUTO_CACHE_TTL = "auto"
+MACHINE_PACED_SOURCES = frozenset({"subagent", "cron", "oneshot", "webhook", "kanban", "api", "tool", "batch"})
+
+
+def auto_cache_ttl_for_source(source: str | None) -> str:
+    """The tier ``auto`` resolves to for a session source: ``5m`` for machine-paced sources,
+    ``1h`` for everything a human types into (cli, tui, desktop, messaging platforms)."""
+    return "5m" if (source or "").strip().lower() in MACHINE_PACED_SOURCES else "1h"
+
+
 def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "") -> str:
     """Clamp a requested cache TTL to what the destination route supports (``None`` → ``5m``).
 

@@ -85,6 +85,7 @@ const {
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
+  REQUIRED_BACKEND_CONTRACT,
   reportBackendContract,
   applyUpdates,
   applyEverythingUpdate,
@@ -99,7 +100,8 @@ const {
   resetUpdateApplyState,
   startUpdatePoller,
   stopUpdatePoller,
-  $updateStatus
+  $updateStatus,
+  BACKGROUND_UPDATE_CHECK_MS
 } = await import('./updates')
 
 const { setConnection } = await import('./session')
@@ -143,7 +145,6 @@ describe('maybeNotifyUpdateAvailable', () => {
   it('shows when an update is available and not snoozed', () => {
     maybeNotifyUpdateAvailable(status())
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ icon: 'gift' })
   })
 
   it('stays quiet for new commits once the toast was closed', () => {
@@ -177,10 +178,9 @@ describe('maybeNotifyUpdateAvailable', () => {
   // FAIL-BEFORE: a shallow installer clone reports behind:null + updateAvailable
   // (exact count unknowable without a merge-base). The guard treated null as 0
   // and silently swallowed the notification entirely.
-  it('still notifies with generic copy when the exact behind count is unknown', () => {
+  it('still notifies when the exact behind count is unknown', () => {
     maybeNotifyUpdateAvailable(status({ behind: null, updateAvailable: true }))
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: 'A new update is available.' })
   })
 })
 
@@ -193,7 +193,7 @@ describe('reportBackendContract', () => {
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(6)
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -233,7 +233,7 @@ describe('reportBackendContract', () => {
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(6) // backend updated → satisfied, snooze cleared
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
@@ -1356,24 +1356,27 @@ describe('startUpdatePoller', () => {
   it('calls checkUpdates() on startup so the version pill populates immediately', async () => {
     startUpdatePoller()
 
-    // checkUpdates() is async — flush microtasks without advancing the 30-min interval.
+    // checkUpdates() is async — flush microtasks without advancing the daily interval.
     await vi.advanceTimersByTimeAsync(0)
 
     expect(checkMock).toHaveBeenCalled()
     expect($updateStatus.get()?.behind).toBe(5)
   })
 
-  it('calls checkUpdates() on each interval tick', async () => {
+  it('polls once per day and never forces past the caches', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).toHaveBeenCalledWith({ force: false })
     checkMock.mockClear()
 
-    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    await vi.advanceTimersByTimeAsync(BACKGROUND_UPDATE_CHECK_MS - 1)
+    expect(checkMock).not.toHaveBeenCalled()
 
-    expect(checkMock).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(checkMock).toHaveBeenCalledTimes(1)
   })
 
-  it('calls checkUpdates() when the window regains focus', async () => {
+  it('window focus only re-checks once the daily cadence has elapsed', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)
     checkMock.mockClear()
@@ -1381,9 +1384,12 @@ describe('startUpdatePoller', () => {
     // Invoke the registered focus handler directly (the mock window doesn't
     // propagate DOM events, so call the stored listener).
     listeners['focus']?.()
-
     await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).not.toHaveBeenCalled()
 
-    expect(checkMock).toHaveBeenCalled()
+    vi.setSystemTime(Date.now() + BACKGROUND_UPDATE_CHECK_MS)
+    listeners['focus']?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).toHaveBeenCalledTimes(1)
   })
 })

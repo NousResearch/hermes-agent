@@ -17,11 +17,10 @@ the conftest module docstring.
 from __future__ import annotations
 
 import subprocess
-import time
 
 import pytest
 
-from tests.docker.conftest import docker_exec, docker_exec_sh, wait_for_path, wait_for_log, wait_for_docker_logs, poll_container
+from tests.docker.conftest import docker_exec, docker_exec_sh, wait_for_path, wait_for_log
 
 
 def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:

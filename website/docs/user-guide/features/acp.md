@@ -351,7 +351,9 @@ request programmatically instead of showing it to you, in which case these
 options exist on the wire but never reach a human. Buzz Desktop does this, so
 treat that path as unattended execution regardless of your `approvals` setting.
 
-On timeout or error, the approval bridge denies the request.
+On timeout or error, the approval bridge denies the request. The wait is
+`approvals.timeout` from `config.yaml` (default 300 s), the same knob the CLI and
+gateway prompts use — raise it if your editor keeps approval cards open longer.
 
 ### Session-scoped edit auto-approval
 

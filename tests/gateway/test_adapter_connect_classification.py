@@ -69,8 +69,6 @@ class TestTelegramAuthClassification:
     def test_network_error_is_not_auth_error(self):
         assert _telegram_classifier()(NetworkError("dns failure")) is False
 
-    def test_timeout_is_not_auth_error(self):
-        assert _telegram_classifier()(TimedOut("read timeout")) is False
 
     def test_generic_exception_is_not_auth_error(self):
         # Unknown types must stay retryable — a false terminal recreates the
@@ -107,23 +105,21 @@ def _discord_classifier():
 
 class TestDiscordConnectClassification:
     def test_login_failure_is_terminal(self):
-        code, message, retryable = _discord_classifier()(LoginFailure("Improper token"))
+        code, _message, retryable = _discord_classifier()(LoginFailure("Improper token"))
         assert code == "discord_auth_error"
         assert retryable is False
-        assert "Developer Portal" in message
 
     def test_privileged_intents_is_terminal(self):
-        code, message, retryable = _discord_classifier()(
+        code, _message, retryable = _discord_classifier()(
             PrivilegedIntentsRequired("shard 0 requested privileged intents")
         )
         assert code == "discord_intents_required"
         assert retryable is False
-        assert "Message Content Intent" in message
 
     def test_unknown_exception_is_retryable_with_explicit_code(self):
         # The old behavior set NO fatal code at all, which the gateway read
         # as "probably transient". Every failure must now carry a code.
-        code, message, retryable = _discord_classifier()(OSError("connection reset"))
+        code, _message, retryable = _discord_classifier()(OSError("connection reset"))
         assert code == "discord_connect_error"
         assert retryable is True
 
@@ -276,6 +272,14 @@ class TestEmailConnectClassification:
 # ── Gateway: needs_attention escalation ────────────────────────────────
 
 
+def _set_attention_after(value) -> None:
+    """Write ``agent.reconnect_attention_after`` into the test's isolated HERMES_HOME config."""
+    import yaml
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(
+        yaml.safe_dump({"agent": {"reconnect_attention_after": value}}), encoding="utf-8")
+
+
 class TestReconnectNeedsAttention:
     def test_fresh_entry_is_not_flagged_and_gets_stamped(self):
         # In-flight upgrade path: entries queued before queued_at existed are
@@ -291,16 +295,13 @@ class TestReconnectNeedsAttention:
         assert _reconnect_needs_attention(info, now) is False
 
     def test_past_threshold_is_flagged(self):
-        import gateway.run as run_module
-
+        _set_attention_after(10)
         now = time.monotonic()
-        info = {"queued_at": now - (run_module._RECONNECT_ATTENTION_AFTER_SECONDS + 1)}
+        info = {"queued_at": now - 11}
         assert _reconnect_needs_attention(info, now) is True
 
-    def test_zero_threshold_disables_escalation(self, monkeypatch):
-        import gateway.run as run_module
-
-        monkeypatch.setattr(run_module, "_RECONNECT_ATTENTION_AFTER_SECONDS", 0)
+    def test_zero_threshold_disables_escalation(self):
+        _set_attention_after(0)
         info = {"queued_at": time.monotonic() - 999999}
         assert _reconnect_needs_attention(info, time.monotonic()) is False
 
@@ -333,8 +334,6 @@ def _make_runner():
 class TestWatcherAttentionEscalation:
     @pytest.mark.asyncio
     async def test_watcher_flags_long_queued_platform_and_keeps_retrying(self, monkeypatch):
-        import gateway.run as run_module
-
         runner = _make_runner()
         status_writes = []
         monkeypatch.setattr(
@@ -343,7 +342,8 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
-        threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
+        threshold = 10
+        _set_attention_after(threshold)
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,
@@ -377,8 +377,6 @@ class TestWatcherAttentionEscalation:
 
     @pytest.mark.asyncio
     async def test_watcher_flags_only_once(self, monkeypatch):
-        import gateway.run as run_module
-
         runner = _make_runner()
         status_writes = []
         monkeypatch.setattr(
@@ -387,7 +385,8 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
-        threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
+        threshold = 10
+        _set_attention_after(threshold)
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,

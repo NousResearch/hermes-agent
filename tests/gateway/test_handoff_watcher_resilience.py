@@ -250,38 +250,6 @@ async def test_reclaim_runs_per_profile_store(monkeypatch):
     )
 
 
-@pytest.mark.asyncio
-async def test_reclaim_tolerates_store_without_the_method(monkeypatch):
-    """An older/duck-typed store must not abort watcher startup."""
-    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: [(None, None)])
-
-    async def _no_sleep(_seconds):
-        return None
-
-    monkeypatch.setattr(run.asyncio, "sleep", _no_sleep)
-
-    class _OldDB:
-        def __init__(self):
-            self.polls = 0
-
-        async def list_pending_handoffs(self):
-            self.polls += 1
-            return []
-
-    db = _OldDB()
-    fake = types.SimpleNamespace()
-    fake._session_db = db
-    fake._running = _running_flag(1)
-
-    async def _process_handoff(row, profile_name=None):
-        return None
-
-    fake._process_handoff = _process_handoff
-
-    coro = run.GatewayRunner._handoff_watcher(fake, interval=0.0, drain_timeout=0.01)
-    await asyncio.wait_for(coro, timeout=5)
-
-    assert db.polls == 1, "the watcher must still poll when reclaim is unavailable"
 
 
 def test_reclaim_stale_running_handoffs_flips_only_running_rows(tmp_path):

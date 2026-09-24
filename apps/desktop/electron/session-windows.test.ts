@@ -294,6 +294,7 @@ test('secondary URLs preserve exact local and remote routes in packaged and deve
           rendererIndexPath: '/tmp/hermes/index.html'
         })
       )
+
       assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
       assert.equal(url.searchParams.get('profile'), 'research')
       assert.equal(url.searchParams.get('watch'), '1')

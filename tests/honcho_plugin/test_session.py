@@ -823,6 +823,7 @@ class TestDialecticLifecycleSmoke:
         mock_manager = MagicMock()
         mock_session = MagicMock()
         mock_session.messages = []
+        mock_session.metadata = {"confirmed_new": True}
         mock_manager.get_or_create.return_value = mock_session
         mock_manager.get_prefetch_context.return_value = None
         mock_manager.pop_context_result.return_value = None
@@ -1393,3 +1394,157 @@ class TestObservationPerSessionScoping:
 
         assert mgr._ai_observes_others(session_c) is True
 
+
+# ---------------------------------------------------------------------------
+# confirmed_new: only a positively identified empty session may prewarm (#98980)
+# ---------------------------------------------------------------------------
+
+
+class TestConfirmedNewFlag:
+    """Only a successful empty context load may authorize startup prewarm.
+
+    A resumed, summary-only, cached or context-load-failed session must not be
+    reported as confirmed new, because the startup dialectic prewarm would then
+    re-derive paid context Honcho has already accumulated.
+    """
+
+    @staticmethod
+    def _load(session_id="stored-session", *, messages=None, summary="", context_error=None):
+        """Run _get_or_create_honcho_session against a fake SDK context()."""
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        mgr = HonchoSessionManager()
+        sdk = MagicMock()
+        sdk.get_peer_configuration.return_value = _FakeServerPeerConfig()
+        if context_error is not None:
+            sdk.context.side_effect = context_error
+        else:
+            sdk.context.return_value = SimpleNamespace(messages=list(messages or []), summary=summary)
+        mgr._sdk_session = MagicMock(return_value=sdk)
+        mgr._authed_call = MagicMock(side_effect=lambda _label, operation: operation())
+        with patch.dict(sys.modules, {"honcho.session": SimpleNamespace(SessionPeerConfig=_FakeServerPeerConfig)}):
+            return mgr._get_or_create_honcho_session(session_id, "user-peer", "ai-peer")
+
+    @pytest.mark.parametrize(
+        ("messages", "summary", "context_error", "confirmed_new"),
+        [
+            ([], "", None, True),
+            ([], "Existing summary", None, False),
+            ([MagicMock()], "", None, False),
+            ([], "", RuntimeError("temporary failure"), False),
+        ],
+        ids=["empty", "summary-only", "messages", "context-failure"],
+    )
+    def test_only_a_successful_empty_context_is_confirmed_new(
+        self, messages, summary, context_error, confirmed_new
+    ):
+        _, loaded, _ = self._load(messages=messages, summary=summary, context_error=context_error)
+
+        assert (loaded == []) is confirmed_new
+
+    def test_get_or_create_exposes_confirmed_new_metadata(self):
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        mgr = HonchoSessionManager()
+        mgr._resolve_user_peer_id = MagicMock(return_value="user-peer")
+        mgr.assistant_peer_id = MagicMock(return_value="ai-peer")
+        mgr._get_or_create_peer = MagicMock()
+        mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), [], None))
+
+        session = mgr.get_or_create("test-session")
+
+        assert session.metadata["confirmed_new"] is True
+
+    def test_get_or_create_marks_unconfirmed_when_context_missing(self):
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        mgr = HonchoSessionManager()
+        mgr._resolve_user_peer_id = MagicMock(return_value="user-peer")
+        mgr.assistant_peer_id = MagicMock(return_value="ai-peer")
+        mgr._get_or_create_peer = MagicMock()
+        mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), None, None))
+
+        session = mgr.get_or_create("stored-session")
+
+        assert session.metadata["confirmed_new"] is False
+
+    def test_cached_sdk_session_is_not_confirmed_new(self):
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        mgr = HonchoSessionManager()
+        cached_sdk = MagicMock()
+        mgr._sessions_cache["stored-session"] = cached_sdk
+
+        session, messages, _ = mgr._get_or_create_honcho_session(
+            "stored-session", MagicMock(), MagicMock()
+        )
+
+        assert session is cached_sdk
+        assert messages is None
+
+
+class TestSessionStartPrewarmGate:
+    """Startup dialectic prewarm fires only for a session positively confirmed new."""
+
+    @staticmethod
+    def _make_provider(*, confirmed_new=True, messages=(), dialectic_result="prewarm synthesis", cfg_extra=None):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.return_value = MagicMock(
+            messages=list(messages), metadata={"confirmed_new": confirmed_new},
+        )
+        mock_manager.get_prefetch_context.return_value = None
+        mock_manager.pop_context_result.return_value = None
+        mock_manager.dialectic_query.return_value = dialectic_result
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+
+        # initialize() waits 0.1s for the init thread; join it so the gate is decided
+        # before asserting (otherwise a not-yet-run prewarm reads as a false pass).
+        if provider._init_thread is not None:
+            provider._init_thread.join(timeout=5.0)
+        return provider
+
+    @pytest.mark.parametrize(
+        "messages",
+        [(), ("an earlier user turn",)],
+        ids=["new-but-unconfirmed", "resumed-with-messages"],
+    )
+    def test_unconfirmed_session_does_not_prewarm(self, messages):
+        """Neither a resumed session nor an unconfirmed empty one may pay for prewarm."""
+        p = self._make_provider(confirmed_new=False, messages=messages)
+
+        assert p._manager.dialectic_query.call_count == 0
+        assert p._prefetch_thread is None
+
+    def test_confirmed_new_session_still_prewarms(self):
+        p = self._make_provider(confirmed_new=True)
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+
+        assert p._manager.dialectic_query.call_count == 1
+
+    def test_resumed_session_runs_dialectic_on_first_new_user_turn(self):
+        """Skipping resume-time prewarm must defer - not disable - dialectic work:
+        the first substantive user turn fires it and stamps that turn."""
+        p = self._make_provider(confirmed_new=False)
+        p._turn_count = 1
+
+        result = p.prefetch("what should we work on next?")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+            result = result or p._consume_pending_dialectic()
+
+        assert p._manager.dialectic_query.call_count == 1
+        assert p._last_dialectic_turn == 1
+        assert "prewarm synthesis" in result

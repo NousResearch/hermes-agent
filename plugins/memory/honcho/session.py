@@ -219,13 +219,21 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             logger.warning("Honcho session '%s' add_peers failed (non-fatal): %s", session_id, e)
         return synced
 
-    def _load_existing_messages(self, session_id: str) -> list:
-        """Load prior messages via context() (one call for messages + metadata), oldest first."""
+    def _load_existing_messages(self, session_id: str) -> list | None:
+        """Load prior messages via context() (one call for messages + metadata), oldest first.
+
+        ``None`` means the session was not positively identified as empty
+        (summary-only context or a failed load); ``[]`` is confirmed new.
+        """
         try:
             ctx = self._authed_call(
                 "session context load",
                 lambda: self._sdk_session(session_id).context(summary=True, tokens=self._context_tokens))
-            existing_messages = ctx.messages or []
+            context_messages = ctx.messages or []
+            if not context_messages and getattr(ctx, "summary", None):
+                logger.info("Honcho session '%s' retrieved (summary only)", session_id)
+                return None
+            existing_messages = context_messages
             if len(existing_messages) > 1:
                 timestamps = [m.created_at for m in existing_messages if m.created_at]
                 if timestamps and timestamps != sorted(timestamps):
@@ -240,19 +248,24 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             logger.warning("Honcho session '%s' loaded without server context: auth failed", session_id)
         except Exception as e:
             logger.warning("Honcho session '%s' loaded (failed to fetch context: %s)", session_id, e)
-        return []
+        return None
 
-    def _get_or_create_honcho_session(self, session_id: str, user_peer: Any, assistant_peer: Any) -> tuple[Any, list, dict[str, bool] | None]:
+    def _get_or_create_honcho_session(self, session_id: str, user_peer: Any, assistant_peer: Any) -> tuple[Any, list | None, dict[str, bool] | None]:
         """(honcho_session, existing_messages, observation flags) with peers configured; a cached session
-        yields no messages and the flags stored when it was configured."""
+        yields no messages and the flags stored when it was configured. ``None`` messages means the
+        session was not positively identified as empty (cached, summary-only, or load failure)."""
         with self._cache_lock:
             if session_id in self._sessions_cache:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
-                return self._sessions_cache[session_id], [], self._session_observation.get(session_id)
+                return self._sessions_cache[session_id], None, self._session_observation.get(session_id)
 
         self._authed_call("session setup", lambda: self._sdk_session(session_id))
         observation = self._configure_session_peers(session_id, user_peer, assistant_peer)
-        existing_messages: list = self._load_existing_messages(session_id) if observation is not None else []
+        existing_messages: list | None = (
+            self._load_existing_messages(session_id)
+            if observation is not None
+            else None
+        )
 
         with self._cache_lock:
             honcho_session = self._sessions_cache.get(session_id)
@@ -350,8 +363,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             messages=[
                 {"role": "assistant" if msg.peer_id == assistant_peer_id else "user", "content": msg.content,
                  "timestamp": msg.created_at.isoformat() if msg.created_at else "", "_synced": True}
-                for msg in existing_messages
+                for msg in existing_messages or []
             ],
+            metadata={"confirmed_new": existing_messages == []},
         )
         with self._cache_lock:
             self._cache[key] = session

@@ -332,7 +332,9 @@ def test_cached_sdk_session_returns_the_flags_stored_for_it():
     mgr._sessions_cache["hs-x"] = sdk
     mgr._session_observation["hs-x"] = flags
 
-    assert mgr._get_or_create_honcho_session("hs-x", None, None) == (sdk, [], flags)
+    # A cached SDK session is not a fresh context load, so its messages read None:
+    # only a successful empty context() may authorize the startup prewarm (#98980).
+    assert mgr._get_or_create_honcho_session("hs-x", None, None) == (sdk, None, flags)
 
 
 @pytest.mark.parametrize("synced, kept", [(False, True), (True, False)])

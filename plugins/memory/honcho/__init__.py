@@ -381,9 +381,15 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 logger.debug("Honcho memory file migration skipped: %s", e)
 
         # Generic dialectic prewarm is incompatible with latest-message query rewriting,
-        # which needs the first substantive user message.
+        # which needs the first substantive user message. It is also only safe for a session
+        # positively confirmed empty: a resumed, summary-only or context-failed session
+        # already has context Honcho accumulated, and prewarming would pay to re-derive it.
         if self._recall_mode in {"context", "hybrid"} and not self._recall_sync:
-            if self._query_rewriter is None or not self._query_rewrite_enabled:
+            metadata = getattr(session, "metadata", None)
+            if not isinstance(metadata, dict) or not metadata.get("confirmed_new", False):
+                logger.debug("Honcho dialectic prewarm skipped for session not confirmed new: %s",
+                             self._session_key)
+            elif self._query_rewriter is None or not self._query_rewrite_enabled:
                 self._spawn_dialectic(_PREWARM_QUERY, thread_name="honcho-prewarm-dialectic", fired_at=0,
                                       log_label="dialectic prewarm", use_query_rewrite=False)
                 logger.debug("Honcho dialectic prewarm started for session: %s", self._session_key)

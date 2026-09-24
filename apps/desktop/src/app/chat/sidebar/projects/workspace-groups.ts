@@ -711,16 +711,27 @@ export function overlayRepoLanes(
 /**
  * Home's overlay: its rows have no cwd to place, so this is a plain upsert of
  * detached live sessions into its single lane — a brand-new project-less chat
- * shows the instant it's created, matching the flat Recents list.
+ * shows the instant it's created, matching the flat Recents list. A chat the
+ * authoritative owner map gives to a named project stays out, even while its
+ * live copy is briefly detached (else it lists in both places).
  */
 function overlayHomeLane(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string>
+  removed: ReadonlySet<string>,
+  owners: ReadonlyMap<string, string>
 ): SidebarProjectTree {
+  const ownedElsewhere = (session: SessionInfo): boolean => {
+    const owner =
+      owners.get(session.id) ?? (session._lineage_root_id ? owners.get(session._lineage_root_id) : undefined)
+
+    return Boolean(owner) && owner !== NO_PROJECT_ID
+  }
+
+  const belongs = (session: SessionInfo): boolean => !removed.has(session.id) && !ownedElsewhere(session)
   const lane = project.repos[0]?.groups[0]
-  const detached = live.filter(session => isDetachedSession(session) && !removed.has(session.id))
-  const kept = (lane?.sessions ?? []).filter(session => !removed.has(session.id))
+  const detached = live.filter(session => isDetachedSession(session) && belongs(session))
+  const kept = (lane?.sessions ?? []).filter(belongs)
 
   if (!detached.length && kept.length === (lane?.sessions.length ?? 0)) {
     return project
@@ -803,7 +814,7 @@ export function overlayLiveLanes(
   authoritativeOwners: ReadonlyMap<string, string> = NO_OWNERS
 ): SidebarProjectTree {
   if (project.isNoProject) {
-    return overlayHomeLane(project, live, removed)
+    return overlayHomeLane(project, live, removed, authoritativeOwners)
   }
 
   let changed = false

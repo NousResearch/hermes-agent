@@ -958,6 +958,30 @@ class TestPinnedGuard:
                 result = _delete_skill("my-skill")
         assert result["success"] is True
 
+    def test_delete_refuses_pinned_by_category_path(self, tmp_path):
+        """Deleting a pinned skill using its categorized path (e.g. 'research/my-skill') is refused."""
+        with _skill_dir(tmp_path):
+            cat_dir = tmp_path / "research" / "my-skill"
+            cat_dir.mkdir(parents=True)
+            (cat_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+            with self._pin("my-skill"):
+                result = _delete_skill("research/my-skill")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert (cat_dir / "SKILL.md").exists()
+
+    def test_delete_refuses_essential_by_category_path(self, tmp_path):
+        """Deleting an essential skill using its categorized path is refused."""
+        with _skill_dir(tmp_path):
+            cat_dir = tmp_path / "autonomous-ai-agents" / "hermes-agent"
+            cat_dir.mkdir(parents=True)
+            (cat_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+            result = _delete_skill("autonomous-ai-agents/hermes-agent")
+        assert result["success"] is False
+        assert "essential" in result["error"].lower()
+        assert (cat_dir / "SKILL.md").exists()
+
+
 
 # ---------------------------------------------------------------------------
 # _delete_skill — recursive-delete safety (port of Kilo Code #11240)

@@ -134,7 +134,15 @@ def _is_pinned(name: str, what: str) -> Optional[bool]:
     """skill_usage pinned flag; None (logged at debug) when the record is unreadable."""
     try:
         from tools import skill_usage
-        return bool(skill_usage.get_record(name).get("pinned"))
+        base_name = name.rsplit("/", 1)[-1] if "/" in name else name
+        rec = skill_usage.get_record(name)
+        if rec and rec.get("pinned"):
+            return True
+        if base_name != name:
+            rec_base = skill_usage.get_record(base_name)
+            if rec_base and rec_base.get("pinned"):
+                return True
+        return False
     except Exception:
         logger.debug("%s lookup failed for %s", what, name, exc_info=True)
         return None
@@ -144,21 +152,23 @@ def _pinned_guard(name: str) -> Optional[str]:
     """Refusal message if *name* is pinned or essential, else None. Pin only guards DELETION;
     patches/edits stay allowed. ESSENTIAL_SKILLS are permanently pinned (the system prompt
     references them). Best-effort: an unreadable sidecar lets the delete through."""
+    base_name = name.rsplit("/", 1)[-1] if "/" in name else name
     try:
         from agent.skill_utils import ESSENTIAL_SKILLS
-        if name in ESSENTIAL_SKILLS:
+        if name in ESSENTIAL_SKILLS or base_name in ESSENTIAL_SKILLS:
             return (
                 f"Skill '{name}' is essential to Hermes (the agent's own "
                 f"operating manual referenced by the system prompt) and "
                 f"cannot be deleted. Patches and edits are still allowed.")
     except Exception:
         logger.debug("essential-guard lookup failed for %s", name, exc_info=True)
-    if _is_pinned(name, "pinned-guard"):
+    if _is_pinned(name, "pinned-guard") or (base_name != name and _is_pinned(base_name, "pinned-guard")):
         return (
             f"Skill '{name}' is pinned and cannot be deleted by skill_manage. Ask the user to "
-            f"run `hermes curator unpin {name}` if they want to delete it. Patches and edits "
+            f"run `hermes curator unpin {base_name}` if they want to delete it. Patches and edits "
             f"are allowed on pinned skills; only deletion is blocked.")
     return None
+
 
 
 def _background_review_write_guard(

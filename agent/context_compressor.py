@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
-from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _COMPRESSION_MARKER_TEMPLATE
+from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _COMPRESSION_MARKER_TEMPLATE, elide_text
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
@@ -1255,7 +1255,7 @@ def _compact_fallback_turn(value: Any) -> str:
     text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > _FALLBACK_TURN_MAX_CHARS:
-        text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+        text = elide_text(text, _FALLBACK_TURN_MAX_CHARS, max_chars=_FALLBACK_TURN_MAX_CHARS)
     return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
 
 
@@ -1539,15 +1539,13 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
             marked = obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars) and obj.endswith("⟫")
             if len(obj) <= head_chars or marked:
                 return obj
-            marker = _COMPRESSION_MARKER_TEMPLATE.format(
-                omitted=len(obj) - head_chars, total=len(obj)
-            )
+            marker = elide_text(obj, head_chars)[head_chars:]
             # Only replace when it reclaims bytes: for a leaf just over the cap the marker is
             # longer than what it replaces.
             if head_chars + len(marker) >= len(obj):
                 return obj
             changed = True
-            return obj[:head_chars] + marker
+            return elide_text(obj, head_chars)
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -1736,7 +1734,7 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    truncation_marker = "...[truncated]"
+
     parsed = _json_dict(content)
     response = parsed.get("user_response")
     # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
@@ -1765,7 +1763,7 @@ def _sum_clarify(name, args, content, content_len, line_count):
         serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
         summary = response_prefix + serialized.decode("utf-8")
         if len(summary) > max_summary_chars:
-            summary = summary[: max_summary_chars - len(truncation_marker)].rstrip() + truncation_marker
+            summary = elide_text(summary, max_summary_chars, max_chars=max_summary_chars)
         return summary
     return "[clarify] asked user a question"
 
@@ -3360,7 +3358,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if role == "assistant" and content:
                 content = strip_think_blocks(None, content)
             if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = elide_text(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
             if role == "tool":
                 parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
                 continue
@@ -4311,7 +4309,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 continue
             text = re.sub(r"\s+", " ", text)
             if len(text) > _ACTIVE_TASK_MAX_CHARS:
-                text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+                text = elide_text(text, _ACTIVE_TASK_MAX_CHARS, max_chars=_ACTIVE_TASK_MAX_CHARS)
             return (
                 f"User asked (deterministic, from compacted turns): {text!r}\n"
                 "Historical only; newer protected-tail messages after this summary win."

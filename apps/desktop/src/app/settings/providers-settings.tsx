@@ -284,7 +284,6 @@ function ConnectedProviderRow({
             aria-label={`${copy.disconnect} ${title} in terminal`}
             onClick={() => onTerminalDisconnect(provider)}
             size="icon-xs"
-            title={copy.disconnectInTerminal}
             type="button"
             variant="ghost"
           >

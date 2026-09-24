@@ -82,6 +82,7 @@ def harness(monkeypatch):
             messages=k.get("messages"), active_system_prompt=k.get("active_system_prompt"),
             conversation_history=k.get("conversation_history"), compression_attempts=k.get("compression_attempts"),
             final_response=k.get("final_response"), turn_exit_reason="unknown", end_turn=False,
+            current_turn_user_idx=k.get("current_turn_user_idx", 0),
         )
 
     monkeypatch.setattr(ttr, "compress_after_tool_results", _compress_stub)
@@ -106,7 +107,8 @@ def _run_round(agent, tcs, messages, ttr):
         failed=False,
         _turn_exit_reason="unknown",
         truncated_tool_call_retries=0,
-    )
+        current_turn_user_idx=0,
+        )
     return verdict
 
 
@@ -118,7 +120,7 @@ def test_sentinel_dropped_and_errored(harness):
     assert len(tool_msgs) == 1
     assert "NOT executed" in tool_msgs[0]["content"]
     assert "Re-issue" in tool_msgs[0]["content"]
-    assert agent._executed == [], f"sentinel call was executed: {executed}"
+    assert agent._executed == [], f"sentinel call was executed: {agent._executed}"
 
 
 def test_sentinel_and_valid_batch_valid_survives(harness):
@@ -129,7 +131,7 @@ def test_sentinel_and_valid_batch_valid_survives(harness):
     tool_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "tool"]
     assert len(tool_msgs) == 1  # the sentinel error result
     assert "NOT executed" in tool_msgs[0]["content"]
-    assert agent._executed == ["terminal"], f"expected valid call to run, got {executed}"
+    assert agent._executed == ["terminal"], f"expected valid call to run, got {agent._executed}"
 
 
 def test_normal_empty_object_args_still_execute(harness):

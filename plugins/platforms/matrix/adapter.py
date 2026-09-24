@@ -809,6 +809,18 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
+def _is_invited_room_source(source: Any) -> bool:
+    """True when *source* (the mautrix ``SyncStream`` flag ``Client.dispatch_event`` stamps on an
+    event) says it came from the ``rooms.invite`` section. Anything unclassifiable answers True so
+    an unusual caller keeps the old act-on-it behaviour rather than silently dropping an invite."""
+    try:
+        from mautrix.client import SyncStream
+
+        return bool(source & SyncStream.INVITED_ROOM)
+    except Exception:
+        return True
+
+
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -2242,8 +2254,29 @@ class MatrixAdapter(BasePlatformAdapter):
         return await cache_document_from_bytes_async(file_bytes, filename)
 
     async def _on_invite(self, event: Any) -> None:
-        """Auto-join rooms when invited, recording DM rooms in m.direct."""
+        """Auto-join rooms when invited, recording DM rooms in m.direct.
+
+        mautrix's ``MembershipEventDispatcher`` fans out every ``m.room.member`` event whose
+        membership is ``invite`` as ``InternalEventType.INVITE``, including historic ones
+        re-read on each (re)connect: we sync with ``MemorySyncStore``, so every connect is a
+        full-state initial sync that dispatches each joined room's state and recent timeline
+        again. The only invite we can act on is the one the homeserver delivers in
+        ``rooms.invite``; everything else is history and stays quiet.
+        """
         room_id = str(getattr(event, "room_id", ""))
+        source = getattr(event, "source", None)
+        if source is not None and not _is_invited_room_source(source):
+            logger.debug("Matrix: ignoring replayed membership invite in %s (source=%s)", room_id, source)
+            return
+        if room_id and room_id in self._joined_rooms:
+            logger.debug("Matrix: ignoring invite to %s — already joined", room_id)
+            return
+        # Skip invites addressed to someone else (bridged rooms carry other users'
+        # invites via state_key). An unresolved target keeps the old path (#76292).
+        target = str(getattr(event, "state_key", "") or "")
+        if self._user_id and target and not self._is_self_sender(target):
+            logger.debug("Matrix: ignoring invite to %s addressed to %s", room_id, target)
+            return
         is_direct = bool(getattr(getattr(event, "content", None), "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.

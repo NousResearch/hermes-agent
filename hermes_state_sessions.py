@@ -866,9 +866,14 @@ class SessionSessionsMixin:
             (),
         ) or 0)
 
-    def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
-        """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
-        forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
+    def _set_lineage_column(
+        self, column: str, session_id: str, value: Any, *, only_if_changed: bool = False,
+    ) -> bool:
+        """Set one column across a compression lineage without crossing fork/reset boundaries."""
+        changed_guard = f" AND {column} != ?" if only_if_changed else ""
+        params = (session_id, session_id, value, value) if only_if_changed else (
+            session_id, session_id, value,
+        )
         return self._write_rowcount(
             f"""
             WITH RECURSIVE
@@ -880,6 +885,10 @@ class SessionSessionsMixin:
                 JOIN sessions child ON child.id = a.id
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE parent.end_reason = 'compression'
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._branched_from')}, '') != parent.id
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._delegate_from')}, '') != parent.id
+                  AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                  AND COALESCE(child.source, '') != 'tool'
               ),
               descendants(id) AS (
                 SELECT ?
@@ -889,6 +898,10 @@ class SessionSessionsMixin:
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._branched_from')}, '') != parent.id
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._delegate_from')}, '') != parent.id
+                  AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                  AND COALESCE(child.source, '') != 'tool'
               ),
               lineage(id) AS (
                 SELECT id FROM ancestors
@@ -897,14 +910,20 @@ class SessionSessionsMixin:
               )
             UPDATE sessions
             SET {column} = ?
-            WHERE id IN (SELECT id FROM lineage)
+            WHERE id IN (SELECT id FROM lineage){changed_guard}
             """,
-            (session_id, session_id, value),
+            params,
         ) > 0
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
         return self._set_lineage_column("archived", session_id, int(archived))
+
+    def unarchive_if_archived(self, session_id: str) -> bool:
+        """Unarchive a lineage only when at least one member is currently archived."""
+        if not session_id:
+            return False
+        return self._set_lineage_column("archived", session_id, 0, only_if_changed=True)
 
     # Accidental end reasons recovery treats as resumable (also interpolated into
     # the recovery/promotion SQL so literals cannot drift).

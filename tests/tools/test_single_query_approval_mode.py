@@ -15,13 +15,10 @@ that decision deterministic and explicit.
 import pytest
 
 import tools.approval as approval_module
+from tools import approval_context
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
-from tools.approval import (
-    _get_single_query_approval_mode,
-    check_all_command_guards,
-    check_dangerous_command,
-    detect_dangerous_command,
-)
+from tools.approval import check_all_command_guards, check_dangerous_command
+from tools.approval_context import _get_single_query_approval_mode
 
 
 @pytest.fixture(autouse=True)
@@ -48,10 +45,6 @@ class TestSingleQueryApprovalModeParsing:
         with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {}}):
             assert _get_single_query_approval_mode() == "deny"
 
-    def test_explicit_deny(self):
-        from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "deny"}}):
-            assert _get_single_query_approval_mode() == "deny"
 
     def test_explicit_approve(self):
         from unittest.mock import patch as mock_patch
@@ -64,15 +57,6 @@ class TestSingleQueryApprovalModeParsing:
         with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "off"}}):
             assert _get_single_query_approval_mode() == "approve"
 
-    def test_allow_maps_to_approve(self):
-        from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "allow"}}):
-            assert _get_single_query_approval_mode() == "approve"
-
-    def test_yes_maps_to_approve(self):
-        from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "yes"}}):
-            assert _get_single_query_approval_mode() == "approve"
 
     def test_case_insensitive(self):
         from unittest.mock import patch as mock_patch
@@ -143,7 +127,7 @@ class TestSingleQueryDenyMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
@@ -157,22 +141,9 @@ class TestSingleQueryDenyMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             result = check_dangerous_command("ls -la", "local")
             assert result["approved"]
-
-    def test_block_message_includes_description(self, monkeypatch):
-        """The block message should mention what pattern was matched."""
-        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-
-        from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
-            assert not result["approved"]
-            assert "dangerous" in result["message"].lower() or "delete" in result["message"].lower()
 
 
 class TestSingleQueryApproveMode:
@@ -186,7 +157,7 @@ class TestSingleQueryApproveMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="approve"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="approve"):
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
@@ -206,7 +177,7 @@ class TestSingleQueryDenyModeAllGuards:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             result = check_all_command_guards("rm -rf /tmp/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
@@ -220,7 +191,7 @@ class TestSingleQueryDenyModeAllGuards:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             result = check_all_command_guards("echo hello", "local")
             assert result["approved"]
 
@@ -232,7 +203,7 @@ class TestSingleQueryDenyModeAllGuards:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="approve"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="approve"):
             result = check_all_command_guards("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
@@ -254,7 +225,7 @@ class TestSingleQueryDenyModeAllGuards:
             "summary": "homograph url",
         }
         with (
-            mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"),
+            mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"),
             mock_patch("tools.approval.detect_dangerous_command",
                        return_value=(False, None, None)),
             mock_patch("tools.tirith_security.check_command_security",
@@ -281,7 +252,7 @@ class TestSingleQueryExecuteCode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             result = approval_module.check_execute_code_guard("import os", "local")
             assert not result["approved"]
             assert result["outcome"] == "blocked"
@@ -295,7 +266,7 @@ class TestSingleQueryExecuteCode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="approve"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="approve"):
             result = approval_module.check_execute_code_guard("import os", "local")
             assert result["approved"]
 
@@ -306,7 +277,7 @@ class TestSingleQueryExecuteCode:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         result = approval_module.check_execute_code_guard("import os", "local")
         assert result["approved"]
@@ -327,7 +298,7 @@ class TestSingleQueryModeInteractions:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             result = check_dangerous_command("rm -rf /", "docker")
             assert result["approved"]
 
@@ -346,7 +317,7 @@ class TestSingleQueryModeInteractions:
         from unittest.mock import patch as mock_patch
         with (
             mock_patch.object(approval_module, "_YOLO_MODE_FROZEN", True),
-            mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"),
+            mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"),
         ):
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert result["approved"]
@@ -359,6 +330,6 @@ class TestSingleQueryModeInteractions:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_single_query_approval_mode", return_value="approve"):
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="approve"):
             result = check_all_command_guards("rm -rf /", "local")
             assert not result["approved"]

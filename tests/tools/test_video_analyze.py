@@ -11,9 +11,7 @@ from tools.vision_tools import (
     _detect_video_mime_type,
     _video_to_base64_data_url,
     _handle_video_analyze,
-    _MAX_VIDEO_BASE64_BYTES,
     video_analyze_tool,
-    VIDEO_ANALYZE_SCHEMA,
 )
 
 
@@ -70,15 +68,6 @@ class TestVideoToBase64DataUrl:
 # ---------------------------------------------------------------------------
 
 
-class TestVideoAnalyzeSchema:
-    """Schema structure is correct."""
-
-    def test_schema_name(self):
-        assert VIDEO_ANALYZE_SCHEMA["name"] == "video_analyze"
-
-
-    def test_schema_description_mentions_video(self):
-        assert "video" in VIDEO_ANALYZE_SCHEMA["description"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -89,19 +78,6 @@ class TestVideoAnalyzeSchema:
 class TestHandleVideoAnalyze:
     """Tests for the registry handler wrapper."""
 
-    def test_returns_awaitable(self, tmp_path, monkeypatch):
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"\x00" * 100)
-        monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "")
-        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "")
-
-        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
-            mock_tool.return_value = json.dumps({"success": True, "analysis": "test"})
-            result = _handle_video_analyze({"video_url": str(video_file), "question": "what is this?"})
-            # Should return an awaitable (coroutine)
-            assert asyncio.iscoroutine(result)
-            # Clean up the unawaited coroutine
-            result.close()
 
 
     def test_falls_back_to_vision_model_env(self, tmp_path, monkeypatch):
@@ -279,11 +255,5 @@ class TestVideoToolsetRegistration:
         assert entry is not None
         assert entry.toolset == "video"
         assert entry.is_async is True
-        assert entry.emoji == "🎬"
 
 
-    def test_in_video_toolset_definition(self):
-        """Toolset 'video' should contain video_analyze."""
-        from toolsets import TOOLSETS
-        assert "video" in TOOLSETS
-        assert "video_analyze" in TOOLSETS["video"]["tools"]

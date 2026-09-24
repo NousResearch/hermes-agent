@@ -47,8 +47,15 @@ class TestTelegramModelPicker:
     @pytest.mark.asyncio
     async def test_back_button_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()
-        adapter._model_picker_state["12345"] = {
-            "providers": [{"slug": "provider_one", "name": "Provider One", "total_models": 1, "is_current": True}],
+        adapter._model_picker_state["12345:42"] = {
+            "providers": [
+                {
+                    "slug": "provider_one",
+                    "name": "Provider One",
+                    "total_models": 1,
+                    "is_current": True,
+                }
+            ],
             "current_model": "model_1",
             "current_provider": "provider_one",
             "session_key": "s",
@@ -58,8 +65,9 @@ class TestTelegramModelPicker:
 
         query = AsyncMock()
         query.data = "mb"
-        query.message = MagicMock()
-        query.message.chat_id = 12345
+        query.message = SimpleNamespace(
+            chat_id=12345, message_id=42, message_thread_id=None
+        )
         query.from_user = MagicMock()
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -80,9 +88,14 @@ class TestTelegramModelPicker:
         only fired when the callback raised."""
         adapter = _make_adapter()
         callback = AsyncMock(return_value="Switched to `gpt-5`")
-        adapter._model_picker_state["12345"] = {
+        adapter._model_picker_state["12345:42"] = {
             "providers": [
-                {"slug": "openai", "name": "OpenAI", "total_models": 1, "is_current": True}
+                {
+                    "slug": "openai",
+                    "name": "OpenAI",
+                    "total_models": 1,
+                    "is_current": True,
+                }
             ],
             "current_model": "model_1",
             "current_provider": "openai",
@@ -95,8 +108,9 @@ class TestTelegramModelPicker:
 
         query = AsyncMock()
         query.data = "mm:0"
-        query.message = MagicMock()
-        query.message.chat_id = 12345
+        query.message = SimpleNamespace(
+            chat_id=12345, message_id=42, message_thread_id=None
+        )
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
@@ -107,7 +121,7 @@ class TestTelegramModelPicker:
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
         assert "`gpt-5`" in edit_kwargs["text"]
-        assert "12345" not in adapter._model_picker_state
+        assert "12345:42" not in adapter._model_picker_state
 
     @pytest.mark.parametrize(
         ("callback_message_id", "callback_thread_id"),
@@ -232,8 +246,9 @@ class TestTelegramModelPicker:
 
         built.clear()
         query = AsyncMock()
-        query.message = MagicMock()
-        query.message.chat_id = 12345
+        query.message = SimpleNamespace(
+            chat_id=12345, message_id=101, message_thread_id=None
+        )
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
@@ -272,12 +287,14 @@ class TestTelegramModelPicker:
             {"slug": f"provider-{i}", "name": f"Provider {i}", "total_models": 1}
             for i in range(10)
         ]
-        providers.append({
-            "slug": "zai",
-            "name": "Z.AI / GLM",
-            "models": ["glm-5.2"],
-            "total_models": 1,
-        })
+        providers.append(
+            {
+                "slug": "zai",
+                "name": "Z.AI / GLM",
+                "models": ["glm-5.2"],
+                "total_models": 1,
+            }
+        )
 
         await adapter.send_model_picker(
             chat_id="12345",
@@ -291,9 +308,7 @@ class TestTelegramModelPicker:
 
         def _callbacks(markup):
             return [
-                button.callback_data
-                for row in markup.inline_keyboard
-                for button in row
+                button.callback_data for row in markup.inline_keyboard for button in row
             ]
 
         first_page = _callbacks(sent["reply_markup"])
@@ -301,8 +316,9 @@ class TestTelegramModelPicker:
         assert "mpv:1" in first_page
 
         query = AsyncMock()
-        query.message = MagicMock()
-        query.message.chat_id = 12345
+        query.message = SimpleNamespace(
+            chat_id=12345, message_id=101, message_thread_id=None
+        )
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
@@ -313,7 +329,7 @@ class TestTelegramModelPicker:
         assert "mpv:0" in second_page
 
         await adapter._handle_model_picker_callback(query, "mp:zai", "12345")
-        assert adapter._model_picker_state["12345"]["selected_provider"] == "zai"
+        assert adapter._model_picker_state["12345:101"]["selected_provider"] == "zai"
 
         await adapter._handle_model_picker_callback(query, "mb", "12345")
         back_page = _callbacks(query.edit_message_text.call_args[1]["reply_markup"])
@@ -323,9 +339,14 @@ class TestTelegramModelPicker:
     async def test_expensive_model_requires_confirmation(self, monkeypatch):
         adapter = _make_adapter()
         callback = AsyncMock(return_value="Switched to `openai/gpt-5.5-pro`")
-        adapter._model_picker_state["12345"] = {
+        adapter._model_picker_state["12345:42"] = {
             "providers": [
-                {"slug": "openrouter", "name": "OpenRouter", "total_models": 1, "is_current": True}
+                {
+                    "slug": "openrouter",
+                    "name": "OpenRouter",
+                    "total_models": 1,
+                    "is_current": True,
+                }
             ],
             "current_model": "model_1",
             "current_provider": "openrouter",
@@ -336,22 +357,24 @@ class TestTelegramModelPicker:
             "msg_id": 42,
         }
         monkeypatch.setattr(
-            "hermes_cli.model_cost_guard.expensive_model_warning",
+            "hermes_cli.model_selection_guards.combined_selection_warning",
             lambda *_args, **_kwargs: SimpleNamespace(
-                message="!!! EXPENSIVE MODEL WARNING !!!\ndid you mean to select openai/gpt-5.5?"
+                title="EXPENSIVE MODEL WARNING",
+                message="Did you mean to select openai/gpt-5.5?",
             ),
         )
 
         query = AsyncMock()
-        query.message = MagicMock()
-        query.message.chat_id = 12345
+        query.message = SimpleNamespace(
+            chat_id=12345, message_id=42, message_thread_id=None
+        )
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
         await adapter._handle_model_picker_callback(query, "mm:0", "12345")
 
         callback.assert_not_awaited()
-        assert "12345" in adapter._model_picker_state
+        assert "12345:42" in adapter._model_picker_state
         first_edit = query.edit_message_text.call_args[1]
         assert "EXPENSIVE MODEL WARNING" in first_edit["text"]
         assert first_edit["reply_markup"] is not None
@@ -359,12 +382,14 @@ class TestTelegramModelPicker:
         await adapter._handle_model_picker_callback(query, "mc:0", "12345")
 
         callback.assert_awaited_once_with("12345", "openai/gpt-5.5-pro", "openrouter")
-        assert "12345" not in adapter._model_picker_state
+        assert "12345:42" not in adapter._model_picker_state
 
     @pytest.mark.asyncio
     async def test_retries_without_thread_when_thread_not_found(self):
         adapter = _make_adapter()
-        providers = [{"slug": "openai", "name": "OpenAI", "total_models": 2, "is_current": True}]
+        providers = [
+            {"slug": "openai", "name": "OpenAI", "total_models": 2, "is_current": True}
+        ]
         call_log = []
 
         class FakeBadRequest(Exception):
@@ -391,7 +416,10 @@ class TestTelegramModelPicker:
         assert result.success is True
         assert len(call_log) == 2
         assert call_log[0]["message_thread_id"] == 99999
-        assert "message_thread_id" not in call_log[1] or call_log[1]["message_thread_id"] is None
+        assert (
+            "message_thread_id" not in call_log[1]
+            or call_log[1]["message_thread_id"] is None
+        )
 
         query = AsyncMock()
         query.message = SimpleNamespace(
@@ -411,15 +439,10 @@ class TestTelegramModelPicker:
         assert "12345:99" not in adapter._model_picker_state
 
     @pytest.mark.asyncio
-    async def test_matching_message_and_thread_callback_switches_model(self, monkeypatch):
-        """Positive path: a callback whose msg_id AND thread match the picker
-        passes ``_model_picker_callback_matches_state`` and performs the switch.
-
-        The guard's happy path with a real (non-General) thread was previously
-        unverified — pre-PR tests exercised only the bare-chat key with no
-        thread, so the ``state_thread_id == query_thread_id`` arm never matched
-        a truthy thread.  Here the picker is opened in topic ``222`` and the
-        callback arrives on the same message in the same topic."""
+    async def test_matching_message_and_thread_callback_switches_model(
+        self, monkeypatch
+    ):
+        """A callback on the sent message in topic 222 switches that picker only."""
         adapter = _make_adapter()
         callback = AsyncMock(return_value="Switched to `gemini-3.5-flash`")
         monkeypatch.setattr(
@@ -474,17 +497,11 @@ class TestTelegramModelPicker:
         query.edit_message_text.assert_awaited()
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "`gemini-3.5-flash`" in edit_kwargs["text"]
-        # Successful switch clears both the message-keyed and bare-chat entries.
         assert "12345:42" not in adapter._model_picker_state
-        assert "12345" not in adapter._model_picker_state
 
     @pytest.mark.asyncio
     async def test_two_concurrent_pickers_resolve_by_message_key(self, monkeypatch):
-        """Two pickers live in one chat: A (msg 10) then B (msg 20).  Sending B
-        OVERWRITES the bare ``chat`` key to B's state, but A still has its own
-        ``chat:10`` message-keyed entry.  A callback fired on A must resolve to
-        state A via that message key — NOT be shadowed by B's bare-key
-        overwrite — and switch A's selected model, leaving B untouched."""
+        """Selecting an older live picker must leave the newer picker untouched."""
         adapter = _make_adapter()
         callback_a = AsyncMock(return_value="Switched to `model-a`")
         callback_b = AsyncMock(return_value="Switched to `model-b`")
@@ -504,7 +521,12 @@ class TestTelegramModelPicker:
         result_a = await adapter.send_model_picker(
             chat_id="12345",
             providers=[
-                {"slug": "prov_a", "name": "ProvA", "models": ["model-a"], "total_models": 1}
+                {
+                    "slug": "prov_a",
+                    "name": "ProvA",
+                    "models": ["model-a"],
+                    "total_models": 1,
+                }
             ],
             current_model="cur",
             current_provider="prov_a",
@@ -514,11 +536,16 @@ class TestTelegramModelPicker:
         )
         assert result_a.success is True
 
-        # Picker B (msg 20) — re-issue in the same chat; bare key is overwritten.
+        # Picker B has independent message-scoped state.
         result_b = await adapter.send_model_picker(
             chat_id="12345",
             providers=[
-                {"slug": "prov_b", "name": "ProvB", "models": ["model-b"], "total_models": 1}
+                {
+                    "slug": "prov_b",
+                    "name": "ProvB",
+                    "models": ["model-b"],
+                    "total_models": 1,
+                }
             ],
             current_model="cur",
             current_provider="prov_b",
@@ -528,10 +555,9 @@ class TestTelegramModelPicker:
         )
         assert result_b.success is True
 
-        # Both message-keyed entries coexist; bare key now points at B.
+        # Both message-keyed entries coexist without a chat-wide fallback.
         assert "12345:10" in adapter._model_picker_state
         assert "12345:20" in adapter._model_picker_state
-        assert adapter._model_picker_state["12345"] is adapter._model_picker_state["12345:20"]
 
         state_a = adapter._model_picker_state["12345:10"]
         state_a["selected_provider"] = "prov_a"
@@ -560,7 +586,6 @@ class TestTelegramModelPicker:
         # A's message-keyed entry is cleared; B's picker remains live and intact.
         assert "12345:10" not in adapter._model_picker_state
         assert "12345:20" in adapter._model_picker_state
-        assert adapter._model_picker_state["12345"] is adapter._model_picker_state["12345:20"]
 
     @pytest.mark.asyncio
     async def test_abandoned_picker_state_is_bounded(self):
@@ -572,9 +597,7 @@ class TestTelegramModelPicker:
             return SimpleNamespace(message_id=next(message_ids))
 
         adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
-        providers = [
-            {"slug": "openai", "name": "OpenAI", "total_models": 1}
-        ]
+        providers = [{"slug": "openai", "name": "OpenAI", "total_models": 1}]
 
         for index in range(3):
             result = await adapter.send_model_picker(
@@ -591,5 +614,8 @@ class TestTelegramModelPicker:
         assert "12345:10" not in adapter._model_picker_state
         assert "12345:20" in adapter._model_picker_state
         assert "12345:30" in adapter._model_picker_state
-        assert adapter._model_picker_state["12345"] is adapter._model_picker_state["12345:30"]
-
+        expired = AsyncMock()
+        expired.message = SimpleNamespace(message_id=10, message_thread_id=None)
+        await adapter._handle_model_picker_callback(expired, "mx", "12345")
+        expired.edit_message_text.assert_not_awaited()
+        assert "expired" in expired.answer.call_args.kwargs["text"].lower()

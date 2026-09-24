@@ -51,6 +51,9 @@ class _SessionDB:
 
 
 def _runner(adapter, *, session_db=...):
+    def admit(event):
+        event._gateway_accepted = True
+    adapter.handle_message.side_effect = admit
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}

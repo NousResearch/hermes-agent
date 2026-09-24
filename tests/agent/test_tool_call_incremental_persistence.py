@@ -387,6 +387,64 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+def test_spilled_result_lazily_initializes_configured_docker_env_before_persisting(monkeypatch):
+    """A first large non-terminal result must advertise a sandbox-readable spill path."""
+    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_backends as terminal_backends
+
+    agent = _make_agent()
+    messages: list = []
+    assistant_message = SimpleNamespace(
+        content="", tool_calls=[_mock_tool_call(call_id="docker-spill")],
+    )
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    task_id = "docker-spill-task"
+    effective_task_id = terminal_tool._resolve_container_task_id(task_id)
+    sandbox = MagicMock()
+    agent._flush_messages_to_session_db = MagicMock()
+
+    try:
+        with (
+            patch("model_tools.handle_function_call", return_value="x" * 120_000),
+            patch.object(terminal_backends, "_create_environment", return_value=sandbox) as create,
+            patch(
+                "agent.tool_executor.maybe_persist_tool_result",
+                side_effect=lambda **kwargs: "persisted" if kwargs["env"] is sandbox else "host path",
+            ),
+        ):
+            agent._execute_tool_calls_sequential(assistant_message, messages, task_id)
+        create.assert_called_once()
+    finally:
+        terminal_tool._active_environments.pop(effective_task_id, None)
+        terminal_tool._last_activity.pop(effective_task_id, None)
+
+    assert messages[-1]["content"] == "persisted"
+
+
+def test_spilled_result_keeps_host_fallback_when_sandbox_creation_fails():
+    """A failed lazy Docker startup retains the prior safe host-path fallback."""
+    agent = _make_agent()
+    messages: list = []
+    assistant_message = SimpleNamespace(
+        content="", tool_calls=[_mock_tool_call(call_id="docker-spill-fallback")],
+    )
+    agent._flush_messages_to_session_db = MagicMock()
+
+    with (
+        patch("model_tools.handle_function_call", return_value="x" * 120_000),
+        patch("agent.tool_executor.get_active_env", return_value=None),
+        patch("agent.tool_executor.ensure_task_env", return_value=None) as ensure,
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: "host path" if kwargs["env"] is None else "persisted",
+        ),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "docker-task")
+
+    ensure.assert_called_once_with("docker-task")
+    assert messages[-1]["content"] == "host path"
+
+
 def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 
@@ -904,4 +962,3 @@ def test_flush_concurrent_nonblank_winner_adopts_canonical_content(tmp_path):
     assert messages[-1]["content"] == "Canonical winner answer from sibling"
     assert messages[-1]["_db_persisted"] is True
     assert messages[-1]["_row_id"] == row_id
-

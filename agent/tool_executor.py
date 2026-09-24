@@ -47,7 +47,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
-from tools.terminal_tool_lifecycle import get_active_env
+from tools.terminal_tool_lifecycle import ensure_task_env, get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
@@ -1021,6 +1021,19 @@ def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata
         )
 
 
+def _result_storage_env(task_id: str, *, needs_persistence: bool):
+    """Return an active sandbox for a spill, creating one only when a spill is needed.
+
+    A non-terminal tool can be the first sandbox consumer.  In that case a
+    host-only spill path would be unusable by the following read_file or
+    execute_code call, so give configured non-local backends their normal
+    lazy bring-up chance.  ``ensure_task_env`` is a no-op for local and
+    returns ``None`` on failed creation, preserving the existing fallback.
+    """
+    env = get_active_env(task_id)
+    return ensure_task_env(task_id) if env is None and needs_persistence else env
+
+
 def _commit_tool_result(
     agent,
     messages: list,
@@ -1072,16 +1085,26 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
+    threshold = budget.resolve_threshold(function_name)
+    text_parts = (
+        [part.get("text") for part in persisted_result.get("content") or []
+        if isinstance(part, dict) and part.get("type") == "text"]
+        if _is_multimodal_tool_result(persisted_result) else [persisted_result]
+    )
+    storage_env = _result_storage_env(
+        effective_task_id,
+        needs_persistence=any(isinstance(text, str) and len(text) > threshold for text in text_parts),
+    )
     if _is_multimodal_tool_result(persisted_result):
         persisted_result = _persist_multimodal_text_parts(
-            persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
+            persisted_result, function_name, tool_call_id, storage_env, budget,
         )
     else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
             tool_name=function_name,
             tool_use_id=tool_call_id,
-            env=get_active_env(effective_task_id),
+            env=storage_env,
             config=budget,
         )
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
@@ -1147,7 +1170,12 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     steer marker is never truncated/discarded when enforcement replaces a result."""
     if num_tools <= 0:
         return
-    enforce_turn_budget(messages[-num_tools:], env=get_active_env(effective_task_id), config=budget)
+    tool_messages = messages[-num_tools:]
+    storage_env = _result_storage_env(
+        effective_task_id,
+        needs_persistence=sum(len(message.get("content", "")) for message in tool_messages) > budget.turn_budget,
+    )
+    enforce_turn_budget(tool_messages, env=storage_env, config=budget)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
 

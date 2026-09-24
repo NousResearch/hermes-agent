@@ -8,8 +8,16 @@ import { deferred } from '../../../test/deferred'
 
 import { useStatusSnapshot } from './use-status-snapshot'
 
+const reportBackendCodeSkewSpy = vi.fn()
+
 vi.mock('@/hermes', () => ({
   getStatus: vi.fn()
+}))
+
+// The store under test reaches the real notification/store graph; mock the one
+// export the hook calls so the assertion is about the hook's wiring.
+vi.mock('@/store/updates', () => ({
+  reportBackendCodeSkew: (...args: unknown[]) => reportBackendCodeSkewSpy(...args)
 }))
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -27,6 +35,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({} as never)
   $setupReadyTick.set(0)
+  reportBackendCodeSkewSpy.mockClear()
 })
 
 afterEach(() => {
@@ -296,5 +305,55 @@ describe('useStatusSnapshot', () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
     expect(result.current.statusSnapshot).toEqual({ version: '1.0.1' })
+  })
+})
+
+// Regression for #118998: after an external `hermes update` the app-owned backend
+// keeps serving pre-update code, and the only signal used to be a guarded endpoint
+// refusing with 503 — invisible to a user who never opens Settings -> Model. The
+// backend publishes the skew on /api/status, which this hook already polls, so the
+// proactive toast must be reported from here.
+describe('useStatusSnapshot code skew', () => {
+  it('reports skew as soon as a status poll carries it', async () => {
+    vi.mocked(getStatus).mockImplementation(
+      async () => ({ version: '1.0.0', code_skew: { boot_rev: 'abc1234567', disk_rev: 'def4567890' } }) as never
+    )
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    expect(reportBackendCodeSkewSpy).toHaveBeenCalledWith({
+      boot_rev: 'abc1234567',
+      disk_rev: 'def4567890'
+    })
+  })
+
+  it('reports no skew when the backend is current (no false positive)', async () => {
+    vi.mocked(getStatus).mockResolvedValue({ version: '1.0.0' } as never)
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    expect(reportBackendCodeSkewSpy).toHaveBeenCalledWith(undefined)
+  })
+
+  it('stops reporting once the backend catches up after a recycle', async () => {
+    vi.mocked(getStatus).mockImplementation(
+      async () => ({ version: '1.0.0', code_skew: { boot_rev: 'abc1234567', disk_rev: 'def4567890' } }) as never
+    )
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    // Backend recycled onto the new code: the field is absent again.
+    vi.mocked(getStatus).mockImplementation(async () => ({ version: '1.0.1' }) as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+
+    expect(reportBackendCodeSkewSpy).toHaveBeenLastCalledWith(undefined)
   })
 })

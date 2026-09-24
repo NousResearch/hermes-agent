@@ -495,6 +495,7 @@ export interface Translations {
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
+    backendRunningOldCodeTitle: string
     installMethodUnsupportedTitle: string
     updateHermes: string
     updateReadyTitle: string

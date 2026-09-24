@@ -423,6 +423,31 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
     return components
 
 
+def _process_code_skew() -> Optional[Dict[str, Any]]:
+    """This process's code skew for ``/api/status``, or ``None`` when there is none.
+
+    The reactive guard (``_dashboard_code_skew_guard``) only fires when the user
+    opens a guarded page, so a Desktop user who never does runs the pre-update
+    checkout indefinitely and silently (#118998).  The Desktop app already polls
+    ``/api/status`` every 60s, so the backend publishes the skew here: same
+    ``detect_code_skew()`` truth (boot fingerprint vs. on-disk checkout), a
+    surface the owning app already reads.  Absent (not null) when there is no
+    skew — including non-git installs, which must never false-positive.
+    """
+    from gateway.code_skew import detect_code_skew
+
+    try:
+        skew = detect_code_skew()
+    except Exception as exc:  # pragma: no cover - defensive, /api/status must never 500
+        _log.debug("code skew probe failed: %s", exc)
+        return None
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+
+    return {"boot_rev": boot_rev, "disk_rev": disk_rev}
+
+
 async def _advisory_pressure(status: Dict[str, Any], home: Path) -> None:
     """Memory / disk pressure rollups + deferred FTS rebuild progress (coarse numbers/enums
     only; public payload). Deliberately NOT folded into components/overall: pressure is
@@ -527,6 +552,12 @@ async def get_status(profile: Optional[str] = None):
         status["components"] = components
         status["overall"] = ("ok" if all(item.get("status") == "ok" for item in components.values())
                              else "degraded")
+        # Proactive code-skew surface (#118998): the Desktop app owns this backend and
+        # polls /api/status every 60s, so the app learns the checkout advanced under it
+        # without waiting for a guarded endpoint to refuse. Absent when there is no skew.
+        skew = await run_in_threadpool(_process_code_skew)
+        if skew is not None:
+            status["code_skew"] = skew
         await _advisory_pressure(status, profile_dir if profile_dir else get_hermes_home())
 
         # Profile NAMES and ``gateway_mode`` are low-sensitivity product surface (Hermes Cloud

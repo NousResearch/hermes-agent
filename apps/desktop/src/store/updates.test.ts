@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
+import { en } from '@/i18n/en'
 
 const storage = new Map<string, string>()
 
@@ -79,6 +80,17 @@ vi.mock('@/store/gateway-reconnect', () => ({
   reconnectGateway: (...args: unknown[]) => reconnectGatewaySpy(...args)
 }))
 
+// The store routes the toast's recycle through the shared backend-restart request
+// (consumed by wiring.tsx, which calls window.hermesDesktop.recycleBackend).
+const requestBackendRestartSpy = vi.fn()
+
+vi.mock('@/store/recovery-requests', () => ({
+  requestBackendRestart: () => requestBackendRestartSpy(),
+  requestRoute: (path: string) => {
+    void path
+  }
+}))
+
 const {
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
@@ -87,6 +99,8 @@ const {
   $backendUpdateApply,
   REQUIRED_BACKEND_CONTRACT,
   reportBackendContract,
+  reportBackendCodeSkew,
+  resetBackendCodeSkewForTests,
   applyUpdates,
   applyEverythingUpdate,
   hasMultipleUpdateTargets,
@@ -235,6 +249,87 @@ describe('reportBackendContract', () => {
 
     reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('reportBackendCodeSkew', () => {
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    requestBackendRestartSpy.mockClear()
+    resetBackendCodeSkewForTests()
+    vi.useRealTimers()
+  })
+
+  // Regression for #118998: the app must learn its backend runs pre-update code
+  // without the user opening a guarded page (Settings -> Model). Before the
+  // backend published the skew on /api/status, nothing surfaced it at all.
+  it('warns with a Restart Hermes action when the backend reports skew', () => {
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    const toast = lastToast() as unknown as { title: string; kind: string; action: { label: string; onClick: () => void } }
+    expect(toast.kind).toBe('warning')
+    expect(toast.title).toBe(en.notifications.backendRunningOldCodeTitle)
+    expect(toast.action.label).toBe(en.notifications.actions.restartHermes)
+  })
+
+  // The recycle must go through the #97067 path (window.hermesDesktop.recycleBackend
+  // -> recycleOwnedBackend), never a second restart implementation.
+  it('routes the action through the shared backend-restart request', () => {
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    ;(lastToast() as unknown as { action: { onClick: () => void } }).action.onClick()
+
+    expect(requestBackendRestartSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // No false positive: a current backend must never raise the toast, and the
+  // 60s status poll calls this with undefined on every tick.
+  it('says nothing when the backend is current', () => {
+    reportBackendCodeSkew(undefined)
+
+    expect(notifySpy).not.toHaveBeenCalled()
+    // Nothing to clear: the steady-state poll must not churn $notifications.
+    expect(dismissSpy).not.toHaveBeenCalled()
+  })
+
+  it('stays quiet on later polls once the user closed it', () => {
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    lastToast().onDismiss() // user closes it -> cooldown starts
+    notifySpy.mockClear()
+
+    // The 60s status poll re-derives the same skew within the cooldown.
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('reminds again after the cooldown elapses', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    vi.setSystemTime(25 * 60 * 60 * 1000) // > 24h cooldown
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  // After the one-click recycle the backend boots on the new code and the field
+  // disappears from /api/status: the toast must clear immediately, and the snooze
+  // must be forgotten so a FUTURE update warns at once instead of staying silent.
+  it('clears the toast and the snooze once the backend catches up', () => {
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    reportBackendCodeSkew(undefined) // backend recycled onto the new code
+    expect(dismissSpy).toHaveBeenCalledWith('backend-code-skew')
+
+    reportBackendCodeSkew({ boot_rev: 'def4567890', disk_rev: 'aaaabbbbcc' }) // a later update
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })

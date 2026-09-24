@@ -21,6 +21,7 @@ import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connec
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { requestBackendRestart } from '@/store/recovery-requests'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
@@ -202,6 +203,84 @@ export function reportInstallMethodWarning(message: string | undefined): void {
     onDismiss: () => snoozeInstallMethodToast(),
     title: translateNow('notifications.installMethodUnsupportedTitle')
   })
+}
+
+const CODE_SKEW_TOAST_ID = 'backend-code-skew'
+// Same time-based snooze as the sibling toasts: the status poll re-derives skew
+// every 60s, so without a cooldown it re-popped on every poll even right after
+// the user dismissed it. Dismissing or recycling restarts the window; the toast
+// clears at once once the backend catches up, which also forgets the snooze.
+const CODE_SKEW_TOAST_SNOOZE_KEY = 'hermes:backend-code-skew-toast-snooze-until'
+// Notifications are in-memory, so this flag is exactly in sync with the toast's
+// presence. It exists so the no-skew branch can skip dismissNotification on the
+// 60s polls where there is nothing to clear — each call rewrites the
+// $notifications array and would re-render every consumer for nothing.
+let codeSkewToastLive = false
+
+function snoozeCodeSkewToast(): void {
+  persistString(CODE_SKEW_TOAST_SNOOZE_KEY, String(Date.now() + SKEW_TOAST_COOLDOWN_MS))
+}
+
+function isCodeSkewToastSnoozed(): boolean {
+  const until = Number(storedString(CODE_SKEW_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
+
+/**
+ * Proactive half of the code-skew UX (#118998).
+ *
+ * An external `hermes update` (terminal, cron, another process) advances the
+ * checkout but deliberately leaves a Desktop-owned `hermes serve` running the
+ * old code. Until now the only signal was reactive: a guarded endpoint
+ * (`/api/model/options`, a `/model` switch) refused with 503 "Restart
+ * required" — invisible to a user who never opens Settings → Model, who then
+ * ran stale code for days until an import-mismatch crash (#86207-class).
+ *
+ * The backend now publishes the same `detect_code_skew()` truth on
+ * `/api/status`, which the app already polls every 60s. Recycling uses the
+ * #97046/#97067 path the Models page uses (`hermesDesktop.recycleBackend` →
+ * `recycleOwnedBackend`), so there is no second restart implementation.
+ */
+export function reportBackendCodeSkew(skew: { boot_rev: string; disk_rev: string } | undefined): void {
+  if (!skew) {
+    // Backend caught up (recycled, or the checkout moved back): drop the
+    // toast and forget the snooze so a future update warns immediately.
+    if (codeSkewToastLive) {
+      codeSkewToastLive = false
+      dismissNotification(CODE_SKEW_TOAST_ID)
+      persistString(CODE_SKEW_TOAST_SNOOZE_KEY, null)
+    }
+
+    return
+  }
+
+  if (isCodeSkewToastSnoozed()) {
+    return
+  }
+
+  codeSkewToastLive = true
+  notify({
+    action: {
+      label: translateNow('notifications.actions.restartHermes'),
+      onClick: () => {
+        snoozeCodeSkewToast()
+        requestBackendRestart()
+      }
+    },
+    durationMs: 0,
+    id: CODE_SKEW_TOAST_ID,
+    kind: 'warning',
+    message: translateNow('notifications.errors.codeSkewRestartRequired'),
+    onDismiss: () => snoozeCodeSkewToast(),
+    title: translateNow('notifications.backendRunningOldCodeTitle')
+  })
+}
+
+/** Test seam: ``codeSkewToastLive`` is in-memory, so a suite that fires the
+ *  toast in one test must start the next one from "no toast shown". */
+export function resetBackendCodeSkewForTests(): void {
+  codeSkewToastLive = false
 }
 
 /**

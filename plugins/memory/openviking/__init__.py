@@ -63,6 +63,9 @@ _TIMEOUT = 30.0
 _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _SESSION_MESSAGE_BATCH_LIMIT = 100
+# Gateway conversations can remain on one OpenViking session indefinitely.
+# Commit bounded batches before extraction input becomes unmanageably large.
+_LIVE_SESSION_COMMIT_TURN_THRESHOLD = 6
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 _RECALL_QUERY_MIN_CHARS = 5
@@ -1226,7 +1229,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # tuple so lock-free background writers never see torn fields or a failed endpoint;
         # _failed_refresh = (settings key, monotonic ts) of the last failure -> cooldown gate.
         (self._session_state_lock, self._inflight_lock, self._deferred_commit_lock, self._committed_session_lock,
-         self._client_refresh_lock, self._runtime_start_lock, self._memory_write_lock) = (threading.Lock() for _ in range(7))
+         self._client_refresh_lock, self._runtime_start_lock, self._memory_write_lock,
+         self._writer_commit_lock) = (threading.Lock() for _ in range(8))
         # Writers keyed by the sid they POST under so a commit can drain all of them.
         # Guards the (_session_id, _turn_count) pair. sync_turn runs on the MemoryManager's background sync
         # executor while on_session_end / on_session_switch run on the caller's thread, so the
@@ -2036,23 +2040,34 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 _preview(user_content), _preview(assistant_content),
             )
 
-        # Snapshot sid + bump the counter atomically so a concurrent switch/end can't
-        # interleave its snapshot+reset (lost turn / misattributed session).
-        with self._session_state_lock:
-            sid = str(session_id or self._session_id).strip()
-            if not sid:
-                return
-            self._turn_count += 1
-        self._mark_session_pending(sid)
-        upload = _TurnUpload(self, sid, batch_messages, user_content, assistant_content)
-
         def drop_empty() -> None:
             if not self._inflight_writers.get(sid):
                 self._inflight_writers.pop(sid, None)
 
-        # Tracked in _inflight_writers[sid] so commits can drain every writer for that sid.
-        self._spawn_tracked("openviking-sync", upload.run, self._inflight_lock, lambda: self._inflight_writers.setdefault(sid, set()),
-                            after_discard=drop_empty)
+        # Register the writer while holding the same fence that finalizers use for
+        # drain+commit. A live commit can therefore never cross a writer which has
+        # observed this turn but has not yet joined _inflight_writers.
+        with self._writer_commit_lock:
+            # Snapshot sid + bump the counter atomically so a concurrent switch/end can't
+            # interleave its snapshot+reset (lost turn / misattributed session).
+            with self._session_state_lock:
+                sid = str(session_id or self._session_id).strip()
+                if not sid:
+                    return
+                self._turn_count += 1
+                turn_count = self._turn_count
+            # A new turn after a successful live commit is fresh work, so it must
+            # re-arm both the duplicate guard and the durable recovery marker.
+            if self._has_committed_session(sid):
+                self._mark_session_committed(sid, committed=False)
+            self._mark_session_pending(sid)
+            upload = _TurnUpload(self, sid, batch_messages, user_content, assistant_content)
+            # Tracked in _inflight_writers[sid] so commits can drain every writer for that sid.
+            self._spawn_tracked("openviking-sync", upload.run, self._inflight_lock, lambda: self._inflight_writers.setdefault(sid, set()),
+                                after_discard=drop_empty)
+
+        if turn_count >= _LIVE_SESSION_COMMIT_TURN_THRESHOLD:
+            self._finalize_session_async(sid, turn_count, context="after live turn threshold")
 
     # -- tracked worker threads ---------------------------------------------
 
@@ -2329,11 +2344,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             try:
                 if self._shutting_down:
                     return
-                if not self._drain_writers(sid, timeout=_DEFERRED_COMMIT_TIMEOUT):
-                    logger.warning("OpenViking writer for %s still alive after drain — leaving session uncommitted", sid)
-                    return
-                if not self._shutting_down and self._session_needs_commit(sid, turn_count):
-                    self._commit_session(sid, turn_count, context=context)
+                # Keep sync_turn from registering a writer between its drain and
+                # commit. Live finalizers run in the background; on_session_end
+                # uses the same fence for the synchronous shutdown boundary.
+                with self._writer_commit_lock:
+                    if not self._drain_writers(sid, timeout=_DEFERRED_COMMIT_TIMEOUT):
+                        logger.warning("OpenViking writer for %s still alive after drain — leaving session uncommitted", sid)
+                        return
+                    if not self._shutting_down and self._session_needs_commit(sid, turn_count):
+                        committed = self._commit_session(sid, turn_count, context=context)
+                        if committed and context == "after live turn threshold":
+                            with self._session_state_lock:
+                                if self._session_id == sid:
+                                    self._turn_count = 0
             finally:
                 self._claim_deferred_sid(sid, release=True)
 
@@ -2347,16 +2370,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
         with self._session_state_lock:
             sid = self._session_id
             turn_count = self._turn_count
-        if not self._drain_writers(sid, timeout=_SESSION_DRAIN_TIMEOUT):
-            logger.warning("OpenViking writer for %s still alive after drain — skipping commit", sid)
-            return
-        if not self._session_needs_commit(sid, turn_count):
-            return
-        if self._commit_session(sid, turn_count, context="on session end"):
-            # Mark clean so a follow-up on_session_switch skips its own commit.
-            with self._session_state_lock:
-                if self._session_id == sid:
-                    self._turn_count = 0
+        with self._writer_commit_lock:
+            if not self._drain_writers(sid, timeout=_SESSION_DRAIN_TIMEOUT):
+                logger.warning("OpenViking writer for %s still alive after drain — skipping commit", sid)
+                return
+            if not self._session_needs_commit(sid, turn_count):
+                return
+            if self._commit_session(sid, turn_count, context="on session end"):
+                # Mark clean so a follow-up on_session_switch skips its own commit.
+                with self._session_state_lock:
+                    if self._session_id == sid:
+                        self._turn_count = 0
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, **kwargs) -> None:
         """Commit the old session and rotate cached state to the new session_id.

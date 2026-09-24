@@ -995,6 +995,9 @@ class TestCodexStreamCallbacks:
 
         agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
+        assert agent._last_api_first_chunk_at is not None
+        assert agent._last_api_ttft is not None
+        assert agent._last_api_ttft >= 0
 
 
     def test_codex_remote_protocol_error_retries_then_raises(self):

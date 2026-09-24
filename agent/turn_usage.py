@@ -10,9 +10,11 @@ model/provider. Logger name stays ``agent.conversation_loop`` for caplog parity.
 
 from __future__ import annotations
 
-import logging
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
+import logging
+import time
 from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
@@ -186,6 +188,20 @@ def record_response_usage(
         ohist = getattr(agent, "_api_output_history", None)
         if ohist is not None:
             ohist.append(int(canonical_usage.output_tokens or 0))
+        thist = getattr(agent, "_api_ttft_history", None)
+        if thist is None:
+            thist = agent._api_ttft_history = deque(maxlen=10)
+        _ttft = getattr(agent, "_last_api_ttft", None)
+        if _ttft is None:
+            _first = getattr(agent, "_last_api_first_chunk_at", None)
+            if _first is not None:
+                _approx_start = time.time() - float(api_duration)
+                if _first >= _approx_start:
+                    _ttft = max(0.0, float(_first) - _approx_start)
+            elif api_duration and float(api_duration) > 0:
+                _ttft = float(api_duration)
+        if _ttft is not None and 0 <= _ttft < 1e6:
+            thist.append(float(_ttft))
 
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:

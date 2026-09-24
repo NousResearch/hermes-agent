@@ -2023,6 +2023,15 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+        _thist = list(getattr(agent, "_api_ttft_history", []) or [])
+        if not _thist:
+            _single_ttft = getattr(agent, "_last_api_ttft", None)
+            if _single_ttft is not None and 0 < _single_ttft < 1e6:
+                _thist = [float(_single_ttft)]
+        if _thist:
+            _avg_ttft = sum(_thist) / len(_thist)
+            if 0 < _avg_ttft < 1e6:
+                usage["avg_ttft_s"] = round(float(_avg_ttft), 3)
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count

@@ -19699,7 +19699,7 @@ class _BareAgent:
 
 
 def test_get_usage_perf_readouts_present():
-    """cache_hit_pct / avg_latency_s / avg_tps mirror the classic CLI bar."""
+    """cache_hit_pct / avg_latency_s / avg_tps / avg_ttft_s mirror the status bar."""
     from collections import deque
 
     class _PerfAgent:
@@ -19708,11 +19708,13 @@ def test_get_usage_perf_readouts_present():
         session_cache_read_tokens = 24_369
         _api_latency_history = deque([2.1, 4.3], maxlen=10)
         _api_output_history = deque([130, 190], maxlen=10)
+        _api_ttft_history = deque([0.45, 0.75], maxlen=10)
 
     usage = server._get_usage(_PerfAgent())
     assert usage["cache_hit_pct"] == 87
     assert usage["avg_latency_s"] == 3.2
     assert usage["avg_tps"] == 50.0  # true throughput sum(out)/sum(lat), not mean of ratios
+    assert usage["avg_ttft_s"] == 0.6
 
 
 def test_get_usage_perf_readouts_omitted_without_data():
@@ -19727,6 +19729,7 @@ def test_get_usage_perf_readouts_omitted_without_data():
     assert "cache_hit_pct" not in usage
     assert "avg_latency_s" not in usage
     assert "avg_tps" not in usage
+    assert "avg_ttft_s" not in usage
 
 
 def test_get_usage_perf_readouts_guard_negative_latency():
@@ -19737,10 +19740,12 @@ def test_get_usage_perf_readouts_guard_negative_latency():
         model = "x"
         _api_latency_history = deque([-0.8], maxlen=10)
         _api_output_history = deque([100], maxlen=10)
+        _api_ttft_history = deque([-0.5], maxlen=10)
 
     usage = server._get_usage(_WeirdAgent())
     assert "avg_latency_s" not in usage
     assert "avg_tps" not in usage
+    assert "avg_ttft_s" not in usage
 
 
 def test_get_usage_includes_active_subagents(monkeypatch):

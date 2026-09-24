@@ -75,6 +75,17 @@ export function tokensPerSecondLabel(usage: UsageStats): string {
   return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
 }
 
+/** `1.8s` or `420ms` for rolling time-to-first-token; '' before first reading. */
+export function timeToFirstTokenLabel(usage: UsageStats): string {
+  const ttft = usage.avg_ttft_s
+
+  if (typeof ttft !== 'number' || !Number.isFinite(ttft) || ttft <= 0) {
+    return ''
+  }
+
+  return ttft < 1 ? `${Math.round(ttft * 1000)}ms` : `${ttft.toFixed(1)}s`
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

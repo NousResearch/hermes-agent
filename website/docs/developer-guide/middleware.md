@@ -17,6 +17,7 @@ planner, model provider adapters, tool registry, memory, or CLI UX.
 
 With middleware enabled, plugins can:
 
+- Select a cache-preserving reasoning effort once at the start of a user turn.
 - Rewrite LLM provider request kwargs before Hermes calls the provider.
 - Rewrite tool arguments before guardrails, approval checks, hooks, and tool
   execution see them.
@@ -31,6 +32,7 @@ Plugins register middleware from `register(ctx)`:
 
 ```python
 def register(ctx):
+    ctx.register_middleware("reasoning_effort", on_reasoning_effort)
     ctx.register_middleware("llm_request", on_llm_request)
     ctx.register_middleware("llm_execution", on_llm_execution)
     ctx.register_middleware("tool_request", on_tool_request)
@@ -49,6 +51,7 @@ Supported middleware kinds:
 
 | Kind | Payload | Return shape | Purpose |
 | --- | --- | --- | --- |
+| `reasoning_effort` | `effort`, `user_message`, `previous_effort`, `has_conversation_history`, route context, `reasoning_effort_updates_supported`, `supported_reasoning_efforts` | `{"effort": "high"}` | Select one transport-supported effort before Hermes persists this user turn. |
 | `llm_request` | `request`, `original_request` | `{"request": {...}}` | Replace effective provider kwargs before provider execution. |
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
@@ -66,6 +69,19 @@ return {
 
 Hermes stores those trace entries in later observer hook payloads as
 `middleware_trace`.
+
+`reasoning_effort` is a narrower pre-turn policy surface. Hermes calls it once
+per user turn, before the durable effort marker and user row are appended. It
+runs only when the selected transport advertises an in-band effort-update
+mechanism; unsupported routes keep their current effort and do not invoke the
+policy. A returned effort is accepted only when it appears in
+`supported_reasoning_efforts`. Plugins cannot use this middleware to disable
+reasoning or change the model/provider. The first turn has no cached history,
+so an accepted choice becomes the session baseline; later choices are recorded
+as append-only markers and lowered by the transport. Hermes does not expose the
+full transcript on this surface: `previous_effort` carries the latest durable
+selection needed for fail-open fallback, and `has_conversation_history`
+distinguishes the first turn.
 
 Execution middleware receives a `next_call` callback. Call it to continue the
 chain:
@@ -86,6 +102,18 @@ to DEBUG, so a mis-declared middleware cannot flood the log; a plugin reload
 resets the report.
 
 ## Execution Order
+
+### User Turns
+
+At the start of each user turn Hermes:
+
+1. Resolves the selected transport's cache-preserving effort capability.
+2. Applies `reasoning_effort` middleware once, when that capability is available.
+3. Persists an effort marker when the accepted choice differs from the thread's
+   last durable effort.
+4. Appends the user message and enters the normal LLM-call loop.
+
+Tool-loop continuations do not run the policy again.
 
 ### LLM Calls
 

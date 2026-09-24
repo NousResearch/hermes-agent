@@ -33,6 +33,7 @@ TOUCH_PROMPT = "Reply with exactly one word: the capital of France."
 TOUCH_EXPECT = "paris"
 _RESTART_BACKOFF_S = (1, 5, 15, 60)
 _RESIDENT = ("loaded", "ready")
+DEFAULT_KEEP_ALIVE_S = 15 * 60
 
 # Chosen once and reused across restarts: sessions persist the resolved base_url as a snapshot, and
 # every resume path re-resolves llamacpp-alias sessions to the live endpoint (a stale port is
@@ -95,6 +96,20 @@ def _stable_api_key() -> str:
     return key
 
 
+def _keep_alive_seconds(value: object) -> int:
+    """Return a safe idle timeout from ``local_runtime.keep_alive``.
+
+    ``-1`` keeps loaded models resident, ``0`` ejects on the first confirmed
+    idle sweep, and positive integers are seconds. Invalid values retain the
+    established 15-minute behavior instead of unexpectedly evicting a model.
+    """
+    if type(value) is int and value >= -1:
+        return value
+    logger.warning("invalid local_runtime.keep_alive=%r; using default %ss",
+                   value, DEFAULT_KEEP_ALIVE_S)
+    return DEFAULT_KEEP_ALIVE_S
+
+
 @lru_cache(maxsize=16)
 def _direct_io_args(executable: Path) -> tuple[str, ...]:
     """Select the loading option supported by this engine, including older pinned builds."""
@@ -110,17 +125,16 @@ def _direct_io_args(executable: Path) -> tuple[str, ...]:
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 
-    # A model that has gone quiet gets its VRAM back after this long. A constant, not a knob:
-    # long enough that an active conversation never trips it, short enough that a wandered-off
-    # session frees ~20 GiB within the hour. No exemptions: demand reloads anything the user
-    # comes back to.
-    IDLE_UNLOAD_S = 15 * 60
+    # The legacy default is long enough that an active conversation never trips it, while a
+    # wandered-off session frees VRAM within the hour. ``keep_alive`` may override it per runtime.
+    IDLE_UNLOAD_S = DEFAULT_KEEP_ALIVE_S
 
     def __init__(self, install_dir: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 keep_alive: object = DEFAULT_KEEP_ALIVE_S):
         self.install_dir = Path(install_dir)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
@@ -129,6 +143,7 @@ class LlamaServerSupervisor:
         self.extra_args = list(extra_args or [])
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
+        self.keep_alive = _keep_alive_seconds(keep_alive)
         self.proc: subprocess.Popen | None = None
         self._job = None
         self.primary_model: str | None = None
@@ -377,7 +392,8 @@ class LlamaServerSupervisor:
             time.sleep(0.3)
 
     def sweep_idle(self, now: float | None = None) -> list[str]:
-        """Unload models idle past IDLE_UNLOAD_S; returns their ids. Idle = no busy slots and no
+        """Unload models idle past ``keep_alive``; returns their ids. ``-1`` retains idle models,
+        and ``0`` unloads them on the first confirmed idle sweep. Idle = no busy slots and no
         queued work, tracked per model across calls; a model seen busy resets its clock. A
         failed telemetry probe is neither idle nor busy: the clock is kept, so a flaky probe
         cannot pin a resident model (and its VRAM) indefinitely."""
@@ -386,6 +402,9 @@ class LlamaServerSupervisor:
         try:
             statuses = self.models()
         except Exception:  # noqa: BLE001
+            return unloaded
+        if self.keep_alive < 0:
+            self._idle_since.clear()
             return unloaded
         for model_id, status in statuses.items():
             if status not in _RESIDENT:
@@ -400,7 +419,7 @@ class LlamaServerSupervisor:
                 self._idle_since.pop(model_id, None)
                 continue
             first_idle = self._idle_since.setdefault(model_id, now)
-            if now - first_idle < self.IDLE_UNLOAD_S:
+            if now - first_idle < self.keep_alive:
                 continue
             try:
                 self.unload_model(model_id)

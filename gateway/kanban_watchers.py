@@ -273,6 +273,7 @@ class GatewayKanbanWatchersMixin:
         bad_ticks = 0
         last_warn_at = 0
         results: Optional[list] = None
+        estop_paused = False
         dispatcher = _KanbanDispatcher(_kb, settings)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
@@ -291,8 +292,19 @@ class GatewayKanbanWatchersMixin:
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
                 if not _kanban_dispatch_allowed():
+                    if not estop_paused:
+                        logger.warning(
+                            "kanban dispatcher: ESTOP is active; ready tasks remain queued "
+                            "until `hermes resume`. Running workers continue.",
+                        )
+                        estop_paused = True
                     bad_ticks = 0
                 else:
+                    if estop_paused:
+                        logger.info(
+                            "kanban dispatcher: ESTOP cleared; resuming dispatch for queued ready tasks.",
+                        )
+                        estop_paused = False
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)

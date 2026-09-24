@@ -9,6 +9,7 @@ token. Nothing on our side of the platform boundary is mocked.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -166,10 +167,27 @@ class GatewayUnderTest:
         return self.proc is not None and self.proc.poll() is None
 
     def tail(self, n: int = 6000) -> str:
+        out = []
+        # the child's stdout/stderr, then its INFO-level log (where turn/delivery progress lands)
+        for label, path in (("gateway stdout", self.log_path),
+                            ("gateway.log (INFO)", self.hermes_home / "logs" / "gateway.log")):
+            try:
+                out.append(f"--- {label} tail\n" + path.read_text(errors="replace")[-n:])
+            except OSError:
+                out.append(f"--- (no {label})")
+        return "\n".join(out)
+
+    def active_agents(self) -> Optional[int]:
+        """In-flight turns as the gateway persists them to ``gateway_state.json`` at every turn boundary."""
         try:
-            return "--- gateway log tail\n" + self.log_path.read_text(errors="replace")[-n:]
-        except OSError:
-            return "--- (no gateway log)"
+            return int(json.loads((self.hermes_home / "gateway_state.json").read_text()).get("active_agents"))
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def wait_idle(self, timeout: float = 90.0) -> None:
+        """Every turn finished (not merely its reply visible): the next inbound starts a fresh turn."""
+        wait_until(lambda: self.active_agents() == 0 or not self.alive(), "gateway idle (active_agents == 0)",
+                   timeout=timeout, on_timeout=self.tail)
 
     def grep(self, pattern: str, limit: int = 30) -> str:
         """Gateway log lines matching ``pattern`` (case-insensitive), for assertion context."""

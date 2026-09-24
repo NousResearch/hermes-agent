@@ -57,6 +57,7 @@ def run_scenario(name: str, request: pytest.FixtureRequest, tmp_path: Path) -> N
     fixture, runner = SCENARIOS[name]
     rig = request.getfixturevalue(fixture)
     assert rig.gw.alive(), f"gateway died before {name}\n{rig.gw.tail()}"
+    rig.gw.wait_idle()  # the previous scenario's last turn fully closed (see barrier())
     runner(rig, name.replace("_", ""), tmp_path)
 
 

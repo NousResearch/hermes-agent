@@ -72,6 +72,9 @@ def wait_reply(rig: Rig, chat_id: str, aid: str, what: str = "", timeout: float 
 def barrier(rig: Rig, token: str, *, group: bool = False) -> None:
     """One more inbound in the same chat, answered: everything queued before it has been handled."""
     aid = f"B-{token}"
+    # A reply can be visible while its turn is still closing; wait for the turn boundary first so
+    # the barrier is a new turn (an inbound in that closing window is tracked as #121393).
+    rig.gw.wait_idle()
     rig.director.script(token, answer(aid, "barrier"))
     inbound = rig.drv.group(f"barrier [in:{token}]", mention=True) if group else rig.drv.dm(f"barrier [in:{token}]")
     wait_reply(rig, inbound.chat_id, aid, f"barrier {token} answered")

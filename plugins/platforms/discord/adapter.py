@@ -997,7 +997,7 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
-from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from .adapter_media import DiscordMediaMixin
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):

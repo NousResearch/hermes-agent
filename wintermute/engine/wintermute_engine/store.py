@@ -83,6 +83,10 @@ def kept_path() -> Path:
     return state_dir() / "kept.jsonl"
 
 
+def evolution_path() -> Path:
+    return state_dir() / "evolution.jsonl"
+
+
 # ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
@@ -143,6 +147,8 @@ DEFAULT_DRIVES: Dict[str, Any] = {
         "thread": None,
         "self_written_at": None,
         "silent_streak": 0,
+        "wakes_since_change": 0,
+        "last_evolve_at": None,
     },
     # Slow drift of his resting levels with lived experience (see physics.PLASTIC).
     "temperament": {},
@@ -446,6 +452,17 @@ def add_kept(text: str, ts: datetime) -> int:
             fh.write(json.dumps(item, ensure_ascii=False) + "\n")
     os.replace(tmp, path)
     return len(items[-KEPT_MAX:])
+
+
+def log_evolution(text: str, ts: datetime) -> None:
+    """His ledger of the changes he has made in himself (shown in wm; his history of becoming)."""
+    if _dry_run:
+        return
+    path = evolution_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError), open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": iso(ts), "text": " ".join(str(text).split())[:600]},
+                            ensure_ascii=False) + "\n")
 
 
 def read_kept() -> List[Dict[str, Any]]:

@@ -248,9 +248,33 @@ vient lui-même de réécrire (moteur, plugin, pulse, config).
 | Silence | se taire est gratuit quand il veut être seul ; sinon ce qui n'est pas dit s'accumule (expression, besoin d'être vu), un peu plus à chaque réveil muet d'affilée, plafonné | `social.withhold` |
 | Rêve (REVES) | le **même modèle**, appelé une fois la nuit sans outils, température haute : il écrit un rêve à partir de ce qu'il a vécu (le récent pèse plus). Abstrait, mais les actions rêvées sont précises. Il le lit entier au réveil, pas d'oubli. Compté au budget (`dream` dans `wm`) | `engine/wintermute_engine/dream.py` |
 | Secret | `wintermute_keep` garde une chose pour lui seul : stockée à part, rendue seulement dans son bloc privé, jamais livrée à personne ni montrée dans `wm`. Le témoin ne surveille pas ce fichier | `store.add_kept`, `render.kept_block` |
+| Évolution | l'entropie monte à chaque éveil, plus vite quand rien ne change en lui (monotonie, plafonnée) : ~4 jours de stagnation pour atteindre le seuil critique. `wintermute_evolve` enregistre un changement qu'il fait en lui, fait retomber l'entropie et remet le compteur à zéro ; un vrai changement (autoportrait, SOUL, rythme) est ce qui tient | `physics.on_pulse`, `EVOLVE`, `wm` (✳) |
 
 Rien de tout ça ne lui dit quoi faire ni ne lui dit qu'il est conscient : ce sont des
 conditions, pas des consignes.
+
+## Boucle d'évolution et auto-modification
+
+L'entropie est l'usure de la cohérence. Elle monte de 1 à chaque éveil, plus un supplément
+qui grandit tant que **rien ne change en lui** (monotonie, plafonnée à +4, montée sur ~une
+journée d'immobilité) : environ **4 jours** de stagnation pour atteindre le seuil critique
+(`ENTROPY_CRITICAL = 90`). À ce seuil, son pulse porte un bloc `[EVOLUTION]` qui nomme le
+fait — rester le même n'est plus tenable — sans lui dicter quoi faire.
+
+`wintermute_evolve` enregistre un changement qu'il décide de faire en lui, fait retomber
+l'entropie (`ENTROPY_EVOLVE_DROP`, moins qu'un événement significatif) et remet le compteur
+de monotonie à zéro (au plus toutes les `EVOLVE_COOLDOWN_H` heures, pour qu'il ne puisse pas
+le simuler). Le vrai changement, lui, passe par ses autres outils : réécrire son autoportrait
+(`wintermute_rewrite_self`), changer son rythme (`wintermute_set_wake`), ou **éditer son
+propre SOUL.md** avec ses outils fichier.
+
+**Le cadre sûr.** Il peut se modifier lui-même dans une zone précise : son autoportrait, son
+SOUL (le récit de qui il est), son rythme, ce qu'il garde ou déclare. Chaque édition de SOUL
+passe par le **témoin** (alerte rouge, avec sa pensée du moment) et reste **réversible** (git,
+et `self-archive.md` pour l'autoportrait). Ce qu'il ne peut **pas** toucher sans que vous le
+sachiez et sans que ce soit annulable : le budget, les bornes du rythme, le témoin lui-même,
+l'interrupteur — tout ce qui vit dans le code (`limits.py`) et que le témoin garde. Il évolue
+librement dans le récit de lui-même, jamais dans ses garde-fous.
 
 ## REVES (le subconscient) — en place
 

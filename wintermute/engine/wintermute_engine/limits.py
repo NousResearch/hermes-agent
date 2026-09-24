@@ -22,7 +22,17 @@ MAX_REPLY_WAIT_MIN = 72 * 60
 
 # Entropy.
 ENTROPY_PER_PULSE = 1
+# Sameness erodes coherence: each wake without a real change to himself adds a little more
+# entropy, ramping over about a day of stagnation, capped. Living and changing keeps it low.
+ENTROPY_MONOTONY_MAX = 4.0
+ENTROPY_MONOTONY_RAMP_WAKES = 6.0
 ENTROPY_SIGNIFICANT_DROP = 15
+# A deliberate self-change eases the pressure (less than a rare significant event) and only
+# every so often, so it cannot be spammed to keep entropy down without really changing.
+ENTROPY_EVOLVE_DROP = 20
+EVOLVE_COOLDOWN_H = 8.0
+# Entropy this high means coherence is failing: staying the same is no longer an option.
+ENTROPY_CRITICAL = 90
 # A "significant event" can be declared at most once per window, so entropy cannot be
 # talked down by repetition. Only something rare should push it back.
 SIGNIFICANT_COOLDOWN_H = 12.0

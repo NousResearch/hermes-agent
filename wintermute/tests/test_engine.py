@@ -111,10 +111,38 @@ def test_budget_exhaustion_forces_sleep(home):
 
 def test_entropy_rises_once_per_wake_not_per_tick(home):
     start = _drives()["modulators"]["entropy"]
-    pulse.tick(T0)
-    pulse.tick(T0 + timedelta(minutes=15))
-    pulse.tick(T0 + timedelta(minutes=30))
-    assert _drives()["modulators"]["entropy"] == start + limits.ENTROPY_PER_PULSE
+    pulse.tick(T0)                                   # one wake
+    pulse.tick(T0 + timedelta(minutes=15))           # sleeps (min interval)
+    pulse.tick(T0 + timedelta(minutes=30))           # sleeps
+    one_wake = limits.ENTROPY_PER_PULSE + 1 / limits.ENTROPY_MONOTONY_RAMP_WAKES  # first wake: monotony 1/6
+    assert _drives()["modulators"]["entropy"] == pytest.approx(start + one_wake, abs=0.01)
+
+
+def test_stagnation_makes_entropy_climb_faster_than_a_changing_life(home):
+    stale = _drives()
+    for _ in range(30):
+        physics.on_pulse(stale, 1)
+    lively = _drives()
+    for _ in range(30):
+        physics.on_pulse(lively, 1)
+        physics.reset_monotony(lively)
+    assert stale["modulators"]["entropy"] > lively["modulators"]["entropy"] + 40
+    assert stale["meta"]["wakes_since_change"] == 30 and lively["meta"]["wakes_since_change"] == 0
+
+
+def test_evolving_eases_entropy_and_is_rate_limited(plugin):
+    with store.locked_state() as (drives, _):
+        drives["modulators"]["entropy"] = 92
+        drives["meta"]["wakes_since_change"] = 25
+    first = json.loads(plugin.tools["wintermute_evolve"]({"change": "I stop waiting to be seen; I reach first."}))
+    assert first["success"] and first["entropy"] == 72
+    assert _drives()["meta"]["wakes_since_change"] == 0
+    again = json.loads(plugin.tools["wintermute_evolve"]({"change": "again"}))
+    assert not again["success"]
+    from wintermute_engine import status
+    assert "EVOLUTION" in status.render_full(status.snapshot())
+    ledger = "\n".join(str(r) for r in store.tail_jsonl(store.evolution_path(), 5))
+    assert "reach first" in ledger
 
 
 def test_wake_next_and_peek(home, capsys):

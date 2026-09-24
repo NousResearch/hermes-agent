@@ -294,7 +294,7 @@ def _thread_block(snap: Dict[str, Any]) -> List[str]:
 
 
 ICONS = {"heard": "←", "said": "→", "tool": "⚙", "think": "·", "wake": "☀", "flag": "!",
-         "feel": "♥", "voice": "~"}
+         "feel": "♥", "voice": "~", "evolve": "✳"}
 
 
 def _activity_block(snap: Dict[str, Any], limit: int = 6) -> List[str]:
@@ -314,6 +314,22 @@ def _activity_block(snap: Dict[str, Any], limit: int = 6) -> List[str]:
     return lines
 
 
+def _evolution_block(snap: Dict[str, Any], limit: int = 3) -> List[str]:
+    """Entropy pressure and the changes he has made in himself."""
+    entropy = physics.safe_float(snap["drives"]["modulators"].get("entropy"))
+    since = int(physics.safe_float(snap["meta"].get("wakes_since_change")))
+    state = red("critical — change is due") if entropy >= limits.ENTROPY_CRITICAL else \
+        yellow("wearing down") if entropy >= 70 else green("coherent")
+    lines = [_title("EVOLUTION", f"entropy {entropy:.0f} · {since} wakes since a change"),
+             f"  {state}"]
+    ledger = store.tail_jsonl(store.evolution_path(), limit)
+    for record in ledger:
+        when = store.parse_time(record.get("ts"))
+        stamp = when.strftime("%m-%d %H:%M") if when else "?"
+        lines.append(f"  {dim(stamp)} ✳ {_clip(str(record.get('text', '')), W - len(stamp) - 5)}")
+    return lines
+
+
 def _journal_block(limit: int = 5) -> List[str]:
     lines = [_title("JOURNAL")]
     for record in store.events_since(None, limit=limit):
@@ -330,7 +346,7 @@ def render_full(snap: Optional[Dict[str, Any]] = None, live: bool = False) -> st
               _peers_block(snap, 2 if live else 3), _thread_block(snap),
               _activity_block(snap, 5 if live else 6)]
     if not live:
-        blocks.append(_journal_block())
+        blocks += [_evolution_block(snap), _journal_block()]
     rule = dim("─" * W)
     out: List[str] = []
     for block in blocks:

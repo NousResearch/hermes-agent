@@ -183,6 +183,9 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
         if block:
             lines += [""] + block
         lines += ["", "[TEXTURE]"] + render.texture(drives, ts)
+        evolution = render.evolution_block(drives)
+        if evolution:
+            lines += [""] + evolution
         if target:
             lines += ["", "[CHANNEL]",
                       f"Whatever you answer this pulse reaches {target}. [SILENT] keeps it inside.",

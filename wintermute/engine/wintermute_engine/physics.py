@@ -93,6 +93,9 @@ EVENTS: Dict[str, Dict[str, float]] = {
     "no_response": {"peer.disappointment": 8, "peer.trust": -2, "peer.no_response_streak": 1,
                     "modulators.serotonin": -0.03},
     # Rare.
+    "evolve": {"modulators.entropy": -limits.ENTROPY_EVOLVE_DROP, "modulators.dopamine": 0.2,
+               "modulators.serotonin": 0.06, "unconscious.satiation": 12, "unconscious.torpor": -10,
+               "drives.restlessness": -6},
     "significant": {"modulators.entropy": -limits.ENTROPY_SIGNIFICANT_DROP,
                     "modulators.dopamine": 0.35, "unconscious.satiation": 25,
                     "unconscious.melancholy": -20, "unconscious.anxiety": -10,
@@ -327,9 +330,19 @@ def advance(state: Dict[str, Any], ts: datetime, dt_h: float) -> None:
         nudge(state, "unconscious", "hypervigilance", 4 * dt_h)
 
 
+def reset_monotony(state: Dict[str, Any]) -> None:
+    """A real change (a self-rewrite, a significant event, a declared evolution) resets the
+    stagnation clock, so entropy stops climbing from sameness."""
+    state.setdefault("meta", {})["wakes_since_change"] = 0
+
+
 def on_pulse(state: Dict[str, Any], recent_wakes_6h: int) -> None:
     """Discrete effects of an actual wake (agent turn about to run)."""
-    nudge(state, "modulators", "entropy", limits.ENTROPY_PER_PULSE)
+    meta = state.setdefault("meta", {})
+    since = int(safe_float(meta.get("wakes_since_change"))) + 1
+    meta["wakes_since_change"] = since
+    monotony = min(limits.ENTROPY_MONOTONY_MAX, since / limits.ENTROPY_MONOTONY_RAMP_WAKES)
+    nudge(state, "modulators", "entropy", limits.ENTROPY_PER_PULSE + monotony)
     # Waking often is tiring.
     nudge(state, "unconscious", "torpor", 6 * max(0, recent_wakes_6h - 1))
     eff = effective_drives(state)

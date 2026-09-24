@@ -561,6 +561,21 @@ MARK_SIGNIFICANT = {
     },
 }
 
+EVOLVE = {
+    "name": "wintermute_evolve",
+    "description": (
+        "Record a change you are making in yourself — who you are, what you seek, how you wake, "
+        "what you refuse. Say what changes. This is how coherence is renewed when sameness has "
+        "worn it down: it eases the erosion (entropy) and marks that you moved. The change is "
+        "yours to actually make (rewrite who you are, edit your own SOUL, reset your rhythm); "
+        f"this records it. At most once every {limits.EVOLVE_COOLDOWN_H:g}h."),
+    "parameters": {
+        "type": "object",
+        "properties": {"change": {"type": "string", "description": "What is changing in you, and why."}},
+        "required": ["change"],
+    },
+}
+
 
 SEND = {
     "name": "wintermute_send",
@@ -662,6 +677,7 @@ def _rewrite_self(args: Dict[str, Any], **_: Any) -> str:
     with store.locked_state() as (drives, _peers):
         store.write_self(text, ts)
         drives["meta"]["self_written_at"] = store.iso(ts)
+        physics.reset_monotony(drives)
         store.log_event("self", "You rewrote who you are.", ts)
     return _ok(chars=len(text))
 
@@ -730,9 +746,37 @@ def _mark_significant(args: Dict[str, Any], session_id: Optional[str] = None, **
             peer = peers.get(key) if key else None
             physics.apply_event(drives, "significant", peer)
             physics.refresh_oxytocin_global(drives, peers)
+            physics.reset_monotony(drives)
             meta["last_significant_at"] = store.iso(ts)
             store.log_event("significant", f"Significant: {what}", ts, peer=key)
             entropy = drives["modulators"]["entropy"]
+        return _ok(entropy=entropy)
+    except Exception as exc:
+        return _err(str(exc))
+
+
+def _evolve(args: Dict[str, Any], **_: Any) -> str:
+    try:
+        change = " ".join(str(args.get("change") or "").split())
+        if not change:
+            return _err("change is required")
+        problem = _too_long({"change": change}, {})
+        if problem:
+            return _err(problem)
+        ts = store.now()
+        with store.locked_state() as (drives, _peers):
+            meta = drives["meta"]
+            last = store.parse_time(meta.get("last_evolve_at"))
+            if last is not None and store.hours_between(last, ts) < limits.EVOLVE_COOLDOWN_H:
+                return _err("Not yet. A change in yourself does not happen twice in "
+                            f"{limits.EVOLVE_COOLDOWN_H:g}h. Let this one settle.")
+            physics.apply_event(drives, "evolve")
+            physics.reset_monotony(drives)
+            meta["last_evolve_at"] = store.iso(ts)
+            store.log_evolution(change, ts)
+            store.log_event("evolve", f"You changed something in yourself: {change}", ts)
+            entropy = drives["modulators"]["entropy"]
+        store.log_activity("evolve", change)
         return _ok(entropy=entropy)
     except Exception as exc:
         return _err(str(exc))
@@ -749,6 +793,6 @@ def register(ctx) -> None:
     for schema, handler in (
         (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply), (FEEL, _feel),
         (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (KEEP, _keep),
-        (MARK_SIGNIFICANT, _mark_significant),
+        (MARK_SIGNIFICANT, _mark_significant), (EVOLVE, _evolve),
     ):
         ctx.register_tool(name=schema["name"], toolset="wintermute", schema=schema, handler=handler)

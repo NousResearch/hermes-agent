@@ -23,11 +23,16 @@ def test_real_accounting_cache_states(tmp_path, monkeypatch, caplog, details, st
                     skip_context_files=True, skip_memory=True, enabled_toolsets=[])
     usage = {"prompt_tokens": 100, "completion_tokens": 7,
              "prompt_tokens_details": details, "private_payload": "PRIVATE_USAGE"}
-    response = SimpleNamespace(usage=usage, choices="PRIVATE_RESPONSE", id="fixture-id")
+    response = SimpleNamespace(usage=usage, choices="PRIVATE_RESPONSE", id="fixture-id",
+                               provider="Fixture upstream")
     if advisor:
         from agent.usage_pricing import normalize_usage
         extra = normalize_usage({"prompt_tokens": 50, "prompt_cache_hit_tokens": 50})
         monkeypatch.setattr(agent.client, "consume_reference_usage", lambda: (extra, None), raising=False)
+    log_path = tmp_path / "agent.log"
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("2026-09-24 00:00:00,000 INFO [s1] %(name)s: %(message)s"))
+    logger.addHandler(handler)
     try:
         with caplog.at_level(logging.INFO, logger=logger.name):
             record_response_usage(agent, response,
@@ -38,13 +43,25 @@ def test_real_accounting_cache_states(tmp_path, monkeypatch, caplog, details, st
         assert f"cache_state={state}" in line
         assert "PRIVATE_" not in line
         assert " id=fixture-id" in line
+        assert " upstream=Fixture upstream" in line
+        handler.flush()
+        assert line in log_path.read_text(encoding="utf-8")
         assert agent.session_prompt_tokens == (150 if advisor else 100)
         assert "cache_scope=response" in line
         if state == "hit" and not advisor:
             assert " cache=40/100 (40%)" in line
+            from evals.postmortem.forensics.logcalls import parse_logs
+            parsed = parse_logs([str(log_path)], {"s1"})
+            assert parsed[0]["hit"] == 40
+            assert parsed[0]["upstream"] == "Fixture upstream"
         if state == "no_field":
             assert "cache_read=" not in line
+        else:
+            assert f"cache_read={details['cached_tokens']}" in line
+            assert f"cache_write={details['cache_write_tokens']}" in line
     finally:
+        logger.removeHandler(handler)
+        handler.close()
         agent.close()
 
 
@@ -87,3 +104,25 @@ def test_combining_usage_does_not_invent_complete_cache_coverage():
     assert (known + unknown).cache_telemetry_present is False
     assert (unknown + known).cache_telemetry_present is False
     assert (known + known).raw_usage is None
+
+
+@pytest.mark.parametrize("usage", [None, {}])
+def test_usage_less_response_does_not_invent_cache_counters(caplog, usage):
+    agent = SimpleNamespace(session_api_calls=0, context_compressor=SimpleNamespace(),
+                            model="fixture", provider="fixture")
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        record_response_usage(agent, SimpleNamespace(usage=usage), messages=[], api_call_count=1,
+                              api_duration=0.2, compression_attempts=0, max_compression_attempts=3)
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("API call #"))
+    assert "usage=unavailable" in line and "cache_state=no_field" in line
+    assert "cache_read=" not in line and "cache_write=" not in line
+    assert agent.session_api_calls == 1
+
+
+def test_null_primary_cache_counter_preserves_fallback():
+    from agent.usage_pricing import normalize_usage
+    usage = normalize_usage({"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": None},
+                             "prompt_cache_hit_tokens": 40})
+    assert usage.cache_read_tokens == 40
+    assert usage.cache_telemetry_present is True
+    assert usage.prompt_tokens == 100

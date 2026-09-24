@@ -12,8 +12,8 @@
  *  - switching between the branch and its parent never renders the other
  *    session's (stale) turns or duplicates a part (#121096).
  *
- * Known bugs are strict expected failures (KNOWN below): the test turns red
- * the moment the bug is fixed, forcing the entry out.
+ * No KNOWN entries: every scenario is green on main. A bug found later is
+ * marked with test.fail() + the issue ref (strict: red once fixed).
  */
 
 import { expect, type Page, test } from '@playwright/test'
@@ -33,9 +33,6 @@ import {
 import { installDuplicateSampler } from './oracle'
 import { startScriptedProvider } from './provider'
 import { sessionRows } from './remote-helpers'
-
-/** Scenario → issue for bugs confirmed on main; test.fail() while listed. */
-const KNOWN: Record<string, string> = {}
 
 const nonce = Math.random()
   .toString(36)
@@ -64,8 +61,8 @@ async function sidebarRowTexts(page: Page): Promise<string[]> {
 /** Markers of every user bubble, in order, and how often each assistant marker renders. */
 async function renderedMarkers(page: Page): Promise<{ users: string[]; assistants: string[] }> {
   const { bubbles } = await renderedTranscript(page)
-  const pick = (role: string, re: RegExp) =>
-    bubbles.filter(b => b.role === role).flatMap(b => b.text.match(re) ?? [])
+
+  const pick = (role: string, re: RegExp) => bubbles.filter(b => b.role === role).flatMap(b => b.text.match(re) ?? [])
 
   return {
     users: pick('user', new RegExp(`\\bU\\d+-${nonce}\\b`, 'g')),
@@ -134,10 +131,6 @@ test('lineage: compaction continuation and branch children keep one coherent sid
     let rootId = ''
 
     await test.step('compaction continuation stays one sidebar row (#121148)', async () => {
-      if (KNOWN.continuation) {
-        test.info().annotations.push({ type: 'known', description: KNOWN.continuation })
-      }
-
       await turn(1, 'first question here')
       rootId = storedSessionForMarker(sandbox, 'default', U(1)) ?? ''
       expect(rootId).not.toBe('')
@@ -174,8 +167,14 @@ test('lineage: compaction continuation and branch children keep one coherent sid
 
     await test.step('the prompt acknowledged after compaction renders once (#121088)', async () => {
       const live = await renderedMarkers(page)
-      expect(live.users.filter(m => m === U(4)), 'live: U4 rendered once').toHaveLength(1)
-      expect(live.assistants.filter(m => m === A(4)), 'live: A4 rendered once').toHaveLength(1)
+      expect(
+        live.users.filter(m => m === U(4)),
+        'live: U4 rendered once'
+      ).toHaveLength(1)
+      expect(
+        live.assistants.filter(m => m === A(4)),
+        'live: A4 rendered once'
+      ).toHaveLength(1)
       expect(live.users.indexOf(U(4)), 'U4 is the last user bubble').toBe(live.users.length - 1)
 
       await page.reload()
@@ -183,8 +182,14 @@ test('lineage: compaction continuation and branch children keep one coherent sid
       await installDuplicateSampler(page)
       await expect(viewport(page)).toContainText(A(4), { timeout: 60_000 })
       const cold = await renderedMarkers(page)
-      expect(cold.users.filter(m => m === U(4)), 'reload: U4 rendered once').toHaveLength(1)
-      expect(cold.assistants.filter(m => m === A(4)), 'reload: A4 rendered once').toHaveLength(1)
+      expect(
+        cold.users.filter(m => m === U(4)),
+        'reload: U4 rendered once'
+      ).toHaveLength(1)
+      expect(
+        cold.assistants.filter(m => m === A(4)),
+        'reload: A4 rendered once'
+      ).toHaveLength(1)
     })
 
     let branchId = ''
@@ -195,7 +200,10 @@ test('lineage: compaction continuation and branch children keep one coherent sid
       const before = new Set(sessionRows(sandbox).map(r => r.id))
       const row = sidebarRows(page).first()
       await row.click({ button: 'right' })
-      await page.getByRole('menuitem', { name: /^branch/i }).first().click()
+      await page
+        .getByRole('menuitem', { name: /^branch/i })
+        .first()
+        .click()
       await expect
         .poll(() => sessionRows(sandbox).filter(r => !before.has(r.id)).length, {
           timeout: 60_000,
@@ -228,7 +236,10 @@ test('lineage: compaction continuation and branch children keep one coherent sid
 
         await openSession(page, branchId, A(5))
         const branch = await renderedMarkers(page)
-        expect(branch.users.filter(m => m === U(5)), `round ${round}: branch turn once`).toHaveLength(1)
+        expect(
+          branch.users.filter(m => m === U(5)),
+          `round ${round}: branch turn once`
+        ).toHaveLength(1)
         expect(new Set(branch.assistants).size, `round ${round}: branch assistant parts unique`).toBe(
           branch.assistants.length
         )

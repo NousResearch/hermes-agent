@@ -87,7 +87,12 @@ export async function startRemoteBackend(sandbox: CoreSandbox): Promise<RemoteBa
   const env: Record<string, string> = {}
 
   for (const [key, value] of Object.entries(process.env)) {
-    if (value && !/^_?HERMES_/.test(key) && !/(_API_KEY|_TOKEN|_SECRET|_BASE_URL)$/.test(key) && key !== 'VIRTUAL_ENV') {
+    if (
+      value &&
+      !/^_?HERMES_/.test(key) &&
+      !/(_API_KEY|_TOKEN|_SECRET|_BASE_URL)$/.test(key) &&
+      key !== 'VIRTUAL_ENV'
+    ) {
       env[key] = value
     }
   }

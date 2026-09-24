@@ -121,7 +121,11 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
       fs.mkdirSync(path.dirname(clientPath), { recursive: true })
       fs.writeFileSync(clientPath, png)
       await stubImagePicker(app, clientPath)
-      await page.locator('[data-slot="composer-root"] button:has(.codicon-add)').filter({ visible: true }).first().click()
+      await page
+        .locator('[data-slot="composer-root"] button:has(.codicon-add)')
+        .filter({ visible: true })
+        .first()
+        .click()
       await page.getByRole('menuitem', { name: /image/i }).first().click()
       await expect(page.locator('[data-slot="composer-root"]').getByText(`shot-${nonce}.png`).first()).toBeVisible()
 
@@ -157,7 +161,9 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
       const everySent = JSON.stringify(provider.completions.map(c => c.body))
       expect(everySent.includes(clientBox.root), 'no client-side path ever reached the backend').toBe(false)
       const sentOnWire = JSON.stringify(ws.sent)
-      expect(sentOnWire.includes(`"path":"${clientPath}"`), 'the client path was never sent as an attach path').toBe(false)
+      expect(sentOnWire.includes(`"path":"${clientPath}"`), 'the client path was never sent as an attach path').toBe(
+        false
+      )
       session.expectUserMarkers.push(U(2))
     })
 
@@ -166,7 +172,10 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
       const row = sidebarRow(page, U(1))
       await expect(row).toBeVisible({ timeout: 60_000 })
       await row.click({ button: 'right' })
-      await page.getByRole('menuitem', { name: /rename/i }).first().click()
+      await page
+        .getByRole('menuitem', { name: /rename/i })
+        .first()
+        .click()
       const input = page.getByRole('dialog').getByRole('textbox').first()
       await expect(input).toBeVisible()
       await input.fill(title)
@@ -178,9 +187,7 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
         .toBe(title)
 
       await backend.restart()
-      await expect
-        .poll(() => sessionRows(backendBox).find(r => r.id === session.sessionId)?.title ?? null)
-        .toBe(title)
+      await expect.poll(() => sessionRows(backendBox).find(r => r.id === session.sessionId)?.title ?? null).toBe(title)
       await page.reload()
       await waitForInteractive(app, page)
       await expect(sidebarRow(page, title)).toBeVisible({ timeout: 60_000 })
@@ -193,9 +200,7 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
       await expect(viewport(page)).toContainText(A(2), { timeout: 60_000 })
       await send(page, `${U(3)} still there`, 'Enter', ws)
       await finished(U(3))
-      await expect
-        .poll(() => sessionRows(backendBox).find(r => r.id === session.sessionId)?.title ?? null)
-        .toBe(title)
+      await expect.poll(() => sessionRows(backendBox).find(r => r.id === session.sessionId)?.title ?? null).toBe(title)
     })
   } finally {
     await app.close().catch(() => undefined)

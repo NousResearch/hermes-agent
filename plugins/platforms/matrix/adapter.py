@@ -2382,14 +2382,15 @@ class MatrixAdapter(BasePlatformAdapter):
         if not isinstance(events, list):
             return False, ""
 
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            if event.get("type") != "m.room.member":
-                continue
-            if event.get("state_key") != self._user_id:
-                continue
+        members = [e for e in events if isinstance(e, dict) and e.get("type") == "m.room.member"]
+        # Our event is the one addressed to our exact id (the one mautrix dispatches to
+        # _on_invite). Only when there is none, fall back to _on_invite's case-insensitive
+        # identity check, so a look-alike member event can never stand in for ours.
+        own = [e for e in members if e.get("state_key") == self._user_id]
+        if not own:
+            own = [e for e in members if self._is_self_sender(str(e.get("state_key") or ""))]
 
+        for event in own:
             content = event.get("content", {})
             if not isinstance(content, dict):
                 continue

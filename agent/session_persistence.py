@@ -217,6 +217,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         "timestamp": timestamp, "api_content": api_content,
         "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
         "platform_message_id": msg.get("platform_message_id"),  # load-bearing for restart drain-window recovery dedup
+        "topic_id": msg.get("_topic_id") if msg.get("_topic_id") is not None else getattr(agent, "_active_topic_id", None),
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]

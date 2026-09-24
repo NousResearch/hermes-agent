@@ -458,6 +458,13 @@ class AIAgent(
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
+        # /new, /resume and /branch reuse the AIAgent instance after changing its
+        # physical session id.  Restore the target session's durable topic override
+        # and active topic instead of carrying the previous session's selection.
+        if hasattr(self, "_topic_segmentation_default"):
+            from agent.session_topics import refresh_topic_segmentation
+            refresh_topic_segmentation(self)
+
     @staticmethod
     def _effective_lmstudio_context_length(config_context_length: Optional[int], runtime_context_length: Any) -> Optional[int]:
         """Return a safe context budget from explicit intent and verified runtime."""

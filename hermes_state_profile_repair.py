@@ -24,7 +24,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from hermes_state_common import _id_chunks, _placeholders as _session_ids_placeholders
+from hermes_state_common import (
+    _id_chunks, _placeholders as _session_ids_placeholders, _rehome_or_delete_session_topics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +182,7 @@ class SessionProfileRepairMixin:
     def export_session_for_move(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Everything the target store needs to hold *session_id* as its own: the row (every column),
         the resolved system prompt, EVERY message row (inactive and compacted generations included —
-        a move is not an export) and its usage rows."""
+        a move is not an export), referenced topic metadata, and its usage rows."""
         def _read(conn):
             session = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if session is None:
@@ -193,10 +195,15 @@ class SessionProfileRepairMixin:
             tool_pin = _stored(session["tool_names"]) if session["tool_names"] else None
             messages = [dict(r) for r in conn.execute(
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (session_id,))]
+            topics = [dict(r) for r in conn.execute(
+                """SELECT DISTINCT t.* FROM session_topics t
+                   LEFT JOIN messages m ON m.topic_id = t.id
+                   WHERE t.session_id = ? OR m.session_id = ? ORDER BY t.id""",
+                (session_id, session_id))]
             usage = [dict(r) for r in conn.execute(
                 "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))]
             return {"session": dict(session), "system_prompt": prompt, "tool_pin": tool_pin, "messages": messages,
-                    "usage": usage}
+                    "topics": topics, "usage": usage}
         return self._read_retrying_ioerr(_read)
 
     def import_moved_session(self, payload: Dict[str, Any], *, profile_name: str) -> str:
@@ -226,8 +233,42 @@ class SessionProfileRepairMixin:
                 # A pin hash means nothing in this store: re-store the pin, or drop an unresolvable ref.
                 session["tool_names"] = self._store_system_prompt(conn, payload.get("tool_pin"))
             self._insert_row(conn, "sessions", session, skip=frozenset())
+            topic_ids: Dict[int, int] = {}
+            active_topics: List[Tuple[str, int]] = []
+            for topic in payload.get("topics") or []:
+                old_id = int(topic["id"])
+                owner_id = str(topic.get("session_id") or session_id)
+                if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (owner_id,)).fetchone() is None:
+                    owner_id = session_id
+                existing = conn.execute(
+                    "SELECT id FROM session_topics WHERE session_id = ? AND normalized_title = ?",
+                    (owner_id, topic["normalized_title"]),
+                ).fetchone()
+                if existing is None:
+                    cursor = conn.execute(
+                        """INSERT INTO session_topics
+                           (session_id, title, normalized_title, summary, state,
+                            created_at, last_active_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (owner_id, topic["title"], topic["normalized_title"],
+                         topic.get("summary"),
+                         "warm" if topic.get("state") == "active" else topic.get("state", "warm"),
+                         topic.get("created_at"), topic.get("last_active_at")),
+                    )
+                    new_id = int(cursor.lastrowid)
+                else:
+                    new_id = int(existing["id"])
+                topic_ids[old_id] = new_id
+                if topic.get("state") == "active":
+                    active_topics.append((owner_id, new_id))
+            for owner_id, topic_id in active_topics:
+                conn.execute("UPDATE session_topics SET state = 'warm' WHERE session_id = ?", (owner_id,))
+                conn.execute("UPDATE session_topics SET state = 'active' WHERE id = ?", (topic_id,))
             for message in payload.get("messages") or []:
-                self._insert_row(conn, "messages", {**message, "session_id": session_id}, skip=_MESSAGE_MOVE_SKIP)
+                moved_message = {**message, "session_id": session_id}
+                old_topic_id = moved_message.get("topic_id")
+                moved_message["topic_id"] = topic_ids.get(int(old_topic_id)) if old_topic_id is not None else None
+                self._insert_row(conn, "messages", moved_message, skip=_MESSAGE_MOVE_SKIP)
             for usage in payload.get("usage") or []:
                 self._insert_row(conn, "session_model_usage", {**usage, "session_id": session_id}, skip=frozenset())
             return "imported"
@@ -250,6 +291,7 @@ class SessionProfileRepairMixin:
             conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,))
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (session_id,))
+            _rehome_or_delete_session_topics(conn, [session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True

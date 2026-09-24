@@ -3303,6 +3303,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                     model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
                     watermark=_archive_watermark_for(session_db, session_id, messages),
                     covered_ids=covered_ids, unresolved_held=unresolved_held,
+                    topic_id=getattr(self, "_active_topic_id", None),
                 )
             except StaleHeldHistory:
                 # Another compaction already committed this session's history; a lease-less prune of the

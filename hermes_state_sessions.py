@@ -18,8 +18,9 @@ from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
-    escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _rehome_or_delete_session_topics, _sql_in_window, _sql_json_extract, _sql_session_last_active,
+    _sql_session_last_active_by_id, escape_like as _escape_like,
+    _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -163,6 +164,7 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     for chunk in _id_chunks(ids):
         ph = _session_ids_placeholders(chunk)
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+        _rehome_or_delete_session_topics(conn, chunk)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
@@ -1578,6 +1580,7 @@ class SessionSessionsMixin:
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            _rehome_or_delete_session_topics(conn, [session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.append(session_id)
@@ -1607,6 +1610,7 @@ class SessionSessionsMixin:
                 (session_id,),
             )
             if cursor.rowcount > 0:
+                _rehome_or_delete_session_topics(conn, [session_id])
                 self._delete_unreferenced_system_prompts(conn)
             return cursor.rowcount > 0
         deleted = self._execute_write(_do)
@@ -1634,6 +1638,7 @@ class SessionSessionsMixin:
                     f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk,
                 )
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                _rehome_or_delete_session_topics(conn, chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
@@ -1672,6 +1677,7 @@ class SessionSessionsMixin:
                 # DELETE FROM messages: a row inserted between the SELECT and here
                 # would otherwise dangle (clean FK state).
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                _rehome_or_delete_session_topics(conn, chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)

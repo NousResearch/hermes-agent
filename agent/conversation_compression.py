@@ -3743,6 +3743,8 @@ def _commit_compaction(
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                     covered_ids=covered_ids, unresolved_held=unresolved_held,
+                    topic_id=getattr(agent, "_active_topic_id", None)
+                    if getattr(agent, "_topic_segmentation_enabled", False) else None,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"

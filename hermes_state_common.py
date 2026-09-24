@@ -249,7 +249,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -335,6 +335,31 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
         yield ids[start:start + size]
 
 
+def _rehome_or_delete_session_topics(conn, owner_ids) -> None:
+    """Keep compression-lineage topics reachable when owner rows are deleted."""
+    doomed = [sid for sid in dict.fromkeys(owner_ids) if sid]
+    if not doomed:
+        return
+    doomed_ph = _placeholders(doomed)
+    for owner_id in doomed:
+        replacement = conn.execute(
+            f"""SELECT m.session_id, MAX(m.id) AS newest
+                FROM messages m
+                JOIN session_topics t ON t.id = m.topic_id
+                JOIN sessions s ON s.id = m.session_id
+                WHERE t.session_id = ? AND m.session_id NOT IN ({doomed_ph})
+                GROUP BY m.session_id ORDER BY newest DESC LIMIT 1""",
+            (owner_id, *doomed),
+        ).fetchone()
+        if replacement is not None:
+            conn.execute(
+                "UPDATE session_topics SET session_id = ? WHERE session_id = ?",
+                (replacement["session_id"], owner_id),
+            )
+        else:
+            conn.execute("DELETE FROM session_topics WHERE session_id = ?", (owner_id,))
+
+
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 
@@ -412,6 +437,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
 
+-- ``session_id`` is the compression-lineage root, not necessarily the row
+-- that currently receives messages.  It intentionally has no FK: a retained
+-- compression child may still reference the conversation's topics after the
+-- archived root is pruned.
+CREATE TABLE IF NOT EXISTS session_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    normalized_title TEXT,
+    summary TEXT,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at REAL NOT NULL,
+    last_active_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -438,7 +478,8 @@ CREATE TABLE IF NOT EXISTS messages (
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
-    display_order INTEGER
+    display_order INTEGER,
+    topic_id INTEGER REFERENCES session_topics(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -597,6 +638,10 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_topic_active
+    ON messages(topic_id, active, id);
+CREATE INDEX IF NOT EXISTS idx_session_topics_conversation
+    ON session_topics(session_id, state, last_active_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
     ON messages(session_id, display_order, active DESC, id DESC)
     WHERE active = 1 OR compacted = 1;

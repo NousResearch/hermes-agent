@@ -1931,6 +1931,25 @@ def test_bound_model_input_without_hygiene_is_deterministic_and_fail_closed():
     assert bound_model_input_without_hygiene(rows, len(rows) + 5) is rows
 
 
+@pytest.mark.parametrize("limit", [3, 4])
+def test_bound_model_input_without_hygiene_starts_at_user_after_tool_round(limit):
+    """A cut inside a tool round cannot leave a function call as the first model turn."""
+    from gateway.run_turn import bound_model_input_without_hygiene
+
+    rows = [
+        {"role": "system", "content": "instructions"},
+        {"role": "user", "content": "earlier request"},
+        {"role": "assistant", "tool_calls": [{"id": "call", "function": {"name": "t"}}]},
+        {"role": "tool", "tool_call_id": "call", "content": "result"},
+        {"role": "user", "content": "latest request"},
+    ]
+    bounded = bound_model_input_without_hygiene(rows, limit)
+
+    assert bounded == [rows[0], rows[-1]]
+    assert len(bounded) <= limit
+    assert rows[2]["role"] == "assistant" and rows[3]["role"] == "tool"
+
+
 @pytest.mark.asyncio
 async def test_hygiene_miss_bounds_the_model_payload(monkeypatch, tmp_path):
     """Turn-hold expiry without a landed summary must not feed the model the whole transcript

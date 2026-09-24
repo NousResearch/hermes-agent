@@ -596,11 +596,14 @@ ctx.register({
 ```
 
 **Arbitration.** Providers are consulted in registry order and the *first
-non-null, non-empty string wins*. A provider that returns `null` (or `''`)
-declines and the next one is asked; a provider that **throws** is treated as
-declining — the error is swallowed and the pill falls through to the next
-provider, then to the core label, so a broken plugin can never blank the pill.
-In compact (floating) mode the pill renders only the chevron and no provider is
+non-empty string wins*; later providers are not called. Anything else declines
+and the next provider is asked: `null`, `''`, a whitespace-only string, and any
+non-string value (an object, array or number is never rendered — the label is
+placed straight into JSX). A provider that **throws** also declines — the error
+is swallowed and the pill falls through to the next provider, then to the core
+label, so a broken plugin can never blank the pill. `reasoningEffort` is always
+a `string` (`''` when the model has no effort level, never `undefined`). In
+compact (floating) mode the pill renders only the chevron and no provider is
 called. `label()` is re-evaluated only when the registry, the model, the effort
 level or the compact flag changes.
 

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { useContext } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
@@ -10,7 +10,7 @@ import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
-import { COMPOSER_AREAS, type ComposerModelPillProvider } from './contrib'
+import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
 import { requestModelMenuToggle } from './focus'
 import { ModelPill } from './model-pill'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -191,22 +191,26 @@ describe('ModelPill label providers', () => {
   it('renders a provider-supplied label, and the core label once the provider declines', () => {
     setCurrentModel('deepseek/deepseek-v4-flash')
 
-    register(({ model, reasoningEffort }) => `${model} · ${reasoningEffort || 'none'}`)
+    const label = vi.fn(({ model, reasoningEffort }: ComposerModelPillContext) => `${model} · ${reasoningEffort || 'none'}`)
+    register(label)
 
     const { unmount } = render(
       <ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
     )
 
     expect(screen.getByText('deepseek/deepseek-v4-flash · none')).toBeTruthy()
+    expect(label).toHaveBeenCalled()
     unmount()
 
     // Floating-composer (compact) mode renders only the chevron: providers are
-    // not consulted, so the provider text must not leak into the DOM.
+    // not consulted at all (the chevron has no text to leak, so only the spy
+    // proves the skip).
+    label.mockClear()
     const compactRender = render(
       <ModelPill compact disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
     )
 
-    expect(screen.queryByText(/· none/)).toBeNull()
+    expect(label).not.toHaveBeenCalled()
     compactRender.unmount()
 
     // Declining provider: the override text is gone, the core label is back.
@@ -219,17 +223,22 @@ describe('ModelPill label providers', () => {
     expect(screen.getByText(formatModelPillLabel('deepseek/deepseek-v4-flash', { fastMode: false }))).toBeTruthy()
   })
 
-  it('treats a throwing provider as declining and lets the next provider win', () => {
+  it('falls through on throw and on a non-string return; the first string wins and later providers are not asked', () => {
     setCurrentModel('deepseek/deepseek-v4-flash')
 
     register(() => {
       throw new Error('broken provider')
     }, 'broken')
-    register(() => 'next wins', 'working')
+    // A non-string (object/array/number) is not a label: rendering it would
+    // throw inside ModelPill (no error boundary there) and blank the composer.
+    register(() => ({ text: 'object label' }) as unknown as string, 'wrong-type')
+    register(() => 'first wins', 'first')
+    const second = vi.fn(() => 'second loses')
+    register(second, 'second')
 
     render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
 
-    // The broken provider declined; the next one's label renders.
-    expect(screen.getByText('next wins')).toBeTruthy()
+    expect(screen.getByText('first wins')).toBeTruthy()
+    expect(second).not.toHaveBeenCalled()
   })
 })

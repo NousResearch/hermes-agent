@@ -201,7 +201,10 @@ export function useComposerModelPillLabel({ compact, model, reasoningEffort }: C
       try {
         const label = provider?.label?.(ctx)
 
-        if (label) {
+        // Only a non-empty string is a label. ModelPill renders the value
+        // straight into JSX with no error boundary, so an object/array/number
+        // from a plugin would throw and blank the composer — treat it as declining.
+        if (typeof label === 'string' && label.trim() !== '') {
           return label
         }
       } catch {

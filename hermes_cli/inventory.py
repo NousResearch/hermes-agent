@@ -158,6 +158,9 @@ def build_models_payload(
     if featured:
         _apply_featured(rows, metadata_config=metadata_config)
     _apply_custom_aliases(rows)
+    from hermes_cli.models_validate import drop_unofferable_model_ids
+
+    drop_unofferable_model_ids(rows)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 

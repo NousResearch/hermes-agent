@@ -319,7 +319,7 @@ _DID_SUFFIX = (
 # needs these directly — provider tools consume them through internal channels.
 # bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
 _CREDENTIAL_FILE_NAMES = (
-    "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
+    "auth.json", "auth.json.corrupt", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
 )
 

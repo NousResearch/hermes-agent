@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
@@ -212,6 +213,33 @@ _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\
 def is_valid_env_name(name: str) -> bool:
     """True when ``name`` is a legal environment-variable name."""
     return bool(name) and bool(_ENV_NAME_RE.match(name))
+
+
+# Install prefixes a *service* PATH routinely omits. A gateway started by launchd, systemd or the
+# desktop app inherits a minimal PATH (often just /usr/bin:/bin:/usr/sbin:/sbin), so `shutil.which`
+# answers "not installed" for a manager CLI the same host runs fine from a login shell.
+_COMMON_CLI_BIN_DIRS: Tuple[str, ...] = (
+    "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+    "~/.local/bin", "~/bin",
+)
+
+
+def resolve_cli_binary(binary: str, binary_path: str = "") -> Optional[Path]:
+    """Resolve a helper CLI to an executable path, or None.
+
+    A pinned ``binary_path`` is used verbatim — pinned-but-missing returns None rather than
+    silently falling back. Otherwise PATH, then :data:`_COMMON_CLI_BIN_DIRS`, so detection
+    describes the HOST rather than the launcher's environment.
+    """
+    if binary_path:
+        return Path(binary_path) if os.access(binary_path, os.X_OK) else None
+    if found := shutil.which(binary):
+        return Path(found)
+    for directory in _COMMON_CLI_BIN_DIRS:
+        candidate = Path(os.path.expanduser(directory)) / binary
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def scrub_ansi(text: str) -> str:

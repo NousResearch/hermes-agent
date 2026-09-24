@@ -305,6 +305,17 @@ def finish_execution(
     return record
 
 
+def set_execution_delivery_outcome(execution_id: str, delivery_outcome: str) -> bool:
+    """Attach recovery delivery bookkeeping without rewriting a terminal execution state."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET delivery_outcome=?
+               WHERE id=? AND status='unknown' AND delivery_outcome IS NULL""",
+            (delivery_outcome, execution_id),
+        )
+    return cur.rowcount == 1
+
+
 _OWNER_GONE_REASON = (
     "Scheduler restarted after this execution's owner exited before a durable "
     "terminal state; whether side effects ran is unknown."
@@ -316,7 +327,7 @@ _OWNER_WEDGED_REASON = (
 )
 
 
-def recover_interrupted_executions() -> int:
+def recover_interrupted_executions(*, return_records: bool = False) -> int | List[Dict[str, Any]]:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
     process is not killed)."""
@@ -380,7 +391,9 @@ def recover_interrupted_executions() -> int:
             _prune_unlocked(conn)
     for record in recovered:
         _emit_execution_state(record)
-    return changed
+    # Callers that only reclaim ledger rows retain the historical count return value. The
+    # scheduler needs the exact CAS-won rows to project an interrupted run onto jobs.json.
+    return recovered if return_records else changed
 
 
 def list_executions(

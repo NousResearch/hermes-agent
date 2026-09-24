@@ -2432,6 +2432,27 @@ def mark_job_run(
     return _under_fire_fence(job_id, locked)
 
 
+def mark_recovered_execution_failed(
+    job_id: str, execution_id: str, error: str,
+) -> Optional[Dict[str, Any]]:
+    """Project one ledger-recovered execution onto its job record exactly once."""
+    def apply(jobs, _i, job):
+        projected = job.get("recovered_execution_ids") or []
+        if execution_id in projected:
+            return None
+        if not isinstance(projected, list):
+            projected = []
+        now = _hermes_now().isoformat()
+        _record_run_outcome(job, False, error, None, None, now)
+        _advance_after_run(job, now)
+        # Keep delayed/concurrent ledger scans idempotent without an unbounded jobs.json cache.
+        job["recovered_execution_ids"] = (projected + [execution_id])[-20:]
+        save_jobs(jobs)
+        return dict(job)
+
+    return _with_job(job_id, apply, None)
+
+
 def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:
     """Best-effort operator-visible trace in the job's output dir; never breaks the caller."""
     try:

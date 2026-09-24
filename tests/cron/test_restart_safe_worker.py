@@ -497,7 +497,7 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     assert scheduler._wait_for_external_cron_worker(
         process, execution_id="exec-1"
     ) is True
-    recover.assert_called_once_with()
+    recover.assert_called_once_with(return_records=True)
     assert get.call_count == 2
 
 
@@ -656,10 +656,11 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
     monkeypatch.setattr(scheduler, "run_job", run)
     job = {"id": "job-1", "execution_id": "exec-1"}
+    adapters = {"discord": object()}
 
-    assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
+    assert scheduler.run_one_job(job, adapters=adapters) is True
 
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, adapters=adapters, loop=None)
     run.assert_not_called()
 
 
@@ -748,7 +749,7 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
 
     created.assert_called_once_with("tool-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-tool"
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, adapters=None, loop=None)
     run.assert_not_called()
 
 

@@ -537,7 +537,8 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+    mark_recovered_execution_failed, save_job_output, self_removal_delivery_allowed,
+    self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -2723,7 +2724,7 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            if _launch_external_cron_worker(job):
+            if _launch_external_cron_worker(job, adapters=adapters, loop=loop):
                 return True
         except Exception as handoff_error:
             error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
@@ -3362,6 +3363,8 @@ def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
     execution_id: str,
+    adapters=None,
+    loop=None,
 ) -> bool:
     """Preserve ``run_one_job``'s synchronous contract after handoff.
 
@@ -3398,7 +3401,10 @@ def _wait_for_external_cron_worker_body(
         # now provably gone. Recover to ``unknown`` rather than routing the
         # exception through the pre-handoff dispatch-failure path, which
         # would falsely assert that no side effect could have happened.
-        recover_interrupted_executions()
+        recovered = recover_interrupted_executions(return_records=True)
+        # Compatibility with older provider/test recovery hooks that return the historical count.
+        if isinstance(recovered, list):
+            _project_recovered_executions(recovered, adapters=adapters, loop=loop)
         if _is_terminal():
             return True
         raise RuntimeError(
@@ -3413,10 +3419,12 @@ def _wait_for_external_cron_worker(
     execution_id: str,
     job_id: Optional[str] = None,
     handoff_files: tuple[Path, ...] = (),
+    adapters=None,
+    loop=None,
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
-            process, execution_id=execution_id
+            process, execution_id=execution_id, adapters=adapters, loop=loop
         )
     finally:
         if job_id is not None:
@@ -3431,7 +3439,7 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
+def _launch_external_cron_worker(job: dict, *, adapters=None, loop=None) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` outside a managed systemd gateway (in-process path).  In
@@ -3583,6 +3591,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
+                    adapters=adapters,
+                    loop=loop,
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -3600,6 +3610,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
+                    adapters=adapters,
+                    loop=loop,
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
@@ -3615,6 +3627,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 execution_id=execution_id,
                 job_id=job_id,
                 handoff_files=(payload_path, stderr_path),
+                adapters=adapters,
+                loop=loop,
             )
         returncode = process.poll()
         if returncode is not None:
@@ -3654,6 +3668,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
         execution_id=execution_id,
         job_id=job_id,
         handoff_files=(payload_path, ack_path, stderr_path),
+        adapters=adapters,
+        loop=loop,
     )
 
 
@@ -3938,7 +3954,33 @@ def _release_tick_lock(lock_fd) -> None:
     lock_fd.close()
 
 
-def _maybe_reap_dead_owners() -> None:
+def _project_recovered_executions(records: list[dict], *, adapters=None, loop=None) -> None:
+    """Finish job-level failure bookkeeping for CAS-recovered ledger attempts."""
+    for record in records:
+        job_id = str(record.get("job_id") or "")
+        execution_id = str(record.get("id") or "")
+        error = str(record.get("error") or "Cron worker exited before terminal completion.")
+        if not job_id or not execution_id:
+            continue
+        try:
+            job = mark_recovered_execution_failed(job_id, execution_id, error)
+            if job is None:
+                continue
+            delivery_error, delivery_outcome = _deliver_crash_failure(
+                job, error, adapters=adapters, loop=loop)
+            from cron.executions import set_execution_delivery_outcome
+            set_execution_delivery_outcome(execution_id, delivery_outcome)
+            if delivery_error:
+                logger.warning(
+                    "Recovered cron execution %s failure delivery failed: %s",
+                    execution_id, delivery_error)
+        except Exception as exc:
+            logger.warning(
+                "Could not project recovered cron execution %s onto job %s: %s",
+                execution_id, job_id, exc)
+
+
+def _maybe_reap_dead_owners(*, adapters=None, loop=None) -> None:
     """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Rows
     whose owner process is proved gone are released (_owner_is_live), as are rows whose live owner
     holds a claim older than the derived stale bound (the process is not killed). Throttled."""
@@ -3960,8 +4002,10 @@ def _maybe_reap_dead_owners() -> None:
     try:
         from cron.executions import recover_interrupted_executions
 
-        _reclaimed = recover_interrupted_executions()
+        _recovered = recover_interrupted_executions(return_records=True)
+        _reclaimed = len(_recovered)
         if _reclaimed:
+            _project_recovered_executions(_recovered, adapters=adapters, loop=loop)
             logger.warning(
                 "Reclaimed %d cron execution(s) whose owner process died "
                 "before reaching a terminal state (marked unknown)",

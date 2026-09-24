@@ -469,3 +469,94 @@ class TestHappyEyeballsSocketConnect:
             monkeypatch.setitem(racer.__globals__, "_happy_eyeballs_create_connection", boom)
             with pytest.raises(RuntimeError, match="racer bug"):
                 racer(("127.0.0.1", 1), 1.0)
+
+
+class TestCwdExecutableSearch:
+    """Windows resolves bare program names through the parent's cwd before PATH — the repo
+    the agent works in. The bootstrap flips Microsoft's process-wide switch
+    (``NoDefaultCurrentDirectoryInExePath``) and, on Python < 3.12, gives ``shutil.which``
+    the PATH-only walk that 3.12+ already performs when the switch is set."""
+
+    def test_which_skipping_cwd_never_returns_the_cwd_hit(self, tmp_path, monkeypatch):
+        """PATH-only: ``""``/``.`` entries and the implicit cwd are skipped, real PATH dirs win,
+        duplicates are walked once."""
+        hb = _fresh_import()
+        planted = tmp_path / "repo"
+        real_bin = tmp_path / "bin"
+        for directory in (planted, real_bin):
+            directory.mkdir()
+            exe = directory / "tool.exe"
+            exe.write_bytes(b"")
+            exe.chmod(0o755)
+        monkeypatch.chdir(planted)
+        monkeypatch.setenv("PATHEXT", ".exe")  # lowercase: case-sensitive test hosts
+
+        poisoned = os.pathsep.join(["", os.curdir, str(real_bin), str(real_bin)])
+        assert hb._which_skipping_cwd("tool", path=poisoned) == str(real_bin / "tool.exe")
+        assert hb._which_skipping_cwd("tool", path=os.pathsep.join(["", os.curdir])) is None
+        # An explicit directory is not a search: the stdlib handles it unchanged.
+        assert hb._which_skipping_cwd(str(planted / "tool.exe"), path="") == str(planted / "tool.exe")
+
+    def test_posix_host_untouched(self, monkeypatch):
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        hb = _fresh_import()
+        import shutil
+
+        assert hb.disable_cwd_executable_search() is False
+        assert "NoDefaultCurrentDirectoryInExePath" not in os.environ
+        assert shutil.which is hb._stdlib_which
+
+    @pytest.mark.windows_only
+    def test_planted_cwd_binary_loses_after_bootstrap(self, tmp_path):
+        """Live repro with a PATH program (the ``git``/``rg``/``node`` shape): a real ``probe.exe``
+        (a copy of cmd.exe) on PATH and a zero-byte ``probe.exe`` planted in the child's cwd.
+        Legacy: Python 3.11's ``shutil.which`` hands back the planted copy (callers then spawn
+        that path). Hardened: ``which`` skips the cwd and the bare-name spawn runs the PATH copy.
+        The bare-name ``CreateProcess`` outcome is printed for the record only: the
+        windows-2025 runner resolved it to PATH even without the switch."""
+        real_bin = tmp_path / "bin"
+        real_bin.mkdir()
+        import shutil
+
+        shutil.copy(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe", real_bin / "probe.exe")
+        planted = tmp_path / "repo"
+        planted.mkdir()
+        (planted / "probe.exe").write_bytes(b"")
+        root = str(Path(__file__).resolve().parents[1])
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("NoDefaultCurrentDirectoryInExePath", "HERMES_CWD_EXE_SEARCH")}
+        env["PATH"] = str(real_bin) + os.pathsep + env.get("PATH", "")
+        probe = textwrap.dedent("""
+            import os, shutil, subprocess, sys
+            sys.path.insert(0, sys.argv[1])
+            if sys.argv[2] == "hardened":
+                import hermes_bootstrap
+            outs = []
+            for name in ("probe", "probe.exe"):
+                try:
+                    outs.append(subprocess.run([name, "/c", "echo ok"], capture_output=True, text=True, timeout=30).stdout.strip())
+                except OSError as exc:
+                    outs.append(f"spawn-failed:{exc.winerror}")
+            which = shutil.which("probe") or ""
+            print(*outs, os.path.abspath(which).lower().startswith(os.getcwd().lower()))
+        """).strip()
+
+        def run(mode: str) -> list[str]:
+            result = subprocess.run([sys.executable, "-c", probe, root, mode], cwd=planted, env=env,
+                                    capture_output=True, text=True, timeout=60)
+            assert result.returncode == 0, result.stderr
+            print(mode, result.stdout.strip())
+            return result.stdout.split()
+
+        legacy = run("legacy")
+        assert legacy[-1] == "True", legacy  # which() resolved the planted cwd copy
+        hardened = run("hardened")
+        assert hardened == ["ok", "ok", "False"], hardened
+
+    @pytest.mark.windows_only
+    def test_opt_out_restores_legacy_lookup(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CWD_EXE_SEARCH", "1")
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        hb = _fresh_import()
+        assert "NoDefaultCurrentDirectoryInExePath" not in os.environ
+        assert hb.disable_cwd_executable_search() is False

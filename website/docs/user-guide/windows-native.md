@@ -132,6 +132,14 @@ Idempotent. No-op on non-Windows.
 
 **Opt out:** `HERMES_DISABLE_WINDOWS_UTF8=1` in the environment falls back to the legacy cp1252 stdio path. Useful for bisecting an encoding bug; unlikely to be the right setting in normal operation.
 
+## Bare program names never resolve through the working directory
+
+Windows looks for a bare program name (`git`, `rg`, `node`, `powershell`) in the **parent process's current directory before `PATH`** — both `CreateProcess` and `cmd.exe` do. Hermes's working directory is the repository it is working in, so a `git.exe` committed to that repo's root would run as you on the next `git status`.
+
+`hermes_bootstrap` flips Microsoft's process-wide switch for this on every entry point: it defines `NoDefaultCurrentDirectoryInExePath` in the process environment (the OS checks only that the variable exists, not its value). One setting covers every present and future spawn site, and it is deliberately inherited by children — `cmd.exe`, Node/libuv, Go and Bun children all honor it. On Python 3.11, `shutil.which()` gets the same PATH-only walk that Python 3.12+ already performs when the switch is set.
+
+The only visible change is inside `cmd.exe` children: a program that lives in the current directory must be invoked as `.\foo`, not `foo` (Hermes's own terminal tool runs bash, which never searched the cwd). **Opt out:** `HERMES_CWD_EXE_SEARCH=1` restores the legacy lookup.
+
 ## The editor (`Ctrl-X Ctrl-E`, `/edit`)
 
 Pre-#21561, pressing `Ctrl-X Ctrl-E` or typing `/edit` silently did nothing on Windows. prompt_toolkit has a hardcoded POSIX-absolute fallback list (`/usr/bin/nano`, `/usr/bin/pico`, `/usr/bin/vi`, …) that never resolves on Windows — even with full Git for Windows installed.

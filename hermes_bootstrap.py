@@ -20,6 +20,7 @@ import importlib.abc
 import importlib.util
 import os
 import selectors
+import shutil
 import socket
 import sys
 import time
@@ -253,6 +254,64 @@ def apply_windows_utf8_bootstrap() -> bool:
     return True
 
 
+_NO_CWD_EXE_SEARCH_VAR = "NoDefaultCurrentDirectoryInExePath"
+# Re-import safe: a wrapped ``which`` carries the original so the module never wraps itself.
+_stdlib_which = getattr(shutil.which, "_hermes_stdlib_which", shutil.which)
+
+
+def _which_skipping_cwd(cmd, mode=os.F_OK | os.X_OK, path=None):
+    """``shutil.which`` for Windows Python < 3.12: PATH only, never the implicit cwd entry.
+
+    3.12+ asks ``NeedCurrentDirectoryForExePath`` before prepending ``.``; older
+    releases always prepend it. Same PATHEXT walk as the stdlib, minus that entry.
+    """
+    if not (mode & os.X_OK) or isinstance(cmd, bytes) or os.path.dirname(cmd):
+        return _stdlib_which(cmd, mode, path)
+    if path is None:
+        path = os.environ.get("PATH", os.defpath)
+    if isinstance(path, bytes):
+        return _stdlib_which(cmd, mode, path)
+    # PATHEXT is Windows-defined: ";"-separated wherever it is read.
+    pathext = [ext for ext in os.environ.get("PATHEXT", "").split(";") if ext] or [".COM", ".EXE", ".BAT", ".CMD"]
+    files = [cmd] if any(cmd.lower().endswith(ext.lower()) for ext in pathext) else [cmd + ext for ext in pathext]
+    seen: set[str] = set()
+    for directory in path.split(os.pathsep):
+        if not directory or directory == os.curdir:
+            continue
+        normdir = os.path.normcase(directory)
+        if normdir in seen:
+            continue
+        seen.add(normdir)
+        for name in files:
+            candidate = os.path.join(directory, name)
+            if os.path.exists(candidate) and os.access(candidate, mode) and not os.path.isdir(candidate):
+                return candidate
+    return None
+
+
+def disable_cwd_executable_search() -> bool:
+    """Windows: stop bare program names resolving through the current directory.
+
+    ``CreateProcess`` and ``cmd.exe`` look for a bare name (``git``, ``rg``, ``node``,
+    ``powershell``) in the parent's cwd BEFORE ``PATH`` unless this variable exists in
+    the process environment (its value is irrelevant — Microsoft's documented switch,
+    ``NeedCurrentDirectoryForExePath``). The agent's cwd is the repo it works in, which
+    anyone who can commit to that repo controls, so a planted ``git.exe`` at its root would
+    run as the user on the next ``git status``. Setting it once covers every current and
+    future spawn site; it is deliberately left in child environments because cmd.exe,
+    libuv/Node, Go and Bun children honor it too. ``shutil.which`` honors it from 3.12
+    (via ``NeedCurrentDirectoryForExePath``); 3.11 gets the PATH-only walk above.
+    ``HERMES_CWD_EXE_SEARCH=1`` restores the legacy lookup. True only when applied.
+    """
+    if not _IS_WINDOWS or os.environ.get("HERMES_CWD_EXE_SEARCH", "").strip() == "1":
+        return False
+    os.environ.setdefault(_NO_CWD_EXE_SEARCH_VAR, "1")
+    if sys.version_info < (3, 12) and shutil.which is _stdlib_which:
+        _which_skipping_cwd._hermes_stdlib_which = _stdlib_which  # type: ignore[attr-defined]
+        shutil.which = _which_skipping_cwd
+    return True
+
+
 def suppress_platform_ver_console() -> None:
     """Stub ``platform._syscmd_ver`` on Windows — decode-crash + console-flash guard.
 
@@ -336,6 +395,7 @@ def export_scratch_tmp_env() -> None:
 
 # Apply on import — entry points only need ``import hermes_bootstrap`` first.
 apply_windows_utf8_bootstrap()
+disable_cwd_executable_search()
 suppress_platform_ver_console()
 activate_durable_lazy_target()
 install_happy_eyeballs_socket_connect()

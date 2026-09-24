@@ -160,7 +160,10 @@ def _session_db_content_sig(db_path: Path):
         available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
         fields = tuple(field for field in _SESSION_SIGNATURE_FIELDS if field in available)
         if not fields:
-            signature = None
+            # A state.db without a readable sessions table (foreign schema, legacy
+            # or transient file): keep the old mtime contract so any move still
+            # wakes the sidebar instead of silently never broadcasting.
+            signature = ("mtime-fallback", mtime)
         else:
             order = " ORDER BY id" if "id" in available else ""
             rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}")

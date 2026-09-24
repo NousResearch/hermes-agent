@@ -82,6 +82,47 @@ CONFIGURABLE_TOOLSETS = [
 ]
 
 
+# Display groups for GUI surfaces (desktop Skills & Tools page). Keys are
+# stable group ids; human-readable labels live in the consumer's i18n.
+# Toolsets not listed here fall back to "plugins" (plugin-provided) or "other".
+TOOLSET_GROUPS: Dict[str, str] = {
+    "web": "web",
+    "browser": "web",
+    "x_search": "web",
+    "terminal": "system",
+    "file": "system",
+    "code_execution": "system",
+    "computer_use": "system",
+    "vision": "media",
+    "video": "media",
+    "image_gen": "media",
+    "video_gen": "media",
+    "tts": "media",
+    "moa": "knowledge",
+    "skills": "knowledge",
+    "todo": "knowledge",
+    "memory": "knowledge",
+    "context_engine": "knowledge",
+    "session_search": "knowledge",
+    "clarify": "knowledge",
+    "delegation": "knowledge",
+    "cronjob": "integrations",
+    "messaging": "integrations",
+    "homeassistant": "integrations",
+    "spotify": "integrations",
+    "discord": "integrations",
+    "discord_admin": "integrations",
+    "yuanbao": "integrations",
+}
+
+
+def _toolset_group(ts_key: str) -> str:
+    """Display group for a toolset key (see TOOLSET_GROUPS)."""
+    if ts_key in TOOLSET_GROUPS:
+        return TOOLSET_GROUPS[ts_key]
+    return "plugins" if ts_key in _get_plugin_toolset_keys() else "other"
+
+
 def gui_toolset_label(label: str) -> str:
     """Strip the leading ``<emoji>`` from a toolset title for GUI surfaces (plugins prefix ``🔌``).
     CLI/TUI keeps the raw label — only HTTP APIs call this."""

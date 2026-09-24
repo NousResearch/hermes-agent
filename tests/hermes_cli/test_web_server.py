@@ -2942,6 +2942,123 @@ class TestNewEndpoints:
         )
 
 
+    # --- Bulk group/category toggles ---
+
+    def test_toggle_skill_category_disables_and_enables(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+        from hermes_cli.config import load_config
+
+        def _fake_find_all_skills(*, skip_disabled=False):
+            return [
+                {"name": "skill-a", "description": "a", "category": "demo"},
+                {"name": "skill-b", "description": "b", "category": "demo"},
+                {"name": "skill-c", "description": "c", "category": "other"},
+            ]
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "demo", "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["skill-a", "skill-b"]
+        assert set(load_config()["skills"]["disabled"]) == {"skill-a", "skill-b"}
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "demo", "enabled": True})
+        assert resp.status_code == 200
+        assert load_config()["skills"]["disabled"] == []
+
+    def test_toggle_skill_category_unknown_returns_400(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False: [{"name": "skill-a", "description": "a", "category": "demo"}],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "nope", "enabled": False})
+        assert resp.status_code == 400
+
+    def test_toggle_skill_category_null_matches_uncategorized(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False: [
+                {"name": "categorized", "description": "a", "category": "demo"},
+                {"name": "uncategorized", "description": "b", "category": None},
+            ],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": None, "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["uncategorized"]
+        assert load_config()["skills"]["disabled"] == ["uncategorized"]
+
+    def test_toggle_skill_round_trip(self):
+        """PUT /api/skills/toggle persists to skills.disabled (config round-trip)."""
+        resp = self.client.put("/api/skills/toggle", json={"name": "some-skill", "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "name": "some-skill", "enabled": False}
+
+        from hermes_cli.config import load_config
+        assert "some-skill" in load_config()["skills"]["disabled"]
+
+        resp = self.client.put("/api/skills/toggle", json={"name": "some-skill", "enabled": True})
+        assert resp.status_code == 200
+        assert "some-skill" not in load_config()["skills"]["disabled"]
+
+    def test_toolsets_list_exposes_group(self):
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["web"]["group"] == "web"
+        assert listing["memory"]["group"] == "knowledge"
+
+    def test_toggle_toolset_group_bulk_round_trip(self):
+        """PUT /api/tools/toolsets/bulk flips every toolset in a group via config."""
+        before = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        web_names = {n for n in before if n in ("web", "browser", "x_search")}
+
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "web", "enabled": False})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["group"] == "web"
+        assert set(body["names"]) == web_names
+
+        after_disable = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        assert all(not after_disable[n] for n in web_names)
+        outside = {n: v for n, v in after_disable.items() if n not in web_names}
+        assert outside == {n: v for n, v in before.items() if n not in web_names}
+
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "web", "enabled": True})
+        assert resp.status_code == 200
+
+        after_enable = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        assert all(after_enable[n] for n in web_names)
+
+    def test_toggle_toolset_group_unknown_returns_400(self):
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "nope", "enabled": True})
+        assert resp.status_code == 400
+
+    def test_toggle_toolset_group_preserves_mcp_entries(self):
+        """Bulk group disable keeps MCP-server entries in platform_toolsets.cli."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        cli = config.setdefault("platform_toolsets", {}).setdefault("cli", [])
+        if "web" not in cli:
+            cli.append("web")
+        cli.append("my-mcp-server")
+        save_config(config)
+
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "web", "enabled": False})
+        assert resp.status_code == 200
+
+        saved = load_config()["platform_toolsets"]["cli"]
+        assert "my-mcp-server" in saved
+        assert "web" not in saved
+
     def test_get_toolset_config_returns_provider_matrix(self):
         """GET .../config returns provider rows with structured env_vars."""
         resp = self.client.get("/api/tools/toolsets/tts/config")

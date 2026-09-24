@@ -18,7 +18,7 @@ from hermes_cli.web_server_profiles import _plugin_terminal_backend_rows
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
-    ToolsetProviderSelect, ToolsetToggle)
+    ToolsetGroupToggle, ToolsetProviderSelect, ToolsetToggle)
 from hermes_cli.web_routers._common import (
     _CONFIG_MUTATION_LOCK, _profile_cli_args, _profile_scope, _spawn_hermes_action,
     config_write_scope, log as _log, scoped_to_thread, spawn_profile_action)
@@ -232,7 +232,7 @@ async def get_toolsets(profile: Optional[str] = None):
     from hermes_cli.tools_config import (
         _CONFIG_ONLY_TOOLSETS, _get_effective_configurable_toolsets, _get_platform_tools,
         _toolset_configuration_platform, _toolset_has_keys, get_nous_subscription_features,
-        gui_toolset_label)
+        gui_toolset_label, _toolset_group)
     from hermes_cli.platforms import platform_label
     from toolsets import resolve_toolset
     from utils import is_truthy_value
@@ -270,11 +270,58 @@ async def get_toolsets(profile: Optional[str] = None):
             is_enabled = name in enabled_by_platform[target_platform]
         result.append({
             "name": name, "label": gui_toolset_label(label), "description": desc,
+            "group": _toolset_group(name),
             "platform": target_platform,
             "platform_label": gui_toolset_label(platform_label(target_platform, target_platform)),
             "enabled": is_enabled, "available": is_enabled,
             "configured": configured[name], "tools": tools})
     return result
+
+
+@router.put("/api/tools/toolsets/bulk")
+async def toggle_toolset_group(body: ToolsetGroupToggle, profile: Optional[str] = None):
+    """Enable/disable every toolset in a display group (``TOOLSET_GROUPS``).
+
+    One ``_save_platform_tools`` write per touched platform, mirroring the
+    single toggle's write path. Config-only toolsets flip their own config
+    section. Does NOT trigger install-on-enable post-setup spawns — run
+    ``hermes tools post-setup`` for providers that need it. Must stay
+    declared above ``/{name}``.
+    """
+    from hermes_cli.tools_config import (
+        _CONFIG_ONLY_TOOLSETS, _get_effective_configurable_toolsets,
+        _get_platform_tools, _save_platform_tools, _toolset_configuration_platform,
+        _toolset_group)
+
+    names = sorted(
+        ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()
+        if _toolset_group(ts_key) == body.group)
+    if not names:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset group: {body.group}")
+    scope_profile = body.profile or profile
+
+    def _run():
+        with config_write_scope(scope_profile):
+            config = load_config()
+            enabled_by_platform = {}
+            for name in names:
+                if name in _CONFIG_ONLY_TOOLSETS:
+                    # No platform_toolsets entry — flip the toolset's own section.
+                    _dict_section(config, name)["enabled"] = bool(body.enabled)
+                    continue
+                platform = _toolset_configuration_platform(name)
+                if platform not in enabled_by_platform:
+                    enabled_by_platform[platform] = set(
+                        _get_platform_tools(config, platform, include_default_mcp_servers=False))
+                if body.enabled:
+                    enabled_by_platform[platform].add(name)
+                else:
+                    enabled_by_platform[platform].discard(name)
+            for platform, enabled in enabled_by_platform.items():
+                _save_platform_tools(config, platform, enabled)
+
+    await asyncio.to_thread(_run)
+    return {"ok": True, "group": body.group, "enabled": body.enabled, "names": names}
 
 
 @router.put("/api/tools/toolsets/{name}")

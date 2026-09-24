@@ -1245,7 +1245,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     return kwargs
 
 
-def _init_memory(agent, _agent_cfg, skip_memory, platform):
+def _init_memory(agent, _agent_cfg, skip_memory, platform, skip_memory_provider=False):
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
     agent._memory_enabled = False
@@ -1286,7 +1286,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
-    if not skip_memory:
+    if not skip_memory and not skip_memory_provider:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if _mem_provider_name and _mem_provider_name.strip():
@@ -2328,6 +2328,7 @@ def init_agent(
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
     gateway_session_key: str = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
+    skip_memory_provider: bool = False,
     skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
@@ -2424,7 +2425,7 @@ def init_agent(
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)
-    _init_memory(agent, _agent_cfg, skip_memory, platform)
+    _init_memory(agent, _agent_cfg, skip_memory, platform, skip_memory_provider)
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(

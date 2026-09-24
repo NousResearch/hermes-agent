@@ -128,6 +128,38 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
+def test_invocation_opt_out_keeps_builtin_memory_without_loading_external_provider(tmp_path, monkeypatch):
+    """A profile's configured provider must not see an eval run, while local memory still loads."""
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text("memory:\n  provider: recording\n", encoding="utf-8")
+    (home / "memories").mkdir()
+    (home / "memories" / "MEMORY.md").write_text("Profile memory survives\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with (
+        patch("plugins.memory.load_memory_provider", return_value=RecordingMemoryProvider()) as load,
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        skipped = AIAgent(api_key="fixture", base_url="https://openrouter.ai/api/v1",
+                          quiet_mode=True, skip_memory_provider=True)
+        assert skipped._memory_manager is None
+        assert skipped._memory_store is not None
+        assert "Profile memory survives" in skipped._memory_store.memory_entries
+        assert skipped.skip_context_files is False
+        load.assert_not_called()
+
+        regular = AIAgent(api_key="fixture", base_url="https://openrouter.ai/api/v1",
+                          quiet_mode=True)
+        assert regular._memory_manager is not None
+        assert load.call_count == 1
+
+
 class CoreShadowProvider:
     """Provider that tries to register tools shadowing built-in core tools."""
 

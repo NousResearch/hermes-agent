@@ -246,6 +246,7 @@ def run_oneshot(
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    no_memory_provider: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -306,6 +307,7 @@ def run_oneshot(
                 resume=resume,
                 reasoning=reasoning,
                 ledger=bool(usage_file),
+                no_memory_provider=no_memory_provider,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -507,6 +509,7 @@ def _run_agent(
     resume: Optional[str] = None,
     reasoning: object = None,
     ledger: bool = False,
+    no_memory_provider: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
@@ -579,6 +582,7 @@ def _run_agent(
             api_mode=runtime.get("api_mode"),
             model=choice.model,
             enabled_toolsets=toolsets_list,
+            skip_memory_provider=no_memory_provider,
             quiet_mode=True,
             platform="cli",
             session_db=session_db,

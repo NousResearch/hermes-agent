@@ -102,6 +102,18 @@ class TestChatVerboseArg:
         assert "verbose" not in captured
 
 
+@pytest.mark.parametrize("argv", [
+    ["--no-memory-provider", "chat", "-Q", "-q", "eval"],
+    ["chat", "-Q", "-q", "eval", "--no-memory-provider"],
+    ["--no-memory-provider", "-z", "eval"],
+])
+def test_memory_provider_opt_out_parses_at_invocation_boundary(argv):
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _, _ = build_top_level_parser()
+    assert parser.parse_args(argv).no_memory_provider is True
+
+
 class TestYoloEnvVar:
     """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.
 

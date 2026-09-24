@@ -1643,6 +1643,7 @@ def main(
     output_format: str = "text",
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    no_memory_provider: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -1706,6 +1707,7 @@ def main(
         quiet = True
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+    cli.no_memory_provider = no_memory_provider
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

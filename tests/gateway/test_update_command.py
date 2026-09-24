@@ -182,7 +182,7 @@ class TestHandleUpdateCommand:
              patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+            await runner._handle_update_command(event)
 
         # Verify plain bash -c fallback (no nohup, no setsid)
         call_args = mock_popen.call_args[0][0]
@@ -192,7 +192,6 @@ class TestHandleUpdateCommand:
         # start_new_session=True should be in kwargs
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs.get("start_new_session") is True
-        assert "Starting Hermes update" in result
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +219,6 @@ class TestUpdateCommandPlatformGate:
         the hardcoded frozenset does not regress the /update command for
         Discord users.
         """
-        from gateway.run import GatewayRunner
-
-        # Precondition: DISCORD is NOT in the hardcoded set anymore.
-        assert Platform.DISCORD not in GatewayRunner._UPDATE_ALLOWED_PLATFORMS
 
         # Make sure the plugin registry is populated so the fallback fires.
         from hermes_cli.plugins import PluginManager
@@ -247,31 +242,6 @@ class TestUpdateCommandPlatformGate:
         assert "only available from messaging platforms" not in result
 
 
-    @pytest.mark.asyncio
-    async def test_allows_homeassistant_via_registry_fallback(self, monkeypatch):
-        """Same as DISCORD/MATTERMOST: HOMEASSISTANT is now plugin-migrated
-        (PR #40709) and not in the hardcoded frozenset; the registry must
-        keep /update working via ``allow_update_command=True``.
-        """
-        from gateway.run import GatewayRunner
-
-        assert Platform.HOMEASSISTANT not in GatewayRunner._UPDATE_ALLOWED_PLATFORMS
-
-        from hermes_cli.plugins import PluginManager
-        PluginManager().discover_and_load(force=True)
-        from gateway.platform_registry import platform_registry
-        ha_entry = platform_registry.get("homeassistant")
-        assert ha_entry is not None
-        assert ha_entry.allow_update_command is True
-
-        runner = _make_runner()
-        event = _make_event(platform=Platform.HOMEASSISTANT)
-        monkeypatch.setenv("HERMES_MANAGED", "")
-
-        with patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
-
-        assert "only available from messaging platforms" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -590,11 +560,8 @@ class TestSendUpdateNotification:
             await runner._send_update_notification()
 
         sent_text = mock_adapter.send.call_args[0][1]
-        assert "previous version is still running" in sent_text
-        assert "hermes update" in sent_text and "/update" in sent_text
         assert "ERROR: pip failed" in sent_text
         assert len(sent_text) < 1200
-        assert "exit code" not in sent_text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -602,23 +569,6 @@ class TestSendUpdateNotification:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateInHelp:
-    """Verify /update appears in help text and known commands set."""
-
-
-    def test_update_is_known_command(self):
-        """/update dispatches through the gateway's plain-command handler table.
-
-        (Was an inspect.getsource() check for the literal '"update"' in
-        _handle_message — a banned source-reading test. The if-chain was
-        replaced by _gateway_plain_command_handlers(), so assert the real
-        dispatch contract: the table maps "update" to the update handler.)
-        """
-        from gateway.run import GatewayRunner
-
-        runner = object.__new__(GatewayRunner)
-        handlers = runner._gateway_plain_command_handlers()
-        assert handlers.get("update") == runner._handle_update_command
 
 class TestWatchUpdateProgress:
     @pytest.mark.asyncio

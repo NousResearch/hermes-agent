@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
 from hermes_state_ids import new_session_id
@@ -117,15 +118,16 @@ class SessionLifecycleMixin:
         candidate = entry.to_dict()
         candidate["active_turn_token"] = token
         candidate["active_turn_started_at"] = _iso(started_at)
-        if started_at is not None:
+        touched = _now() if started_at is not None else None
+        if touched is not None:
             # Keeps the legacy 120s startup heuristic working for an older binary during a rolling
             # downgrade/upgrade window.
-            candidate["updated_at"] = started_at.isoformat()
+            candidate["updated_at"] = touched.isoformat()
         self._save_entry(session_key, entry_data=candidate, lock_held=True)
         entry.active_turn_token = token
         entry.active_turn_started_at = started_at
-        if started_at is not None:
-            entry.updated_at = started_at
+        if touched is not None:
+            entry.updated_at = touched
 
     def mark_turn_active(self, session_key: str) -> Optional[str]:
         """Persist exact ownership of the running agent turn; returns the opaque token for
@@ -136,7 +138,9 @@ class SessionLifecycleMixin:
             entry = self._entry_locked(session_key)
             if entry is None:
                 return None
-            self._set_turn_marker_locked(session_key, entry, token, _now())
+            # Aware UTC, unlike the local wall clock elsewhere: the next process compares it with
+            # epoch transcript timestamps and may run in another zone (DST, container vs unit TZ).
+            self._set_turn_marker_locked(session_key, entry, token, datetime.now(timezone.utc))
         return token
 
     def clear_turn_active(self, session_key: str, token: str) -> bool:
@@ -153,8 +157,7 @@ class SessionLifecycleMixin:
         """Promote crash-left turn markers into ``resume_pending`` (unclean startup only).
         Old/invalid markers are cleared without resuming; suspended sessions are never re-armed.
         Returns the number of newly promoted sessions."""
-        now = _now()
-        max_age = timedelta(seconds=max(0, max_age_seconds))
+        now, epoch_now = _now(), time.time()
         promoted = 0
 
         def _promote(entry: SessionEntry) -> bool:
@@ -162,13 +165,10 @@ class SessionLifecycleMixin:
             if not entry.active_turn_token:
                 return False
             started_at = entry.active_turn_started_at
-            try:
-                marker_is_stale = started_at is None or (
-                    max_age_seconds > 0 and now - started_at > max_age
-                )
-            except TypeError:
-                # Mixed aware/naive timestamps: clear rather than risk an unsafe old resume.
-                marker_is_stale = True
+            # Epoch arithmetic: a pre-upgrade naive marker reads as local time, an aware one exactly.
+            marker_is_stale = started_at is None or (
+                max_age_seconds > 0 and epoch_now - started_at.timestamp() > max_age_seconds
+            )
             if not marker_is_stale and not entry.suspended:
                 if entry.resume_pending:
                     # A drain-timeout marker is more specific; keep it.
@@ -241,23 +241,3 @@ class SessionLifecycleMixin:
             logger.info("SessionStore pruned %d entries older than %d days",
                         len(removed_keys), max_age_days)
         return len(removed_keys)
-
-    def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
-        """Mark sessions active within *max_age_seconds* as ``resume_pending`` after a crash/fast
-        restart (already-pending and suspended entries are skipped). Returns the number marked.
-
-        Called on gateway startup after a crash or fast restart to preserve in-flight sessions instead of
-        destroying their conversation history (#7536). Only marks sessions updated within *max_age_seconds*
-        to avoid touching long-idle sessions. Sets ``resume_pending=True`` so the next incoming message on
-        the same session_key auto-resumes from the existing transcript.
-        """
-        cutoff = _now() - timedelta(seconds=max_age_seconds)
-
-        def _mark(entry: SessionEntry) -> bool:
-            if entry.resume_pending or entry.suspended or entry.updated_at < cutoff:
-                return False
-            entry.resume_pending = True
-            entry.resume_reason = "restart_interrupted"
-            entry.last_resume_marked_at = _now()
-            return True
-        return self._update_all_entries_locked(_mark)

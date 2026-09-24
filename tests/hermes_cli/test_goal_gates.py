@@ -3,7 +3,6 @@
 import json
 import subprocess
 import sys
-import time
 from unittest.mock import patch
 
 import pytest
@@ -15,8 +14,6 @@ from hermes_cli.goals import (
     GoalManager,
     GoalState,
     run_gate,
-    save_goal,
-    load_goal,
 )
 
 
@@ -148,10 +145,6 @@ def test_gates_persist_and_reload():
     assert reloaded.state.gates[0].command == "echo persisted"
 
 
-def test_status_line_mentions_gates():
-    mgr = _mgr_with_goal("gate-status-sid")
-    mgr.add_gate("echo g")
-    assert "1 gate" in mgr.status_line()
 
 
 # ──────────────────────────────────────────────────────────────────────

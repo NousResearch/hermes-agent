@@ -61,12 +61,14 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
   // live dropdown on the pane under the pointer, else the active composer.
   { id: 'composer.modelPicker', category: 'composer', defaults: ['mod+shift+m'] },
-  // Voice conversation toggle. Matches the documented `voice.record_key`
-  // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
-  // toggle. Off macOS `ctrl` folds to `mod`, which IS the ⌘B/Ctrl+B sidebar
-  // chord, so ship it unbound there (rebindable in the panel) rather than
-  // stealing the long-standing sidebar binding.
-  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
+  // Voice conversation toggle. On macOS that's literally ⌃B — distinct from
+  // the ⌘B sidebar toggle. Off macOS `ctrl` folds to `mod`, so ⌃B IS the
+  // sidebar chord. Ship ⌃⌥V there ("v" for voice) instead of stealing mod+b
+  // or leaving the action unbound.
+  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : ['mod+alt+v'] },
+  // Dictation is intentionally unbound: it is available for users who prefer
+  // a keyboard trigger without claiming a chord from text entry by default.
+  { id: 'composer.dictate', category: 'composer', defaults: [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
@@ -134,6 +136,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
   // Unbound: the rail is a one-time preference, not something to flip mid-chat.
   { id: 'view.toggleProfileRail', category: 'view', defaults: [] },
+  // Unbound for the same reason: Simple ↔ Advanced is a stance, not a view
+  // toggle; ⌘K, the layout editor and Settings → Appearance are its doors.
+  { id: 'view.toggleSimpleMode', category: 'view', defaults: [] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },

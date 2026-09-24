@@ -427,7 +427,7 @@ def test_core_marker_retry_ceiling_hands_off_to_late_recovery(
     root = _project(tmp_path)
     core_marker = root / ".update-incomplete"
     core_marker.write_text(
-        f'{{"attempts": {er._EARLY_CORE_INSTALL_MAX_ATTEMPTS}}}', encoding="utf-8"
+        f'{{"attempts": {er._CORE_INSTALL_MAX_ATTEMPTS}}}', encoding="utf-8"
     )
 
     from hermes_cli import _install_repair as ir

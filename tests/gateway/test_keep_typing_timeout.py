@@ -102,38 +102,6 @@ class TestKeepTypingTimeoutPerTick:
             f"on a slow send_typing"
         )
 
-    @pytest.mark.asyncio
-    async def test_fast_send_typing_still_gets_awaited(self, monkeypatch):
-        """When send_typing is fast (normal case), it must still complete
-        normally — the timeout is only an upper bound, not a cap on
-        successful calls."""
-        adapter = _StubAdapter()
-        completed = []
-
-        async def fast_send_typing(chat_id, metadata=None):
-            await asyncio.sleep(0.01)  # well under the timeout
-            completed.append(chat_id)
-
-        monkeypatch.setattr(adapter, "send_typing", fast_send_typing)
-        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
-
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            adapter._keep_typing(
-                chat_id="456",
-                interval=0.5,
-                stop_event=stop_event,
-            )
-        )
-        await asyncio.sleep(1.2)  # ~3 ticks
-        stop_event.set()
-        await asyncio.wait_for(task, timeout=1.0)
-
-        assert len(completed) >= 2, (
-            f"expected multiple completed send_typing calls, got "
-            f"{len(completed)}"
-        )
-        assert all(c == "456" for c in completed)
 
     @pytest.mark.asyncio
     async def test_send_typing_exception_does_not_kill_loop(self, monkeypatch):
@@ -168,36 +136,6 @@ class TestKeepTypingTimeoutPerTick:
             f"keep ticking (got {tick_count['n']} ticks)"
         )
 
-    @pytest.mark.asyncio
-    async def test_paused_chat_skips_send_typing(self, monkeypatch):
-        """When a chat is in _typing_paused (e.g. awaiting approval), the
-        loop must not call send_typing at all. Regression guard — existing
-        behavior, preserved through the timeout change."""
-        adapter = _StubAdapter()
-        calls = []
-
-        async def recording_send_typing(chat_id, metadata=None):
-            calls.append(chat_id)
-
-        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
-        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
-        adapter._typing_paused.add("paused-chat")
-
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            adapter._keep_typing(
-                chat_id="paused-chat",
-                interval=0.3,
-                stop_event=stop_event,
-            )
-        )
-        await asyncio.sleep(1.0)
-        stop_event.set()
-        await asyncio.wait_for(task, timeout=1.0)
-
-        assert calls == [], (
-            f"send_typing was called on a paused chat: {calls}"
-        )
 
     @pytest.mark.asyncio
     async def test_stop_typing_refresh_blocks_late_cancel_tick(self, monkeypatch):

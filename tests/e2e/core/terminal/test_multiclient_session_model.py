@@ -89,7 +89,9 @@ class Turn:
     slow: bool
     attached: set[int]  # id() of connections attached to ``sid`` when the prompt was accepted
     interrupted: bool = False
-    frame_idx: int = 0  # the submitting connection's frame count when the accepted prompt.submit went out
+    # id() of each connection attached at submit -> ITS frame count when the accepted prompt.submit went out:
+    # every connection has its own history length, so a watcher scans from its own index, not the submitter's.
+    frame_idx: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -190,10 +192,10 @@ class Model:
         canary = f"cnry-s{self.seed}-{self.n:03d}"
         text = f"{'slow ' if slow else ''}please ack {canary}"
         refusals: list[str] = []
-        sent_at = [0]
+        sent_at: list[dict[int, int]] = [{}]
 
         def attempt():
-            sent_at[0] = len(conn.snapshot())
+            sent_at[0] = {id(c): len(c.snapshot()) for c in [*self.attached_live(slot.sid), conn]}
             frame = conn.request("prompt.submit", {"session_id": slot.sid, "text": text})
             if "error" not in frame:
                 return frame["result"]
@@ -222,9 +224,11 @@ class Model:
         return turn
 
     def wait_first_delta(self, turn: Turn, conn: WSClient) -> None:
-        # From this turn's submit on: an earlier turn's delta on the same sid is not this turn streaming.
+        # From this turn's submit on, in THIS connection's frame history: an earlier turn's delta on the
+        # same sid is not this turn streaming.
+        assert id(conn) in turn.frame_idx, f"{conn.name} was not attached when {turn.canary} was submitted"
         conn.wait_for(lambda f: etype(f) == "message.delta" and f["params"].get("session_id") == turn.sid,
-                      timeout=STEP_TIMEOUT, start=turn.frame_idx, what=f"first delta of {turn.canary}")
+                      timeout=STEP_TIMEOUT, start=turn.frame_idx[id(conn)], what=f"first delta of {turn.canary}")
 
     def db_has_reply(self, turn: Turn) -> bool:
         return bool(self.be.db_rows(

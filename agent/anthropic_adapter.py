@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Iterable
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
@@ -735,11 +734,10 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
         # Some SDK versions drop optional message_delta metadata from the final snapshot.
-        # An iterable stream must end in message_stop; a get_final_message-only shim cannot
-        # prove completion and is treated as a retryable incomplete response.
+        # The stream must end in message_stop; anything else is a retryable incomplete response.
         stop_details = None
         saw_message_stop = False
-        for event in (stream if isinstance(stream, Iterable) else ()):
+        for event in stream:
             if getattr(event, "type", None) == "message_stop":
                 saw_message_stop = True
             if getattr(event, "type", None) == "message_delta":

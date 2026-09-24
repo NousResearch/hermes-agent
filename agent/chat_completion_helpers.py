@@ -3282,8 +3282,7 @@ class _StreamingCall(StreamingWaitMonitor):
         per-request ``request_client`` so the watchdog can abort this socket
         without closing the shared client mid-flight."""
         has_tool_use = False
-        # Eventless stream: the SDK's get_final_message() raises AssertionError (no
-        # message_start); shims may fabricate a contentless Message. All -> EmptyStreamError.
+        # No message_stop -> EmptyStreamError; saw_stream_event only picks the message.
         saw_stream_event = False
         saw_message_stop = False
         self.last_chunk_time["t"] = time.time()
@@ -3351,19 +3350,14 @@ class _StreamingCall(StreamingWaitMonitor):
                 if not saw_message_stop:
                     raise EmptyStreamError(
                         "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
-                    )
-                try:
-                    base_final_message = raw_stream.get_final_message()
-                    # The SDK snapshot keeps only stop_reason/stop_sequence from message_delta; the
-                    # refusal's stop_details (category/explanation) survives only in our accumulator.
-                    _stop_details = accumulator.finalize().get("stop_details")
-                    if _stop_details is not None and getattr(base_final_message, "stop_details", None) is None:
-                        base_final_message.stop_details = _stop_details
-                except AssertionError:
-                    if not saw_stream_event:
-                        raise EmptyStreamError(
-                            "Provider returned an empty stream with no events (possible upstream error or malformed event stream).") from None
-                    raise
+                        if saw_stream_event else
+                        "Provider returned an empty stream with no events (possible upstream error or malformed event stream).")
+                base_final_message = raw_stream.get_final_message()
+                # The SDK snapshot keeps only stop_reason/stop_sequence from message_delta; the
+                # refusal's stop_details (category/explanation) survives only in our accumulator.
+                _stop_details = accumulator.finalize().get("stop_details")
+                if _stop_details is not None and getattr(base_final_message, "stop_details", None) is None:
+                    base_final_message.stop_details = _stop_details
         finally:
             try:
                 self._close_managed_stream()

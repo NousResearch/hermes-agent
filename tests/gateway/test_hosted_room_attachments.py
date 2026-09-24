@@ -1,6 +1,8 @@
+import json
 import os
 import sqlite3
 import threading
+from typing import Any
 
 import pytest
 
@@ -48,6 +50,92 @@ def _manifest(*attachments):
         }
         for item in attachments
     ]
+
+
+def _import_bytes(store, conn, *, upload_id="history-upload", data=PNG, **overrides):
+    params = dict(room_id="room-1", upload_id=upload_id, kind="image",
+                  name="history.png", mime="image/png", data=data)
+    params.update(overrides)
+    return store.put_import(conn, **params)
+
+
+def test_import_bytes_share_writer_with_commit_and_exact_published_owner(tmp_path):
+    db = tmp_path / "state.db"
+    store = HostedRoomAttachmentStore(db)
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        staged = _import_bytes(store, conn)
+        assert _import_bytes(store, conn)["attachment_id"] == staged["attachment_id"]
+        assert _import_bytes(store, conn)["idempotent"] is True
+        with pytest.raises(AttachmentConflictError):
+            _import_bytes(store, conn, data=PNG + b"changed")
+        manifest = _manifest(staged)
+        with pytest.raises(AttachmentConflictError):
+            store.commit_import_message(conn, room_id="room-1", event_id="history-event",
+                                        manifest=[dict(manifest[0], name="wrong.png")],
+                                        recipient_member_ids=["research"])
+        assert store.commit_import_message(
+            conn, room_id="room-1", event_id="history-event", manifest=manifest,
+            recipient_member_ids=["research"]) == manifest
+        assert store.commit_import_message(
+            conn, room_id="room-1", event_id="history-event", manifest=manifest,
+            recipient_member_ids=["research"]) == manifest
+        with pytest.raises(AttachmentConflictError):
+            store.commit_import_message(conn, room_id="room-1", event_id="foreign-event",
+                                        manifest=manifest, recipient_member_ids=["research"])
+        # Minimal test-owned published-event schema; importer/Route are not copied here.
+        conn.execute("CREATE TABLE hosted_room_events (room_id TEXT, event_id TEXT, kind TEXT, payload_json TEXT)")
+        conn.commit()
+
+    access: dict[str, Any] = dict(room_id="room-1", attachment_id=staged["attachment_id"],
+                                  event_id="history-event", recipient_member_id="research", viewer=True)
+    with pytest.raises(AttachmentNotFoundError):
+        store.read(**access)  # staged commitment alone is not publication
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO hosted_room_events VALUES (?,?,?,?)",
+                     ("room-1", "history-event", "history.imported",
+                      json.dumps({"attachments": _manifest(staged)})))
+    assert store.read(**access).data == PNG
+    with pytest.raises(AttachmentNotFoundError):
+        store.read(**dict(access, room_id="foreign-room"))
+    with pytest.raises(AttachmentNotFoundError):
+        store.read(**dict(access, event_id="foreign-event"))
+    with pytest.raises(AttachmentNotFoundError):
+        store.read(**dict(access, recipient_member_id="foreign-member", viewer=False))
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO hosted_room_events VALUES (?,?,?,?)",
+                     ("room-1", "history-event", "history.imported",
+                      json.dumps({"attachments": _manifest(staged)})))
+    with pytest.raises(AttachmentNotFoundError):
+        store.read(**access)  # ambiguous published ownership fails closed
+
+
+def test_import_rollback_orphan_recovery_and_admission_guards(tmp_path):
+    db = tmp_path / "state.db"
+    store = HostedRoomAttachmentStore(db, room_quota_bytes=len(PNG), room_quota_count=1)
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        with pytest.raises(AttachmentError, match="writer transaction"):
+            _import_bytes(store, conn)
+        conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(AttachmentError, match="MIME|mime|kind|bytes"):
+            _import_bytes(store, conn, data=b"not a png")
+        staged = _import_bytes(store, conn)
+        with pytest.raises(AttachmentQuotaError):
+            _import_bytes(store, conn, upload_id="second")
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_attachments").fetchone()[0] == 1
+        conn.rollback()
+    assert store.stats()["attachments"] == 0
+    assert list(store.blob_root.iterdir())  # SQLite rolled back, private blob is orphaned
+    store.recover_import_rollback()
+    assert list(store.blob_root.iterdir()) == []
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        assert _import_bytes(store, conn)["attachment_id"] != staged["attachment_id"]
+        conn.commit()
+    assert store.stats()["attachments"] == 1
 
 
 def test_store_is_private_atomic_deduplicated_and_upload_idempotent(tmp_path):

@@ -400,7 +400,7 @@ class GatewayInboundMixin:
             _clarify_adapter = self._delivery_adapter_for(source)
             if _clarify_adapter:
                 _intake_adapter = self._intake_adapter_for(source)
-                if _intake_adapter:
+                if callable(getattr(type(_intake_adapter), "acknowledge_resumed_reply", None)):
                     await _intake_adapter.acknowledge_resumed_reply(event, _quick_key)
                 try:
                     _clarify_adapter.resume_typing_for_chat(source.chat_id)

@@ -3425,12 +3425,17 @@ class BasePlatformAdapter(ABC):
         if replies is None:
             replies = []
             owner._hermes_resumed_replies = replies
-        replies.append(event)
-        await self._run_processing_hook("on_processing_start", event)
+        started = asyncio.Event()
+        replies.append((event, started))
+        try:
+            await self._run_processing_hook("on_processing_start", event)
+        finally:
+            started.set()
 
     async def _complete_resumed_replies(self, outcome: ProcessingOutcome) -> None:
         owner = asyncio.current_task()
-        for reply in getattr(owner, "_hermes_resumed_replies", ()):
+        for reply, started in getattr(owner, "_hermes_resumed_replies", ()):
+            await started.wait()
             await self._run_processing_hook("on_processing_complete", reply, outcome)
         if owner is not None and hasattr(owner, "_hermes_resumed_replies"):
             del owner._hermes_resumed_replies

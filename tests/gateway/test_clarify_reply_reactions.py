@@ -13,6 +13,17 @@ from gateway.session import SessionSource
 from tools import clarify_gateway
 
 
+@pytest.fixture(autouse=True)
+def _isolate_clarify_entries():
+    with clarify_gateway._lock:
+        clarify_gateway._entries.clear()
+        clarify_gateway._session_index.clear()
+    yield
+    with clarify_gateway._lock:
+        clarify_gateway._entries.clear()
+        clarify_gateway._session_index.clear()
+
+
 class _Adapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
@@ -113,3 +124,56 @@ async def test_invalid_clarify_reply_does_not_acknowledge():
         assert adapter.reactions == []
     finally:
         clarify_gateway.resolve_gateway_clarify("clarify-invalid", "")
+
+
+@pytest.mark.asyncio
+async def test_fast_turn_cannot_finish_reply_before_start_reaction():
+    adapter = _Adapter()
+    inbound = _Inbound(adapter)
+    original = _event("original", "question")
+    key = adapter._source_session_key(original.source)
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    started = asyncio.Event()
+    release_start = asyncio.Event()
+
+    async def process(event):
+        entered.set()
+        await finish.wait()
+        return "done"
+
+    original_start = adapter.on_processing_start
+
+    async def slow_start(event):
+        if event.message_id == "reply":
+            started.set()
+            await release_start.wait()
+        await original_start(event)
+
+    adapter.on_processing_start = slow_start
+    adapter._message_handler = process
+    task = asyncio.create_task(adapter._process_message_background(original, key))
+    adapter._session_tasks[key] = task
+    reply_task = None
+    try:
+        await entered.wait()
+        clarify_gateway.register("clarify-fast", key, "Answer?", None)
+        reply = _event("reply", "yes")
+        reply_task = asyncio.create_task(inbound._hm_clarify_reply(reply, reply.source, key))
+        await started.wait()
+        finish.set()
+        await asyncio.sleep(0)
+        assert ("reply", ProcessingOutcome.SUCCESS) not in adapter.reactions
+        release_start.set()
+        await reply_task
+        await task
+        assert adapter.reactions.index(("reply", "eyes")) < adapter.reactions.index(
+            ("reply", ProcessingOutcome.SUCCESS))
+    finally:
+        clarify_gateway.resolve_gateway_clarify("clarify-fast", "")
+        release_start.set()
+        finish.set()
+        if reply_task is not None and not reply_task.done():
+            await reply_task
+        if not task.done():
+            await task

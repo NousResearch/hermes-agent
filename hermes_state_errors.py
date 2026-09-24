@@ -34,6 +34,28 @@ _TRANSIENT_SQLITE_MARKERS = (
 )
 
 
+# Lock contention by result code. SQLite keeps SQLITE_BUSY when FTS5's xConnect loses the race
+# on its %_config read but replaces the text with "vtable constructor failed: messages_fts",
+# so a phrase match read a busy store as a hard failure.
+_SQLITE_LOCK_CODES = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+
+
+def _sqlite_primary_code(exc_or_str) -> "int | None":
+    """Primary result code (extended codes keep it in the low byte); None when unknown."""
+    code = getattr(exc_or_str, "sqlite_errorcode", None)
+    return code & 0xFF if isinstance(code, int) else None
+
+
+def is_sqlite_lock_error(exc_or_str) -> bool:
+    """SQLITE_BUSY / SQLITE_LOCKED: wait and retry, never treat as damage. A known result code
+    decides; only without one (our own re-raised messages, RPC-wrapped strings) does the text."""
+    code = _sqlite_primary_code(exc_or_str)
+    if code is not None:
+        return code in _SQLITE_LOCK_CODES
+    text = str(exc_or_str).lower()
+    return "locked" in text or "busy" in text
+
+
 def _is_no_more_rows(exc: sqlite3.Error) -> bool:
     """Transient engine error on contended WAL appends (retries like locked/busy);
     message-scoped because some builds raise it as InterfaceError."""
@@ -43,8 +65,8 @@ def _is_no_more_rows(exc: sqlite3.Error) -> bool:
 def is_transient_sqlite_error(exc: BaseException) -> bool:
     """"Busy right now", not "damaged": one predicate so retry and the HTTP
     503-vs-500 split cannot drift apart."""
-    return isinstance(exc, sqlite3.OperationalError) and any(
-        marker in str(exc).lower() for marker in _TRANSIENT_SQLITE_MARKERS
+    return isinstance(exc, sqlite3.OperationalError) and (
+        is_sqlite_lock_error(exc) or any(marker in str(exc).lower() for marker in _TRANSIENT_SQLITE_MARKERS)
     )
 
 
@@ -263,6 +285,8 @@ def classify_persistence_error(exc_or_str) -> str:
     # naming messages_fts*) is index damage, never whole-file corruption (#97794).
     if is_fts_scoped_corruption_error(exc_or_str):
         return "fts_index"
+    if _sqlite_primary_code(exc_or_str) in _SQLITE_LOCK_CODES:
+        return "locked"
     text = str(exc_or_str).lower()
     for markers, cause in _PERSISTENCE_CAUSE_BY_PHRASE:
         if any(marker in text for marker in markers):

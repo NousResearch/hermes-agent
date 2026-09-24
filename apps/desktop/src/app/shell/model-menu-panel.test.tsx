@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { $customModels } from '@/store/custom-models'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
 
@@ -46,6 +47,7 @@ beforeEach(() => {
   $currentModel.set('')
   $currentProvider.set('')
   $collapsedProviders.set([])
+  $customModels.set([])
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
 
@@ -202,16 +204,43 @@ describe('ModelMenuPanel search', () => {
     })
   })
 
-  it('Enter with no matches is a no-op (menu stays put, nothing selected)', async () => {
+  it('Enter on an id nothing lists selects it as a custom model', async () => {
     const { content, onSelectModel } = renderPanel()
 
     await content.findByText('DeepSeek')
 
     const input = screen.getByRole('textbox', { name: 'Search models' })
     fireEvent.change(input, { target: { value: 'zzz-no-such-model' } })
+
+    // One row per configured provider (MoA excluded).
+    await vi.waitFor(() => {
+      expect(content.getAllByText(/^zzz-no-such-model/)).toHaveLength(2)
+    })
+
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(onSelectModel).not.toHaveBeenCalled()
+    // First configured provider, since no provider is current.
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'zzz-no-such-model',
+        provider: 'deepseek',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
+  it('a query that still matches catalog rows offers no custom model', async () => {
+    const { content } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+    expect(rowWithText(content, /^gemini$/)).toBeNull()
   })
 
   it('arrows move the selection without leaving the input; Enter commits the stepped row', async () => {
@@ -227,6 +256,37 @@ describe('ModelMenuPanel search', () => {
     })
 
     // First match auto-selected; ↓ steps to the second match.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-2.5-flash',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
+  it('hovering a model row leaves focus in the search field and arrows still drive the list (#53980)', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    input.focus()
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 2\.5 Pro/i)).not.toBeNull()
+    })
+
+    // A real hand on the mouse: wake the rows, then move over one.
+    fireEvent.mouseMove(window)
+    fireEvent.pointerMove(rowWithText(content, /Gemini 2\.5 Pro/i)!, { pointerType: 'mouse' })
+
+    expect(input.ownerDocument.activeElement).toBe(input)
+
     fireEvent.keyDown(input, { key: 'ArrowDown' })
     fireEvent.keyDown(input, { key: 'Enter' })
 

@@ -45,7 +45,9 @@ import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
 type AuthMode = 'oauth' | 'token'
@@ -168,6 +170,8 @@ interface GatewaySettingsProps {
 }
 
 export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
+  useSettingDeepLink('gateway', page => subpage === undefined || page === subpage)
+
   // Recovery always keeps the complete connection form, regardless of a
   // settings destination. Other tasks never mount that form or its probes.
   if (!embedded && subpage === 'devices') {
@@ -1251,7 +1255,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         </div>
       ) : null}
 
-      <div className="mb-5 grid gap-2">
+      <div className="mb-5 grid gap-2" id={settingElementId(SETTING_IDS.gateway.connectionMode)}>
         <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
           {g.modeTitle}
         </div>
@@ -1743,6 +1747,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
             checked={keychainEncryption}
             description={g.keychainEncryptionDesc}
             disabled={keychainEncryptionBusy}
+            id={settingElementId(SETTING_IDS.gateway.keychainEncryption)}
             label={g.keychainEncryptionTitle}
             onChange={on => void setKeychainEncryption(on)}
           />
@@ -1754,6 +1759,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
               </Button>
             }
             description={g.diagnosticsDesc}
+            id={settingElementId(SETTING_IDS.gateway.diagnostics)}
             title={g.diagnostics}
           />
         </div>

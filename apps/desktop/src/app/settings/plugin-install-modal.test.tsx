@@ -176,3 +176,46 @@ describe('Install from Git entry flow', () => {
     )
   })
 })
+
+describe('Unified package desktop half on a local backend', () => {
+  const alreadyExists = "Plugin 'pkg' already exists. Use force reinstall to replace it."
+  const reconcileDesktopPlugins = vi.fn(async (): Promise<string[]> => [])
+
+  const installHybrid = async (mode: 'local' | 'remote') => {
+    $connection.set({ mode } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install' ? { ok: false, error: alreadyExists } : { plugins: [] }
+    )
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
+    )
+    expect(await screen.findByText(alreadyExists)).toBeTruthy()
+  }
+
+  it('never clones the desktop half standalone when the agent install is refused', async () => {
+    // A no-Force retry of a package already on disk: the backend refuses the
+    // agent half, and the desktop half is still served from that package.
+    // Cloning it separately here is what left desktop-plugins/<git-name>/
+    // beside the package copy (#100412).
+    await installHybrid('local')
+
+    expect(reconcileDesktopPlugins).toHaveBeenCalled()
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
+  })
+
+  it('still clones the desktop half for a remote backend', async () => {
+    // A remote backend's plugins/ folder is unreadable from this machine, so
+    // the separate clone remains the only door for its desktop half.
+    await installHybrid('remote')
+
+    expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
+    expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
+  })
+})

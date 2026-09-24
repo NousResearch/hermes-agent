@@ -522,6 +522,28 @@ class TestContentBearingProgress:
             accumulator.feed(_chunk(content="token"))
         assert fence.seconds_since_progress() < 0.05
 
+    def test_content_free_frames_still_record_ttfp_timing(self):
+        """The fast-lane telemetry contract (#96945/#96963) survives the
+        #96707 gating: the provider-response (time_to_first_progress_ms)
+        hook must fire on the FIRST frame of any kind (transport liveness),
+        not only on the first token."""
+        from agent.auxiliary_client import (
+            _aux_provider_response,
+            _aux_thread_local_hook,
+        )
+
+        responses: list = []
+        keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
+        accumulator = _ChatStreamAccumulator()
+
+        with (
+            _aux_thread_local_hook(_aux_provider_response, lambda: responses.append("response")),
+            aux_progress_hook(lambda: None),
+        ):
+            accumulator.feed(keepalive)
+
+        assert responses, "content-free first frame must still record TTFP"
+
 
 
 # ---------------------------------------------------------------------------

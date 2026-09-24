@@ -2788,10 +2788,12 @@ export interface SessionCreateResult {
   messages: TranscriptMessage[]
   info: SessionLiveInfo
 }
-/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
+/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 export interface TranscriptMessage {
   role: string
   text?: string | null
+  content?: unknown | null
+  tool_call_id?: string | null
   timestamp?: number | null
   row_id?: number | null
   display_kind?: string | null
@@ -2815,6 +2817,20 @@ export interface ToolLabel {
 }
 /** Which surface one inner call of a bridged ``tool_call`` runs on. */
 export type ToolLabelKind = 'connector' | 'mcp' | 'tool'
+export interface SessionBranchStoredParams {
+  profile?: string | null
+  parent_session_id: string
+  cols?: number | null
+  source?: string | null
+  cwd?: string | null
+}
+export interface SessionBranchStoredResult {
+  session_id: string
+  stored_session_id: string
+  message_count: number
+  messages_omitted: boolean
+  info: SessionLiveInfo
+}
 /** ``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id. */
 export interface SessionResumeParams {
   session_id: string
@@ -3065,6 +3081,20 @@ export interface SessionBranchResult {
   parent: string
   message_count: number
   messages: TranscriptMessage[]
+  info: SessionLiveInfo
+}
+export interface SessionBranchWholeParams {
+  session_id: string
+  profile?: string | null
+  name?: string | null
+}
+export interface SessionBranchWholeResult {
+  session_id: string
+  stored_session_id: string
+  title: string
+  parent: string
+  message_count: number
+  messages_omitted: boolean
   info: SessionLiveInfo
 }
 export interface SessionUndoParams {
@@ -4970,6 +5000,10 @@ export interface RpcMethods {
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
   /** Fork a live session into a new stored child that shares the parent's history so far. */
   'session.branch': { params: SessionBranchParams; result: SessionBranchResult }
+  /** Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch). */
+  'session.branch_stored': { params: SessionBranchStoredParams; result: SessionBranchStoredResult }
+  /** session.branch of the whole history without echoing the copied transcript back. */
+  'session.branch_whole': { params: SessionBranchWholeParams; result: SessionBranchWholeResult }
   /** Tear down a live session (its stored row stays resumable). */
   'session.close': { params: SessionCloseParams; result: SessionCloseResult }
   /** Manual /compress of an idle session, optionally focused on a topic. */
@@ -5277,6 +5311,8 @@ export const RPC_METHODS = [
   'session.activate',
   'session.active_list',
   'session.branch',
+  'session.branch_stored',
+  'session.branch_whole',
   'session.close',
   'session.compress',
   'session.context_breakdown',

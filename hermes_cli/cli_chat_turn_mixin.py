@@ -93,7 +93,7 @@ class CLIChatTurnMixin:
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        print(flush=True)
+        _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
@@ -117,7 +117,7 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
-                print(f"Error: {e}")
+                _cprint(f"Error: {e}")
                 return None
             finally:
                 self._chat_release_turn_audio(turn)
@@ -397,7 +397,7 @@ class CLIChatTurnMixin:
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
-        from cli import _hermes_home, logger
+        from cli import _cprint, _hermes_home, logger
         # Ambient "thinking" blips in voice mode; skipped per-blip while TTS speaks, the mic
         # records or a barge capture is live. voice.thinking_sound gates it (default on).
         if self._voice_mode:
@@ -430,7 +430,7 @@ class CLIChatTurnMixin:
                     pass
                 interrupt_msg = None
                 continue
-            print("\n⚡ New message detected, interrupting...")
+            _cprint("\n⚡ New message detected, interrupting...")
             if turn.stop_event is not None:
                 turn.stop_event.set()
             self.agent.interrupt(interrupt_msg)
@@ -594,16 +594,16 @@ class CLIChatTurnMixin:
             payload = (combined, image_parts) if image_parts else combined
             preview = combined[:50] + ("..." if len(combined) > 50 else "")
             if len(all_parts) > 1:
-                print(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
+                _cprint(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
             else:
-                print(f"\n⚡ Sending after interrupt: '{preview}'")
+                _cprint(f"\n⚡ Sending after interrupt: '{preview}'")
             self._pending_input.put(payload)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
         _leftover_steer = turn.result.get("pending_steer") if turn.result else None
         if _leftover_steer:
             preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-            print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+            _cprint(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
             self._pending_input.put(_leftover_steer)
 
         return response

@@ -816,3 +816,46 @@ class TestMergeAdjacentUserTurnsPersistedMarker:
         assert merged[0]["content"] == "first\n\nsecond"
         assert _DB_PERSISTED_MARKER not in merged[0]
         assert cc._flush_scan_cursor_invalidated is True
+
+
+def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tmp_path):
+    """A supersede merges the adjacent user turns for the model; the originals stay in display
+    history as compacted rows, so no display projection (resume, REST page, legacy page, prompt
+    timeline) may also paint the merged row. The model view still holds each input exactly once."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_state import SessionDB
+    from hermes_state_timeline import get_session_timeline
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="cli")
+    messages = _conversation(exchanges=8)
+    for i, msg in enumerate(messages):
+        msg["timestamp"] = 1000.0 + i
+        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"], timestamp=msg["timestamp"])
+        msg[_DB_PERSISTED_MARKER] = True
+    cc = _compressor()
+    cc._session_db, cc._session_id = db, "s"
+    for _ in range(4):
+        messages = cc._micro_compact(messages)
+    assert len(_summary_markers(messages)) == 1
+    assert any("question 0\n\nquestion 1" in str(m.get("content")) for m in messages), "no supersede merge happened"
+
+    def shown(msgs):
+        return sorted(t for m in msgs if m.get("role") == "user" for t in str(m["content"]).split("\n\n"))
+
+    typed = sorted(m["content"] for m in _conversation(exchanges=8) if m["role"] == "user")
+    model, display = db.get_resume_conversations("s")
+    assert shown(display) == typed
+    assert shown(model) == typed
+    assert shown(db.get_messages("s", include_compacted=True)) == typed
+    timeline = [e["preview"] for e in get_session_timeline(db, "s")["entries"]]
+    assert sorted(timeline) == typed
+    # Legacy stores (no display index, read-only so no backfill) take the payload-bounded page.
+    db._execute_write(lambda conn: conn.execute("UPDATE messages SET display_order = NULL"))
+    legacy = SessionDB(db_path=tmp_path / "state.db", read_only=True)
+    try:
+        assert shown(legacy.get_messages("s", include_compacted=True)) == typed
+        assert sorted(e["preview"] for e in get_session_timeline(legacy, "s")["entries"]) == typed
+    finally:
+        legacy.close()
+        db.close()

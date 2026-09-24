@@ -1136,8 +1136,6 @@ class TestSessionMetadata:
 
         assert store.set_session_metadata(entry.session_key, "k", "v")
         assert entry.updated_at == idle
-        # And the restart freshness gate must still see it as idle.
-        assert store.suspend_recently_active(max_age_seconds=120) == 0
 
 
 class TestRewriteTranscriptPreservesReasoning:

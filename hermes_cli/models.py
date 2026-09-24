@@ -1154,13 +1154,11 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Accepts the Anthropic Fast Mode ``speed`` param (Opus 4.8 / Opus 5 only) — deliberately NOT a
-    general "fast model" check: Opus 4.7 hard-400s on it, and dedicated ``…-fast`` ids select fast
-    inference via the model field and must not also get it."""
-    base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
-    if not base.startswith("claude-") or "-fast" in base:
-        return False
-    return any(v in base for v in ("opus-4-8", "opus-4.8", "opus-5"))
+    """Accepts the Anthropic Fast Mode ``speed`` param (Opus 4.8 / Opus 5 / Opus 5.5 only) —
+    deliberately NOT a general "fast model" check. The list lives in ``agent.model_metadata``."""
+    from agent.model_metadata import is_anthropic_fast_mode_model
+
+    return is_anthropic_fast_mode_model(model_id)
 
 
 def _fast_mode_route_supported(

@@ -1666,6 +1666,21 @@ clone_repo() {
             # fetched remote so bootstrap/install can recover.
             if ! git pull --ff-only origin "$BRANCH"; then
                 log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
+                # Park commits the reset drops behind a rescue ref, same namespace
+                # as ``hermes update`` (which also prunes these refs).
+                local dropped rescue_kind rescue_ref
+                dropped="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)"
+                if [ "${dropped:-0}" -gt 0 ]; then
+                    rescue_kind="diverged"
+                    git merge-base HEAD "origin/$BRANCH" >/dev/null 2>&1 || rescue_kind="orphan"
+                    rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short=12 HEAD)"
+                    if git update-ref "$rescue_ref" HEAD; then
+                        log_warn "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
+                        log_warn "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
+                    else
+                        log_warn "Could not back up local commits (HEAD was $(git rev-parse HEAD))"
+                    fi
+                fi
                 git reset --hard "origin/$BRANCH"
             fi
 

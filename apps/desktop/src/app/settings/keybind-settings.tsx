@@ -33,12 +33,15 @@ import {
 import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { ScreenshotSettings } from './screenshot-settings'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 interface KeybindSettingsProps {
   subpage?: string
 }
 
 export function KeybindSettings({ subpage }: KeybindSettingsProps = {}) {
+  useSettingDeepLink('keybinds', page => subpage === undefined || page === subpage)
+
   if (subpage === 'hud-gesture') {
     return (
       <SettingsContent>

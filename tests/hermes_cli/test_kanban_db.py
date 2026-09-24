@@ -1781,6 +1781,36 @@ def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------
 
+def test_maybe_emit_scratch_tip_fires_once_per_install(kanban_home):
+    """The first scratch workspace materialized on an install appends a
+    ``tip_scratch_workspace`` event; later scratch tasks on the same install
+    stay silent, and non-scratch workspaces never trigger it."""
+    with kbc.connect() as conn:
+        wt = kb.create_task(conn, title="worktree task")
+        t1 = kb.create_task(conn, title="first scratch")
+        t2 = kb.create_task(conn, title="second scratch")
+
+    def _kinds(task_id):
+        with kbc.connect() as conn:
+            rows = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        return [r["kind"] for r in rows]
+
+    with kbc.connect() as conn:
+        kbw._maybe_emit_scratch_tip(conn, wt, "worktree")
+    assert "tip_scratch_workspace" not in _kinds(wt)
+
+    with kbc.connect() as conn:
+        kbw._maybe_emit_scratch_tip(conn, t1, "scratch")
+    assert _kinds(t1).count("tip_scratch_workspace") == 1
+
+    with kbc.connect() as conn:
+        kbw._maybe_emit_scratch_tip(conn, t2, "scratch")
+    assert "tip_scratch_workspace" not in _kinds(t2), (
+        "scratch tip re-fired on the same install"
+    )
 
 
 

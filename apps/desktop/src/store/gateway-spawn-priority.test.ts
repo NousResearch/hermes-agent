@@ -30,7 +30,10 @@ const {
   configureGatewayRegistry,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayForAgent,
+  openGatewayForProfile,
   requestGatewayForAgent,
+  retainGatewayForAgent,
   setPrimaryGateway
 } = await import('./gateway')
 
@@ -80,6 +83,26 @@ describe('user opens dial main as foreground from the first IPC (#102281)', () =
     expect(seen.every(priority => priority === 'foreground')).toBe(true)
   })
 
+  it('openGatewayForProfile without a priority never tags a dial as foreground', async () => {
+    const desktop = installDesktop()
+
+    await openGatewayForProfile('research')
+
+    const seen = priorities(desktop.getConnection, args => (args[1] as { priority?: string } | undefined)?.priority)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === undefined)).toBe(true)
+  })
+
+  it('openGatewayForAgent forwards spawnPriority to every registry dial', async () => {
+    const desktop = installDesktop()
+
+    await openGatewayForAgent('homelab', 'research', { spawnPriority: 'foreground' })
+
+    const seen = priorities(desktop.getConnectionFor, args => (args[0] as { priority?: string }).priority)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === 'foreground')).toBe(true)
+  })
+
   it('ensureGatewayForAgent is always a foreground open', async () => {
     const desktop = installDesktop()
 
@@ -91,7 +114,7 @@ describe('user opens dial main as foreground from the first IPC (#102281)', () =
   })
 })
 
-// requestGatewayForAgent (and retainGatewayForAgent) are the RPC-lease pair that
+// requestGatewayForAgent / retainGatewayForAgent are the RPC-lease pair that
 // createBackendSessionForSend, openNewSessionTile and the plugin SDK's
 // host.requestProfile dial through. They are not activation doors, so they
 // never hardcode 'foreground'; a user gesture (first send, "New session", a
@@ -122,5 +145,40 @@ describe('RPC-lease dials forward an explicit spawnPriority (#105104)', () => {
     const seen = registryPriorities(desktop)
     expect(seen.length).toBeGreaterThanOrEqual(1)
     expect(seen.every(priority => priority === undefined)).toBe(true)
+  })
+
+  it('retainGatewayForAgent tags the lease dial when the caller says foreground', async () => {
+    const desktop = installDesktop()
+
+    const release = await retainGatewayForAgent('homelab', 'research', { spawnPriority: 'foreground' })
+    release()
+
+    const seen = registryPriorities(desktop)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === 'foreground')).toBe(true)
+  })
+
+  it('retainGatewayForAgent without options never tags a registry dial', async () => {
+    const desktop = installDesktop()
+
+    const release = await retainGatewayForAgent('homelab', 'research')
+    release()
+
+    const seen = registryPriorities(desktop)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === undefined)).toBe(true)
+  })
+
+  it('retainGatewayForAgent on the plain-profile route (null connection) still dials foreground', async () => {
+    // Neither #105390 nor #110354 covered this branch: the v1 profile resolver
+    // goes through gatewayForProfile, not the registry secondary.
+    const desktop = installDesktop()
+
+    const release = await retainGatewayForAgent(null, 'research', { spawnPriority: 'foreground' })
+    release()
+
+    const seen = priorities(desktop.getConnection, args => (args[1] as { priority?: string } | undefined)?.priority)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === 'foreground')).toBe(true)
   })
 })

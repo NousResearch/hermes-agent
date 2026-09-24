@@ -440,6 +440,21 @@ def is_grok_46_family(model: str) -> bool:
     return name == "grok-4.6" or name.startswith("grok-4.6-")
 
 
+# Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+# Exact ids, not a family prefix: Opus 4.7 answers the parameter with an error, Opus 4.6 silently
+# runs and bills at standard speed, and a future Opus is unsupported until the docs list it.
+_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"})
+
+
+def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
+    """Whether *model* accepts Anthropic fast mode. Accepts vendor-prefixed, dotted, variant and
+    dated spellings (``anthropic/claude-opus-5.5``, ``claude-opus-4-8-20260601``). Dedicated
+    ``...-fast`` ids select fast inference through the model field and are not in the list."""
+    name = str(model or "").strip().lower().split(":", 1)[0].rsplit("/", 1)[-1]
+    name = re.sub(r"(\d)\.(\d)", r"\1-\2", name)
+    return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
     "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",

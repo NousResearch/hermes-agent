@@ -95,7 +95,7 @@ _BUNDLED_PLUGINS_DIR = (
 
 
 def _sync_auth_registry() -> None:
-    """Mirror profiles into ``hermes_cli.auth.PROVIDER_REGISTRY`` if that module is loaded.
+    """Mirror profiles into the ``hermes_cli`` snapshots (auth registry, picker catalog) that are loaded.
 
     ``hermes_cli.auth`` takes its own snapshot of ``list_providers()`` when it is imported. If a
     plugin's imports pull that module in while :func:`_discover_providers` is still running, the
@@ -105,13 +105,17 @@ def _sync_auth_registry() -> None:
     top-level code mid-scan and risk a circular import). Never raises: registration must not fail
     because of the auth mirror.
     """
-    sync = getattr(sys.modules.get("hermes_cli.auth"), "sync_plugin_provider_registry", None)
-    if sync is None:
-        return
-    try:
-        sync()
-    except Exception as exc:  # pragma: no cover — never break discovery
-        logger.debug("auth registry sync skipped: %s", exc)
+    for module, attr in (
+        ("hermes_cli.auth", "sync_plugin_provider_registry"),
+        ("hermes_cli.models_catalog_static", "sync_plugin_provider_catalog"),
+    ):
+        sync = getattr(sys.modules.get(module), attr, None)
+        if sync is None:
+            continue
+        try:
+            sync()
+        except Exception as exc:  # pragma: no cover — never break discovery
+            logger.debug("%s sync skipped: %s", module, exc)
 
 
 def register_provider(profile: ProviderProfile) -> None:

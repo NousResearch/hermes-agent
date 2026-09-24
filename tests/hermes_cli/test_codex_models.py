@@ -2,16 +2,34 @@ import json
 from unittest.mock import patch
 
 from hermes_cli.codex_models import (
+    _FORWARD_COMPAT_TEMPLATE_MODELS,
+    DEFAULT_CODEX_MODELS,
     get_codex_model_ids,
 )
 
 
-CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
-    "gpt-5.6-sol-pro",
-    "gpt-5.6-terra-pro",
-    "gpt-5.6-luna-pro",
-}
+def _pro_slugs(model_ids):
+    return [m for m in model_ids if m.removesuffix("-900k").endswith("-pro")]
 
+
+def test_codex_catalog_never_offers_chatgpt_rejected_pro_slugs(monkeypatch, tmp_path):
+    """The ChatGPT Codex OAuth backend 400s every ``-pro`` slug (#52492), so
+    neither the offline fallback nor forward-compat synthesis over a live
+    catalog may offer one, while the fallback still keeps every curated model."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))  # no config.toml default, no cache
+    offline = get_codex_model_ids()
+    assert set(DEFAULT_CODEX_MODELS) <= set(offline)
+    assert _pro_slugs(offline) == []
+
+    # Live discovery returning only template slugs fires every forward-compat
+    # synthesis rule; none of what it adds may be -pro.
+    templates = list(dict.fromkeys(t for _, ts in _FORWARD_COMPAT_TEMPLATE_MODELS for t in ts))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api", lambda access_token: templates
+    )
+    live = get_codex_model_ids(access_token="codex-access-token")
+    assert {synthetic for synthetic, _ in _FORWARD_COMPAT_TEMPLATE_MODELS} <= set(live)
+    assert _pro_slugs(live) == []
 
 
 

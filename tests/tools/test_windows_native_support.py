@@ -688,3 +688,43 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         assert argv_used[2] not in rendered  # watcher script body
         assert "argv" not in fmt.lower()
         assert "env=" not in fmt.lower()
+
+
+# ---------------------------------------------------------------------------
+# cron pre-run scripts resolve bash dynamically (Git Bash on Windows)
+# ---------------------------------------------------------------------------
+
+
+class TestCronSchedulerBashResolution:
+    """cron.scheduler_script must resolve bash via PATH (Git Bash on Windows) and,
+    when no bash exists, return an actionable error instead of a [WinError 2] crash."""
+
+    def test_sh_script_uses_bash_found_on_path(self, tmp_path, monkeypatch):
+        from cron import scheduler_script
+
+        script = tmp_path / "job.sh"
+        script.write_text("echo hi\n", encoding="utf-8")
+        found = str(tmp_path / "git" / "bin" / "bash.exe")
+        monkeypatch.setattr(scheduler_script.shutil, "which",
+                            lambda name: found if name == "bash" else None)
+
+        argv, _overlay, error = scheduler_script._script_argv(script)
+
+        assert error is None
+        assert argv == [found, str(script)]
+
+    def test_missing_bash_returns_actionable_error(self, tmp_path, monkeypatch):
+        from cron import scheduler_script
+
+        script = tmp_path / "job.sh"
+        script.write_text("echo hi\n", encoding="utf-8")
+        real_isfile = os.path.isfile
+        monkeypatch.setattr(scheduler_script.shutil, "which", lambda name: None)
+        monkeypatch.setattr(scheduler_script.os.path, "isfile",
+                            lambda p: False if p == "/bin/bash" else real_isfile(p))
+
+        argv, _overlay, error = scheduler_script._script_argv(script)
+
+        assert argv is None
+        assert "bash not found" in error
+        assert "job.sh" in error

@@ -156,6 +156,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     gateways: List[Dict[str, Any]] = []
     profile_platforms: Dict[str, dict] = {}
     multiplex = False
+    standalone_reason: Optional[str] = None
     for name, home in homes:
         try:
             # A served profile's liveness is the multiplexer's: listing it here showed one phantom
@@ -171,6 +172,8 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
         if name == "default" and len(served) > 1:
             multiplex = True
+        if (runtime or {}).get("multiplex_standalone_reason"):
+            standalone_reason = str(runtime["multiplex_standalone_reason"])
         plats = (runtime or {}).get("platforms")
         owned: dict = {}
         if isinstance(plats, dict) and plats:
@@ -188,10 +191,16 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         mode = "multiplex"
     else:
         mode = {0: "none", 1: "single"}.get(len(gateways), "multiple")
+    # A guard refusal on a multi-profile host is what the dashboard banner shows; a single-profile
+    # install has nothing unserved and gets no banner.
+    from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
+    if standalone_reason == SINGLE_PROFILE_REASON or len(homes) < 2:
+        standalone_reason = None
     return {
         "profiles": [name for name, _home in homes],
         "parked_profiles": [name for name, home in homes if name != "default" and profile_is_parked(home)],
         "gateway_mode": mode,
+        "multiplex_standalone_reason": standalone_reason,
         "gateways": gateways,
         "profile_platforms": profile_platforms}
 

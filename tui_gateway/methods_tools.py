@@ -777,13 +777,17 @@ def _cmd_retry(rid, params, session, name, arg):
 def _cmd_steer(rid, params, session, name, arg):
     if not arg:
         return _err(rid, 4004, "usage: /steer <prompt>")
-    agent = session.get("agent") if session else None
+    shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"
+    # An idle agent still accepts steer(), but nothing drains it until the NEXT turn's pre-API
+    # drain, which splices it after whatever tool row is newest (#64578). Idle → a normal message.
+    if not (session and session.get("running")):
+        return _ok(rid, {"type": "send", "message": arg, "notice": f"No agent running; sent as next turn: {shown}"})
+    agent = session.get("agent")
     if agent and hasattr(agent, "steer"):
         with contextlib.suppress(Exception):
             if agent.steer(arg):
-                shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"
                 return _exec_out(rid, f"⏩ Steer queued — arrives after the next tool call: {shown}")
-    return _ok(rid, {"type": "send", "message": arg})  # no active run: next-turn message
+    return _ok(rid, {"type": "send", "message": arg})  # turn still building / steer refused: next-turn message
 
 
 def _cmd_goal(rid, params, session, name, arg):
@@ -1358,10 +1362,23 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, f"server '{name}' already exists")
     raw_cfg = params.get("config")
     server_config: dict = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
-    if preset:  # fills url/command/args when omitted; mutates server_config in place
-        mc._apply_mcp_preset(
-            name, preset_name=preset, url=server_config.get("url"), command=server_config.get("command"),
-            cmd_args=list(server_config.get("args") or []), server_config=server_config)
+    # Explicit url/command wins. Otherwise a desktop catalog id is resolved
+    # before the CLI preset registry — that registry raises, and the wrapper
+    # turns the raise into 5024 before the 4063 check below can run.
+    if preset and not (server_config.get("url") or server_config.get("command")):
+        catalog = _tools_mod("hermes_cli.mcp_catalog")
+        entry = catalog.get_entry(preset)
+        if entry is not None:
+            for key, value in catalog._build_server_config(entry, install_dir=None).items():
+                server_config.setdefault(key, value)
+        else:
+            try:
+                mc._apply_mcp_preset(
+                    name, preset_name=preset, url=server_config.get("url"),
+                    command=server_config.get("command"),
+                    cmd_args=list(server_config.get("args") or []), server_config=server_config)
+            except ValueError:
+                return _err(rid, 4063, f"Unknown MCP catalog entry or preset: {preset}")
     if not server_config.get("url") and not server_config.get("command"):
         return _err(rid, 4063, "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'")
     if bearer_token := params.get("bearer_token"):

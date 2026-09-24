@@ -3346,6 +3346,12 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     # without it is the same remedy, so treat the shape error as a rejection too.
     if "response_format" in err_lower and "json_schema" in err_lower:
         return True
+    # Gemini native names its own generationConfig keys, never ours: "Function calling with a response
+    # mime type: 'application/json' is unsupported" (pre-Gemini-3 + tools via a proxy), or an
+    # "Unknown name"/"Invalid value" 400 on response_schema / response_json_schema for a schema the
+    # surface cannot express. Same remedy: one retry without the format.
+    if _contains_any(err_lower, ("response mime type", "response_schema", "response_json_schema")):
+        return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
 

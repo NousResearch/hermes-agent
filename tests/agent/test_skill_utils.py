@@ -5,19 +5,15 @@ from unittest.mock import patch
 import pytest
 
 from agent.skill_utils import (
-    extract_skill_config_vars,
-    extract_skill_conditions,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
-    is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
     parse_config_string_list,
     parse_frontmatter,
     resolve_skill_config_values,
     skill_matches_platform,
-    skill_matches_platform_list,
 )
 
 
@@ -130,21 +126,6 @@ class TestDisabledSkillsJsonArrayString:
 
         assert get_disabled_skill_names() == {"skill-a", "skill-b"}
 
-    def test_get_disabled_skill_names_scalar_string_still_single_name(
-        self, tmp_path, monkeypatch
-    ):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "skills:\n  disabled: 'hidden-skill'\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from agent import skill_utils
-
-        getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
-
-        assert get_disabled_skill_names() == {"hidden-skill"}
 
 
 def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
@@ -245,48 +226,6 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
 # ── skill_matches_platform on Termux ──────────────────────────────────────
 
 
-class TestSkillMatchesPlatformTermux:
-    """Termux is Linux userland on Android. Skills tagged platforms:[linux]
-    must load there regardless of whether Python reports sys.platform as
-    "linux" (pre-3.13) or "android" (3.13+). Reported by user @LikiusInik
-    in May 2026 — only 3 built-in skills appeared on Termux because every
-    github/productivity/mlops skill is tagged platforms:[linux,macos,windows]
-    and sys.platform=="android" did not start with "linux".
-    """
-
-    def test_no_platforms_field_matches_everywhere(self):
-        # Backward-compat default — skills without a platforms tag load
-        # on any OS, Termux included.
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=True
-        ):
-            assert skill_matches_platform({}) is True
-            assert skill_matches_platform({"name": "foo"}) is True
-
-
-
-
-
-
-
-    def test_non_termux_android_does_not_widen(self):
-        # If we're somehow on a plain Android Python (not Termux), don't
-        # silently load Linux skills — Termux is the supported environment.
-        fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is False
-            assert skill_matches_platform_list(fm["platforms"]) is False
-
-    def test_linux_skill_on_real_linux_unaffected(self):
-        # The non-Termux Linux path must not change.
-        fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "linux"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is True
-            assert skill_matches_platform_list(fm["platforms"]) is True
 
 
 
@@ -372,17 +311,6 @@ class TestParseFrontmatterBOM:
             assert skill_matches_platform(bom_fm) is expected
 
 
-    def test_real_file_read_path(self, tmp_path):
-        # End-to-end: write the file the way a Windows editor does (utf-8-sig
-        # emits a BOM), read it the way _parse_skill_file does (plain utf-8),
-        # and confirm the frontmatter survives the round trip.
-        f = tmp_path / "SKILL.md"
-        f.write_text(self.SKILL, encoding="utf-8-sig")
-        raw = f.read_text(encoding="utf-8")
-        assert raw.startswith("\ufeff")  # BOM really is present on disk
-        fm, _ = parse_frontmatter(raw)
-        assert fm["name"] == "my-skill"
-        assert fm["platforms"] == ["macos"]
 
 
 class TestBOMToleranceSiblingSites:

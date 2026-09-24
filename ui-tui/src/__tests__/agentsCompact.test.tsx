@@ -26,7 +26,7 @@ it('keeps collapsed live chrome to one row without losing count or restore contr
     const text = Array.from({ length: cols }, (_, i) => cellAtIndex(view.screen, i).char).join('')
     expect(text).toContain(`${rows.running} live agents`)
     expect(text).toContain('Ctrl+T expand')
-    expect(text).toContain('F7 restore')
+    expect(text).toContain('Ctrl+R restore')
     expect(renderToScreen(<AgentsPanelView cols={cols} {...rows} t={DEFAULT_THEME} />, cols).height).toBeGreaterThan(
       view.height
     )

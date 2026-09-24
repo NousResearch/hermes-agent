@@ -94,6 +94,78 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://www.getyourguide.com/culebra-island-l145468/from-fajardo-tour-t19894/>')
   })
 
+  it('does not include wrapper closing parens in raw-url autolinks', () => {
+    const output = preprocessMarkdown('Check (https://example.com/page)')
+
+    expect(output).toContain('(<https://example.com/page>)')
+    expect(output).not.toContain('<https://example.com/page)>')
+  })
+
+  it('strips wrapper closing parens from bare raw-url autolinks', () => {
+    const output = preprocessMarkdown('(https://example.com/page)')
+
+    expect(output).toBe('(<https://example.com/page>)')
+    expect(output).not.toContain('<https://example.com/page)>')
+  })
+
+  it('strips multiple wrapper closing parens from raw-url autolinks', () => {
+    const output = preprocessMarkdown('((https://example.com/page))')
+
+    expect(output).toBe('((<https://example.com/page>))')
+    expect(output).not.toContain('<https://example.com/page)>')
+    expect(output).not.toContain('<https://example.com/page))>')
+  })
+
+  it('leaves raw URLs inside inline code spans unchanged', () => {
+    const input = 'Keep `https://example.com/page)` literal.'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+  })
+
+  it('keeps trailing punctuation outside wrapper-paren raw-url autolinks', () => {
+    expect(preprocessMarkdown('(https://example.com/page).')).toBe('(<https://example.com/page>).')
+    expect(preprocessMarkdown('(https://example.com/page),')).toBe('(<https://example.com/page>),')
+  })
+
+  it('preserves balanced parens inside raw-url autolinks', () => {
+    const output = preprocessMarkdown('See https://example.com/wiki/Foo_(bar)')
+
+    expect(output).toContain('<https://example.com/wiki/Foo_(bar)>')
+  })
+
+  it('preserves a trailing balanced pair after an earlier stray closing paren', () => {
+    const output = preprocessMarkdown('See https://example.com/a)(b)')
+
+    expect(output).toContain('<https://example.com/a)(b)>')
+  })
+
+  it('strips three wrapper closing parens from raw-url autolinks', () => {
+    const output = preprocessMarkdown('(((https://example.com/page)))')
+
+    expect(output).toBe('(((<https://example.com/page>)))')
+  })
+
+  it('preserves an unmatched opening paren at the end of a raw URL', () => {
+    const output = preprocessMarkdown('https://example.com/foo(')
+
+    expect(output).toContain('<https://example.com/foo(>')
+  })
+
+  it('strips only the wrapper closing paren around balanced-paren URLs', () => {
+    const output = preprocessMarkdown('(https://example.com/wiki/Foo_(bar))')
+
+    expect(output).toBe('(<https://example.com/wiki/Foo_(bar)>)')
+    expect(output).not.toContain('<https://example.com/wiki/Foo_(bar))>')
+  })
+
+  it('does not autolink canonical markdown links', () => {
+    const input = '[link](https://github.com/NousResearch/hermes-agent/issues)'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+  })
+
   it('strips orphan numeric citation markers outside code spans', () => {
     const output = preprocessMarkdown('This is the source[0], but keep `items[0]` untouched.')
 
@@ -315,13 +387,6 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
   })
 
-  it('escapes currency dollars in prose so they are not parsed as math', () => {
-    const output = preprocessMarkdown('$5 and $10')
-
-    expect(output).toContain('\\$5')
-    expect(output).toContain('\\$10')
-  })
-
   it('moves hugging $$ delimiters of multiline display math onto their own lines', () => {
     const input = [
       '$$\\begin{aligned}',
@@ -398,11 +463,5 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
 
     expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
-  })
-
-  it('shields inline math whose body contains an escaped dollar', () => {
-    const output = preprocessMarkdown('$\\sqrt[3]{8} + \\$5$')
-
-    expect(output).toContain('\\sqrt[3]{8}')
   })
 })

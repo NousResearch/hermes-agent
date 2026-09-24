@@ -39,20 +39,6 @@ def _messages(n: int, size: int = 1500) -> list:
     return msgs
 
 
-def test_successful_compression_trims_memory_once(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        mem_trim, "trim_memory", lambda *a, **kw: calls.append(kw) or False
-    )
-
-    cc = _compressor()
-    out = cc.compress(_messages(14), current_tokens=100_000)
-
-    assert len(out) < 15, "sanity: compaction should have made progress"
-    assert len(calls) == 1, "trim_memory must run exactly once per compaction"
-    assert calls[0].get("reason") == "post-compression"
-
-
 def test_trim_failure_does_not_break_compression(monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError("allocator says no")

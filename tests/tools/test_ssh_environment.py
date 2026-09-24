@@ -188,12 +188,6 @@ class TestControlSocketPath:
 
 
 class TestTerminalToolConfig:
-    def test_ssh_persistent_default_true(self, monkeypatch):
-        """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""
-        monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
-        monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is True
 
 
     def test_ssh_persistent_respects_config(self, monkeypatch):

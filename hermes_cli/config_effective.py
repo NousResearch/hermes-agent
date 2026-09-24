@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from hermes_cli import config as _config
 from hermes_cli import managed_scope
+from hermes_cli.config_read_errors import _warn_config_parse_failure
 from utils import fast_safe_load
 
 # path -> raw user mapping from the last successful parse in this process; served (through the
@@ -44,7 +45,7 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> Dict[
         from hermes_cli.config_backups import load_newest_good_backup
         raw = load_newest_good_backup(config_path)
         fallback = "last-known-good-backup"
-    _config._warn_config_parse_failure(config_path, exc, fallback=fallback if raw is not None else "defaults")
+    _warn_config_parse_failure(config_path, exc, fallback=fallback if raw is not None else "defaults")
     return copy.deepcopy(raw) if raw is not None else {}
 
 

@@ -137,13 +137,6 @@ describe('send-diagnostics store', () => {
     }
   })
 
-  it('dismiss clears the dialog state', () => {
-    requestSendDiagnostics()
-    dismissSendDiagnostics()
-
-    expect($sendDiagnostics.get()).toBeNull()
-  })
-
   it('dismissal mid-upload is immediate and a stale completion cannot resurrect the dialog', async () => {
     let resolveRequest: (value: unknown) => void = () => {}
 

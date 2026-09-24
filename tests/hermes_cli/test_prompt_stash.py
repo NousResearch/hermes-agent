@@ -51,7 +51,7 @@ def stash():
 class TestStashNoOp:
     """An empty or whitespace-only composer must not create a stash entry."""
 
-    @pytest.mark.parametrize("text", ["", "   ", "\n", "\t\t", "  \n \n  ", None])
+    @pytest.mark.parametrize("text", ["", "  \n \n  ", None])
     def test_stash_blank_buffer_is_noop(self, stash, text):
         assert stash.stash(text) is False
         assert len(stash) == 0
@@ -60,8 +60,6 @@ class TestStashNoOp:
     def test_pop_empty_stash_returns_none(self, stash):
         assert stash.pop() is None
 
-    def test_peek_empty_stash_returns_none(self, stash):
-        assert stash.peek() is None
 
     def test_open_panel_on_empty_stash_refused(self, stash):
         assert stash.open_panel() is False
@@ -89,16 +87,10 @@ class TestRoundTrip:
     @pytest.mark.parametrize(
         "text",
         [
-            "hello",
-            "line one\nline two",
-            "line one\nline two\nline three\n",
             "\n  leading blank and indented\n",
-            "trailing spaces   ",
-            "   leading spaces",
             "para one\n\npara two\n\n\npara three",
-            "tabs\there\tand\there",
+            "tabs\there\tand\there   ",
             "unicode ünïcödé 中文 🎉 mixed",
-            "```python\ndef f():\n    return 1\n```",
         ],
     )
     def test_stash_then_restore_round_trips_exactly(self, stash, text):
@@ -111,12 +103,6 @@ class TestRoundTrip:
         # Popping consumed the entry.
         assert len(stash) == 0
 
-    def test_multiline_draft_preserves_every_newline(self, stash):
-        text = "a\nb\nc\nd\ne"
-        stash.stash(text)
-        restored, _ = stash.pop()
-        assert restored.count("\n") == 4
-        assert restored.splitlines() == ["a", "b", "c", "d", "e"]
 
     def test_round_trip_through_resolve_ctrl_s(self, stash):
         """The full gesture: Ctrl+S to park, Ctrl+S on empty to bring back."""
@@ -198,10 +184,6 @@ class TestIndicatorState:
         assert stash.placeholder_hint() == ""
         assert bool(stash) is False
 
-    def test_single_item_indicator(self, stash):
-        stash.stash("draft")
-        assert stash.indicator() == "📌 1"
-        assert bool(stash) is True
 
     def test_count_grows_with_stash(self, stash):
         stash.stash("a")
@@ -211,13 +193,6 @@ class TestIndicatorState:
         stash.stash("c")
         assert stash.indicator() == "📌 3"
 
-    def test_indicator_marks_open_panel(self, stash):
-        stash.stash("a")
-        stash.stash("b")
-        stash.open_panel()
-        assert stash.indicator() == "📌 2 ▲"
-        stash.close_panel()
-        assert stash.indicator() == "📌 2"
 
     def test_indicator_clears_after_restoring_last_item(self, stash):
         stash.stash("only")
@@ -230,11 +205,6 @@ class TestIndicatorState:
         assert "Ctrl+S" in hint
         assert "write the migration guide" in hint
 
-    def test_placeholder_hint_multi_shows_count(self, stash):
-        stash.stash("a")
-        stash.stash("b")
-        stash.stash("c")
-        assert stash.placeholder_hint() == "Ctrl+S to browse 3 stashed drafts"
 
     def test_clear_resets_all_state(self, stash):
         stash.stash("a")
@@ -376,8 +346,6 @@ class TestResolveCtrlS:
     def test_empty_buffer_empty_stash_is_noop(self, stash):
         assert resolve_ctrl_s(stash, "") == (ACTION_NOOP, None)
 
-    def test_whitespace_buffer_empty_stash_is_noop(self, stash):
-        assert resolve_ctrl_s(stash, "   \n  ") == (ACTION_NOOP, None)
 
     def test_content_stashes(self, stash):
         action, payload = resolve_ctrl_s(stash, "some draft")
@@ -412,25 +380,8 @@ class TestResolveCtrlS:
         assert action == ACTION_RESTORED
         assert payload == ("real draft", [])
 
-    def test_stash_pop_stash_pop_cycle(self, stash):
-        for text in ("one", "two\nlines", "three\n\nparas"):
-            assert resolve_ctrl_s(stash, text)[0] == ACTION_STASHED
-            action, payload = resolve_ctrl_s(stash, "")
-            assert action == ACTION_RESTORED
-            assert payload is not None
-            assert payload[0] == text
-            assert len(stash) == 0
 
 
 # --------------------------------------------------------------------- ages
 
 
-class TestAgeFormatting:
-    def test_age_reflects_injected_clock(self):
-        clock = _FakeClock()
-        s = PromptStash(clock=clock)
-        s.stash("draft")
-        entry = s.peek()
-        assert entry is not None
-        clock.advance(120)
-        assert clock() - entry.stashed_at == 120

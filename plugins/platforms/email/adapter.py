@@ -29,7 +29,7 @@ from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
-from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, send_error
+from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -595,31 +595,60 @@ class EmailAdapter(BasePlatformAdapter):
                    for name in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"))
 
     @staticmethod
-    def _allowlist_in_effect() -> bool:
-        """True when EMAIL_/GATEWAY_ALLOWED_USERS gates access (without one the gateway default-denies, so the spoofable From: grants nothing)."""
-        return any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"))
+    def _open_access() -> bool:
+        """True when the gateway admits any sender, so a forged From: gains nothing. The gateway's own order:
+        EMAIL_ALLOW_ALL_USERS wins over a list, GATEWAY_ALLOW_ALL_USERS applies only while no list is set."""
+        if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY:
+            return True
+        return (_get_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY
+                and not any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")))
+
+    def _answers_unknown_senders(self) -> bool:
+        """True when ``platforms.email.unauthorized_dm_behavior`` opts into ``pair`` or ``decline``."""
+        behavior = (self.config.extra or {}).get("unauthorized_dm_behavior")
+        return isinstance(behavior, str) and behavior.strip().lower() in {"pair", "decline"}
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
-        """Pre-dispatch sender gate: self, automated, allowlist, From: authentication."""
+        """Pre-dispatch sender gate: self, automated, authorization, From: authentication."""
         if sender_addr == self._address.lower():
             return False
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
             return False
-        # Drop senders the gateway would never authorize before a MessageEvent (and thread context) exists —
-        # otherwise a dispatch/authorization race can send a reply even though the handler returned None.
         allowed_raw = _get_secret("EMAIL_ALLOWED_USERS", "").strip()
-        if not allowed_raw:
-            if not self._allow_all_senders():
-                logger.debug("[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset and open access is not opted in: %s", sender_addr)
-                return False
-        elif sender_addr.lower() not in {a.strip().lower() for a in allowed_raw.split(",") if a.strip()}:
-            logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+        # Parsed like the gateway's allowlists (JSON list literals included), or '["alice"]' would dodge the guard below.
+        listed = set()
+        for raw in (allowed_raw, _get_secret("GATEWAY_ALLOWED_USERS", "")):
+            raw = decode_json_list_literal(raw)
+            listed.update(str(a).strip().lower() for a in (raw if isinstance(raw, list) else str(raw).split(","))
+                          if str(a).strip())
+        if sender_addr.lower() in listed:
+            granted = True
+        elif sender_addr.split("@", 1)[0].lower() in listed:
+            # The gateway's check also matches an address by its bare local part (#119446), so an entry like "alice"
+            # would admit, or pair, alice@<any domain>; the domain is the sender's to choose.
+            logger.debug("[Email] Dropping sender whose local part alone matches an allowlist entry: %s", sender_addr)
             return False
-        # Reject spoofed senders (GHSA-rxqh-5572-8m77): the allowlist keys on the attacker-controlled
-        # From:. Only matters when an allowlist GRANTS access and allow-all is off; fail-closed.
-        if (self._require_authenticated_sender and self._allowlist_in_effect()
-                and not self._allow_all_senders() and not msg_data.get("sender_authenticated", False)):
+        else:
+            # Approved pairings grant access too, and only the gateway's own check sees them. Its verdict also decides
+            # open access: GATEWAY_ALLOW_ALL_USERS beside a GATEWAY_ALLOWED_USERS list grants a stranger nothing there.
+            verdict = self._is_sender_authorized(sender_addr, "dm", sender_addr)
+            granted = verdict if verdict is not None else (not allowed_raw and self._allow_all_senders())
+        # Drop senders the gateway would neither authorize nor answer (pair/decline) before a MessageEvent (and thread
+        # context) exists — otherwise a dispatch/authorization race can send a reply even though the handler returned None.
+        if not granted and not self._answers_unknown_senders():
+            logger.debug("[Email] Dropping unauthorized sender at dispatch (unknown senders are ignored): %s", sender_addr)
+            return False
+        # Reject spoofed senders (GHSA-rxqh-5572-8m77): short of open access, every grant keys on the attacker-controlled
+        # From:, and a pairing code or decline is mailed back to it, open access or not; fail-closed. Only a granted
+        # sender's drop warns: forged mail from strangers is routine, and the opt-out hint would be wrong advice for it.
+        if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
+            if not granted:
+                logger.debug("[Email] Not answering unknown sender with unauthenticated From: %s (%s)",
+                             sender_addr, msg_data.get("auth_reason", "no verdict"))
+                return False
+            if self._open_access():
+                return True
             logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
                            "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
                            "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",

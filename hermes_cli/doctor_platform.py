@@ -94,9 +94,6 @@ def _report_database_holders(name: str, db_path: Path) -> None:
     offline journal-mode conversion; a partial or unavailable scan is reported as "cannot prove quiet", never as
     an all-clear (the scan is the same fail-closed authority repair/VACUUM/checkpoint admission uses)."""
     from hermes_state_holders import describe_holder_pid, foreign_state_db_holders
-    if sys.platform == "win32":
-        check_warn(f"{name}: cannot prove the database is quiet", "(holder scan is unavailable on Windows)")
-        return
     unknown: list[str] = []
     by_pid: dict[int, set[str]] = {}
     for pid, target in foreign_state_db_holders(db_path):

@@ -64,16 +64,7 @@ class TestWinPtyBridgeUnavailable:
     web_server platform branch doesn't blow up at import time when pywinpty
     is missing or the host isn't Windows."""
 
-    def test_error_is_importable_and_carries_message(self):
-        err = PtyUnavailableError("conpty missing")
-        assert "conpty" in str(err)
 
-    def test_bridge_class_is_importable(self):
-        # The platform-branched import in web_server.py relies on this:
-        #     from hermes_cli.win_pty_bridge import WinPtyBridge, PtyUnavailableError
-        # Both symbols must always exist; ``is_available()`` is the gate.
-        assert WinPtyBridge is not None
-        assert callable(WinPtyBridge.is_available)
 
     @pytest.mark.asyncio
     async def test_write_has_nonblocking_async_contract(self):

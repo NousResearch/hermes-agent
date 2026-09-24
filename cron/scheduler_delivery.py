@@ -576,21 +576,16 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
-def _origin_thread_is_stale(origin: dict) -> bool:
-    """True when a Slack origin's thread is a stale creation-turn artifact. Thread-per-message
-    Slack stamps each top-level message id as the session thread (a KEY, not a location); old jobs
-    carry it as ``origin.thread_id``. Heuristic: if the origin chat IS the Slack home chat, the
-    pinned thread is that artifact and delivery goes top-level (or to the home target's thread)."""
-    if str(origin.get("platform") or "").lower() != "slack" or not origin.get("thread_id"):
-        return False
-    home_chat = _get_home_target_chat_id("slack")
-    return bool(home_chat) and str(origin.get("chat_id")) == str(home_chat)
-
-
 def _origin_delivery_thread(origin: dict):
-    """The thread a deliver=origin job should use, stale stamps dropped."""
-    if _origin_thread_is_stale(origin):
-        return _get_home_target_thread_id("slack") or None
+    """The thread a ``deliver=origin`` job should use.
+
+    The persisted ``origin.thread_id`` is authoritative routing: ``_origin_from_env`` already
+    drops a synthetic Slack per-message stamp at capture time (thread == the creating message's
+    own id — a KEY, not a location) and keeps genuine conversation threads, so fire-time
+    resolution must carry whatever thread survived into the resolved target. The previous
+    home-chat staleness heuristic dropped EVERY home-chat Slack origin thread — genuine working
+    threads included — so results that belonged in the originating thread posted to the channel
+    root."""
     return origin.get("thread_id")
 
 
@@ -660,7 +655,6 @@ def _resolve_single_delivery_target(
             and str(origin.get("platform") or "").lower() == platform_key
             and str(origin.get("chat_id")) == str(chat_id)
             and origin.get("thread_id")
-            and not _origin_thread_is_stale(origin)
         ):
             thread_id = origin.get("thread_id")
         return {
@@ -674,7 +668,17 @@ def _resolve_single_delivery_target(
     if origin and origin.get("platform") == platform_name:
         chat_id = _get_home_target_chat_id(platform_name)
         if chat_id:
-            return _home_target(platform_name, chat_id, home_provenance)
+            target = _home_target(platform_name, chat_id, home_provenance)
+            if (
+                not target.get("thread_id")
+                and str(chat_id) == str(origin.get("chat_id"))
+                and origin.get("thread_id")
+            ):
+                # The home channel IS the origin chat: a bare-platform token resolves to the
+                # same conversation, so keep its thread instead of dropping the report to the
+                # channel root. A configured home thread still wins (it is explicit routing).
+                target["thread_id"] = origin.get("thread_id")
+            return target
         # No home configured: falls back to the origin chat. No tag needed — the
         # origin-match check in _target_mirror_eligible already covers this target.
         return {

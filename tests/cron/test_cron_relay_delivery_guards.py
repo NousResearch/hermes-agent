@@ -1,13 +1,15 @@
-"""Fire-time guards: stale Slack creation-thread routing + relay-fronted preflight.
+"""Fire-time origin-thread routing + relay-fronted preflight guards.
 
 Two related defects on relay-fronted Slack deployments:
 
-1. Jobs persisted before the synthetic-thread capture fix carry the creation
-   message's own id as ``origin.thread_id``. At fire time ``deliver=origin``
-   replayed it unconditionally, and the Slack origin-affinity re-attach put it
-   back even on explicit ``slack:<chat_id>`` targets. Guard: when the resolved
-   Slack chat IS the configured home chat, the origin thread is a stale
-   per-message artifact — deliver top-level (home thread config still wins).
+1. Reports must land in the thread they came from. ``_origin_from_env`` drops the
+   synthetic per-message stamp at capture time (thread == the creating message's
+   own id) and keeps genuine conversation threads, so fire-time resolution carries
+   whatever thread survived into the resolved target — ``deliver=origin``, a bare
+   home token whose home chat IS the origin chat, and explicit ``slack:<chat_id>``
+   targets landing on the origin chat. (A previous home-chat staleness heuristic
+   dropped EVERY home-chat Slack origin thread — genuine working threads included
+   — so reports posted to the channel root.)
 
 2. ``_preflight_check_delivery`` validated the ``slack:`` prefix against
    natively-configured platforms only; in relay-only topology that set is
@@ -33,34 +35,60 @@ def _slack_home(monkeypatch, chat_id="D0BJTDCSR7C", thread_id=None):
                         lambda p: thread_id if p == "slack" else None)
 
 
-SYNTH = "1755043010.123456"
+PINNED = "1755043010.123456"
 
 
-class TestOriginThreadStaleGuard:
-    def test_origin_thread_dropped_when_chat_is_home(self, monkeypatch):
-        """deliver=origin, slack origin chat == home chat: creation thread is stale."""
+class TestOriginThreadPreserved:
+    def test_origin_thread_kept_when_chat_is_home(self, monkeypatch):
+        """deliver=origin, slack origin chat == home chat: the persisted thread still routes."""
         _slack_home(monkeypatch)
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": SYNTH}}
+                          "thread_id": PINNED}}
         target = _resolve_single_delivery_target(job, "origin")
         assert target == {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": None, "_resolved_from": "origin"}
+                          "thread_id": PINNED, "_resolved_from": "origin"}
 
     def test_origin_thread_kept_when_chat_not_home(self, monkeypatch):
-        """A non-home Slack origin thread may be a genuine working thread: keep it."""
+        """A non-home Slack origin thread is a genuine working thread: keep it."""
         _slack_home(monkeypatch, chat_id="D_OTHER_HOME")
         job = {"origin": {"platform": "slack", "chat_id": "C0AGENERAL",
                           "thread_id": "1755040000.000100"}}
         target = _resolve_single_delivery_target(job, "origin")
         assert target["thread_id"] == "1755040000.000100"
 
-    def test_home_thread_config_still_wins(self, monkeypatch):
-        """When the home target itself pins a thread, deliver there, not top-level."""
+    def test_origin_thread_wins_over_home_thread_config(self, monkeypatch):
+        """deliver=origin addresses the originating conversation itself: its thread wins."""
         _slack_home(monkeypatch, thread_id="1755000000.000001")
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": SYNTH}}
+                          "thread_id": PINNED}}
         target = _resolve_single_delivery_target(job, "origin")
+        assert target["thread_id"] == PINNED
+
+    def test_home_token_on_origin_chat_keeps_the_origin_thread(self, monkeypatch):
+        """A bare home token resolving to the origin chat keeps its thread."""
+        _slack_home(monkeypatch)
+        job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
+                          "thread_id": PINNED}}
+        target = _resolve_single_delivery_target(job, "slack")
+        assert target["chat_id"] == "D0BJTDCSR7C"
+        assert target["thread_id"] == PINNED
+
+    def test_home_thread_config_wins_on_home_token(self, monkeypatch):
+        """When the home target itself pins a thread, a home token delivers there."""
+        _slack_home(monkeypatch, thread_id="1755000000.000001")
+        job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
+                          "thread_id": PINNED}}
+        target = _resolve_single_delivery_target(job, "slack")
         assert target["thread_id"] == "1755000000.000001"
+
+    def test_home_token_to_other_chat_stays_flat(self, monkeypatch):
+        """A home token resolving to a DIFFERENT chat is not the origin conversation."""
+        _slack_home(monkeypatch, chat_id="D_OTHER_HOME")
+        job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
+                          "thread_id": PINNED}}
+        target = _resolve_single_delivery_target(job, "slack")
+        assert target["chat_id"] == "D_OTHER_HOME"
+        assert target.get("thread_id") is None
 
     def test_non_slack_origin_thread_untouched(self, monkeypatch):
         """Telegram forum-topic origins replay their thread verbatim."""
@@ -70,8 +98,8 @@ class TestOriginThreadStaleGuard:
         target = _resolve_single_delivery_target(job, "origin")
         assert target["thread_id"] == "2203"
 
-    def test_explicit_target_no_reattach_when_chat_is_home(self, monkeypatch):
-        """slack:<home_chat> must not inherit the stale creation thread."""
+    def test_explicit_target_reattach_for_home_chat(self, monkeypatch):
+        """slack:<home_chat> re-attaches the persisted origin thread too."""
         _slack_home(monkeypatch)
         monkeypatch.setattr(
             "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
@@ -79,9 +107,9 @@ class TestOriginThreadStaleGuard:
             "tools.send_message_tool.resolve_send_target",
             lambda platform, rest, **kw: (rest, None, None))
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": SYNTH}}
+                          "thread_id": PINNED}}
         target = _resolve_single_delivery_target(job, "slack:D0BJTDCSR7C")
-        assert target["thread_id"] is None
+        assert target["thread_id"] == PINNED
 
     def test_explicit_target_reattach_kept_for_non_home_chat(self, monkeypatch):
         """Origin-affinity re-attach is preserved for genuine non-home threads."""

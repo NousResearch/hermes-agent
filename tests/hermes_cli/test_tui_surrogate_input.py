@@ -55,6 +55,24 @@ def test_text_change_combines_surrogate_pair_before_the_prompt_renders():
     assert buffer.cursor_position == len(buffer.text)
 
 
+def test_text_change_keeps_cursor_before_pair_when_between_code_units():
+    buffer = Buffer()
+    buffer.text = "A\ud83d\ude02B"
+    buffer.cursor_position = 2  # Between the high and low UTF-16 code units.
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._tui_prev_text_len = 0
+    cli._tui_prev_newline_count = 0
+    cli._tui_paste_just_collapsed = False
+    cli._skip_paste_collapse = False
+    cli._tui_paste_over_threshold = lambda text, line_count, threshold_key: False
+    cli._recover_terminal_input_modes = lambda **_kwargs: None
+
+    cli._tui_on_text_changed(buffer)
+
+    assert buffer.text == "A😂B"
+    assert buffer.cursor_position == 1
+
+
 def test_live_surrogate_repair_keeps_fallback_paste_collapse():
     buffer = Buffer()
     cli = HermesCLI.__new__(HermesCLI)

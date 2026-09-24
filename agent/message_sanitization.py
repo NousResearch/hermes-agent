@@ -36,6 +36,15 @@ def _combine_surrogate_pairs(text: str) -> str:
     )
 
 
+def _surrogate_cursor_position(text: str, cursor: int) -> int:
+    """Map a code-unit cursor to combined text, before a pair if it splits one."""
+    if (0 < cursor < len(text)
+            and '\ud800' <= text[cursor - 1] <= '\udbff'
+            and '\udc00' <= text[cursor] <= '\udfff'):
+        cursor -= 1
+    return len(_combine_surrogate_pairs(text[:cursor]))
+
+
 def _sanitize_surrogates(text: str) -> str:
     """Combine valid UTF-16 surrogate pairs and replace unpaired code units with U+FFFD."""
     if text.isascii() or not _SURROGATE_RE.search(text):

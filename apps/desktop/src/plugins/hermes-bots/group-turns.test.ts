@@ -275,6 +275,39 @@ describe('session resolution', () => {
 })
 
 describe('session-gone classification', () => {
+  it('delivers a completed reply when preflight compression shrinks the transcript below the pre-submit count', async () => {
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+    const room = await loadRoom({ turn: () => 'reply after compression' })
+    const handle = await room.turns.ensureGroupChatSession('Room', LOCAL_MEMBER, 't1')
+    const session = room.gateway.sessions.get(String(handle.stored))!
+    session.messages.push(
+      { content: 'older user context', role: 'user' },
+      { content: 'older assistant context', role: 'assistant' },
+      { content: 'another older user context', role: 'user' }
+    )
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    let submitted = false
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = (await request(method, params)) as Record<string, unknown> & { messages?: unknown[] }
+
+      submitted = submitted || method === 'prompt.submit'
+
+      return method === 'session.resume' && submitted
+        ? { ...result, messages: (result.messages || []).slice(-2) }
+        : result
+    }
+
+    try {
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).resolves.toBe(
+        'reply after compression'
+      )
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   it('treats 4001 and "not in memory" as recoverable, 4007 as not', async () => {
     const { turns } = await loadRoom()
 
@@ -1295,6 +1328,26 @@ describe('stranded harvest', () => {
     expect(log(room, 'Late')[0].from.name).toBe('research')
     expect(log(room, 'Late')[0].text).toMatch(/delivered late/)
     expect(room.chat.$groupChats.get().Late.stranded?.research).toBeUndefined()
+  })
+
+  it('harvests a reply when compression shrinks the transcript below the marker count', async () => {
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('Compressed', current => {
+      current.sessions = { research: 'sid-research' }
+      current.stranded = { research: { before: 513, prompt: roomPrompt('Compressed'), thread: 't1' } }
+
+      return current
+    })
+    seedSession(room, 'sid-research', 'research', 'Group: Compressed · t1', [
+      ['user', roomPrompt('Compressed')],
+      ['assistant', 'late reply preserved after compression']
+    ])
+
+    await room.turns.harvestStrandedGroupReply('Compressed', { name: 'research', title: '' })
+
+    expect(log(room, 'Compressed').map(entry => entry.text)).toEqual(['late reply preserved after compression'])
+    expect(room.chat.$groupChats.get().Compressed.stranded?.research).toBeUndefined()
   })
 
   it('prefers the substantive answer over a trailing synthetic (pass)', async () => {

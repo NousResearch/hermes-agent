@@ -75,6 +75,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # SILK voice-note decoding (WeChat/QQ); silk-v3 codec binding.
     "stt.silk": ("pilk==0.2.4",),
 
+    # ─── Voice endpointing (Smart Turn v3 semantic end-of-turn) ────────────
+    # Opt-in adaptive endpoint for the server-owned converse loop (voice.endpoint.model).
+    # onnxruntime runs the ~8.7 MB int8 model; transformers supplies only the Whisper log-mel
+    # front end (numpy path — NO torch is pulled). onnxruntime==1.27.0 tracks [wake]/uv.lock.
+    "voice.endpoint": (
+        "onnxruntime==1.27.0",
+        "transformers==5.17.0",
+    ),
+
     # ─── Wake word ("Hey Hermes") engines (sync with the `wake` extra) ──────
     # openWakeWord's ONNX model scores ~0 on macOS ARM64, so macOS uses the tflite backend
     # (ai-edge-litert, bridged in tools/wake_word.py). Separate feature because specs cannot

@@ -255,6 +255,10 @@ wake = [
   # macOS equivalent, bridged in tools/wake_word.py.
   "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
 ]
+# Smart Turn v3 semantic end-of-turn endpointer for the converse loop (voice.endpoint.model).
+# Opt-in and lazy-installed (tools/lazy_deps.py voice.endpoint); excluded from [all]. transformers
+# is used ONLY for the Whisper log-mel front end (numpy path — no torch); onnxruntime runs the model.
+voice-endpoint = ["onnxruntime==1.27.0", "transformers==5.17.0"]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
 # (memory.supermemory / memory.mem0) at first use. Where BOTH pin exactly the

@@ -203,6 +203,30 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
 
 
+def _chrome_for_testing_executable(chrome_dir: str) -> bool:
+    """True when ``chrome_dir`` holds a runnable Chrome-for-Testing binary, not just a version-named dir.
+
+    An interrupted ``agent-browser install`` can leave a ``chrome-<version>`` directory without the
+    binary, so the directory name alone must not count as a usable browser (teknium1's review on #30161).
+    Candidate shapes mirror agent-browser's own discovery (verified live against 0.37.1: both the flat
+    and nested linux64 layouts resolve): CfT linux64 ``chrome-linux64/chrome``, flat ``chrome``, macOS
+    ``Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing``, win64
+    ``chrome-win64/chrome.exe`` / flat ``chrome.exe``. The exec-bit check is intentionally stricter than
+    agent-browser's (a non-executable file is "found" by their probe but fails at launch).
+    """
+    for rel in (
+        os.path.join("chrome-linux64", "chrome"),
+        "chrome",
+        os.path.join("Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+        os.path.join("chrome-win64", "chrome.exe"),
+        "chrome.exe",
+    ):
+        exe = os.path.join(chrome_dir, rel)
+        if os.path.isfile(exe) and os.access(exe, os.X_OK):
+            return True
+    return False
+
+
 def _chromium_search_roots() -> List[str]:
     """Chromium / headless-shell scan roots in agent-browser/Playwright probe order: ``PLAYWRIGHT_BROWSERS_PATH``, then the per-OS default cache."""
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
@@ -214,21 +238,32 @@ def _chromium_search_roots() -> List[str]:
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
         roots.append(os.path.join(local, "ms-playwright"))
+    roots.append(os.path.join(home, ".agent-browser", "browsers"))
     return roots
 
 
 def _has_chromium_build(root: str) -> bool:
-    """True when ``root`` holds a Playwright ``chromium-*`` / ``chromium_headless_shell-*`` dir (agent-browser accepts either)."""
+    """True when ``root`` holds a usable Chromium build (agent-browser accepts ``chromium-*`` / ``chromium_headless_shell-*``).
+
+    agent-browser 0.26+ installs Chrome for Testing as ``chrome-<version>/`` — accepted only when the
+    version dir actually contains the binary (an interrupted download can leave it behind without one).
+    """
     try:
-        return any(e.startswith(("chromium-", "chromium_headless_shell-")) for e in os.listdir(root))
+        for entry in os.listdir(root):
+            if entry.startswith(("chromium-", "chromium_headless_shell-")):
+                return True
+            if entry.startswith("chrome-") and _chrome_for_testing_executable(os.path.join(root, entry)):
+                return True
     except OSError:
-        return False
+        pass
+    return False
 
 
 def _chromium_installed() -> bool:
     """True when a usable Chromium (or headless-shell) build is on disk; cached.
 
-    Checks ``AGENT_BROWSER_EXECUTABLE_PATH``, then system Chrome/Chromium on PATH, then Playwright's cache.
+    Checks ``AGENT_BROWSER_EXECUTABLE_PATH``, then system Chrome/Chromium on PATH, then the scan roots
+    (Playwright's cache and agent-browser's own ``browsers/`` dir).
     Without a binary the CLI hangs on first use until the command timeout fires, so the tool must not be advertised.
     """
     _bt = _origin()

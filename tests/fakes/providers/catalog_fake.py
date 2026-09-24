@@ -1,13 +1,17 @@
 """Multi-dialect recording loopback provider for the provider-catalog E2E matrix.
 
 One real HTTP server on 127.0.0.1 that answers every wire dialect the bundled
-model-provider plugins speak, routed by request path:
+model-provider plugins speak, at EXACT paths only (``routes``: path -> dialect, built by the
+caller from the base URL it configured; anything else is a 404, so a request that lands under
+the right prefix but at the wrong path is visible, never silently answered):
 
-* ``POST …/chat/completions`` — OpenAI Chat Completions (JSON or SSE)
-* ``POST …/messages``         — Anthropic Messages (JSON or SSE)
-* ``POST …/responses``        — OpenAI Responses (SSE event stream)
-* ``GET  …/models``           — model listing (OpenAI ``data`` shape), or a
-  scripted 404 / hang so picker fallbacks can be exercised
+* ``chat``      — OpenAI Chat Completions (JSON or SSE)
+* ``anthropic`` — Anthropic Messages (JSON or SSE)
+* ``responses`` — OpenAI Responses (SSE event stream)
+* ``listing``   — ``GET`` model listing (OpenAI ``data`` shape), or a scripted
+  status / hang so picker fallbacks can be exercised
+
+Without ``routes`` the server answers nothing (egress sentinel only).
 
 Every request (method, path, headers, body) is recorded, so a test can assert on
 exactly which credential reached which host in which header.
@@ -40,19 +44,13 @@ class Recorded:
     path: str
     headers: dict[str, str]
     body: Any
+    # Dialect of the exact route the request hit, or "unknown" (answered 404).
+    dialect: str = "unknown"
     t: float = field(default_factory=time.time)
 
-    @property
-    def dialect(self) -> str:
-        return path_dialect(self.path) if self.method == "POST" else "listing"
 
-
-def path_dialect(path: str) -> str:
-    p = path.split("?", 1)[0].rstrip("/")
-    for suffix, name in (("/chat/completions", "chat"), ("/messages", "anthropic"), ("/responses", "responses")):
-        if p.endswith(suffix):
-            return name
-    return "unknown"
+def bare_path(path: str) -> str:
+    return path.split("?", 1)[0]
 
 
 class CatalogFake:
@@ -68,7 +66,9 @@ class CatalogFake:
         models_status: int = 200,
         models_hang_s: float = 0.0,
         fail_status: int | None = None,
+        routes: dict[str, str] | None = None,
     ) -> None:
+        self.routes = dict(routes or {})
         self.tool_name = tool_name
         self.tool_args = tool_args or {}
         self.final_text = final_text
@@ -298,9 +298,11 @@ def _handler_for(fake: CatalogFake) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             if self._refuse_egress("GET"):
                 return
-            fake._record(Recorded("GET", self.path, self._headers(), None))
-            if not self.path.split("?", 1)[0].rstrip("/").endswith("/models"):
-                self._json(404, {"error": {"message": "not found"}})
+            dialect = fake.routes.get(bare_path(self.path), "unknown")
+            dialect = dialect if dialect == "listing" else "unknown"
+            fake._record(Recorded("GET", self.path, self._headers(), None, dialect))
+            if dialect != "listing":
+                self._json(404, {"error": {"message": f"not found: {self.path}"}})
                 return
             if fake.models_hang_s:
                 fake._stop.wait(fake.models_hang_s)
@@ -322,8 +324,9 @@ def _handler_for(fake: CatalogFake) -> type[BaseHTTPRequestHandler]:
                 body = json.loads(raw or b"{}")
             except json.JSONDecodeError:
                 body = {"_raw": raw.decode("utf-8", "replace")}
-            fake._record(Recorded("POST", self.path, self._headers(), body))
-            dialect = path_dialect(self.path)
+            dialect = fake.routes.get(bare_path(self.path), "unknown")
+            dialect = dialect if dialect in ("chat", "anthropic", "responses") else "unknown"
+            fake._record(Recorded("POST", self.path, self._headers(), body, dialect))
             if dialect == "unknown":
                 self._json(404, {"error": {"message": f"unsupported path {self.path}"}})
                 return

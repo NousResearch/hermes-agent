@@ -16,25 +16,26 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.core.providers._catalog_helpers import (
-    FINAL, URL_SUFFIX_OF_DIALECT, Row, decoy_keys, discover_catalog, run_hermes, write_home,
+    AUTH_HEADER_OF_DIALECT, FINAL, Known, Row, decoy_keys, discover_catalog, gate, known_gate, run_hermes, write_home,
 )
 from tests.fakes.providers.catalog_fake import CatalogFake
 
 CATALOG = discover_catalog()
-# Rows whose primary can be redirected; xai cannot (#121347), so it is never a primary/fallback here.
-ROWS = [r for r in CATALOG if r.skip_reason() is None and r.name != "xai"]
+# Rows whose primary can be redirected; xai cannot (#121347), so it is never a primary/fallback
+# here. Rows with no loopback dialect FAIL in the matrix shards.
+ROWS = [r for r in CATALOG if r.skip_reason() is None and r.dialect and r.name != "xai"]
 # Keyed on the FALLBACK provider (pairs follow catalog order, so primaries shift as plugins are
-# added). Strict: a listed cell that turns green fails the row until the entry is dropped.
-_FB_BASE_URL_IGNORED = "#121359 fallback entry ignores its base_url; goes to the vendor host"
-_FB_CELLS = ("fallback_answered", "fallback_tool_round_trip", "fallback_used_own_key")
-KNOWN: dict[tuple[str, str], str] = {
-    **{("anthropic", c): _FB_BASE_URL_IGNORED for c in _FB_CELLS},
-    **{("openrouter", c): _FB_BASE_URL_IGNORED for c in _FB_CELLS},
-}
+# added). Signature: the fallback's own fake got nothing while its vendor host was CONNECTed.
+_FB_CELLS = frozenset({"fallback_answered", "fallback_tool_round_trip", "fallback_used_own_key"})
 
 
-def _url(fake: CatalogFake, row: Row) -> str:
-    return f"{fake.origin}/{row.name}{URL_SUFFIX_OF_DIALECT[row.dialect or 'chat']}"
+def _fb_known(name: str) -> Known:
+    host = next(r.vendor_host() for r in CATALOG if r.name == name)
+    return Known(rf"^alive_inference=0 egress=\[[^\]]*'{host.replace('.', r'[.]')}'",
+                 "#121359 fallback entry ignores its base_url; goes to the vendor host", _FB_CELLS)
+
+
+KNOWN: dict[str, Known] = {n: _fb_known(n) for n in ("anthropic", "openrouter")}
 
 
 def _drive(primary: Row, fallback: Row, root: Path) -> dict:
@@ -44,23 +45,28 @@ def _drive(primary: Row, fallback: Row, root: Path) -> dict:
     (project / "canary.txt").write_text(canary + "\n", encoding="utf-8")
     keys = decoy_keys(CATALOG)
     args = {"path": str(project / "canary.txt")}
-    with CatalogFake(fail_status=500) as dead, CatalogFake(tool_args=args, final_text=FINAL) as alive:
-        home = write_home(root, {"provider": primary.name, "base_url": _url(dead, primary)}, {
+    with CatalogFake(fail_status=500, routes=primary.routes()) as dead, \
+            CatalogFake(tool_args=args, final_text=FINAL, routes=fallback.routes()) as alive:
+        home = write_home(root, {"provider": primary.name, "base_url": dead.origin + primary.base_path}, {
             "fallback_providers": [{"provider": fallback.name, "model": "catalog-model-a",
-                                    "base_url": _url(alive, fallback)}]})
-        proc = run_hermes(home, project, {**keys, **dead.proxy_env()}, "-z", "Read canary.txt and report.")
+                                    "base_url": alive.origin + fallback.base_path}]})
+        proc = run_hermes(home, project, {**keys, **dead.proxy_env()}, "-z", "Read canary.txt and report.",
+                          sentinel=dead, watch=[alive], vendor_hosts=frozenset({fallback.vendor_host()} - {""}))
         dead_reqs, alive_reqs = dead.inference(), alive.inference()
         egress = dead.egress_hosts()
     pk, fk = keys[primary.key_env or ""], keys[fallback.key_env or ""]
     return {
-        "rc": proc.returncode, "stdout": proc.stdout[-400:], "stderr": proc.stderr[-1200:],
-        "egress": egress, "dead_paths": [r.path for r in dead_reqs], "alive_paths": [r.path for r in alive_reqs],
+        "rc": proc.returncode, "stdout": proc.stdout[-400:], "stderr": proc.stderr[-1200:], "egress": egress,
+        "alive_inference": len(alive_reqs), "dead_paths": [f"{r.path} [{r.dialect}]" for r in dead_reqs],
+        "alive_paths": [f"{r.path} [{r.dialect}]" for r in alive_reqs],
         "cells": {
-            "primary_tried_first": bool(dead_reqs) and any(pk in v for v in dead_reqs[0].headers.values()),
+            "primary_tried_first": bool(dead_reqs) and dead_reqs[0].dialect != "unknown" and pk in dead_reqs[0].headers.get(
+                AUTH_HEADER_OF_DIALECT[dead_reqs[0].dialect], ""),
             "fallback_answered": proc.returncode == 0 and FINAL in proc.stdout,
             "fallback_tool_round_trip": any(canary in json.dumps(r.body) for r in alive_reqs),
+            # Every fallback call hit its exact configured route with ITS key in the dialect's header.
             "fallback_used_own_key": bool(alive_reqs) and all(
-                any(fk in v for v in r.headers.values()) for r in alive_reqs),
+                r.dialect != "unknown" and fk in r.headers.get(AUTH_HEADER_OF_DIALECT[r.dialect], "") for r in alive_reqs),
             "primary_key_not_sent_to_fallback": pk == fk or not any(
                 pk in v for r in alive_reqs for v in r.headers.values()),
         },
@@ -82,11 +88,11 @@ def results(tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
 def test_dead_primary_falls_through(row: Row, results: dict[str, dict]) -> None:
     res = results[row.name]
     cells = res["cells"]
-    known = {c: ref for (p, c), ref in KNOWN.items() if p == res["fallback"]}
-    fixed = sorted(c for c in known if cells.get(c))
-    assert not fixed, f"{row.name}: {fixed} now green — drop their KNOWN entries ({set(known.values())})"
-    failed = sorted(c for c, ok in cells.items() if not ok and c not in known)
-    assert not failed, f"{row.name} -> {res['fallback']}: cells red: {failed}\n" + json.dumps(
-        {k: v for k, v in res.items() if k != "cells"})[:2500]
-    if known:
-        pytest.xfail(f"{sorted(known)}: {'; '.join(sorted(set(known.values())))}")
+    failed = sorted(c for c, ok in cells.items() if not ok)
+    known = KNOWN.get(res["fallback"])
+    unlisted = [c for c in failed if not known or c not in known.cells]
+    facts = json.dumps({k: v for k, v in res.items() if k != "cells"})[:2500]
+    assert not unlisted, f"{row.name} -> {res['fallback']}: cells red: {unlisted}\n{facts}"
+    with known_gate(known):
+        gate(not failed, f"alive_inference={res['alive_inference']} egress={res['egress']}\n"
+                         f"{row.name} -> {res['fallback']}: cells red: {failed}\n{facts}")

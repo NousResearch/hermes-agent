@@ -7,12 +7,13 @@ egress goes through the ``CatalogFake`` sentinel proxy, which refuses and record
 host. Cells assert user-visible outcomes: the device-code polling cadence the vendor sees, the
 reply on stdout, the bearer on the next wire request, and the tokens persisted to auth.json.
 
-Open bugs are strict, message-gated run-time xfails (``KNOWN`` + ``strict_known``): a cell XFAILs
-only while it fails with that bug's signature, and FAILS once the fix lands so the entry is dropped.
+Open bugs are merge-order-safe, message-gated run-time xfails (``KNOWN`` +
+``tests.e2e.core._pending_fixes.known_failure``): a cell XFAILs only while its gated assertion
+fails with that bug's signature, any other failure stays red, and a fixed bug simply passes.
 
-Not redirectable to a loopback fake, so not covered here (explicit skips below): openai-codex and
-qwen-oauth refresh (token URLs are module constants, no env/config override) and the Copilot token
-exchange (hardcoded api.github.com).
+NOT COVERED (not redirectable to a loopback fake): openai-codex and qwen-oauth refresh (token URLs
+are module constants, no env/config override) and the Copilot token exchange (hardcoded
+api.github.com).
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core.providers._catalog_helpers import strict_known
+from tests.e2e.core.providers._catalog_helpers import Known, gate, known_gate
 from tests.fakes.providers.catalog_fake import CatalogFake
 from tests.fakes.providers.catalog_oauth import NOUS_INVOKE_SCOPE, OAuthFake, make_jwt
 
@@ -39,13 +40,13 @@ TURN_TIMEOUT = 120.0
 # Public, credential-free model-metadata catalog (pricing/context lookups); never carries a vendor token.
 CREDENTIAL_FREE_HOSTS = frozenset({"models.dev:443"})
 
-# (pattern matched against the failing assertion text, reason). Delete an entry when its fix lands.
-KNOWN: dict[str, tuple[str, str]] = {
-    "device_interval": (
-        r"device poll gap .* < server interval",
+# Signature regex on the gated assertion's own text. Delete an entry when its fix lands.
+KNOWN: dict[str, Known] = {
+    "device_interval": Known(
+        r"^device poll gap \d+\.\d+s < server interval",
         "#121163 Nous device-code login polls at 1s, ignoring the server's interval"),
-    "nous_401_retry_route": (
-        r"401 recovery retry left NOUS_INFERENCE_BASE_URL",
+    "nous_401_retry_route": Known(
+        r"^401 recovery retry left NOUS_INFERENCE_BASE_URL: egress to \[[^\]]*'inference-api\.nousresearch\.com:443'",
         "#121323 Nous 401 pool recovery retries on the stored production host, "
         "dropping the NOUS_INFERENCE_BASE_URL override"),
 }
@@ -218,9 +219,9 @@ def test_nous_device_login_slow_down_grows_interval(device_login) -> None:
 def test_nous_device_login_honors_server_interval(device_login) -> None:
     gaps = device_login["gaps"]
     assert len(gaps) == len(DEVICE_SCRIPT), f"unexpected poll count, gaps={gaps}"
-    with strict_known(*KNOWN["device_interval"]):
-        assert gaps[0] >= DEVICE_INTERVAL - 0.1, (
-            f"device poll gap {gaps[0]:.2f}s < server interval {DEVICE_INTERVAL}s (gaps={[round(g, 2) for g in gaps]})")
+    with known_gate(KNOWN["device_interval"]):
+        gate(gaps[0] >= DEVICE_INTERVAL - 0.1,
+             f"device poll gap {gaps[0]:.2f}s < server interval {DEVICE_INTERVAL}s (gaps={[round(g, 2) for g in gaps]})")
 
 
 # --- Nous token refresh ----------------------------------------------------------------------
@@ -272,11 +273,11 @@ def test_nous_inference_401_refreshes_rotates_and_retries(tmp_path, sentinel) ->
         info = _describe(proc, fake, sentinel)
         assert any(r.bearer == revoked for r in fake.inference()), f"the stale bearer was never tried\n{info}"
         fresh = _assert_rotation_persisted(home, seed, fake, info)
-        with strict_known(*KNOWN["nous_401_retry_route"]):
-            assert not _vendor_egress(sentinel), (
-                f"401 recovery retry left NOUS_INFERENCE_BASE_URL: egress to {_vendor_egress(sentinel)}\n{info}")
-            assert any(r.bearer == fresh for r in fake.inference()), f"no retry with the refreshed token\n{info}"
-            assert proc.returncode == 0 and fake.reply in proc.stdout, f"turn failed after refresh\n{info}"
+        with known_gate(KNOWN["nous_401_retry_route"]):
+            gate(not _vendor_egress(sentinel),
+                 f"401 recovery retry left NOUS_INFERENCE_BASE_URL: egress to {_vendor_egress(sentinel)}\n{info}")
+        assert any(r.bearer == fresh for r in fake.inference()), f"no retry with the refreshed token\n{info}"
+        assert proc.returncode == 0 and fake.reply in proc.stdout, f"turn failed after refresh\n{info}"
 
 
 # --- MiniMax OAuth refresh -------------------------------------------------------------------
@@ -305,20 +306,3 @@ def test_minimax_oauth_expired_token_refreshes_and_persists(tmp_path, sentinel) 
         assert state.get("access_token") == rotated["access_token"], f"MiniMax access token not persisted\n{info}"
         assert _row(home.auth(), "openrouter", "or-1")["access_token"] == OPENROUTER_ROW["access_token"]
         assert not _vendor_egress(sentinel), f"turn leaked egress: {_vendor_egress(sentinel)}"
-
-
-# --- not redirectable ------------------------------------------------------------------------
-
-_UNREDIRECTABLE = {
-    "openai-codex": "token refresh URL is the module constant CODEX_OAUTH_TOKEN_URL (auth.openai.com); "
-                    "no env/config override, so a refresh cannot reach a loopback fake",
-    "qwen-oauth": "token refresh URL is the module constant QWEN_OAUTH_TOKEN_URL (chat.qwen.ai); "
-                  "no env/config override",
-    "copilot": "token exchange URL is hardcoded to api.github.com",
-}
-
-
-@pytest.mark.parametrize("provider", sorted(_UNREDIRECTABLE))
-def test_oauth_refresh_not_redirectable(provider: str) -> None:
-    pytest.skip(f"{provider}: {_UNREDIRECTABLE[provider]}")
-

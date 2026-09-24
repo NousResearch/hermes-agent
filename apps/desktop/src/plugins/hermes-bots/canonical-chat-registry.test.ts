@@ -89,6 +89,7 @@ async function loadModule() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  hostMock.focusOpenWorkspaceSession.mockReset()
   hostMock.openSession.mockResolvedValue(undefined)
 })
 
@@ -166,15 +167,19 @@ describe('the registry row wins, always', () => {
         ? { sessions: [{ id: 'root-1', resolved_id: 'tip-9', root_title: 'Bot Chat', title: 'Bot Chat' }] }
         : {}
     )
+
     const tiles = [
       { storedSessionId: 'old-tip', workspaceTabTitle: 'Bot Chat' },
       { storedSessionId: 'root-1', workspaceTabTitle: 'Bot Chat' },
       { storedSessionId: 'tip-9', workspaceTabTitle: 'Bot Chat' },
       { storedSessionId: 'side-chat', workspaceTabTitle: 'Another chat' }
     ]
+
     hostMock.focusOpenWorkspaceSession.mockImplementation((_owner, probe, allowed) => {
       expect(allowed).toEqual([])
+
       expect(tiles.filter(probe)).toEqual([tiles[0]])
+
       return null
     })
 

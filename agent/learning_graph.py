@@ -133,8 +133,8 @@ def memory_fingerprint(entry: str) -> str:
     A journey card is identified by what it says, not by where it sat: the list can be
     prepended to (an agent ``memory_tool`` add mid-turn) between the graph being drawn and the
     user submitting an edit, and a bare index then names somebody else's card (#119668).
-    Both producers of an entry — this module's chunking and ``MemoryStore._parse_entries`` —
-    strip and split on the same delimiter, so the same entry digests the same on both sides.
+    Cards and the mutation path both read entries through ``MemoryStore._read_file``, so the
+    same entry digests the same on both sides (a BOM'd file included).
     """
     return hashlib.sha256(entry.strip().encode("utf-8")).hexdigest()[:12]
 
@@ -145,25 +145,29 @@ def memory_node_id(card: dict[str, Any], index: int) -> str:
 
 
 def _memory_cards() -> list[dict[str, Any]]:
-    """``MEMORY.md`` / ``USER.md`` prose split on bare ``§`` separators; every
-    non-empty chunk becomes one card (MEMORY.md cards first, then USER.md)."""
+    """``MEMORY.md`` / ``USER.md`` entries as the memory tool parses them; every
+    entry becomes one card (MEMORY.md cards first, then USER.md)."""
+    from tools.memory_tool import MemoryStore
+
     base = get_hermes_home() / "memories"
     cards: list[dict[str, Any]] = []
     for fname, source in (("MEMORY.md", "memory"), ("USER.md", "profile")):
         path = base / fname
         try:
-            text, file_ts = path.read_text(encoding="utf-8").strip(), _to_int_ts(path.stat().st_mtime)
+            file_ts = _to_int_ts(path.stat().st_mtime)
         except OSError:
             continue
-        for chunk_idx, chunk in enumerate(c.strip() for c in text.split("\n§\n")):
-            if chunk:
-                first = chunk.splitlines()[0].strip().lstrip("# ").strip()
-                cards.append({
-                    "source": source, "timestamp": file_ts + chunk_idx if file_ts is not None else None,
-                    "title": (first[:80] + "…") if len(first) > 80 else first, "body": chunk[:1200],
-                    # Digest the WHOLE chunk, not the truncated ``body`` a long memory renders with.
-                    "fingerprint": memory_fingerprint(chunk),
-                })
+        # The store's own parser (utf-8-sig, same delimiter): a hand-rolled split kept a Notepad
+        # BOM glued to the first entry, so its fingerprint never matched the store's and the card
+        # was "stale" forever.
+        for chunk_idx, chunk in enumerate(MemoryStore._read_file(path)):
+            first = chunk.splitlines()[0].strip().lstrip("# ").strip()
+            cards.append({
+                "source": source, "timestamp": file_ts + chunk_idx if file_ts is not None else None,
+                "title": (first[:80] + "…") if len(first) > 80 else first, "body": chunk[:1200],
+                # Digest the WHOLE chunk, not the truncated ``body`` a long memory renders with.
+                "fingerprint": memory_fingerprint(chunk),
+            })
     return cards
 
 

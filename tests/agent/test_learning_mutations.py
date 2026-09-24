@@ -94,6 +94,16 @@ def test_memory_writes_match_memory_tool_format(home):
     assert entries == ["alpha rewritten", "beta note"]
     assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries)
 
+    # A Notepad BOM must not make the first card's id permanently "stale": the graph and the
+    # store must parse the file the same way.
+    path.write_text("alpha note\n§\nbeta note", encoding="utf-8-sig")
+    from agent.learning_graph import build_learning_graph
+
+    first = next(n for n in build_learning_graph()["nodes"] if n["kind"] == "memory")
+    assert first["label"] == "alpha note"  # the BOM is not part of the card's title
+    assert lm.edit_node(first["id"], "alpha sans bom")["ok"]
+    assert MemoryStore._read_file(path) == ["alpha sans bom", "beta note"]
+
 
 # ── Locking / drift (issue #119668) ─────────────────────────────────────────
 # A Journey mutation shares MEMORY.md with the live agent's memory tool, so it must

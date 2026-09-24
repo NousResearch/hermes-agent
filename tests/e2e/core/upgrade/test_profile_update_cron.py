@@ -8,7 +8,8 @@ CLI process over a fake HOME; the assertions read the cron store the scheduler i
 
 Contract (documented in the command help and profile-distributions.md): shipped jobs are
 installed but NOT auto-scheduled; an update refreshes the jobs the distribution ships, removes
-the ones the author retired, and leaves the jobs the user added in place.
+the ones the author retired, leaves the jobs the user added in place, and keeps a job the user
+paused paused (#120823 Expected).
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ def gap(ok: bool, msg: str) -> None:
 KNOWN: dict[str, str] = {
     "keeps_user_jobs": "#120823 profile update replaces cron/jobs.json wholesale, deleting the user's own jobs",
     "install_paused": "#120823 profile install leaves shipped cron jobs enabled and scheduled",
+    "keeps_paused_state": "#120823 profile update re-enables a shipped cron job the user paused",
 }
 
 
@@ -111,10 +113,12 @@ def world(tmp_path_factory) -> World:
     # The user installs it.
     w.cli("profile", "install", str(w.src), "-y")
     w.after_install = I.cron_jobs(w.installed)
-    # The user schedules a job of their own and pauses one shipped job they do not want.
+    # The user schedules a job of their own and pauses the shipped digest they do not want yet.
     w.cli("-p", "shipped-bot", "cron", "create", "--name", "my-own-reminder", "0 7 * * *", "the user's own reminder")
+    w.cli("-p", "shipped-bot", "cron", "pause", str(_by_name(I.cron_jobs(w.installed))["weekly-digest"]["id"]))
     w.before_update = I.cron_jobs(w.installed)
     assert set(_by_name(w.before_update)) == {"weekly-digest", "retired-job", "my-own-reminder"}, w.before_update
+    assert not _is_scheduled(_by_name(w.before_update)["weekly-digest"]), f"harness: pause did not land: {w.before_update}"
     # The author ships v2: the digest prompt changes, retired-job is gone.
     v2 = [dict(j) for j in I.cron_jobs(author) if j.get("name") == "weekly-digest"]
     v2[0]["prompt"] = "write the weekly digest v2"
@@ -149,3 +153,11 @@ def test_profile_install_does_not_auto_schedule_shipped_jobs(world, key):
     assert set(jobs) == {"weekly-digest", "retired-job"}, world.after_install
     running = sorted(n for n, j in jobs.items() if _is_scheduled(j))
     gap(not running, f"shipped jobs are live right after `profile install` (documented: not auto-scheduled): {running}")
+
+
+@pytest.mark.parametrize("key", [pytest.param("keeps_paused_state", marks=known("keeps_paused_state"))])
+def test_profile_update_keeps_a_shipped_job_the_user_paused_paused(world, key):
+    jobs = _by_name(world.after_update)
+    assert "weekly-digest" in jobs, f"shipped job missing after update: {world.after_update}"
+    gap(not _is_scheduled(jobs["weekly-digest"]),
+        f"`profile update` re-enabled the shipped job the user paused: {jobs['weekly-digest']}")

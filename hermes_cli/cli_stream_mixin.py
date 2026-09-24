@@ -422,10 +422,8 @@ class CLIStreamMixin:
             HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
         if not text:
             return
-        # Defer content while the reasoning box renders so reasoning always lands BEFORE it.
-        if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
-            self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
+        # Close a still-open reasoning box on the first content token so the answer streams
+        # token-by-token; _close_reasoning_box renders the reasoning tail first, so ordering holds.
         self._close_reasoning_box()
 
         # Open the response box header on the very first visible text

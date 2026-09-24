@@ -22,6 +22,7 @@ from tools.approval import (
     disable_session_yolo,
 )
 from tools.approval_context import reset_current_session_key, set_current_session_key
+from tools.terminal_tool import _resolved_guard_variants
 
 
 # Commands that MUST be hardline-blocked: every one destroys a whole disk.
@@ -292,6 +293,50 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     'cat x > "" "prose about /dev/sda"',
     'cat x > \'\' \'note: cat y > /dev/sda\'',
 ]
+
+
+
+class _FakeDeviceEnv:
+    def __init__(self, devices):
+        self.devices = devices
+        self.queries = []
+
+    def fetch_device_realpath(self, path):
+        self.queries.append(path)
+        return self.devices.get(path)
+
+
+@pytest.mark.parametrize("command,cwd,devices,expected_fragment", [
+    ("wipefs -a ../dev/sda", "/tmp", {"/dev/sda": "/dev/sda"}, "wipefs -a /dev/sda"),
+    ("dd if=/dev/zero of=/tmp/../dev/sda", "/work", {"/dev/sda": "/dev/sda"},
+     "of=/dev/sda"),
+    ("shred -n 1 /workspace/raw-disk", "/workspace",
+     {"/workspace/raw-disk": "/dev/nvme0n1"}, "/dev/nvme0n1"),
+    ('cat x > "../dev/rdisk0"', "/tmp", {"/dev/rdisk0": "/dev/rdisk0"},
+     '"/dev/rdisk0"'),
+])
+def test_backend_resolved_device_identity_reaches_hardline(
+    command, cwd, devices, expected_fragment
+):
+    env = _FakeDeviceEnv(devices)
+    variants = _resolved_guard_variants(command, env, cwd)
+    assert len(variants) == 1
+    assert expected_fragment in variants[0]
+    assert detect_hardline_command(variants[0])[0] is True
+
+
+def test_relative_device_lookalike_regular_file_stays_runnable():
+    env = _FakeDeviceEnv({})  # backend says this is not a block/character device
+    command = "shred -u ../dev/sda-notes"
+    assert _resolved_guard_variants(command, env, "/tmp") == []
+    assert env.queries == ["/dev/sda-notes"]
+    assert detect_hardline_command(command) == (False, None)
+
+
+def test_non_mutating_command_does_not_probe_backend_paths():
+    env = _FakeDeviceEnv({"/dev/sda": "/dev/sda"})
+    assert _resolved_guard_variants("ls ../dev/sda", env, "/tmp") == []
+    assert env.queries == []
 
 
 @pytest.mark.parametrize("command", _BLOCK_DEVICE_HARDLINE_BLOCK)

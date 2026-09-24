@@ -32,6 +32,7 @@ test.skipIf(displayPrefix === null)(
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-portal-session-'))
     let fixtureFailed = false
+    let fixtureError: unknown
 
     try {
       const bundle = join(root, 'main.cjs')
@@ -83,15 +84,21 @@ test.skipIf(displayPrefix === null)(
       expect(stdout).toContain('PORTAL_SESSION_LIVE_OK')
     } catch (error) {
       fixtureFailed = true
-      throw error
-    } finally {
-      try {
-        // Chromium may still hold its Network temp file briefly after Electron
-        // is killed by execFile's timeout. Do not hide the fixture's real error.
-        await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-      } catch (cleanupError) {
-        if (!fixtureFailed) throw cleanupError
+      fixtureError = error
+    }
+
+    try {
+      // Chromium may still hold its Network temp file briefly after Electron
+      // is killed by execFile's timeout. Do not hide the fixture's real error.
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    } catch (cleanupError) {
+      if (!fixtureFailed) {
+        throw cleanupError
       }
+    }
+
+    if (fixtureFailed) {
+      throw fixtureError
     }
   },
   105_000

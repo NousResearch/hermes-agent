@@ -3,6 +3,7 @@
 
 from typing import Any
 
+from hermes_cli.config_defaults import SESSION_LIST_SORT_DEFAULT, SESSION_LIST_SORT_VALUES
 from hermes_cli.config_issues import ConfigIssue, _issue
 
 
@@ -73,3 +74,14 @@ def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) ->
                    f"web.{_key} is set to '{_val}', but {note} — "
                    "web_search/web_extract will fail until it is changed",
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
+
+
+def _validate_sessions(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
+    sessions = config.get("sessions")
+    if not (isinstance(sessions, dict) and "list_sort" in sessions):
+        return
+    list_sort = sessions.get("list_sort")
+    if list_sort not in SESSION_LIST_SORT_VALUES:
+        choices = " or ".join(repr(value) for value in SESSION_LIST_SORT_VALUES)
+        _issue(issues, "error", f"sessions.list_sort must be {choices}, got {list_sort!r}",
+               f"Set sessions.list_sort to {SESSION_LIST_SORT_DEFAULT} (default) or started")

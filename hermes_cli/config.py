@@ -584,8 +584,9 @@ def ensure_hermes_home():
 
 # ---- Config loading/saving ----
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
-from hermes_cli.config_providers import (
+from hermes_cli.config_defaults import (  # noqa: E402,F401
+    DEFAULT_CONFIG, OPTIONAL_ENV_VARS, SESSION_LIST_SORT_DEFAULT, SESSION_LIST_SORT_VALUES)
+from hermes_cli.config_providers import (  # noqa: E402,F401  (re-exported; callers/tests use hermes_cli.config.<name>)
     _API_MODE_ALIASES, _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
     _canonical_api_mode, _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
     _entries_for_route, _normalize_custom_provider_entry, _normalize_provider_models,
@@ -1098,9 +1099,11 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
             from hermes_cli.config_home import config_load_issue
             return [config_load_issue(exc)]
 
-    from hermes_cli.config_value_checks import _validate_timezone, _validate_voice, _validate_web_backends
+    from hermes_cli.config_value_checks import (
+        _validate_sessions, _validate_timezone, _validate_voice, _validate_web_backends)
     issues: list[ConfigIssue] = []
     _validate_voice(config, issues)
+    _validate_sessions(config, issues)
     _validate_timezone(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")

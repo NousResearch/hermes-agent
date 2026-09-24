@@ -14,11 +14,6 @@ from acp_adapter.session import SessionState, _expand_acp_enabled_toolsets
 
 logger = logging.getLogger("acp_adapter.server")
 
-try:
-    from hermes_cli import __version__ as HERMES_VERSION
-except Exception:
-    HERMES_VERSION = "0.0.0"
-
 
 class SkillCommandLoadError(RuntimeError):
     pass
@@ -364,4 +359,6 @@ class SlashCommandsMixin:
         return f"Queued for the next turn. ({_queue_prompt(state, queued_text)} queued)"
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
-        return f"Hermes Agent v{HERMES_VERSION}"
+        from hermes_cli.version_info import get_version_info
+
+        return f"Hermes Agent v{get_version_info().derived_version}"

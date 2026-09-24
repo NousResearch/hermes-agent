@@ -16,8 +16,8 @@ import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import hermes_yaml as yaml
 import pytest
-import yaml
 
 from hermes_cli import profiles
 from hermes_cli.profiles import (
@@ -131,7 +131,7 @@ class TestCreateProfile:
         profile_dir = create_profile("coder", no_alias=True)
         env_path = profile_dir / ".env"
         assert env_path.exists()
-        content = env_path.read_text(encoding="utf-8")
+        content = env_path.read_text(encoding="utf-8-sig")
         # Placeholder only — no credentials leak in from anywhere.
         assert all(
             line.startswith("#") or not line.strip()
@@ -150,12 +150,12 @@ class TestCreateProfile:
         """
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text(
-            "model:\n  provider: nous\n  default: some/model\n"
+            "model:\n  provider: nous\n  default: some/model\n", encoding="utf-8"
         )
 
         profile_dir = create_profile("coder", no_alias=True)
 
-        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cfg["model"]["provider"] == "nous"
         assert cfg["model"]["default"] == "some/model"
 
@@ -170,12 +170,12 @@ class TestCreateProfile:
         (default_home / "config.yaml").write_text(
             "model:\n  provider: my-gateway\n  default: my-finetune\n"
             "providers:\n  my-gateway:\n    api: https://llm.internal.example.com/v1\n    key_env: GW_KEY\n"
-            "  unrelated:\n    api: https://other.example.com/v1\n"
+            "  unrelated:\n    api: https://other.example.com/v1\n", encoding="utf-8"
         )
 
         profile_dir = create_profile("coder", no_alias=True)
 
-        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cfg["model"] == {"provider": "my-gateway", "default": "my-finetune"}
         assert cfg["providers"] == {"my-gateway": {"api": "https://llm.internal.example.com/v1", "key_env": "GW_KEY"}}
 
@@ -187,15 +187,15 @@ class TestCreateProfile:
         """
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text(
-            "model:\n  provider: nous\n  default: some/model\n"
+            "model:\n  provider: nous\n  default: some/model\n", encoding="utf-8"
         )
         profile_dir = create_profile("coder", no_alias=True)
 
         (default_home / "config.yaml").write_text(
-            "model:\n  provider: other\n  default: changed/model\n"
+            "model:\n  provider: other\n  default: changed/model\n", encoding="utf-8"
         )
 
-        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cfg["model"]["provider"] == "nous"
         assert cfg["model"]["default"] == "some/model"
 
@@ -206,17 +206,17 @@ class TestCreateProfile:
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
         # Create source config files in default profile
-        (default_home / "config.yaml").write_text("model: test")
-        (default_home / ".env").write_text("KEY=val")
-        (default_home / "SOUL.md").write_text("Be helpful.")
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
+        (default_home / ".env").write_text("KEY=val", encoding="utf-8")
+        (default_home / "SOUL.md").write_text("Be helpful.", encoding="utf-8")
 
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
 
-        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert cloned_config["model"] == "test"
-        assert (profile_dir / ".env").read_text().strip() == "KEY=val"
-        assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+        assert (profile_dir / ".env").read_text(encoding="utf-8-sig").strip() == "KEY=val"
+        assert (profile_dir / "SOUL.md").read_text(encoding="utf-8-sig") == "Be helpful."
 
     def test_clone_config_copies_only_the_active_memory_providers_config(self, profile_env):
         """#120115: --clone carried ``memory.provider: hindsight`` but not hindsight's own config,
@@ -262,11 +262,11 @@ class TestCreateProfile:
         from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
 
         default_home = profile_env / ".hermes"
-        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         manifest = {"version": 1, "agents": {"claude-code": {
             "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
             "last_import": 1, "imported_skills": ["s1"]}}}
-        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest))
+        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
 
         plain = create_profile("plain", clone_config=True, no_alias=True)
         assert not (plain / SYNC_MANIFEST_NAME).exists()
@@ -274,8 +274,8 @@ class TestCreateProfile:
         synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
         assert load_sync_manifest(synced)["agents"] == manifest["agents"]
         # Editing the source afterwards does not reach the clone: still an independent island.
-        (default_home / "config.yaml").write_text("model: changed")
-        assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
+        (default_home / "config.yaml").write_text("model: changed", encoding="utf-8")
+        assert yaml.safe_load((synced / "config.yaml").read_text(encoding="utf-8-sig"))["model"] == "test"
 
     @staticmethod
     def _home_with_linked_skill(profile_env):
@@ -286,7 +286,7 @@ class TestCreateProfile:
         (external / "foo" / "SKILL.md").write_text("# external foo\n", encoding="utf-8")
         (default_home / "skills" / "local").mkdir(parents=True)
         (default_home / "skills" / "local" / "SKILL.md").write_text("# local\n", encoding="utf-8")
-        (default_home / "config.yaml").write_text(f"model: test\nskills:\n  external_dirs:\n    - {external}\n")
+        (default_home / "config.yaml").write_text(f"model: test\nskills:\n  external_dirs:\n    - {external}\n", encoding="utf-8")
         return default_home, external
 
     @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
@@ -297,7 +297,7 @@ class TestCreateProfile:
         default_home, external = self._home_with_linked_skill(profile_env)
         # copytree sees plain directories (what a junction looks like to os.stat on Windows).
         (default_home / "skills" / "foo").mkdir()
-        (default_home / "skills" / "foo" / "SKILL.md").write_text("# a physical copy would come from here\n")
+        (default_home / "skills" / "foo" / "SKILL.md").write_text("# a physical copy would come from here\n", encoding="utf-8")
         (default_home / "skills" / "gone").mkdir()
         targets = {str(default_home / "skills" / "foo"): str(external / "foo"),
                    str(default_home / "skills" / "gone"): str(profile_env / "nowhere")}
@@ -312,13 +312,13 @@ class TestCreateProfile:
         clone = create_profile("clone", no_alias=True, **clone_kwargs)
         foo = clone / "skills" / "foo"
         assert foo.is_symlink() and foo.resolve() == (external / "foo").resolve()
-        assert (foo / "SKILL.md").read_text(encoding="utf-8") == "# external foo\n"
+        assert (foo / "SKILL.md").read_text(encoding="utf-8-sig") == "# external foo\n"
         assert (clone / "skills" / "local" / "SKILL.md").is_file()
         assert not (clone / "skills" / "gone").exists()
         from tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_clone_keeps_real_ntfs_junction(self, profile_env):
         import _winapi
         default_home, external = self._home_with_linked_skill(profile_env)
@@ -339,31 +339,31 @@ class TestCreateProfile:
         # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
         # that inherits jobs.json fires every job twice (two gateways, same job ids).
         default_home = profile_env / ".hermes"
-        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         (default_home / "cron").mkdir()
-        (default_home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "abc123def456"}]}))
+        (default_home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "abc123def456"}]}), encoding="utf-8")
         (default_home / "cron" / "output").mkdir()
 
         profile_dir = create_profile("coder", clone_all=True, no_alias=True)
 
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
-        assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+        assert yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))["model"] == "test"
 
     def test_clone_all_does_not_inherit_the_source_screen_or_browser_process_artifacts(self, profile_env):
         """A clone keeps browser data, never the source's screen or Chromium runtime files."""
         default_home = profile_env / ".hermes"
-        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         bd = default_home / "bot-desktop"
         browser_profile = bd / "browser-profile"
         (browser_profile / "Default").mkdir(parents=True)
-        (browser_profile / "Default" / "Cookies").write_text("jar")
-        (bd / "launcher.pid").write_text("4242 1.5")
-        (bd / "env").write_text("DISPLAY=:21\nXAUTHORITY=/x\n")
-        (bd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 3}))
+        (browser_profile / "Default" / "Cookies").write_text("jar", encoding="utf-8")
+        (bd / "launcher.pid").write_text("4242 1.5", encoding="utf-8")
+        (bd / "env").write_text("DISPLAY=:21\nXAUTHORITY=/x\n", encoding="utf-8")
+        (bd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 3}), encoding="utf-8")
         process_markers = ("DevToolsActivePort", "SingletonLock", "SingletonCookie", "SingletonSocket")
         for process_marker in process_markers:
-            (browser_profile / process_marker).write_text("source-process")
+            (browser_profile / process_marker).write_text("source-process", encoding="utf-8")
 
         profile_dir = create_profile("coder", clone_all=True, no_alias=True)
         cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
@@ -372,15 +372,15 @@ class TestCreateProfile:
             assert not (profile_dir / "bot-desktop" / runtime_file).exists(), runtime_file
         for process_marker in process_markers:
             assert not (cloned_browser / process_marker).exists(), process_marker
-        assert (cloned_browser / "Default" / "Cookies").read_text() == "jar"
+        assert (cloned_browser / "Default" / "Cookies").read_text(encoding="utf-8-sig") == "jar"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_clone_all_does_not_attach_to_the_source_profiles_live_browser(self, profile_env):
         """Copied Chromium markers must not route the clone through the source profile's CDP port."""
         from tools.bot_desktop.browser import running_instance_cdp_port
 
         default_home = profile_env / ".hermes"
-        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_profile = default_home / "bot-desktop" / "browser-profile"
         browser_profile.mkdir(parents=True)
 
@@ -388,7 +388,7 @@ class TestCreateProfile:
             listener.bind(("127.0.0.1", 0))
             listener.listen()
             port = listener.getsockname()[1]
-            (browser_profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/source\n")
+            (browser_profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/source\n", encoding="utf-8")
             (browser_profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
             assert running_instance_cdp_port(str(browser_profile)) == port
 
@@ -403,10 +403,10 @@ class TestCreateProfile:
         # A live source profile holds special files copytree cannot copy (e.g. a suffixless
         # agent-browser control socket); one of them must not abort the whole clone.
         default_home = profile_env / ".hermes"
-        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_dir = default_home / "home" / ".agent-browser"
         browser_dir.mkdir(parents=True)
-        (browser_dir / "state.json").write_text("{}")
+        (browser_dir / "state.json").write_text("{}", encoding="utf-8")
         os.mkfifo(browser_dir / "control")
 
         profile_dir = create_profile("coder", clone_all=True, no_alias=True)
@@ -431,7 +431,7 @@ class TestNoSkillsOptOut:
         # Marker file is present
         marker = profile_dir / NO_BUNDLED_SKILLS_MARKER
         assert marker.is_file(), "expected .no-bundled-skills marker in profile root"
-        assert "--no-skills" in marker.read_text()
+        assert "--no-skills" in marker.read_text(encoding="utf-8-sig")
 
         # skills/ dir exists (profile bootstrapping still creates the dir) but
         # contains nothing yet because create_profile itself doesn't seed.
@@ -455,7 +455,7 @@ class TestBackfillProfileEnvs:
     def test_copies_default_env_into_envless_profiles(self, profile_env):
         import stat
         tmp_path = profile_env
-        (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n")
+        (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n", encoding="utf-8")
         p1 = create_profile("old1", no_alias=True)
         p2 = create_profile("old2", no_alias=True)
         # Simulate pre-#44792 profiles: no .env
@@ -466,7 +466,7 @@ class TestBackfillProfileEnvs:
 
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
-            assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
+            assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\n"
             assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 
@@ -477,7 +477,7 @@ class TestBackfillProfileEnvs:
         backfilled = backfill_profile_envs(quiet=True)
 
         assert backfilled == ["noroot"]
-        content = (p / ".env").read_text(encoding="utf-8")
+        content = (p / ".env").read_text(encoding="utf-8-sig")
         assert all(
             line.startswith("#") or not line.strip()
             for line in content.splitlines()
@@ -970,12 +970,12 @@ class TestAliasCollision:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_checks_bat_extension(self, profile_env):
         wrapper_dir = profile_env / ".local" / "bin"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
         bat_path = wrapper_dir / "mybot.bat"
-        bat_path.write_text("@echo off\r\nhermes -p mybot %*\r\n")
+        bat_path.write_text("@echo off\r\nhermes -p mybot %*\r\n", encoding="utf-8")
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=str(bat_path),
@@ -1005,12 +1005,12 @@ class TestWrapperScript:
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.name == "mybot"
-        content = wrapper.read_text()
+        content = wrapper.read_text(encoding="utf-8-sig")
         assert content.startswith("#!/bin/sh")
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_remove_finds_bat_on_windows(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
@@ -1041,7 +1041,7 @@ class TestWrapperScriptSecurity:
         with pytest.raises(ValueError, match="Invalid alias name"):
             create_wrapper_script("../../.bashrc", target="coder")
         # The traversal target was not touched.
-        assert sentinel.read_text(encoding="utf-8") == "keep"
+        assert sentinel.read_text(encoding="utf-8-sig") == "keep"
 
     def test_create_wrapper_rejects_absolute_path(self, profile_env, tmp_path):
         target = tmp_path / "abs-wrapper"
@@ -1069,7 +1069,7 @@ class TestFindAliasForProfile:
         from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
         wrapper_dir = _get_wrapper_dir()
         wrapper_dir.mkdir(parents=True, exist_ok=True)
-        (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
+        (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n", encoding="utf-8")
         assert find_alias_for_profile("steve") is None
 
 
@@ -1125,12 +1125,12 @@ class TestRenameProfile:
                     "enabled": True,
                 }
             }
-        }))
+        }), encoding="utf-8")
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
             rename_profile("ssi_health", "heimdall")
 
-        cfg = json.loads(honcho_path.read_text())
+        cfg = json.loads(honcho_path.read_text(encoding="utf-8-sig"))
         assert "hermes.ssi_health" not in cfg["hosts"]
         assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
@@ -1340,12 +1340,12 @@ class TestExportImport:
         # OPERATOR's real install whenever basetest sits inside it, so this test used to
         # overwrite the live config.yaml / .env / MEMORY.md with its fixtures.
         default_dir = profile_env / ".hermes"
-        (default_dir / "config.yaml").write_text("model: test")
-        (default_dir / ".env").write_text("KEY=val")
-        (default_dir / "SOUL.md").write_text("Be nice.")
+        (default_dir / "config.yaml").write_text("model: test", encoding="utf-8")
+        (default_dir / ".env").write_text("KEY=val", encoding="utf-8")
+        (default_dir / "SOUL.md").write_text("Be nice.", encoding="utf-8")
         mem_dir = default_dir / "memories"
         mem_dir.mkdir(exist_ok=True)
-        (mem_dir / "MEMORY.md").write_text("remember this")
+        (mem_dir / "MEMORY.md").write_text("remember this", encoding="utf-8")
 
         output = tmp_path / "export" / "default.tar.gz"
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -1370,7 +1370,7 @@ class TestExportImport:
         """
         # Same reason as above: never resolve the operator's real default home from a test.
         default_dir = profile_env / ".hermes"
-        (default_dir / "config.yaml").write_text("ok")
+        (default_dir / "config.yaml").write_text("ok", encoding="utf-8")
         # Place broken symlink *inside* the allowed ``skills/`` tree so the
         # root-level allow-list passes the directory through; the
         # symlinks=True flag must then preserve the link instead of
@@ -1379,7 +1379,7 @@ class TestExportImport:
         broken_dir.mkdir(parents=True)
         (broken_dir / "broken_link").symlink_to("/nonexistent/path")
         # Valid symlink for comparison
-        (broken_dir / "valid_target.txt").write_text("real data")
+        (broken_dir / "valid_target.txt").write_text("real data", encoding="utf-8")
         (broken_dir / "valid_link").symlink_to(
             broken_dir / "valid_target.txt"
         )
@@ -1466,9 +1466,8 @@ class TestWriteProfileMetaDurability:
     def _interrupted_write(profile_dir):
         """Run a ``write_profile_meta`` whose serialization fails mid-call.
 
-        The pre-fix code called ``yaml.safe_dump``; ``utils.atomic_yaml_write``
-        calls ``yaml.dump``.  Breaking both keeps this serializer-agnostic, so
-        it measures durability rather than the choice of entry point.  A
+        ``utils.atomic_yaml_write`` serializes through ``hermes_yaml.safe_dump``.
+        Breaking that seam measures durability rather than the choice of writer. A
         scoped ``MonkeyPatch.context`` is used instead of the fixture so the
         patch is reverted immediately, without touching the session-wide env
         isolation that shares the function-scoped ``monkeypatch`` instance.
@@ -1478,20 +1477,19 @@ class TestWriteProfileMetaDurability:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(yaml, "safe_dump", _boom)
-            mp.setattr(yaml, "dump", _boom)
             with pytest.raises(RuntimeError):
                 profiles.write_profile_meta(profile_dir, description_auto=True)
 
     def test_failed_write_leaves_existing_file_intact(self, tmp_path):
         profile_dir = self._seed(tmp_path)
         path = profile_dir / "profile.yaml"
-        before = path.read_text(encoding="utf-8")
+        before = path.read_text(encoding="utf-8-sig")
         assert "Curated by hand" in before
 
         self._interrupted_write(profile_dir)
 
         # A truncating open() destroys the file before the dump ever runs.
-        assert path.read_text(encoding="utf-8") == before
+        assert path.read_text(encoding="utf-8-sig") == before
 
     def test_failed_write_does_not_silently_drop_unspecified_fields(self, tmp_path):
         profile_dir = self._seed(tmp_path)
@@ -1515,7 +1513,7 @@ class TestWriteProfileMetaDurability:
         profile_dir.mkdir()
         profiles.write_profile_meta(profile_dir, description="Code wizard 🧙 ✨")
 
-        raw = (profile_dir / "profile.yaml").read_text(encoding="utf-8")
+        raw = (profile_dir / "profile.yaml").read_text(encoding="utf-8-sig")
         assert "\\U" not in raw
         assert "🧙" in raw
         assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
@@ -1539,7 +1537,7 @@ class TestWriteProfileMetaDurability:
         profiles.write_profile_meta(profile_dir, description="updated")
 
         assert (profile_dir / "profile.yaml").is_symlink()
-        assert "updated" in real.read_text(encoding="utf-8")
+        assert "updated" in real.read_text(encoding="utf-8-sig")
         assert [p.name for p in profile_dir.iterdir() if p.name.endswith(".tmp")] == []
 
 
@@ -1613,16 +1611,16 @@ class TestEdgeCases:
         tmp_path = profile_env
         # Create source profile with config
         source_dir = create_profile("source", no_alias=True)
-        (source_dir / "config.yaml").write_text("model: cloned")
-        (source_dir / ".env").write_text("SECRET=yes")
+        (source_dir / "config.yaml").write_text("model: cloned", encoding="utf-8")
+        (source_dir / ".env").write_text("SECRET=yes", encoding="utf-8")
 
         target_dir = create_profile(
             "target", clone_from="source", clone_config=True, no_alias=True,
         )
-        cloned_config = yaml.safe_load((target_dir / "config.yaml").read_text())
+        cloned_config = yaml.safe_load((target_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert cloned_config["model"] == "cloned"
-        assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
+        assert (target_dir / ".env").read_text(encoding="utf-8-sig").strip() == "SECRET=yes"
 
 
 
@@ -1657,7 +1655,7 @@ class TestProfilesToServe:
         host multiplexer, but callers that enumerate INSTALLED profiles still see it."""
         create_profile("solo", no_alias=True)
         create_profile("member", no_alias=True)
-        (get_profile_dir("solo") / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        (get_profile_dir("solo") / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         serve = dict(profiles_to_serve(multiplex=True))
         assert set(serve) == {"default", "member"}
         served_all = dict(profiles_to_serve(multiplex=True, include_standalone=True))
@@ -1668,7 +1666,7 @@ class TestProfilesToServe:
         standalone) with exactly one warning per process."""
         profiles._STANDALONE_WARNED = False
         default_home = _get_default_hermes_home()
-        (default_home / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        (default_home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         caplog.clear()
         with caplog.at_level("WARNING", logger="hermes_cli.profiles"):
             serve = dict(profiles_to_serve(multiplex=True))
@@ -1682,7 +1680,7 @@ class TestProfilesToServe:
     def test_standalone_malformed_config_does_not_break_roster(self, profile_env, caplog, content):
         create_profile("solo", no_alias=True)
         home = get_profile_dir("solo")
-        (home / "config.yaml").write_text(content)
+        (home / "config.yaml").write_text(content, encoding="utf-8")
         for _ in range(2):
             assert profiles.profile_is_standalone(home) is False
             assert "solo" in dict(profiles_to_serve(True))
@@ -1696,7 +1694,7 @@ class TestProfilesToServe:
         create_profile("solo", no_alias=True)
         home = get_profile_dir("solo")
         cfg = home / "config.yaml"
-        cfg.write_text("gateway:\n  standalone: true\n")
+        cfg.write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         real_stat = Path.stat
 
         def denied(path, *args, **kwargs):
@@ -1725,13 +1723,13 @@ class TestProfilesToServe:
         create_profile("alpha", no_alias=True)
         create_profile("beta", no_alias=True)
         alpha, beta = get_profile_dir("alpha"), get_profile_dir("beta")
-        (alpha / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        (alpha / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         assert profiles.profile_is_standalone(alpha) is True
         assert profiles.profile_is_standalone(beta) is False
         assert profiles.profile_is_standalone(alpha) is True  # memo hit, still True
         cfg = alpha / "config.yaml"
         replacement = alpha / "replacement.yaml"
-        replacement.write_text("gateway:\n  standalone: false\n")
+        replacement.write_text("gateway:\n  standalone: false\n", encoding="utf-8")
         replacement.replace(cfg)
         assert profiles.profile_is_standalone(alpha) is False
         assert profiles.profile_is_standalone(beta) is False
@@ -1760,7 +1758,7 @@ class TestResolveProfileEnvSpelling:
         custom = tmp_path / "custom-hermes"
         for profile_dir in (root / "profiles" / "beta", root / "profiles" / "coder", custom / "profiles" / "beta"):
             profile_dir.mkdir(parents=True)
-            (profile_dir / "config.yaml").write_text("{}\n")  # identity marker: a bare dir does not resolve
+            (profile_dir / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker: a bare dir does not resolve
         cases = [
             (root, "coder", root / "profiles" / "coder"),
             (root / "profiles" / "alpha", "beta", root / "profiles" / "beta"),
@@ -1799,7 +1797,7 @@ def _live_bot_desktop_launcher(profile_dir: Path):
     return proc
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("op", ["delete", "rename"])
 def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op):
     """Deleting or renaming a profile stops its gateway, and must stop its Bot Desktop launcher too: the
@@ -1828,7 +1826,7 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
             time.sleep(0.05)
         assert not runtime._pid_alive(proc.pid), "the launcher was not stopped by the profile op"
         if op == "rename":
-            moved = json.loads((profile_dir.parent / "hacker" / "bot-desktop" / "lease.json").read_text(encoding="utf-8"))
+            moved = json.loads((profile_dir.parent / "hacker" / "bot-desktop" / "lease.json").read_text(encoding="utf-8-sig"))
             assert moved["holder"] == "agent", "stale human lease survived the teardown"
     finally:
         proc.kill()
@@ -1839,7 +1837,7 @@ def test_export_leaves_the_bot_desktop_browser_profile_out(profile_env, tmp_path
     """bot-desktop/ holds the screen's persistent Chromium profile (Cookies, Login Data: the bot's live web
     sessions) plus sockets and X state. None of it belongs in an export archive meant to move a persona."""
     profile_dir = create_profile(name, no_alias=True) if name != "default" else get_profile_dir("default")
-    (profile_dir / "config.yaml").write_text("model: test")
+    (profile_dir / "config.yaml").write_text("model: test", encoding="utf-8")
     cookies = profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
     cookies.parent.mkdir(parents=True)
     cookies.write_bytes(b"SQLite format 3\x00")
@@ -1868,12 +1866,12 @@ class TestCloneAllExcludesRuntimeTrees:
     def _seed(self, home):
         (home / "models").mkdir(); (home / "models" / "big.gguf").write_bytes(b"\0" * 64)
         (home / "runtimes" / "llamacpp" / "bin").mkdir(parents=True)
-        (home / "runtimes" / "llamacpp" / "bin" / "llama-server").write_text("bin")
+        (home / "runtimes" / "llamacpp" / "bin" / "llama-server").write_text("bin", encoding="utf-8")
         (home / "node" / "bin").mkdir(parents=True)
-        (home / "node" / "bin" / "node").write_text("bin")
+        (home / "node" / "bin" / "node").write_text("bin", encoding="utf-8")
         (home / "skills" / "greet").mkdir(parents=True)
-        (home / "skills" / "greet" / "SKILL.md").write_text("# greet\n")
-        (home / "config.yaml").write_text("model: test\n")
+        (home / "skills" / "greet" / "SKILL.md").write_text("# greet\n", encoding="utf-8")
+        (home / "config.yaml").write_text("model: test\n", encoding="utf-8")
 
     def test_ignore_drops_runtime_trees_only_at_the_default_root(self, profile_env):
         default_home = profile_env / ".hermes"

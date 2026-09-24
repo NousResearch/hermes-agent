@@ -36,13 +36,11 @@ from hermes_cli.plugins import (  # noqa: E402
     PluginManifest,
 )
 
-
 def _make_ctx(name: str = "test_plugin") -> tuple[PluginManager, PluginContext]:
     mgr = PluginManager()
     manifest = PluginManifest(name=name, version="0.1.0", description="test")
     ctx = PluginContext(manifest=manifest, manager=mgr)
     return mgr, ctx
-
 
 def _make_adapter() -> TelegramAdapter:
     config = PlatformConfig(enabled=True, token="test-token", extra={})
@@ -50,7 +48,6 @@ def _make_adapter() -> TelegramAdapter:
     adapter._app = MagicMock()
     adapter._bot = MagicMock()
     return adapter
-
 
 # ===========================================================================
 # PluginContext.register_platform_handler — validation + queuing
@@ -95,7 +92,6 @@ class TestRegisterPlatformHandlerAPI:
         assert len(mgr.get_platform_handler_factories("matrix")) == 1
         assert mgr.get_platform_handler_factories("slack") == []
 
-
     def test_multiple_plugins_each_recorded(self):
         mgr = PluginManager()
         for name in ("plugin_a", "plugin_b"):
@@ -114,7 +110,6 @@ class TestRegisterPlatformHandlerAPI:
         mgr.discover_and_load(force=True)
         assert mgr.get_platform_handler_factories("telegram") == []
 
-
 # ===========================================================================
 # Telegram back-compat alias
 # ===========================================================================
@@ -131,8 +126,6 @@ class TestTelegramAlias:
         assert mgr.get_platform_handler_factories("telegram") == [
             (factory, "test_plugin")
         ]
-
-
 
 # ===========================================================================
 # BasePlatformAdapter._wire_plugin_handlers (via TelegramAdapter)
@@ -157,7 +150,6 @@ class TestAdapterPluginWiring:
         adapter._app.add_handler.assert_called_once()
         # Adapter asked for its own platform's factories.
         mgr.get_platform_handler_factories.assert_called_once_with("telegram")
-
 
     def test_raising_factory_does_not_block_others(self):
         adapter = _make_adapter()
@@ -201,8 +193,6 @@ class TestAdapterPluginWiring:
             adapter._wire_plugin_handlers(None)
         assert seen == [None]
 
-
 # ===========================================================================
 # Every adapter calls _wire_plugin_handlers in connect() — source invariant
 # ===========================================================================
-

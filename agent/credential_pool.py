@@ -778,7 +778,8 @@ def _guarded_global_root(global_path: Optional[Path]) -> Optional[Path]:
         if real_home_env:
             real_root = Path(real_home_env) / ".hermes" / "auth.json"
             try:
-                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                # Comparing the guard path must not probe the real auth store.
+                if os.path.normcase(os.path.abspath(global_path)) == os.path.normcase(os.path.abspath(real_root)):
                     return None
             except Exception:
                 return None

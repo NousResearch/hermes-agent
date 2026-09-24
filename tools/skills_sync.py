@@ -24,7 +24,7 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
-from tools.skill_usage import _read_skill_name, read_suppressed_names
+from tools.skill_usage import _read_skill_name
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
@@ -112,16 +112,47 @@ def _build_external_skill_index() -> Set[str]:
 def _read_manifest() -> Dict[str, str]:
     """``{skill_name: origin_hash}``; v1 plain-name lines get an empty hash (migrates next sync)."""
     try:
-        lines = _manifest_file().read_text(encoding="utf-8").splitlines() if _manifest_file().exists() else []
-    except OSError:
+        result = {}
+        for line in _manifest_file().read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                # v2 format: name:hash
+                name, _, hash_val = line.partition(":")
+                result[name.strip()] = hash_val.strip()
+            else:
+                # v1 format: plain name — empty hash triggers migration
+                result[line] = ""
+        return result
+    except (OSError, IOError):
         return {}
-    pairs = (line.partition(":") for line in map(str.strip, lines) if line)
-    return {name.strip(): hash_val.strip() for name, _, hash_val in pairs}
 
 
 def _read_suppressed_names() -> set:
-    """Built-in skills the curator pruned — must NOT be re-seeded (tests patch this name)."""
-    return read_suppressed_names()
+    """Built-in skills the curator pruned — must NOT be re-seeded on sync.
+
+    Delegates to ``tools.skill_usage`` (single source of truth) and falls back
+    to reading ``~/.hermes/skills/.curator_suppressed`` directly if that import
+    is unavailable in a packaged/update context.
+    """
+    try:
+        from tools.skill_usage import read_suppressed_names
+
+        return read_suppressed_names()
+    except Exception:
+        path = _skills_dir() / ".curator_suppressed"
+        if not path.exists():
+            return set()
+        names = set()
+        try:
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    names.add(line)
+        except OSError:
+            pass
+        return names
 
 
 def _write_manifest(entries: Dict[str, str]):

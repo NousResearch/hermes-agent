@@ -4,6 +4,12 @@ import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 
 export const ja = defineLocale({
+  externalOpenFailed: {
+    title: 'このリンクを開けませんでした',
+    message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
+    copyUrl: 'リンクをコピー',
+    close: '閉じる'
+  },
   intro: introJa,
   sessionImport: {
     title: '別のアプリから続ける',
@@ -163,6 +169,8 @@ export const ja = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning:
+      '別の Hermes インストールがこのプロファイルを使用しています。両方が設定とデータを共有しているため、変更が競合する可能性があります。このまま続けるか、変更する前にもう一方を終了してください。',
     region: '通知',
     hide: '非表示',
     show: '表示',
@@ -968,40 +976,7 @@ export const ja = defineLocale({
       }
     }),
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `バージョン ${value}`,
-      versionUnavailable: 'バージョンを取得できません',
-      bundleOutOfSync: 'アプリのビルドが古くなっています',
-      bundleOutOfSyncDesc:
-        'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
-      bundleOutOfSyncAction: 'インストーラーを入手',
-      bundleSwapPending: '再起動して更新を完了',
-      bundleSwapPendingDesc:
-        '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',
-      bundleSwapPendingAction: 'Hermes を再起動',
-      updates: '更新',
-      checkNow: '今すぐ確認',
-      checking: '確認中…',
-      seeWhatsNew: '新機能を見る',
-      updateNow: '今すぐ更新',
-      releaseNotes: 'リリースノート',
-      onLatest: '最新バージョンです。',
-      installing: '更新をインストール中です。',
-      cantUpdate: 'このビルドはアプリ内から更新できません。',
-      cantReach: '更新サーバーに接続できませんでした。',
-      tapCheck: '更新を探すには「今すぐ確認」を押してください。',
-      updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
-      updateReadyUnknown: '新しい更新の準備ができました。',
-      lastChecked: age => `前回確認: ${age}`,
-      justNowSuffix: ' · たった今',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes はバックグラウンドで自動的に更新を確認し、利用可能になったら通知します。',
-      branchCommit: (branch, commit) => `ブランチ ${branch} · コミット ${commit}`,
-      never: '未確認',
-      justNow: 'たった今',
-      minAgo: count => `${count} 分前`,
-      hoursAgo: count => `${count} 時間前`,
-      daysAgo: count => `${count} 日前`
+      updates: '更新'
     },
     config: {
       minimizeToTrayTitle: 'トレイに最小化',
@@ -1328,6 +1303,7 @@ export const ja = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: 'ローカルモデルの接続が変更されました',
       title: 'ローカルモデル',
       runtimeTitle: 'ローカルランタイム',
       runtimeReady: backend => `準備完了 · ${backend}`,
@@ -1363,7 +1339,13 @@ export const ja = defineLocale({
       quickstartConfigure: '自分で選ぶ',
       downloaded: 'ダウンロード済み',
       downloadAction: size => `ダウンロード · ${size}`,
-      downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadStatusRunning: 'ダウンロード中',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `残り約${time}`,
+      downloadPausedLabel: '一時停止中',
+      downloadPauseAction: '一時停止',
+      downloadResumeAction: '再開',
       downloadDoneToast: model => `${model} の準備ができました。`,
       installDoneToast: 'ローカルランタイムのインストールが完了しました。',
       useAction: '使用する',
@@ -1374,7 +1356,7 @@ export const ja = defineLocale({
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -2931,6 +2913,13 @@ export const ja = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: 'このHermesビルドはサポートされていません',
+    discontinuedBody: 'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
+    channels: { stable: '安定版', canary: '先行版' },
+    bundleSwapPending: '再起動して更新を完了',
+    bundleSwapPendingDesc:
+      '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',
+    bundleSwapPendingAction: 'Hermes を再起動',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -2953,6 +2942,7 @@ export const ja = defineLocale({
     connectionRetry: '接続を確認してもう一度試してください。',
     gitUnusable: 'このコンピューターで Git を実行できなかったため、更新を確認できませんでした。',
     latestBody: '最新バージョンを実行しています。',
+    versionDetailsDistributionStore: 'Microsoft Store',
     latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',
     availableTitle: '新しい更新が利用可能',
@@ -3018,7 +3008,31 @@ export const ja = defineLocale({
       failed: 'バックエンドの更新に失敗しました。',
       noReturn:
         'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `バージョン ${value}`,
+    versionUnavailable: 'バージョンを取得できません',
+    checkNow: '今すぐ確認',
+    seeWhatsNew: '新機能を見る',
+    releaseNotes: 'リリースノート',
+    onLatest: '最新バージョンです。',
+    installing: '更新をインストール中です。',
+    cantReach: '更新サーバーに接続できませんでした。',
+    tapCheck: '更新を探すには「今すぐ確認」を押してください。',
+    updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
+    updateReadyUnknown: '新しい更新の準備ができました。',
+    lastChecked: age => `前回確認: ${age}`,
+    never: '未確認',
+    justNow: 'たった今',
+    minAgo: count => `${count} 分前`,
+    hoursAgo: count => `${count} 時間前`,
+    daysAgo: count => `${count} 日前`,
+    justNowSuffix: ' · たった今',
+    bundleOutOfSync: 'アプリのビルドが古くなっています',
+    bundleOutOfSyncDesc:
+      'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
+    bundleOutOfSyncAction: 'インストーラーを入手',
+    checkingShort: '確認中…'
   },
 
   guidedGreeting: {

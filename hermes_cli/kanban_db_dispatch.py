@@ -486,7 +486,9 @@ def _terminate_reclaimed_worker(
     signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
     UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
     it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
-    spawning a duplicate beside it."""
+    spawning a duplicate beside it. A live process whose start time only drifted forward within
+    ``_SAME_WORKER_START_DRIFT_CEILING`` (#118326) is that same case: never signalled, reported as
+    surviving so the reclaim defers."""
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
@@ -509,6 +511,14 @@ def _terminate_reclaimed_worker(
         info["terminated"] = not _kb._pid_alive(pid)
         return info
     if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+        if _drifted_spawn_still_matches(pid, started_at):
+            # Exact mismatch on a same-epoch near-match: our own worker after a forward
+            # start-time drift (#118326). Not signalled — and the claim must not be released
+            # beside a live worker either, so report survival: the caller defers
+            # (reclaim_deferred) instead of re-creating the duplicate-spawn the issue is about.
+            info["signal_refused"] = True
+            info["start_time_drifted"] = True
+            return info
         info["terminated"] = True
         info["pid_recycled"] = True
         return info
@@ -528,6 +538,14 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _worker_alive(pid, started_at):
+        if _pid_recycled(pid, started_at):
+            # A tolerant "still alive" that fails the exact fingerprint can only be a
+            # drift-rescued near-match: the number is recycled and owned by a stranger now,
+            # so the SIGKILL escalation is not ours to send. Report survival; the claim rides
+            # the heartbeat backstop instead of a signal permission (#118326).
+            info["signal_refused"] = True
+            info["pid_recycled"] = True
+            return info
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
@@ -732,6 +750,11 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
             if _worker_alive(pid, started_at):
+                if _pid_recycled(pid, started_at):
+                    # Tolerant liveness here can be a drift-rescued near-match on a number
+                    # already recycled: never escalate to SIGKILL against the exact
+                    # fingerprint. The row settles on a later tick instead.
+                    continue
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"

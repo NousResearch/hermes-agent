@@ -321,8 +321,7 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { resolvePetOverlayBounds } from './pet-overlay'
-import { registerPetOverlayIpc } from './pet-overlay-ipc'
+import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
   recordDismissed as recordPluginCompatDismissed
@@ -14437,9 +14436,10 @@ function closePetOverlay() {
   // second overlay while the first is still on screen (see petOverlayClosing).
 }
 
-// Re-home the popped-out pet after a display change: if the overlay still sits
-// on a connected display it stays put; otherwise it is re-centered on the main
-// window's display (see resolvePetOverlayBounds). The corrected spot is pushed
+// Re-home the popped-out pet after a display change: an overlay that still
+// fits its display stays put, one pushed past a work-area edge is clamped back
+// in, and one on no display is re-centered on the main window's display (see
+// resolvePetOverlayBounds). The corrected spot is pushed
 // back to the renderer via the existing 'bounds' control channel, which it
 // persists for the next pop-out/restart.
 function rehomePetOverlay() {
@@ -14447,18 +14447,8 @@ function rehomePetOverlay() {
     return
   }
 
-  let anchor = null
-
-  try {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      anchor = mainWindow.getContentBounds()
-    }
-  } catch {
-    // Resolve falls back to the primary display when the anchor is unknown.
-  }
-
   const current = petOverlayWindow.getBounds()
-  const resolved = resolvePetOverlayBounds(current, screen.getAllDisplays(), anchor)
+  const resolved = placePetOverlay(current, mainWindow)
 
   if (!resolved) {
     return

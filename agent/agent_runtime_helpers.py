@@ -383,7 +383,8 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
 
     sources = (*prev.get("_source_row_ids", ()), prev.get("_row_id"),
                *msg.get("_source_row_ids", ()), msg.get("_row_id"))
-    prev["_source_row_ids"] = tuple(i for i in sources if isinstance(i, int) and not isinstance(i, bool))
+    prev["_source_row_ids"] = tuple(dict.fromkeys(
+        i for i in sources if isinstance(i, int) and not isinstance(i, bool)))
 
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
@@ -576,7 +577,8 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             sources = (*prev.get("_source_row_ids", ()), prev.get("_row_id"),
                        *msg.get("_source_row_ids", ()), msg.get("_row_id"))
-            prev["_source_row_ids"] = tuple(i for i in sources if isinstance(i, int) and not isinstance(i, bool))
+            prev["_source_row_ids"] = tuple(dict.fromkeys(
+                i for i in sources if isinstance(i, int) and not isinstance(i, bool)))
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )

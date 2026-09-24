@@ -679,6 +679,11 @@ class SessionMessagesMixin:
         duplicates and get rewind flags (``active=0, compacted=0``) so search doesn't return each carried
         message once per compaction. ``model_config_patch`` merges in the same txn (``None`` removes a key).
 
+        With ``held_row_ids``, only those active source rows were handed to the compressor. Other active
+        rows (even gaps below the largest held id) are cloned after the summary. ``tail_row_ids`` identifies
+        held originals copied into the compressed tail; the positional ``tail_count`` is used only by legacy
+        callers without source provenance. Missing held rows abort the transaction.
+
         Concurrent-append safety (#75316): when *watermark* is provided (the value of
         :meth:`get_active_message_watermark` captured at compression START), rows that arrived during the
         slow provider summary call (``id > watermark``) are NOT summarized away. They are re-sequenced after

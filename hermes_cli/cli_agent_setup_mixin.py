@@ -596,7 +596,8 @@ class CLIAgentSetupMixin:
                 f"Cannot resume session: {resume_limit_error}",
                 f"[bold red]Cannot resume session:[/] {_escape(resume_limit_error)}")
             return False
-        restored = self._session_db.get_messages_as_conversation(self.session_id, repair_alternation=True)
+        restored = self._session_db.get_messages_as_conversation(
+            self.session_id, repair_alternation=True, include_row_ids=True)
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored

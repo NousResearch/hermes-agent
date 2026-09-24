@@ -1711,7 +1711,8 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
-                db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                row_id = db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                entry["_row_id"] = row_id
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
 

@@ -635,6 +635,7 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
     **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
+    "gemini_prompt_blocked": _V_CONTENT_BLOCKED,
 }
 
 # Provider-native status codes that arrive as a bare ``{"error": {"code": …}}`` body
@@ -677,7 +678,9 @@ class _Ctx:
 
     def __post_init__(self) -> None:
         self.error_type = type(self.error).__name__
-        self.error_code = _extract_error_code(self.body)
+        body_code = _extract_error_code(self.body)
+        exception_code = getattr(self.error, "code", "")
+        self.error_code = body_code or (exception_code.strip() if isinstance(exception_code, str) else "")
         self.code = self.error_code.lower()
         self.headers = _from_cause_chain(self.error, _headers_of, {})
         self.provider_slug = (self.provider or "").strip().lower()
@@ -820,6 +823,8 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome
+    if _PROVIDER_CODE_FAMILIES.get(c.provider_slug, c.provider_slug) == "gemini" and c.code == "gemini_prompt_blocked":
+        return _V_CONTENT_BLOCKED
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):

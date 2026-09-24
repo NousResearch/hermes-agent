@@ -273,6 +273,45 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
 
 
+@pytest.mark.parametrize("translator", ["response", "stream"])
+def test_prompt_feedback_block_is_terminal_content_policy_error(translator):
+    from agent.error_classifier import FailoverReason, classify_api_error
+    from agent.gemini_native_adapter import GeminiAPIError, translate_gemini_response, translate_stream_event
+
+    payload = {"promptFeedback": {"blockReason": "SAFETY"}}
+    with pytest.raises(GeminiAPIError, match="SAFETY") as exc_info:
+        if translator == "response":
+            translate_gemini_response(payload, model="gemini-2.5-flash")
+        else:
+            translate_stream_event(payload, model="gemini-2.5-flash", tool_call_indices={})
+
+    error = exc_info.value
+    result = classify_api_error(error, provider="gemini")
+    assert error.code == "gemini_prompt_blocked"
+    assert error.status_code == 400
+    assert result.reason == FailoverReason.content_policy_blocked
+    assert result.retryable is False
+
+
+def test_candidate_less_response_without_prompt_block_remains_empty_response():
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    response = translate_gemini_response({}, model="gemini-2.5-flash")
+
+    assert response.choices[0].message.content == ""
+
+
+def test_candidate_response_keeps_its_own_finish_reason_despite_prompt_feedback():
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    response = translate_gemini_response(
+        {"promptFeedback": {"blockReason": "SAFETY"}, "candidates": [{"finishReason": "SAFETY", "content": {"parts": []}}]},
+        model="gemini-2.5-flash",
+    )
+
+    assert response.choices[0].finish_reason == "content_filter"
+
+
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
     from agent.gemini_native_adapter import GeminiNativeClient
 

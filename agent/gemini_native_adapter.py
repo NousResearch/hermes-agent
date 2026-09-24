@@ -620,7 +620,27 @@ def _part_function_call(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
+def _prompt_feedback_block_error(response: Dict[str, Any]) -> Optional[GeminiAPIError]:
+    """Convert Gemini's candidate-less prompt safety refusal into a terminal API error."""
+    if response.get("candidates"):
+        return None
+    feedback = response.get("promptFeedback")
+    if not isinstance(feedback, dict):
+        return None
+    block_reason = feedback.get("blockReason")
+    if not isinstance(block_reason, str) or not block_reason.strip():
+        return None
+    return GeminiAPIError(
+        f"Gemini blocked the prompt: {block_reason}",
+        code="gemini_prompt_blocked",
+        status_code=400,
+        details={"blockReason": block_reason, "promptFeedback": feedback},
+    )
+
+
 def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespace:
+    if error := _prompt_feedback_block_error(resp):
+        raise error
     candidates = resp.get("candidates") or []
     cand = parts = None
     if isinstance(candidates, list) and candidates:
@@ -724,6 +744,8 @@ def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, a
 
 
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
+    if error := _prompt_feedback_block_error(event):
+        raise error
     candidates = event.get("candidates") or []
     if not candidates:
         return []

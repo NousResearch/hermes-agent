@@ -8,7 +8,7 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { isValidElement, type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -250,15 +250,19 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
 }
 
 function childrenToText(children: unknown): string {
+  return childrenToTextValue(children).trim()
+}
+
+function childrenToTextValue(children: unknown): string {
   if (typeof children === 'string' || typeof children === 'number') {
-    return String(children).trim()
+    return String(children)
   }
 
-  if (Array.isArray(children) && children.every(c => typeof c === 'string' || typeof c === 'number')) {
-    return children.join('').trim()
+  if (Array.isArray(children)) {
+    return children.map(childrenToTextValue).join('')
   }
 
-  return ''
+  return isValidElement(children) ? childrenToTextValue(children.props.children) : ''
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {

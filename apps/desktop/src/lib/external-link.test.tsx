@@ -62,12 +62,14 @@ describe('external link helpers', () => {
     ).toBe('getyourguide.com/culebra-island-l145468/from-fajardo-full-day-cordillera-islands-catamaran-tour-t19894')
   })
 
-  it('derives readable title fallbacks from URL slugs', () => {
+  it('derives readable fallback labels without changing URL identifier casing', () => {
     expect(
       urlSlugTitleLabel(
         'https://www.getyourguide.com/fajardo-l882/from-fajardo-icacos-island-full-day-catamaran-trip-t19891/'
       )
-    ).toBe('From Fajardo Icacos Island Full Day Catamaran Trip')
+    ).toBe('from fajardo icacos island full day catamaran trip')
+    expect(urlSlugTitleLabel('https://example.com/releases/tag/v1.0.1')).toBe('v1.0.1')
+    expect(urlSlugTitleLabel('https://example.com/repository/blob/main/README.md')).toBe('README.md')
   })
 
   it('filters out local/non-http targets for title fetches', () => {
@@ -221,7 +223,7 @@ describe('external link helpers', () => {
     render(<LinkifiedText text={`Read ${url}`} />)
 
     const link = screen.getByTitle(url)
-    expect(link.textContent).toContain('From Fajardo Full Day Cordillera Islands Catamaran Tour')
+    expect(link.textContent).toContain('from fajardo full day cordillera islands catamaran tour')
 
     await waitFor(() => {
       expect(link.textContent).toContain('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
@@ -240,7 +242,7 @@ describe('external link helpers', () => {
 
     const link = screen.getByTitle(url)
     await waitFor(() => {
-      expect(link.textContent).toBe('From Fajardo Full Day Cordillera Islands Catamaran Tour')
+      expect(link.textContent).toBe('from fajardo full day cordillera islands catamaran tour')
     })
   })
 

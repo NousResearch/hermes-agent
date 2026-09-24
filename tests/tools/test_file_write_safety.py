@@ -472,6 +472,38 @@ class TestProtectedInstructionFiles:
         assert res.get("error") and "BLOCKED" in res["error"]
         assert not target.exists()
 
+    def test_selected_approval_transport_approves_protected_write(self, tmp_path, monkeypatch):
+        """The one-shot protected-file gate must use the selected transport.
+
+        This exercises the real write entry point without a CLI callback: the
+        selected transport is the only reachable operator surface.
+        """
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from tools import approval_context, approval_prompt
+
+        manager = PluginManager()
+        manifest = PluginManifest(
+            name="protected-write-transport", version="1.0.0", description="test",
+            source="user", key="protected-write-transport",
+        )
+        seen = []
+        PluginContext(manifest, manager).register_approval_transport(
+            "phone", lambda request: seen.append(request) or request.respond("once")
+        )
+        monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            approval_context, "_get_approval_transport_config", lambda: ("phone", None)
+        )
+
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target, "approved by transport")
+
+        assert not res.get("error"), res
+        assert target.read_text(encoding="utf-8") == "approved by transport"
+        assert len(seen) == 1
+        assert seen[0].pattern_key == "protected_instruction_file"
+        assert seen[0].allowed_choices == ("once", "deny")
+
     def test_config_disabled_skips_gate(self, tmp_path, approvals, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(

@@ -165,6 +165,10 @@ export const zhHant: Translations = {
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
     newChat: "新對話",
+    workspace: "工作區",
+    workspaceDefault: "預設",
+    workspaceRescan: "重新掃描儲存庫",
+    workspaceCustom: "其他路徑…",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {
@@ -323,6 +327,8 @@ export const zhHant: Translations = {
     disableRuntime: "停用",
     enableAfterInstall: "安裝後啟用",
     enableRuntime: "啟用",
+    toggleTakesEffectAfterRestart:
+      "已儲存 — 重新啟動閘道以套用變更。",
     forceReinstall: "強制重新安裝（先刪除既有資料夾）",
     headline:
       "探索、安裝、啟用並更新 Hermes 外掛（對齊 `hermes plugins` CLI）。",

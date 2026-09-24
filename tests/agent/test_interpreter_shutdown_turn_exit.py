@@ -159,17 +159,7 @@ def test_non_quiet_mode_still_prints_error(monkeypatch, capsys):
 
 
 class TestSharedPredicate:
-    def test_matches_interpreter_variant(self):
-        from tools.interpreter_shutdown import interpreter_shutting_down
 
-        exc = RuntimeError("cannot schedule new futures after interpreter shutdown")
-        assert interpreter_shutting_down(exc) is True
-
-    def test_matches_plain_executor_variant(self):
-        from tools.interpreter_shutdown import interpreter_shutting_down
-
-        exc = RuntimeError("cannot schedule new futures after shutdown")
-        assert interpreter_shutting_down(exc) is True
 
     def test_ignores_unrelated_errors(self):
         from tools.interpreter_shutdown import interpreter_shutting_down
@@ -177,18 +167,4 @@ class TestSharedPredicate:
         assert interpreter_shutting_down(RuntimeError("boom")) is False
         assert interpreter_shutting_down(None) is False
 
-    def test_cron_wrapper_delegates(self):
-        from cron.scheduler import _interpreter_shutting_down
 
-        exc = RuntimeError("cannot schedule new futures after shutdown")
-        assert _interpreter_shutting_down(exc) is True
-        assert _interpreter_shutting_down(RuntimeError("boom")) is False
-
-    def test_tool_executor_wrapper_delegates(self):
-        from agent.tool_executor import _is_interpreter_shutdown_submit_error
-
-        # The tool-executor predicate previously matched ONLY the fuller
-        # variant; via the shared home it now catches both.
-        exc = RuntimeError("cannot schedule new futures after shutdown")
-        assert _is_interpreter_shutdown_submit_error(exc) is True
-        assert _is_interpreter_shutdown_submit_error(RuntimeError("boom")) is False

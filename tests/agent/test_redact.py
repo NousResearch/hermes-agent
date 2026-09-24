@@ -529,6 +529,31 @@ class TestTelegramTokens:
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
 
+    def test_long_digit_run_completes_fast(self):
+        """A long digit run with no ``:<token>`` after it must stay linear.
+
+        Without the run-start lookbehind, ``\\d{8,}`` retried from every digit
+        of the run (quadratic while holding the GIL): a 2 MB Unity asset diff
+        with a ``_typelessdata: 000...`` line pinned a core for hours inside
+        terminal-output redaction. The colon is what routes the text through
+        the Telegram pass.
+        """
+        import time
+
+        text = "_typelessdata: " + "0" * 100_000 + "\n"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text, force=True) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_token_after_long_digit_run_still_redacted(self):
+        # The lookbehind must not change matching: a real token whose id
+        # starts its own digit run is still masked, digits embedded in a
+        # longer run are not an id.
+        text = "0" * 1000 + " bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
+        result = redact_sensitive_text(text, force=True)
+        assert "ABCDEfghij" not in result
+        assert "123456789:***" in result
+
 
 class TestPassthrough:
     def test_empty_string(self):

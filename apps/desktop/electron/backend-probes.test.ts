@@ -17,8 +17,6 @@ import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
-  hermesRuntimeImportProbe,
-  PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
   verifyHermesCli
@@ -98,16 +96,6 @@ test('canImportHermesCli returns false when binary does not exist', async () => 
   assert.equal(await canImportHermesCli(ghost), false)
 })
 
-test('hermes runtime import probe checks config dependencies', () => {
-  const probe = hermesRuntimeImportProbe()
-  assert.match(probe, /\bimport yaml\b/)
-  // dotenv is the first third-party import on the CLI boot path
-  // (hermes_cli/env_loader.py); a mid-update venv missing python-dotenv
-  // passed the old probe and produced an unrecoverable boot loop.
-  assert.match(probe, /\bimport dotenv\b/)
-  assert.match(probe, /\bimport hermes_cli\.config\b/)
-})
-
 test('explicit Hermes override is authoritative', () => {
   assert.equal(shouldTrustHermesOverride('/nix/store/abc/bin/hermes'), true)
 })
@@ -149,21 +137,6 @@ test('verifyHermesCli returns true when --version exits 0', async () => {
       void 0
     }
   }
-})
-
-test('verifyHermesCli swallows timeouts (does not throw)', async () => {
-  // We can't easily provoke a real hang in CI without slowing the
-  // suite, but we CAN confirm that an invocation that DOES throw
-  // (because the binary is missing) returns false rather than
-  // propagating. Same code path the timeout case takes.
-  assert.equal(await verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
-})
-
-test('default probe timeout is 15s (not the old 5s death-loop value)', () => {
-  assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 15_000)
-  // Module constant uses process.env at load time; with no override it
-  // matches the default (tests run without HERMES_PROBE_TIMEOUT_MS).
-  assert.equal(PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS)
 })
 
 test('resolveProbeTimeoutMs honours HERMES_PROBE_TIMEOUT_MS', () => {

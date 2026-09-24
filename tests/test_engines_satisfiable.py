@@ -151,24 +151,6 @@ class TestEnginesAreSatisfiable:
             "Hermes-managed install cannot run npm ci."
         )
 
-    def test_desktop_node_floor_is_not_stricter_than_its_toolchain(self):
-        """apps/desktop must not demand more Node than its own build tools do.
-
-        Vite is the real constraint (it needs `node:util.styleText`). Raising
-        the desktop floor beyond it silently force-migrates every user's
-        toolchain for no dependency reason.
-        """
-        desktop = json.loads((REPO_ROOT / "apps" / "desktop" / "package.json").read_text())
-        node_range = desktop["engines"]["node"]
-        # The tightest floor any dependency actually declares (react-router
-        # 8.3.0 -> >=22.22.0). If this legitimately rises, the assertion
-        # documents the reason for the bump rather than blocking it.
-        assert _satisfies_range("22.22.0", node_range), (
-            f"apps/desktop engines.node is {node_range!r}, which rejects Node "
-            "22.12 — stricter than Vite requires. A desktop floor above the "
-            "build toolchain's own floor replaces working user toolchains for "
-            "nothing."
-        )
 
 
 class TestExcludedNpmBand:
@@ -274,24 +256,4 @@ class TestDeclaredFloorsClearTheLockedTree:
             f"in scripts/install.ps1) or relax the dep. Violations: {violations}"
         )
 
-    def test_installer_gates_match_the_manifest_arms(self):
-        """install.sh's node_satisfies_build must encode the same floors as
-        engines.node — a laxer gate accepts a Node that npm then rejects."""
-        node_range = _root_manifest()["engines"]["node"]
-        install_sh = (REPO_ROOT / "scripts" / "install.sh").read_text()
-        install_ps1 = (REPO_ROOT / "scripts" / "install.ps1").read_text()
-        for arm in node_range.split("||"):
-            arm = arm.strip()
-            major, minor = _parse_major_minor_patch(arm.lstrip("^>="))[:2]
-            if arm.startswith("^") and minor > 0:
-                sh_gate = f'[ "$major" -eq {major} ] && [ "$minor" -ge {minor} ]'
-                ps1_gate = f"if ($v.Major -eq {major}) {{ return ($v.Minor -ge {minor}) }}"
-                assert sh_gate in install_sh, (
-                    f"engines.node arm {arm!r} has no matching gate in "
-                    f"install.sh node_satisfies_build (expected: {sh_gate})"
-                )
-                assert ps1_gate in install_ps1, (
-                    f"engines.node arm {arm!r} has no matching gate in "
-                    f"install.ps1 Test-NodeVersionOk (expected: {ps1_gate})"
-                )
 

@@ -655,11 +655,11 @@ ctx.register({
 ```
 
 *Arbitration:* every registration mounts, in registry order, each inside its
-own error boundary — a contribution that throws collapses to an inline chip
-naming its `id` and the rest of the page (and other plugins' cards) keep
-rendering. The slot is not a settings section: the Appearance subpage filter
-does not gate it, and there is no "first wins" — plugins cannot suppress each
-other here.
+own error boundary — a contribution that throws collapses to an inline error
+card naming its `id` (with Retry) and the rest of the page (and other plugins'
+cards) keep rendering. The slot mounts on the top-level Appearance page only,
+not on deep-link subpages (`settings/appearance/<section>`), and there is no
+"first wins" — plugins cannot suppress each other here.
 
 *Teardown:* the registration is owned by the plugin loader; disabling or
 reloading the plugin disposes it and the card disappears on the next render.

@@ -60,7 +60,9 @@ describe('AppearanceExtraSlot', () => {
 
     render(<AppearanceExtraSlot />)
 
-    // The boundary's inline fallback names the failed contribution.
-    expect(screen.getByRole('button', { name: 'broken-extra' })).toBeTruthy()
+    // A page-level card gets the pane fallback (canonical ErrorState + Retry),
+    // not the bar-item chip meant for toolbar slots.
+    expect(screen.getByText('“broken-extra” failed to render')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
   })
 })

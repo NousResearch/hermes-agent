@@ -28,7 +28,7 @@ export function AppearanceExtraSlot() {
   return (
     <>
       {contributions.map(contribution => (
-        <ContribBoundary id={contribution.id} key={`${contribution.source ?? 'core'}:${contribution.id}`} variant="chip">
+        <ContribBoundary id={contribution.id} key={`${contribution.source ?? 'core'}:${contribution.id}`}>
           {contribution.render && <ContribRender render={contribution.render} />}
         </ContribBoundary>
       ))}

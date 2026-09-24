@@ -1053,9 +1053,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
       )}
 
       {/* Plugin-provided appearance controls — the sanctioned seam for a
-          plugin that used to inject nodes into this page. Not a setting
-          section: the subpage filter above does not gate it. */}
-      <AppearanceExtraSlot />
+          plugin that used to inject nodes into this page. Top-level page only:
+          a deep-link subpage shows one built-in section, and a plugin card is
+          not that section. */}
+      {subpage === undefined && <AppearanceExtraSlot />}
     </SettingsContent>
   )
 }

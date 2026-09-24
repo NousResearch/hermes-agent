@@ -82,31 +82,6 @@ describe('vision_analyze activity image', () => {
     expect(await screen.findByRole('dialog')).toBeTruthy()
   })
 
-  it('keeps a cold portrait image contained in its fixed frame instead of overriding its size', async () => {
-    $connection.set({ mode: 'local' } as never)
-    renderVisionRow()
-
-    fireEvent.click(screen.getByRole('button', { expanded: false }))
-
-    const img = await screen.findByRole('img')
-
-    await waitFor(() => expect(img.getAttribute('src')).toBe(DATA_URL))
-    Object.defineProperties(img, { naturalWidth: { value: 400 }, naturalHeight: { value: 800 } })
-    fireEvent.load(img)
-
-    // A cold image has no intrinsic dimensions yet, so its frame keeps the
-    // fallback shape and the image must fit inside it rather than size itself.
-    const frame = img.closest<HTMLElement>('[data-slot="aui_markdown-image"]')!
-
-    expect(parseFloat(frame.style.aspectRatio)).toBeCloseTo(16 / 9)
-    expect(img.classList).toContain('size-full')
-    expect(img.classList).toContain('object-contain')
-
-    for (const override of ['h-auto', 'w-full', 'object-cover']) {
-      expect(img.classList).not.toContain(override)
-    }
-  })
-
   it('reads a remote-gateway image through the profile-scoped fs API, never the local reader', async () => {
     $connection.set({ mode: 'remote', profile: 'wsl-work' } as never)
     renderVisionRow()

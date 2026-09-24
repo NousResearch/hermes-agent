@@ -96,6 +96,18 @@ it.each(cases)('reserves $kind frames through cold decode, warm return and failu
   expect(warm.container.textContent).toMatch(/Open image/i)
 })
 
+it('keeps the pending generated-image frame when its result arrives', async () => {
+  const path = '/geometry/pending.svg'
+  const mounted = render(<GeneratedImage aspectRatio="landscape" />)
+  const pendingStyle = frame(mounted.container).style.cssText
+  mounted.rerender(<GeneratedImage aspectRatio="landscape" result={{ success: true, image: path, pixel_size: '900x600' }} />)
+
+  // Must hold before the file read settles, not just after img.onload.
+  expect(frame(mounted.container).style.cssText).toBe(pendingStyle)
+  await decode(mounted.container, 900, 600)
+  expect(frame(mounted.container).style.cssText).toBe(pendingStyle)
+})
+
 it.each(['markdown', 'generated'])('%s dimensions follow owner and source, not stale reads or hints', async kind => {
   const path = `${paths.second}?${kind}`
 

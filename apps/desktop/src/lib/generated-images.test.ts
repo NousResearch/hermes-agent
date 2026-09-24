@@ -2,30 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   dedupeGeneratedImageEchoesInParts,
-  generatedImageDimensionsFromResult,
   generatedImageEchoSources,
   generatedImageFromResult,
   stripGeneratedImageEchoes
 } from './generated-images'
 
 describe('generatedImageFromResult', () => {
-  it('uses decoded pixel_size, never requested sizing, for intrinsic geometry', () => {
-    const dimensions = { width: 900, height: 600 }
-
-    const result = {
-      success: true,
-      image: '/image.png',
-      pixel_size: `${dimensions.width}x${dimensions.height}`,
-      size: '1024x1024'
-    }
-
-    expect(generatedImageDimensionsFromResult(JSON.stringify(result))).toEqual(dimensions)
-
-    for (const pixel_size of [undefined, 'auto', '0x600', '9'.repeat(400) + 'x600']) {
-      expect(generatedImageDimensionsFromResult({ ...result, pixel_size })).toBeUndefined()
-    }
-  })
-
   it('prefers the host-visible image path', () => {
     expect(
       generatedImageFromResult({

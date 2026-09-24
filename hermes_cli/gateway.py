@@ -1032,13 +1032,17 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
+        from gateway.status import _pid_exists
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            from gateway.status import _pid_exists
             if not _pid_exists(pid):
                 break
             time.sleep(0.2)
+        else:
+            # A stale/recycled PID must not trigger a second gateway while it remains live.
+            if _pid_exists(pid):
+                sys.exit(0)
 
         # Route the respawned gateway's stray stdout/stderr to the same sidecar log _spawn_detached
         # uses: with DEVNULL a gateway killed moments after respawn (parent Job Object teardown when

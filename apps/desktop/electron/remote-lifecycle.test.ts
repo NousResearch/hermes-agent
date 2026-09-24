@@ -32,6 +32,7 @@ import {
   readLockfile,
   readRemoteInstallId,
   READY_RE,
+  remoteProcessCreationTime,
   remotePidAlive,
   remoteSupportsSshOwnership,
   scrapeReadyPort,
@@ -42,6 +43,7 @@ import {
   validateRemotePath,
   writeLockfile
 } from './remote-lifecycle'
+import { withRemoteTimeout } from './ssh-connection'
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
@@ -565,6 +567,26 @@ test('remotePidAlive maps kill -0 ALIVE/DEAD', async () => {
   assert.equal(await remotePidAlive(fakeSsh([[/kill -0/, 'ALIVE']]), 123), true)
   assert.equal(await remotePidAlive(fakeSsh([[/kill -0/, 'DEAD']]), 123), false)
   assert.equal(await remotePidAlive(fakeSsh([]), null), false)
+})
+
+// runSsh's local exec timeout only SIGKILLs the local ssh child, not a wedged
+// remote command (#110478) — probeHermesVersion/remoteSupportsSshOwnership are
+// already wrapped in withRemoteTimeout() for this; these three lighter probes
+// were not, until now.
+test('remotePidAlive, pidIsOurDashboard and remoteProcessCreationTime run under the remote watchdog', async () => {
+  const pidAliveSsh = fakeSsh([[/kill -0/, 'ALIVE']])
+  await remotePidAlive(pidAliveSsh, 123)
+  assert.equal(pidAliveSsh.calls.at(-1), withRemoteTimeout('kill -0 123 2>/dev/null && echo ALIVE || echo DEAD'))
+
+  const ownershipSsh = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
+  await pidIsOurDashboard(ownershipSsh, 5, SPAWN_NONCE, '/x/hermes')
+  assert.match(ownershipSsh.calls.at(-1)!, /^\[ -n "\$\{ZSH_VERSION-\}"/)
+  assert.match(ownershipSsh.calls.at(-1)!, /\(python3 -c '.*'\) <\/dev\/null & __htp=\$!/s)
+
+  const creationTimeSsh = fakeSsh([[/sys\.platform/, 'linux:123']])
+  await remoteProcessCreationTime(creationTimeSsh, 7)
+  assert.match(creationTimeSsh.calls.at(-1)!, /^\[ -n "\$\{ZSH_VERSION-\}"/)
+  assert.match(creationTimeSsh.calls.at(-1)!, /\(python3 -c '.*'\) <\/dev\/null & __htp=\$!/s)
 })
 
 test('metadata and process proof transport failures remain indeterminate', async () => {

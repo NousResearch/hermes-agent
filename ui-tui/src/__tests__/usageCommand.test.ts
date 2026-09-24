@@ -65,6 +65,26 @@ describe('/usage slash command', () => {
     expect(printed(withBalance.sys)).not.toContain('no API calls yet')
   })
 
+  it('splits prompt tokens into fresh input, cache reads, and cache writes', async () => {
+    const { panel, run } = buildCtx({
+      'session.usage': baseUsage({
+        calls: 7,
+        input: 480,
+        output: 495,
+        total: 102_671,
+        cache_read: 101_696,
+        cache_write: 120
+      })
+    })
+
+    await run('')
+
+    const rows = panel.mock.calls.find(c => c[0] === 'Usage')?.[1]?.[0]?.rows as [string, string][]
+    expect(rows).toContainEqual(['Fresh input tokens', '480'])
+    expect(rows).toContainEqual(['Cache read tokens', '101,696'])
+    expect(rows).toContainEqual(['Cache write tokens', '120'])
+  })
+
   it('renders the dollar two-bar model (no "credits" wording) when available', async () => {
     const { panel, run } = buildCtx({
       'session.usage': baseUsage({

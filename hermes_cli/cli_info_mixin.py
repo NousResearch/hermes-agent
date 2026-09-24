@@ -715,6 +715,8 @@ class CLIInfoMixin:
 
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
         reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
         compressor = agent.context_compressor
         last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
@@ -725,7 +727,11 @@ class CLIInfoMixin:
         print("  📊 Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
+        print(f"  Fresh input tokens:        {input_tokens:>10,}")
+        if cache_read_tokens:
+            print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
+        if cache_write_tokens:
+            print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
         print(f"  Output tokens:             {output_tokens:>10,}")
         if reasoning_tokens:
             print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")

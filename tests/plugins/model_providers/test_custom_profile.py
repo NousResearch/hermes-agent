@@ -188,6 +188,45 @@ class TestCustomReasoningWireShape:
         assert kwargs["reasoning_effort"] == expected
         assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
+    @pytest.mark.parametrize(
+        "model, effort, expected",
+        [
+            ("openai/gpt-oss-120b", "medium", "medium"),
+            ("openai/gpt-oss-20b", "high", "high"),
+            ("gpt-oss-120b", "low", "low"),
+            # Outside gpt-oss's own low/medium/high ladder, clamp_effort finds the
+            # nearest weaker supported level rather than passing the raw value through.
+            ("openai/gpt-oss-120b", "xhigh", "high"),
+        ],
+    )
+    def test_groq_gpt_oss_keeps_graded_effort(self, custom_profile, model, effort, expected):
+        """Groq's GPT-OSS models are the one exception to the blanket none/default clamp
+
+        (#75089's fix was too broad) — they have their own graded low/medium/high knob
+        per Groq's own docs and 400 on 'default' itself.
+        """
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model=model, messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config={"enabled": True, "effort": effort},
+            base_url="https://api.groq.com/openai/v1", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == expected
+        assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_groq_gpt_oss_disabled_still_clamps_to_none(self, custom_profile):
+        """Disabling reasoning takes the same 'none' path as every other endpoint —
+
+        gpt-oss's own vocabulary only governs the graded-effort branch.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="openai/gpt-oss-120b",
+            base_url="https://api.groq.com/openai/v1",
+        )
+        assert tl == {"reasoning_effort": "none"}
+        assert "think" not in eb
+
 
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""

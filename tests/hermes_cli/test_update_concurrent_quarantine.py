@@ -1,7 +1,7 @@
 """`hermes update` concurrent-instance gate and Windows gateway service helpers
 (#26670, #37039, #98814): concurrent shim detection, shim quarantine,
 gateway/non-gateway classification, gateway pause/resume (SCM services,
-profile and unmapped gateways, venv launcher ancestors), leftover venv holder
+verified profiles and venv launcher ancestors), unmapped-PID refusal, leftover venv holder
 nomination, gateway-ancestor tree-kill refusal, and SCM stop/restore.
 
 Windows-only code paths carry ``@pytest.mark.windows_only`` and run on the
@@ -175,16 +175,22 @@ def test_quarantine_reports_a_lock_it_cannot_break(tmp_path, capsys, monkeypatch
 # ---------------------------------------------------------------------------
 
 
+def _pin_managed_checkout(monkeypatch):
+    """These pause tests exercise the managed install, not an isolated checkout."""
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", Path(os.environ["HERMES_HOME"]) / "hermes-agent")
+
+
 @pytest.mark.windows_only
-def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
+def test_pause_windows_gateways_for_update_refuses_unmapped_pids_before_any_stop(
     monkeypatch,
     tmp_path,
-    capsys,
 ):
-    """Profile gateways get a planned-stop marker + graceful drain; unmapped
-    gateways are force-stopped with their argv captured for respawn."""
+    """An argv-only PID has no verified home, so no gateway may be stopped."""
     import gateway.status as status_mod
     import hermes_cli.gateway as gateway_mod
+
+    # This is a managed-install pause, not an isolated-checkout update.
+    _pin_managed_checkout(monkeypatch)
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
@@ -207,14 +213,6 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         return set()
 
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
-    monkeypatch.setattr(
-        gateway_mod,
-        "_capture_gateway_argv",
-        lambda pid: ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
-        if pid == 202
-        else None,
-    )
-
     terminated = []
     monkeypatch.setattr(
         status_mod,
@@ -222,34 +220,12 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         lambda pid, force=False, **kwargs: terminated.append((pid, force)),
     )
 
-    token = cli_main._pause_windows_gateways_for_update()
+    with pytest.raises(RuntimeError, match="without a verified profile or service owner: 202"):
+        cli_main._pause_windows_gateways_for_update()
 
-    assert token == {
-        "resume_needed": True,
-        "profiles": {"work": 101},
-        "unmapped_pids": [202],
-        "unmapped": [
-            {
-                "pid": 202,
-                "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
-            }
-        ],
-    }
-    assert waited_for == [101]
-    assert terminated == [(202, True)]
-
-    marker = json.loads(
-        (profile_home / ".gateway-planned-stop.json").read_text(encoding="utf-8")
-    )
-    assert marker["target_pid"] == 101
-    assert marker["stopper_pid"] == os.getpid()
-
-    captured = capsys.readouterr().out
-    assert "Paused gateway profile(s): work" in captured
-    assert "without profile mapping" in captured
-    # An unmapped PID whose argv we captured is respawnable, so we must NOT
-    # tell the user to restart it manually.
-    assert "Restart manually after update" not in captured
+    assert waited_for == []
+    assert terminated == []
+    assert not (profile_home / ".gateway-planned-stop.json").exists()
 
 
 @pytest.mark.windows_only
@@ -261,6 +237,7 @@ def test_pause_and_resume_windows_gateway_service(
     afterward instead of spawning a competing detached gateway."""
     import hermes_cli.gateway as gateway_mod
     import hermes_cli.update_cmd_windows as update_cmd_windows
+    _pin_managed_checkout(monkeypatch)
 
     profile_home = tmp_path / "profiles" / "default"
     profile_home.mkdir(parents=True)
@@ -335,6 +312,7 @@ def _two_services():
 
 def _patch_service_discovery(monkeypatch, services):
     import hermes_cli.gateway as gateway_mod
+    _pin_managed_checkout(monkeypatch)
 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
     monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_k: [])
@@ -398,6 +376,7 @@ def test_pause_windows_gateways_aborts_when_service_discovery_is_indeterminate(
 ):
     """An indeterminate SCM scan aborts before any gateway is torn down."""
     import hermes_cli.gateway as gateway_mod
+    _pin_managed_checkout(monkeypatch)
 
     monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_k: [])
     monkeypatch.setattr(
@@ -423,6 +402,7 @@ def test_pause_windows_gateways_aborts_when_gateway_pid_discovery_is_indetermina
 ):
     """Failed PID discovery aborts instead of reading as "no gateways running"."""
     import hermes_cli.gateway as gateway_mod
+    _pin_managed_checkout(monkeypatch)
 
     monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_k: [])
     monkeypatch.setattr(gateway_mod, "find_windows_gateway_services", lambda **_k: [])
@@ -603,6 +583,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     """
     import gateway.status as status_mod
     import hermes_cli.gateway as gateway_mod
+    _pin_managed_checkout(monkeypatch)
 
     venv_exe = str(_project_venv_root() / "Scripts" / "python.exe")
     worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"

@@ -869,6 +869,15 @@ def _discover_windows_gateways():
         running_pids = list(dict.fromkeys(
             [*find_gateway_pids(all_profiles=True), *sorted(profile_processes), *sorted(service_gateway_pids)]
         ))
+    # The process-table scan is host-wide, and an argv-only gateway cannot be tied
+    # safely to this Hermes home. Stop before writing any markers or sending any
+    # pause request if it found a PID without a profile PID-file or service owner.
+    unmapped_pids = sorted(set(running_pids) - set(profile_processes) - service_gateway_pids)
+    if unmapped_pids:
+        raise RuntimeError(
+            "Refusing Windows update gateway pause: process(es) without a verified "
+            f"profile or service owner: {', '.join(map(str, unmapped_pids))}"
+        )
     return profile_processes, service_gateways, service_gateway_pids, running_pids
 
 
@@ -926,10 +935,21 @@ def _pause_windows_gateways_for_update() -> dict | None:
     from hermes_cli.update_cmd import _m
     if not _m()._is_windows():
         return None
+    # The process scanner below is host-wide. A checkout outside the effective
+    # Hermes home (including the default home when HERMES_HOME is unset) must
+    # not acquire a live gateway pause token or mutate its checkout while an
+    # unrelated gateway may still be using it.
+    from hermes_constants import get_default_hermes_root
+    managed_root = (get_default_hermes_root().resolve() / "hermes-agent").resolve()
+    if Path(_m().PROJECT_ROOT).resolve() != managed_root:
+        raise RuntimeError(
+            "Refusing Windows update gateway pause outside the managed Hermes checkout"
+        )
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
         from gateway.status import get_process_start_time, terminate_pid
-        from hermes_cli.gateway import _capture_gateway_argv
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
+    if set(running_pids) - set(profile_processes) - service_gateway_pids:
+        raise RuntimeError("Refusing Windows update gateway pause with an unverified process owner")
     if not running_pids:
         token = _windows_cold_start_plan()
         # Other profiles may hold a dead attestation even when the active profile owes nothing
@@ -944,18 +964,11 @@ def _pause_windows_gateways_for_update() -> dict | None:
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     drain_timeout = _gateway_drain_timeout(socket_acks)
     survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
-    unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
-    # Snapshot unmapped gateways' argv *before* force-killing so resume can replay it.
-    # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``).
-    unmapped = [
-        {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
-                                            "Could not capture argv for unmapped gateway %s: %s", int(pid))}
-        for pid in unmapped_pids
-    ]
-    # Tree-kill survivors, unmapped gateways, and pre-drain launchers; a launcher
-    # already gone with its worker raises ProcessLookupError and is skipped.
+    # Tree-kill only verified profile survivors and their pre-drain launchers;
+    # an unmapped host-wide scan result has already aborted in discovery.
+    # A launcher already gone with its worker raises ProcessLookupError.
     force_killed = []
-    for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
+    for pid in sorted(set(survivors).union(launcher_pids)):
         with suppress(ProcessLookupError, PermissionError, OSError):
             terminate_pid(int(pid), force=True, expected_start_time=get_process_start_time(int(pid)))
             force_killed.append(int(pid))
@@ -963,16 +976,12 @@ def _pause_windows_gateways_for_update() -> dict | None:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
     if force_killed:
         print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
-    if unmapped_pids:
-        print(f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping")
-        if any(not u.get("argv") for u in unmapped):  # no recoverable cmdline (psutil missing, denied, gone)
-            print("    Restart manually after update: hermes gateway run")
-    token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}
+    token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": [], "unmapped": []}
     # Every profile with ANY live gateway at discovery counts as running: service-supervised ones skip the
     # socket pause (absent from ``profiles``) but the SCM restart brings them back, not a cold-start.
     running_profiles = set(profiles) | {str(p.profile) for p in profile_processes.values()} | {str(s.profile) for s in service_gateways}
     _record_attested_cold_start_profiles(token, running_profiles)
-    return _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
+    return _pause_windows_gateway_services(service_gateways, token, profiles, [])
 
 
 def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> None:

@@ -103,6 +103,8 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
 
     homes = {"default": tmp_path, "beta": tmp_path / "profiles" / "beta"}
     homes["beta"].mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path / "hermes-agent")
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)

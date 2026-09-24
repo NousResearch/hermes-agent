@@ -150,6 +150,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
   const selectionVersionRef = useRef(0)
+  const canSelectStartupSession = useCallback(() => selectionVersionRef.current === 0, [])
 
   const resetSession = useCallback(() => {
     cancelResumeScrollRef.current?.()
@@ -357,12 +358,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const resumeById = useCallback(
-    (id: string) => {
-      selectionVersionRef.current++
+    (id: string, startup = false) => {
+      if (startup && !canSelectStartupSession()) return Promise.resolve()
+      if (!startup) selectionVersionRef.current++
+      const selectionVersion = selectionVersionRef.current
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
       return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+        if (startup && selectionVersionRef.current !== selectionVersion) return
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -374,6 +378,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
+            if (startup && selectionVersionRef.current !== selectionVersion) return
             const r = asRpcResult<SessionResumeResult>(raw)
 
             if (!r) {
@@ -418,12 +423,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
           })
           .catch((e: Error) => {
+            if (startup && selectionVersionRef.current !== selectionVersion) return
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
           })
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [canSelectStartupSession, closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const guardBusySessionSwitch = useCallback(
@@ -442,6 +448,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   return useMemo(
     () => ({
       activateLiveSession,
+      canSelectStartupSession,
       closeSession,
       guardBusySessionSwitch,
       newLiveSession,
@@ -453,6 +460,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     }),
     [
       activateLiveSession,
+      canSelectStartupSession,
       closeSession,
       guardBusySessionSwitch,
       newLiveSession,

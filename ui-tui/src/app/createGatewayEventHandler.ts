@@ -437,7 +437,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   syncThemeToTerminalBackground()
 
   const { rpc } = ctx.gateway
-  const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
+  const { STARTUP_RESUME_ID, canSelectStartupSession, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, bellOnPrompt, stdout, sys } = ctx.system
 
   // display.bell_on_prompt — BEL whenever a blocking prompt modal opens
@@ -755,6 +755,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // users aren't surprised.  (Shares the memoized full-config read.)
     getFullConfigOnce()
       .then(cfg => {
+        if (!canSelectStartupSession()) return
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
           patchUiState({ status: 'forging session…' })
           newSession(undefined, undefined, true)
@@ -764,11 +765,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+          if (!canSelectStartupSession()) return
           const target = r?.session_id
 
           if (target) {
             patchUiState({ status: 'resuming most recent…' })
-            resumeById(target)
+            resumeById(target, true)
             scheduleStartupPrompt()
 
             return
@@ -780,6 +782,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         })
       })
       .catch(() => {
+        if (!canSelectStartupSession()) return
         patchUiState({ status: 'forging session…' })
         newSession(undefined, undefined, true)
         scheduleStartupPrompt()

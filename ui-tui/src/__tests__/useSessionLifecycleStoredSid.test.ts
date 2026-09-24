@@ -123,4 +123,30 @@ describe('useSessionLifecycle durable session id', () => {
     expect(getUiState().sid).toBe('resumed')
     expect(rpc).not.toHaveBeenCalledWith('session.create', expect.anything())
   })
+
+  it('keeps an explicit resume when an auto-resume response arrives later', async () => {
+    let finishRecent!: (value: unknown) => void
+    const recent = new Promise<unknown>(resolve => { finishRecent = resolve })
+    const request = vi.fn(async (method: string) => method === 'session.resume' ? recent : null)
+    const rpc = vi.fn(async () => ({ provider_configured: true }))
+    const setHistoryItems = vi.fn()
+    const api = mountLifecycle(request, rpc, setHistoryItems)
+    await vi.waitFor(() => expect(api()).toBeTruthy())
+
+    const autoResume = api().resumeById('recent', true)
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('session.resume', { cols: 80, session_id: 'recent' }))
+    request.mockImplementationOnce(async () => ({
+      messages: [{ role: 'user', text: 'chosen conversation' }],
+      session_id: 'chosen',
+      status: 'idle'
+    }))
+    await api().resumeById('chosen')
+    finishRecent({ messages: [], session_id: 'recent', status: 'idle' })
+    await autoResume
+
+    expect(getUiState().sid).toBe('chosen')
+    expect(getUiState().status).toBe('ready')
+    expect(setHistoryItems).toHaveBeenLastCalledWith([{ role: 'user', text: 'chosen conversation' }])
+    expect(api().canSelectStartupSession()).toBe(false)
+  })
 })

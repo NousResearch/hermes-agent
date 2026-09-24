@@ -39,6 +39,7 @@ const buildCtx = (appended: Msg[]) =>
     },
     session: {
       STARTUP_RESUME_ID: '',
+      canSelectStartupSession: () => true,
       colsRef: ref(80),
       newSession: vi.fn(),
       resetSession: vi.fn(),
@@ -1182,8 +1183,35 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-most-recent'))
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-most-recent', true))
     expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it.each(['config', 'recent', 'fallback'] as const)('does not override an explicit resume after delayed %s lookup', async phase => {
+    const ctx = buildCtx([])
+    const pending = Promise.withResolvers<any>()
+    let selected = false
+    ctx.session.canSelectStartupSession = () => !selected
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return phase === 'config' || phase === 'fallback' ? pending.promise : { config: { display: { tui_auto_resume_recent: true } } }
+      }
+      if (method === 'session.most_recent') return pending.promise
+      return null
+    })
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+    if (phase === 'recent') {
+      await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledWith('session.most_recent', {}))
+    }
+    selected = true
+    patchUiState({ sid: 'chosen', status: 'ready' })
+    if (phase === 'fallback') pending.reject(new Error('config unavailable'))
+    else pending.resolve({ config: { display: { tui_auto_resume_recent: true } }, session_id: 'recent' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+    expect(getUiState().status).toBe('ready')
+    expect(getUiState().sid).toBe('chosen')
   })
 
   it('on gateway.ready with auto_resume on but no eligible session, falls back to new', async () => {

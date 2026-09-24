@@ -904,6 +904,7 @@ export function useMainApp(gw: GatewayClient) {
         gateway,
         session: {
           STARTUP_RESUME_ID,
+          canSelectStartupSession: session.canSelectStartupSession,
           colsRef,
           newSession: session.newSession,
           recoverSidRef,
@@ -928,6 +929,7 @@ export function useMainApp(gw: GatewayClient) {
       composerActions.setInput,
       gateway,
       panel,
+      session.canSelectStartupSession,
       session.newSession,
       session.resetSession,
       session.resumeById,

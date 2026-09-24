@@ -490,12 +490,13 @@ export interface GatewayEventHandlerContext {
   gateway: GatewayServices
   session: {
     STARTUP_RESUME_ID: string
+    canSelectStartupSession: () => boolean
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string, startup?: boolean) => void
     // Session carried across a transport loss or child exit, cleared after resume.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => Promise<void>
+    resumeById: (id: string, startup?: boolean) => Promise<void>
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {

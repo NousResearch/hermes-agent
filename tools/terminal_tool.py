@@ -1486,6 +1486,53 @@ def _handle_terminal(args, **kw):
     )
 
 
+# --- Compact schema profile (agent.compact_tool_schemas) ---
+# Keeps every hard rule from the long text: the tool-routing bans, the
+# never-pipe-through-tail rule (it masks exit codes), state persistence,
+# never nohup/setsid/'&', and pty for interactive CLIs.
+TERMINAL_COMPACT_DESCRIPTION = (
+    "Run shell commands; cwd, filesystem and env persist across calls. Not "
+    "for cat/tail (read_file), grep/ls (search_files), sed/awk (patch), or "
+    "heredoc writes (write_file). NEVER pipe a build/test through tail/cat "
+    "nor add '|| echo failed' — exit_code would report the pipe, hiding "
+    "failures. Foreground returns as soon as it ends, so set timeout high. "
+    "Long work: background=true, never nohup/'&'. Interactive: pty=true."
+)
+
+TERMINAL_COMPACT_PARAMS = {
+    "background": (
+        "Run in the background, returning a session_id. Pair with "
+        "notify_on_complete=true for anything with a defined end; leave silent "
+        "only for daemons that never exit. Manage via process(). Health-check "
+        "a started server in a separate call — no sleep loops."
+    ),
+    "timeout": (
+        "Max seconds to wait (default 180, foreground max 600). Returns as "
+        "soon as the command finishes, so set it high. Over 600s is rejected — "
+        "use background=true."
+    ),
+    "workdir": (
+        "Absolute cwd for this command. Defaults to the session cwd; after a "
+        "cd, the result's 'cwd' field is authoritative."
+    ),
+    "pty": (
+        "Pseudo-terminal mode for interactive CLIs (REPLs, Codex), which hang "
+        "without it. Local and SSH backends only. Default false."
+    ),
+    "notify_on_complete": (
+        "With background=true: one notification on exit. Right for nearly "
+        "every bounded long task. MUTUALLY EXCLUSIVE with watch_patterns, "
+        "which is dropped if both are set."
+    ),
+    "watch_patterns": (
+        "Strings to watch for in background output. ONLY for one-shot signals "
+        "from processes that never exit (e.g. 'startup complete'). NOT for "
+        "end-of-run markers (use notify_on_complete) or per-iteration "
+        "patterns — rate-limited to 1/15s and auto-disabled if it over-fires. "
+        "MUTUALLY EXCLUSIVE with notify_on_complete."
+    ),
+}
+
 registry.register(
     name="terminal",
     toolset="terminal",
@@ -1494,6 +1541,8 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    compact_description=TERMINAL_COMPACT_DESCRIPTION,
+    compact_parameter_descriptions=TERMINAL_COMPACT_PARAMS,
 )
 
 

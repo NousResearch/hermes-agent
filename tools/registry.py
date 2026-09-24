@@ -29,6 +29,100 @@ _TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
 _MAX_LOGGED_ERROR_CHARS = 8192
 
 
+# ---------------------------------------------------------------------------
+# Compact tool-schema profile (agent.compact_tool_schemas)
+#
+# Prose-heavy tool descriptions are a per-request tax: the biggest core tools
+# alone carry ~9 KB of description + parameter prose re-sent on every API call.
+# A tool may register `compact_description` and `compact_parameter_descriptions`
+# alongside its schema; when the profile is on, get_definitions() swaps that
+# prose in. Structure — parameter names, types, enums, required lists — is never
+# touched, so tool-calling behaviour is unaffected.
+#
+# Prompt caching: the verdict is read once per get_definitions() pass and tool
+# definitions are frozen for the life of a session, so flipping the config never
+# rewrites an in-flight conversation's schemas.
+# ---------------------------------------------------------------------------
+
+_COMPACT_CACHE_TTL_SECONDS = 30.0
+_compact_cache: Optional[tuple[float, bool]] = None
+_compact_cache_lock = threading.Lock()
+
+
+def _reset_compact_cache_for_tests() -> None:
+    """Drop the memoized compact-profile verdict. Test-only."""
+    global _compact_cache
+    with _compact_cache_lock:
+        _compact_cache = None
+
+
+def _read_compact_schemas_config() -> bool:
+    """Read agent.compact_tool_schemas from config. Never raises."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        if not isinstance(agent_cfg, dict):
+            return False
+        return bool(agent_cfg.get("compact_tool_schemas", False))
+    except Exception as exc:  # config unreadable / import cycle / bad YAML
+        logger.debug("Could not read agent.compact_tool_schemas: %s", exc)
+        return False
+
+
+def compact_schemas_enabled() -> bool:
+    """Whether the compact tool-schema profile is active.
+
+    Memoized briefly: get_definitions() can run many times per turn and this
+    otherwise re-parses config.yaml on each pass.
+    """
+    global _compact_cache
+    now = time.monotonic()
+    with _compact_cache_lock:
+        cached = _compact_cache
+        if cached is not None and (now - cached[0]) < _COMPACT_CACHE_TTL_SECONDS:
+            return cached[1]
+    enabled = _read_compact_schemas_config()
+    with _compact_cache_lock:
+        _compact_cache = (now, enabled)
+    return enabled
+
+
+def _apply_compact_profile(
+    schema: dict,
+    compact_description: Optional[str],
+    compact_parameter_descriptions: Optional[Dict[str, str]],
+) -> dict:
+    """Return *schema* with compact prose swapped in.
+
+    Copies every level it rewrites so the registered schema dict is never
+    mutated. Only ``description`` strings change: an unknown parameter name in
+    ``compact_parameter_descriptions`` is ignored rather than inventing a
+    property, so a stale compact entry can never widen the tool's contract.
+    """
+    if not compact_description and not compact_parameter_descriptions:
+        return schema
+
+    out = dict(schema)
+    if compact_description:
+        out["description"] = compact_description
+
+    if compact_parameter_descriptions:
+        params = out.get("parameters")
+        if isinstance(params, dict) and isinstance(params.get("properties"), dict):
+            params = dict(params)
+            properties = dict(params["properties"])
+            for pname, text in compact_parameter_descriptions.items():
+                spec = properties.get(pname)
+                if isinstance(spec, dict):
+                    properties[pname] = {**spec, "description": text}
+            params["properties"] = properties
+            out["parameters"] = params
+
+    return out
+
+
 def _bound_error_text(text: str) -> str:
     """Bound an error body destined for model context; logs keep a longer prefix."""
     if len(text) <= _MAX_TOOL_ERROR_CHARS:
@@ -195,6 +289,13 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    # Optional compact prose used when agent.compact_tool_schemas is on.
+    # compact_description replaces the tool description;
+    # compact_parameter_descriptions maps parameter name -> terser text.
+    # Both are prose-only: structure is never rewritten, and a tool that supplies
+    # neither is served unchanged under either profile.
+    compact_description: Optional[str] = None
+    compact_parameter_descriptions: Optional[Dict[str, str]] = None
 
 
 class _PluginOverridePolicy:
@@ -663,7 +764,10 @@ class ToolRegistry:
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: int | float | None = None,
-        dynamic_schema_overrides: Callable = None, override: bool = False,
+        dynamic_schema_overrides: Callable = None,
+        compact_description: Optional[str] = None,
+        compact_parameter_descriptions: Optional[Dict[str, str]] = None,
+        override: bool = False,
         scope: Optional[str] = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
@@ -728,7 +832,9 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides,
+                compact_description=compact_description,
+                compact_parameter_descriptions=compact_parameter_descriptions)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
@@ -839,6 +945,9 @@ class ToolRegistry:
         absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
         result = []
         check_results: Dict[Callable, bool] = {}
+        # Resolved once per pass: every tool in one request must agree on the
+        # profile, and tool definitions are frozen per session anyway.
+        compact = compact_schemas_enabled()
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
@@ -861,6 +970,16 @@ class ToolRegistry:
                         name, exc)
                 if isinstance(overrides, dict):
                     schema_with_name.update(overrides)
+            # Compaction runs LAST so it wins over the long prose, while any
+            # config-derived parameter text a dynamic override just produced
+            # (delegate_task's live concurrency/nesting limits) survives
+            # untouched unless the tool explicitly compacts that parameter.
+            if compact:
+                schema_with_name = _apply_compact_profile(
+                    schema_with_name,
+                    entry.compact_description,
+                    entry.compact_parameter_descriptions,
+                )
             result.append({"type": "function", "function": schema_with_name})
         return result
 

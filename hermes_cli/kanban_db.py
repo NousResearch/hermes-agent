@@ -3131,21 +3131,27 @@ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> 
 def edit_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, priority: Optional[int] = None,
+    completion_contract: Optional[str] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
     changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
+        field for field, value in (("title", title), ("body", body), ("priority", priority),
+                                   ("completion_contract", completion_contract))
         if value is not None
     ]
+    if completion_contract is not None:
+        from hermes_cli.kanban_pr_acceptance import validate_contract
+        completion_contract = validate_contract(completion_contract)
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
             return False
         assignments = []
         params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
+        for field, value in (("title", title), ("body", body), ("priority", priority),
+                             ("completion_contract", completion_contract)):
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)

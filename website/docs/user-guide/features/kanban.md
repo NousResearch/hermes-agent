@@ -49,7 +49,8 @@ The eight canonical collaboration patterns are catalogued in [Collaboration patt
 
 Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
 `https://github.com/OWNER/REPO/pull/123` URL for existing work). `kanban_create`
-accepts the same `completion_contract`. Use `local-only` for intentionally local
+accepts the same `completion_contract`. Use `kanban edit <id> --completion-contract
+CONTRACT` to re-scope an existing card. Use `local-only` for intentionally local
 work; existing and undeclared cards retain that default. Prose URLs are not policy.
 
 After publishing, pass `metadata.published_pr` to completion. The first matching
@@ -944,7 +945,7 @@ hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
-        [--priority N]
+        [--priority N] [--completion-contract local-only|OWNER/REPO|https://github.com/OWNER/REPO/pull/123]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)

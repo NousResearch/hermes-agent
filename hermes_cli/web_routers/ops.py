@@ -226,9 +226,8 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
 
     def _save():
-        subs = wh._load_subscriptions()
-        subs[name] = route
-        wh._save_subscriptions(subs)
+        with wh._subscription_transaction() as subs:
+            subs[name] = route
         return _webhook_route_summary(name, route, wh._get_webhook_base_url())
 
     summary = await config_scoped_to_thread(profile, _save)
@@ -236,16 +235,12 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     return summary
 
 
-def _webhook_subs_with(name: str):
-    """(module, subscriptions, key) for an existing route; 404 otherwise. Call inside the
-    request's profile scope — ``_load_subscriptions`` resolves the home at call time."""
-    import hermes_cli.webhook as wh
-
+def _webhook_subs_with(subs: dict, name: str):
+    """Find an existing route inside the profile-scoped registry transaction."""
     key = (name or "").strip().lower()
-    subs = wh._load_subscriptions()
     if key not in subs:
         raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
-    return wh, subs, key
+    return key
 
 
 @router.delete("/api/webhooks/{name}")
@@ -253,9 +248,9 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
     profile = destructive_profile(profile, "DELETE /api/webhooks/{name}")
 
     def _run():
-        wh, subs, key = _webhook_subs_with(name)
-        del subs[key]
-        wh._save_subscriptions(subs)
+        import hermes_cli.webhook as wh
+        with wh._subscription_transaction() as subs:
+            del subs[_webhook_subs_with(subs, name)]
 
     await config_scoped_to_thread(profile, _run)
     return {"ok": True}
@@ -266,10 +261,11 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
     """Disabled routes stay on disk (re-enable later) but the gateway rejects
     their events with 403; it hot-reloads the file, so no restart is needed."""
     def _run():
-        wh, subs, key = _webhook_subs_with(name)
-        subs[key]["enabled"] = bool(body.enabled)
-        wh._save_subscriptions(subs)
-        return key
+        import hermes_cli.webhook as wh
+        with wh._subscription_transaction() as subs:
+            key = _webhook_subs_with(subs, name)
+            subs[key]["enabled"] = bool(body.enabled)
+            return key
 
     key = await config_scoped_to_thread(profile, _run)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}

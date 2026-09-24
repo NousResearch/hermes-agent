@@ -3,10 +3,12 @@
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import time
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict
 
@@ -39,6 +41,47 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
     # The file holds per-route HMAC secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
     # rename (no umask window) and re-asserts the mode on the destination afterwards.
     atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
+
+
+@contextmanager
+def _subscription_transaction():
+    """Serialize the entire mutation with plugin writers on a persistent sibling inode.
+
+    Readers retain their permissive legacy loader; writers must never interpret a
+    damaged or unreadable registry as empty and then overwrite it.
+    """
+    path = _subscriptions_path()
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
+    lock_path = path.with_name(path.name + ".lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            # Lock one byte of the persistent file; seek before every operation.
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            os.fchmod(fd, 0o600)
+        try:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                data = {}
+            if not isinstance(data, dict):
+                raise ValueError(f"Webhook subscriptions registry is not an object: {path}")
+            yield data
+            atomic_json_write(path, data, mode=_SUBSCRIPTIONS_FILE_MODE, fsync_dir=True)
+        finally:
+            if os.name == "nt":
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _get_webhook_config() -> dict:
@@ -116,13 +159,9 @@ def _cmd_subscribe(args):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
         return
 
-    subs = _load_subscriptions()
-    is_update = name in subs
-    existing = subs.get(name, {})
     profile_arg = getattr(args, "route_profile", None)
-    if profile_arg is None:
-        profile = existing.get("profile", "default")
-    else:
+    profile = "default"
+    if profile_arg is not None:
         from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
         try:
             profile = normalize_profile_name(profile_arg)
@@ -133,16 +172,13 @@ def _cmd_subscribe(args):
         if not profile_exists(profile):
             print(f"Error: Profile '{profile}' does not exist.")
             return
-    secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
-        "secret": secret,
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
-        "profile": profile,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -180,8 +216,14 @@ def _cmd_subscribe(args):
         route["script"] = script
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
-    subs[name] = route
-    _save_subscriptions(subs)
+    with _subscription_transaction() as subs:
+        is_update = name in subs
+        existing = subs.get(name, {})
+        profile = existing.get("profile", "default") if profile_arg is None else profile
+        secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
+        route["profile"] = profile
+        route["secret"] = secret
+        subs[name] = route
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
@@ -236,13 +278,12 @@ def _cmd_list(args):
 
 def _cmd_remove(args):
     name = args.name.strip().lower()
-    subs = _load_subscriptions()
-    if name not in subs:
-        print(f"  No subscription named '{name}'.")
-        print("  Note: Static routes from config.yaml cannot be removed here.")
-        return
-    del subs[name]
-    _save_subscriptions(subs)
+    with _subscription_transaction() as subs:
+        if name not in subs:
+            print(f"  No subscription named '{name}'.")
+            print("  Note: Static routes from config.yaml cannot be removed here.")
+            return
+        del subs[name]
     print(f"  Removed webhook subscription: {name}")
 
 

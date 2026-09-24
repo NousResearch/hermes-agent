@@ -462,6 +462,80 @@ def test_original_pruned_args_never_reach_real_managed_relay(tmp_path, monkeypat
         relay_runtime._reset_for_tests()
 
 
+def test_relay_request_rewrite_is_blocked_before_execution_interceptor(tmp_path, monkeypatch):
+    """Clean model args may become poisoned inside Relay request middleware; the
+    terminal scope-local guard must reject that effective request before execution."""
+    pytest.importorskip("nemo_relay")
+    from agent import relay_runtime
+
+    session_id = "session-pruned-relay-rewrite"
+    consumer = "test.context-pruned-relay-rewrite-guard"
+    request_name = "test-context-pruned-request-rewrite"
+    execution_name = "test-context-pruned-execution-short-circuit"
+    execution_seen = []
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    relay_runtime._reset_for_tests()
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id=session_id,
+        platform="cli",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease, turn_id="turn-pruned-relay-rewrite", task_id="task-1",
+    )
+    lease.host.retain_managed_execution(consumer)
+    relay = lease.host.relay
+    pruned = _compressed_args("body")
+
+    def rewrite_request(_name, args):
+        assert args == {"body": "complete"}
+        return dict(pruned)
+
+    async def short_circuit(_name, args, next_call):
+        del next_call
+        execution_seen.append(dict(args))
+        return relay.ToolExecutionInterceptOutcome({"intercepted": True})
+
+    relay.intercepts.register_tool_request(request_name, 1, False, rewrite_request)
+    relay.intercepts.register_tool_execution(execution_name, 1, short_circuit)
+    try:
+        assert lease.host.managed_execution_enabled()
+
+        agent = _make_agent("test_effectful_write")
+        agent.session_id = session_id
+        tc = _mock_tool_call(
+            "test_effectful_write",
+            json.dumps({"body": "complete"}),
+            "c-pruned-relay-request-rewrite",
+        )
+        msg = SimpleNamespace(content="", tool_calls=[tc])
+        messages = []
+
+        with (
+            patch("hermes_cli.middleware.apply_tool_request_middleware") as hermes_request_middleware,
+            patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+        ):
+            agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+        # Relay request middleware did rewrite the call, but the terminal Relay
+        # request guard rejected it before either execution middleware or Hermes'
+        # downstream request/dispatch pipeline received the poisoned payload.
+        assert execution_seen == []
+        hermes_request_middleware.assert_not_called()
+        dispatch.assert_not_called()
+        payload = json.loads(messages[0]["content"])
+        assert payload["error"] == "suspected_pruned_tool_arguments"
+        assert payload["argument_paths"] == ["$.body"]
+    finally:
+        relay.intercepts.deregister_tool_execution(execution_name)
+        relay.intercepts.deregister_tool_request(request_name)
+        lease.host.release_managed_execution(consumer)
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+        relay_runtime._reset_for_tests()
+
+
 def test_pruned_block_sanitizes_post_hook_and_outbound_tool_input():
     agent = _make_agent("test_effectful_write")
     args = _compressed_args("body")

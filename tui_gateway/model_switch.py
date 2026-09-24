@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import os
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -13,6 +14,35 @@ _registry = HandlerRegistry()
 
 
 _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
+
+
+def _model_switch_skew_guard() -> str | None:
+    """Refuse a model switch when this backend is running pre-update code, else ``None``.
+
+    Long-lived stdio-TUI / Desktop-owned ``hermes serve`` backends freeze ``sys.modules`` at
+    boot; after ``hermes update`` replaces the checkout underneath one, the switch chain's
+    first-time lazy imports can resolve a freshly-pulled module against a stale cached
+    dependency -> ``ImportError: cannot import name ...`` (the Desktop surfaced it raw in the
+    model-switch toast). Mirrors the gateway's ``_model_switch_skew_guard`` and the dashboard's
+    ``_dashboard_code_skew_guard`` (#86207); silent when no boot revision was recorded
+    (non-git installs), so it is never a false positive.
+    """
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
+        hint = ("use Restart backend in Hermes Desktop, or quit and reopen the app, "
+                "to load the new code")
+    else:
+        hint = "quit and relaunch Hermes to load the new code"
+    return (
+        f"Restart required: this backend is running code from {boot_rev} but the checkout "
+        f"on disk is now {disk_rev}. Switching models would risk a stale-module crash — {hint}."
+    )
+
 
 
 def _snapshot_agent_model_runtime(agent) -> dict:
@@ -280,6 +310,8 @@ def _apply_model_switch(
     sid: str, session: dict, raw_input: str, *, confirm_expensive_model: bool = False,
     pin_session_override: bool = True, parsed_flags: Any | None = None,
     persist_override: bool | None = None) -> dict:
+    if skew := _model_switch_skew_guard():
+        raise ValueError(skew)
     from hermes_cli.model_switch import switch_model
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)

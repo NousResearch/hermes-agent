@@ -480,8 +480,14 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     setSrc('')
     void artifactImageSrc(artifact.value)
       .then(nextSrc => {
-        if (active) {
+        if (!active) {
+          return
+        }
+
+        if (nextSrc) {
           setSrc(nextSrc)
+        } else {
+          onImageError(artifact.id)
         }
       })
       .catch(() => {

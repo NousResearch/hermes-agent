@@ -280,9 +280,19 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                    # Drop the half-open socket so the next iteration raises in
+                    # _read_events and goes through the backoff path again.
+                    try:
+                        await self._cleanup_ws()
+                    except Exception as cleanup_exc:
+                        logger.debug("[%s] Cleanup after failed reconnect: %s", self.name, cleanup_exc)
 
     async def _read_events(self) -> None:
-        if not self._ws:
+        # A closed socket must raise here, not fall through: otherwise
+        # _listen_loop calls us in a tight loop with no suspending await and
+        # starves the whole event loop (observed 2026-09-13: 11 days at 99% CPU
+        # after a reconnect failed during authentication).
+        if not self._ws or self._ws.closed:
             raise RuntimeError("WebSocket not connected")
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()

@@ -118,6 +118,31 @@ def require(value: Optional[str], detail: str) -> str:
     return stripped
 
 
+REDACTED_CREDENTIAL_WRITE_DETAIL = (
+    "Refusing to save a redacted credential preview; re-enter the full secret to replace it."
+)
+
+
+def redacted_credential_preview(value: Any) -> Optional[str]:
+    """Return a display-only credential sentinel that can never gain write authority."""
+    if not value:
+        return None
+    from hermes_cli.config import redact_key
+    return f"«redacted:{redact_key(str(value))}»"
+
+
+def is_redacted_credential_preview(submitted: Any, current: Any = None) -> bool:
+    """Recognize current and stale dashboard previews without guessing from key shape."""
+    value = str(submitted or "")
+    if value == "«redacted-secret»" or (value.startswith("«redacted:") and value.endswith("»")):
+        return True
+    if current:
+        # Compatibility with a page opened before the non-reusable sentinel contract.
+        from hermes_cli.config import redact_key
+        return value == redact_key(str(current))
+    return False
+
+
 # Corrupt-store reporting for polled read endpoints. The dashboard polls analytics every few
 # seconds; a persistently malformed state.db once produced ~520K identical tracebacks in 24 h
 # (#96591). One WARNING per store per interval, then debug; the caller gets an explicit status

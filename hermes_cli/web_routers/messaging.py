@@ -25,14 +25,17 @@ from gateway.status import (
     multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
     retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
+from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import (
+    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
+    redacted_credential_preview,
+)
 from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
@@ -196,6 +199,11 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
+def _messaging_env_value(key: str, env_on_disk: dict[str, str], *, scoped: bool) -> str:
+    """Resolve the credential source shared by Messaging GET and write preflight."""
+    return env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
+
+
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None,
@@ -225,14 +233,12 @@ def _messaging_platform_payload(
         runtime_platform = {}
 
     def env_value(key: str) -> str:
-        # Profile-scoped: judge only the profile's own .env — the dashboard process's
-        # os.environ carries the ROOT install's .env and would report root credentials as the profile's.
-        return env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
+        return _messaging_env_value(key, env_on_disk, scoped=scoped)
 
     env_vars = [
         {
             "key": key, "required": key in entry["required_env"], "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None, **_messaging_env_info(key),
+            "redacted_value": redacted_credential_preview(value), **_messaging_env_info(key),
         }
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])
     ]
@@ -884,12 +890,9 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                 trimmed = value.strip()
                 if not trimmed:
                     continue
-                current = env_on_disk.get(key) or ("" if scoped_dir is not None else os.getenv(key, ""))
-                if current and trimmed == redact_key(current):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Refusing to save a redacted credential preview; re-enter the full secret to replace it.",
-                    )
+                current = _messaging_env_value(key, env_on_disk, scoped=scoped_dir is not None)
+                if is_redacted_credential_preview(trimmed, current):
+                    raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
                 _validate_messaging_env_value(platform_id, key, trimmed)
                 updates[key] = trimmed
 

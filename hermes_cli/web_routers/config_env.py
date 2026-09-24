@@ -11,7 +11,10 @@ import asyncio
 import time
 import urllib.parse
 from fastapi import APIRouter
-from hermes_cli.web_routers._common import http_failure, scoped_to_thread
+from hermes_cli.web_routers._common import (
+    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
+    redacted_credential_preview, scoped_to_thread,
+)
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
@@ -21,7 +24,7 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,10 +49,6 @@ _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
-
-_REDACTED_CREDENTIAL_WRITE_DETAIL = (
-    "Refusing to save a redacted credential preview; re-enter the full secret to replace it."
-)
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
@@ -250,7 +249,7 @@ def _get_env_vars_sync(profile: Optional[str] = None):
         # gaps (description/url) and always supplies provider grouping hints.
         return {
             "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None,
+            "redacted_value": redacted_credential_preview(value),
             "description": info.get("description") or cat_meta.get("description", ""),
             "url": info.get("url") if info.get("url") is not None else cat_meta.get("url"),
             "category": info.get("category") or cat_meta.get("category", ""),
@@ -301,8 +300,8 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
 
         def _save():
             current = load_env().get(body.key)
-            if current and body.value == redact_key(current):
-                raise ValueError(_REDACTED_CREDENTIAL_WRITE_DETAIL)
+            if is_redacted_credential_preview(body.value, current):
+                raise ValueError(REDACTED_CREDENTIAL_WRITE_DETAIL)
             return save_provider_env_credential(body.key, body.value)
 
         return await scoped_to_thread(body.profile or profile, _save)
@@ -368,7 +367,7 @@ def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """
     plaintext = str(entry.get("api_key") or "").strip()
     if plaintext:
-        return True, redact_key(plaintext)
+        return True, redacted_credential_preview(plaintext)
     key_env = str(entry.get("key_env") or "").strip()
     if key_env:
         return True, f"${{{key_env}}}"
@@ -631,8 +630,12 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         display_preview = _api_key_display(existing)[1]
         existing_key_env = str(existing.get("key_env") or "").strip()
         stored_secret = load_env().get(existing_key_env) if existing_key_env else None
-        if submitted_key == display_preview or (stored_secret and submitted_key == redact_key(stored_secret)):
-            raise HTTPException(status_code=400, detail=_REDACTED_CREDENTIAL_WRITE_DETAIL)
+        if (
+            submitted_key == display_preview
+            or re.fullmatch(r"\$\{[^}]+\}", submitted_key)
+            or is_redacted_credential_preview(submitted_key, stored_secret)
+        ):
+            raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var
         entry.pop("api_key", None)

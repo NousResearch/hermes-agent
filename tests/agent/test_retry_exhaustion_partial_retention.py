@@ -121,3 +121,20 @@ def test_nonretryable_terminal_keeps_delivered_partial():
     assert result.get("partial") is True
     assert PARTIAL in result["final_response"]
     assert result["final_response"].strip() != str(result["error"]).strip()
+
+
+def test_exhausted_429_collapses_continuation_trail_into_one_assistant_row():
+    messages = _messages_with_fragment()
+    error = _Http(429, "HTTP 429: RequestBurstTooFast — slow down traffic growth")
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    result = max_retries_exhausted_result(
+        _Agent(), error, classified, max_retries=3, is_rate_limited=True,
+        error_msg=str(error).lower(), api_kwargs=None, api_messages=[], messages=messages,
+        conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", model="m", current_turn_user_idx=0,
+    )
+    # No dangling synthetic nudge: the turn persists as user -> one assistant row.
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[1]["content"] == PARTIAL
+    assert not any(m.get("_length_continuation_nudge") for m in messages)
+    assert result.get("partial") is True and PARTIAL in result["final_response"]

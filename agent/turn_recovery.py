@@ -773,37 +773,26 @@ def _failed_turn_result(final_response: str, messages: Any, api_call_count: int,
     }
 
 
-def _recover_delivered_partial_text(agent: Any, messages: Any) -> str:
-    """Visible assistant text already delivered this turn ("" when none).
+def settle_delivered_partial(agent: Any, messages: Any, current_turn_user_idx: Any) -> str:
+    """Visible text already delivered this turn ("" when none), collapsing any continuation
+    trail first so the terminal persist never keeps a dangling synthetic nudge (#119001).
 
-    ``build_api_request`` resets ``_current_streamed_assistant_text`` on every
-    attempt, so after a mid-stream death + continuation + pre-stream 429 the
-    live accumulator is empty and the only record is the
-    ``_length_continuation_fragment`` rows the truncation path appended (#119001).
+    ``build_api_request`` resets ``_current_streamed_assistant_text`` per attempt, so after a
+    mid-stream death + continuation + pre-stream error the live accumulator is empty and the
+    fragment rows (now collapsed into one assistant row) are the only record.
     """
-    try:
-        _live = getattr(agent, "_current_streamed_assistant_text", "") or ""
-    except Exception:
-        _live = ""
-    if isinstance(_live, str) and _live.strip():
-        return _live.strip()
-    _parts = [
-        m["content"].strip() for m in messages or ()
-        if isinstance(m, dict) and m.get("_length_continuation_fragment")
-        and isinstance(m.get("content"), str) and m["content"].strip()
-    ]
-    if not _parts:
-        return ""
-    # Same glue as _join_truncated_parts: newline where two parts would stick.
-    _joined = ""
-    for _part in _parts:
-        if _joined and not _joined[-1].isspace() and not _part[0].isspace():
-            _joined += "\n"
-        _joined += _part
-    return _joined.strip()
+    from agent.turn_truncation import collapse_continuation_trail
+    collapsed = collapse_continuation_trail(
+        agent, messages, current_turn_user_idx, finish_reason="error",
+    )
+    live = getattr(agent, "_current_streamed_assistant_text", "")
+    if isinstance(live, str) and live.strip():
+        from agent.agent_runtime_helpers import strip_think_blocks
+        return strip_think_blocks(agent, live).strip() or collapsed
+    return collapsed
 
 
-def _with_delivered_partial(final_response: str, error_summary: str, agent: Any, messages: Any) -> tuple:
+def _with_delivered_partial(final_response: str, error_summary: str, delivered: str) -> tuple:
     """Prepend delivered partial text to a terminal error body ("" unchanged).
 
     Returns ``(final_response, keep_partial)``; callers set ``result["partial"]``
@@ -811,8 +800,8 @@ def _with_delivered_partial(final_response: str, error_summary: str, agent: Any,
     retain the bubble instead of clearing it. ``final_response`` must stay
     distinct from ``error`` — that inequality is the retention contract.
     """
-    _delivered = _recover_delivered_partial_text(agent, messages)
-    if not _delivered or _delivered.strip() == (error_summary or "").strip():
+    _delivered = (delivered or "").strip()
+    if not _delivered or _delivered == (error_summary or "").strip():
         return final_response, False
     return f"{_delivered}\n\n{final_response}", True
 
@@ -984,6 +973,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
+    delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -1091,7 +1081,7 @@ def nonretryable_client_error_result(
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
     # "Provider error" and offers Retry instead of a re-login.
     _final_response, _keep_partial = _with_delivered_partial(
-        _final_response, _nonretryable_summary, agent, messages,
+        _final_response, _nonretryable_summary, delivered,
     )
     result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     result.update({
@@ -1118,7 +1108,7 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -1243,7 +1233,7 @@ def max_retries_exhausted_result(
     # shown, so keep it as the reply (marked failed) instead of an error-only
     # turn — the gateway flags ``partial`` and surfaces retain the bubble.
     _final_response, _keep_partial = _with_delivered_partial(
-        _final_response, _final_summary, agent, messages,
+        _final_response, _final_summary, delivered,
     )
     if _keep_partial:
         result["final_response"] = _final_response

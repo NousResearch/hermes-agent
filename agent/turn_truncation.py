@@ -42,6 +42,49 @@ _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
     "chats are reset automatically)."
 )
 
+def collapse_continuation_trail(
+    agent: Any, messages: List[Dict[str, Any]], current_turn_user_idx: Any, *,
+    finish_reason: str, parts: Optional[List[str]] = None,
+) -> str:
+    """Drop this turn's ``_length_continuation_fragment``/``_nudge`` rows and append one
+    assistant row holding the joined, think-stripped partial; returns that text ("" none).
+
+    ``parts=None`` (retry exhaustion, #119001): the text comes from the fragment rows and
+    nothing happens without a valid turn index or a trail — an unanswered synthetic nudge
+    must never be persisted, and an earlier turn's rows must never be read. Explicit
+    ``parts`` (the continuation ceiling) always appends, scanning from 0 without an index.
+    """
+    idx = current_turn_user_idx
+    valid_idx = isinstance(idx, int) and idx >= 0
+    if parts is None and not (valid_idx and idx < len(messages)):
+        return ""
+    turn_start = idx + 1 if valid_idx else 0
+    fragment_parts: List[str] = []
+    retained: List[Any] = []
+    found_trail = False
+    for message in messages[turn_start:]:
+        if isinstance(message, dict) and (
+            message.get("_length_continuation_fragment") or message.get("_length_continuation_nudge")
+        ):
+            found_trail = True
+            content = message.get("content")
+            if message.get("_length_continuation_fragment") and isinstance(content, str) and content:
+                fragment_parts.append(content)
+            continue
+        retained.append(message)
+    if parts is None and not found_trail:
+        return ""
+    messages[turn_start:] = retained
+    from agent.conversation_loop import _join_truncated_parts
+    partial = agent._strip_think_blocks(
+        _join_truncated_parts(fragment_parts if parts is None else parts)
+    ).strip()
+    if partial:
+        append_message(messages, {"role": "assistant", "content": partial, "finish_reason": finish_reason})
+    agent._session_messages = messages
+    return partial
+
+
 _THINKING_EXHAUSTED = (
     "💭 Reasoning exhausted the output token budget — no visible response was produced.",
     "⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning "
@@ -279,7 +322,11 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         _retry.restart_with_length_continuation = True
         return st.done("break")
 
-    partial_response = agent._strip_think_blocks(_join_truncated_parts(st.truncated_response_parts)).strip()
+    # Unanswered continue nudges made every later turn re-truncate: drop the trail.
+    partial_response = collapse_continuation_trail(
+        agent, messages, st.current_turn_user_idx, finish_reason="length",
+        parts=st.truncated_response_parts,
+    )
     # The one-shot reasoning-off override must not leak into the next turn.
     agent._ephemeral_reasoning_off = False
     agent._vprint(
@@ -290,20 +337,6 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
            else "no visible text was produced."),
         force=True, diagnostic=True,
     )
-    # Unanswered continue nudges made every later turn re-truncate: drop the trail.
-    idx = st.current_turn_user_idx
-    _turn_start = idx + 1 if isinstance(idx, int) and idx >= 0 else 0
-    messages[_turn_start:] = [
-        m for m in messages[_turn_start:]
-        if not (isinstance(m, dict) and (
-            m.get("_length_continuation_fragment") or m.get("_length_continuation_nudge")
-        ))
-    ]
-    if partial_response:
-        append_message(messages, {
-            "role": "assistant", "content": partial_response, "finish_reason": "length"
-        })
-    agent._session_messages = messages
     if filled is not None:
         notice = _WINDOW_FILLED.format(prompt=filled[0], ctx=filled[1])
         return st.end_turn(

@@ -21,7 +21,7 @@ from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
     log_api_error_attempt,
     max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
-    recover_before_classification, route_classified_error,
+    recover_before_classification, route_classified_error, settle_delivered_partial,
 )
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -54,6 +54,7 @@ def handle_api_error(
     conversation_history: Any, approx_tokens: Any, retry_count: Any, max_retries: Any,
     compression_attempts: Any, max_compression_attempts: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    current_turn_user_idx: Any = None,
 ) -> ApiErrorVerdict:
     """Recover from ``api_error`` in the original order. Every fallback activation must leave
     the retry loop with ``restart_with_rebuilt_messages`` armed (``"break"``) so the pre-API
@@ -211,7 +212,7 @@ def handle_api_error(
         api_messages=api_messages, api_kwargs=api_kwargs, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, approx_tokens=approx_tokens,
         retry_count=retry_count, max_retries=max_retries, compression_attempts=compression_attempts,
-        api_call_count=api_call_count,
+        api_call_count=api_call_count, current_turn_user_idx=current_turn_user_idx,
     )
     active_system_prompt = _ue.active_system_prompt
     retry_count = _ue.retry_count
@@ -252,6 +253,7 @@ def settle_unrecovered_error(
     _provider: Any, _base: Any, _model: Any, messages: Any, api_messages: Any, api_kwargs: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: Any, retry_count: Any,
     max_retries: Any, compression_attempts: Any, api_call_count: Any, error_context: Any = None,
+    current_turn_user_idx: Any = None,
 ) -> UnrecoveredErrorVerdict:
     """Decide the fate of an API error that every recovery chain declined: local validation /
     non-retryable client errors (Copilot stale-credential self-heal first, then fallback, then a
@@ -339,11 +341,13 @@ def settle_unrecovered_error(
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
                 retry_count = compression_attempts = 0
                 return _verdict("break")
+        # Terminal from here: collapse the continuation trail once, before the persist.
+        _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
         return _verdict("return", nonretryable_client_error_result(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
-            base_url=_base, model=_model,
+            base_url=_base, model=_model, delivered=_delivered,
         ))
 
     if retry_count >= max_retries:
@@ -380,12 +384,13 @@ def settle_unrecovered_error(
             if _ladder["action"] == "continue":
                 retry_count = 0
             return _verdict(_ladder["action"], _ladder.get("result"))
+        _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
         return _verdict("return", max_retries_exhausted_result(
             agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,
             messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
-            base_url=_base, model=_model,
+            base_url=_base, model=_model, delivered=_delivered,
         ))
 
     wait_time = compute_error_backoff(

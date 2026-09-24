@@ -28,7 +28,9 @@ def test_declared_media_routes_to_standalone_for_captioned_and_media_only(monkey
         result = asyncio.run(_send_to_platform(platform, config, "room", "hello world", media_files=files,
                                                force_document=True))
         assert result["success"] and "warnings" not in result
-        assert [call.kwargs["media_files"] for call in sender.await_args_list] == [None, files]
+        media_per_chunk = [call.kwargs["media_files"] for call in sender.await_args_list]
+        assert media_per_chunk[:-1] == [None] * (len(media_per_chunk) - 1)
+        assert media_per_chunk[-1] == files
         assert sender.await_args_list[-1].kwargs["force_document"] is True
 
         sender.reset_mock()

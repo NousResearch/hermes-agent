@@ -619,6 +619,11 @@ def test_peer_success_and_error_reads_are_bounded(monkeypatch):
 
 
 def test_real_http_drip_cannot_extend_the_whole_response_deadline():
+    # The client's ``timeout_seconds`` is ALSO urllib's socket timeout for connect + status
+    # line, so it must outlast the server thread's scheduling latency on a loaded box (0.1s
+    # produced "unreachable" from ``_read_status`` at ~30 procs; AGENTS.md floor is 2s).
+    # The drip (~211 bytes at >=50ms each, i.e. >=10s) stays far beyond that budget, so only
+    # a client that extends its deadline per chunk can ever read it to the end.
     class DripPeer(BaseHTTPRequestHandler):
         def do_GET(self):
             body = json.dumps({"pad": "x" * 200}).encode()
@@ -632,7 +637,7 @@ def test_real_http_drip_cannot_extend_the_whole_response_deadline():
                     self.wfile.flush()
                 except OSError:
                     break
-                time.sleep(0.02)
+                time.sleep(0.05)
 
         def log_message(self, *_args):
             return None
@@ -645,7 +650,7 @@ def test_real_http_drip_cannot_extend_the_whole_response_deadline():
         client = PeerRunsHTTPClient(
             base_url=f"http://127.0.0.1:{server.server_port}",
             api_key="",
-            timeout_seconds=0.1,
+            timeout_seconds=2.0,
         )
         with pytest.raises(PeerRunsHTTPError, match="time budget") as caught:
             client._request("/drip")
@@ -653,8 +658,47 @@ def test_real_http_drip_cannot_extend_the_whole_response_deadline():
         server.shutdown()
         thread.join(timeout=2)
 
-    assert time.monotonic() - started < 2.0
+    # 2s budget + serve_forever's 0.5s poll on shutdown, well under the >=10s drip.
+    assert time.monotonic() - started < 6.0
     assert caught.value.retryable is True
+
+
+def test_socket_timeout_on_the_last_budget_slice_is_the_time_budget_not_unreachable(
+    monkeypatch,
+):
+    """A socket timeout inside the bounded body read is the deadline expiring even when the
+    coarse monotonic clock has not ticked past ``deadline`` yet.
+
+    ``time.monotonic()`` is ``GetTickCount64`` on Windows (15.6ms resolution): the socket
+    timeout is tightened to the remaining slice, the OS waits it out and raises, and the
+    clock can still read below the deadline. Re-raising the bare ``TimeoutError`` there made
+    ``_request`` report "unreachable" -- the FLAKY shape of the real-HTTP drip test above.
+    """
+    import tui_gateway.hosted_room_peer_http as peer_http
+
+    now = [100.0]
+    monkeypatch.setattr(peer_http.time, "monotonic", lambda: now[0])
+    deadline = now[0] + 0.1
+
+    class StuckResponse:
+        headers = {"Content-Length": "16"}
+
+        def __init__(self):
+            self.timeouts: list[float] = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def read1(self, _size):
+            # The OS waited the whole remaining slice; the coarse clock has not moved.
+            now[0] = deadline - 0.01
+            raise TimeoutError("timed out")
+
+    response = StuckResponse()
+    with pytest.raises(PeerRunsHTTPError, match="time budget") as caught:
+        peer_http._read_body(response, max_bytes=1024, deadline=deadline, kind="")
+    assert caught.value.retryable is True
+    assert response.timeouts == [pytest.approx(0.1)]
 
 
 def test_peer_approval_sends_the_exact_request_id(peer_server, tmp_path):

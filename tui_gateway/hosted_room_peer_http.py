@@ -109,7 +109,13 @@ def _read_bounded_response(response: Any, *, max_bytes: int, deadline: float) ->
         try:
             chunk = reader(min(_PEER_RESPONSE_CHUNK_BYTES, max_bytes + 1 - len(body)))
         except Exception as exc:
-            if time.monotonic() >= deadline:
+            # A socket timeout here IS the budget expiring: the socket timeout was tightened
+            # to ``remaining`` above (or is the client's whole-request timeout, which is never
+            # shorter). Do not re-check the clock -- ``time.monotonic()`` is GetTickCount64 on
+            # Windows (15.6ms resolution), so it can still read below ``deadline`` after the
+            # OS has already waited the full remaining slice, and the bare TimeoutError would
+            # then be misreported as "unreachable" instead of "time budget".
+            if isinstance(exc, TimeoutError) or time.monotonic() >= deadline:
                 raise _PeerResponseDeadlineExceeded from exc
             raise
         if not chunk:

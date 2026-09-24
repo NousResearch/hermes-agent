@@ -297,13 +297,15 @@ def _working_attempt_is_current(compressor: Any, generation: Any) -> bool:
     """True when *generation* is still the last attempt that began summary work.
 
     Without a published marker (attribute-less compressor, or the attempt never reached
-    dispatch) supersession falls back to the entry-generation ownership check."""
+    dispatch) supersession falls back to the entry-generation ownership check; a compressor
+    that no attempt has ever claimed cannot have been superseded."""
     if not generation:
         return True
     with _COMPRESSOR_ATTEMPT_LOCK:
         marker = getattr(compressor, "_compression_working_attempt_generation", None)
         if marker is None:
-            return int(getattr(compressor, "_compression_attempt_generation", 0) or 0) == generation
+            entry_generation = int(getattr(compressor, "_compression_attempt_generation", 0) or 0)
+            return not entry_generation or entry_generation == generation
         return int(marker) == int(generation)
 
 

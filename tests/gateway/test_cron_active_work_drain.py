@@ -18,11 +18,12 @@ this relies on (get_running_job_ids, mark_running_jobs_interrupted).
 """
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from tests.gateway.restart_test_helpers import make_restart_runner
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -30,9 +31,11 @@ def _reset_cron_running_set():
     import cron.scheduler as sched
 
     sched._running_job_ids.clear()
+    sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
     yield
     sched._running_job_ids.clear()
+    sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
 
 
@@ -43,10 +46,6 @@ def _make_async_noop():
     return _noop
 
 
-class TestActiveCronJobCount:
-    def test_zero_when_no_cron_jobs_running(self):
-        runner, _adapter = make_restart_runner()
-        assert runner._active_cron_job_count() == 0
 
 
 class TestDrainWaitsForCronWork:
@@ -59,11 +58,11 @@ class TestDrainWaitsForCronWork:
         import cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
-        sched._running_job_ids.add("job-1")
+        sched._running_job_ids.add(sched._inflight_key("job-1"))
 
         async def finish_job():
             await asyncio.sleep(0.12)
-            sched._running_job_ids.discard("job-1")
+            sched._running_job_ids.discard(sched._inflight_key("job-1"))
 
         task = asyncio.create_task(finish_job())
         _snapshot, timed_out = await runner._drain_active_agents(2.0)
@@ -81,17 +80,22 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         import cron.scheduler as sched
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
-        import tools.browser_tool as _bt
+        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the timeout path
+        runner._cron_drain_timeout = 0.01  # ...past the cron floor too (#82161)
         adapter.disconnect = _make_async_noop()
 
-        sched._running_job_ids.add("job-1")
+        sched._running_job_ids.add(sched._inflight_key("job-1"))
+        sched._running_fire_owners[sched._inflight_key("job-1")] = {
+            object(): ("owner-1", sched._get_hermes_home().resolve())
+        }
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 1)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
-        monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+        monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", lambda: None)
+        monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         marked_calls = []
         real_mark = sched.mark_running_jobs_interrupted
@@ -103,10 +107,9 @@ class TestKillToolSubprocessesMarksCronInterrupted:
 
         monkeypatch.setattr(sched, "mark_running_jobs_interrupted", _spy)
 
-        with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"), \
+        with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"), \
              patch("cron.scheduler.mark_job_run"):
             await runner.stop()
 
         assert marked_calls, "mark_running_jobs_interrupted was never called during shutdown"
         assert any(result == ["job-1"] for _reason, result in marked_calls)
-

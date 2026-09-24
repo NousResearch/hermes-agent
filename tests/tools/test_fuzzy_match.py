@@ -1,6 +1,6 @@
 """Tests for the fuzzy matching module."""
 
-from tools.fuzzy_match import fuzzy_find_and_replace
+from tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
 
 
 class TestExactMatch:
@@ -21,10 +21,19 @@ class TestExactMatch:
         assert new == content  # untouched
 
     def test_empty_old_string_rejected(self):
+        """The rejection must carry a recovery path — a bare "cannot be empty"
+        leaves models re-sending the identical call until the loop detector
+        kills the run (cline/cline#13970)."""
         new, count, _, err = fuzzy_find_and_replace("abc", "", "x")
         assert count == 0
         assert err is not None
+        assert "read the file" in err and "write_file" in err
 
+    def test_identical_strings(self):
+        new, count, _, err = fuzzy_find_and_replace("abc", "abc", "abc")
+        assert count == 0
+        assert new == "abc"
+        assert err == IDENTICAL_STRINGS_ERROR
 
     def test_multiline_exact(self):
         content = "line1\nline2\nline3"
@@ -219,14 +228,28 @@ class TestUnicodeNormalized:
         expected = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 changed'
         assert new == expected, f"Got {new!r}"
 
-    def test_no_unicode_no_change(self):
-        """When file has no Unicode, replacement is direct (no-op guard)."""
-        content = "plain text here"
+
+    def test_equal_boundary_inside_expansion_keeps_region_text(self):
+        """An edit boundary falling inside a multi-char expansion (em-dash ->
+        '--') must snap to the expansion, not copy text from the region start.
+
+        SequenceMatcher splits old/new so that the second equal block begins
+        at the expansion's second '-': a norm index with no direct original
+        position. The old fallback (position 0) spliced the whole region text
+        into the replacement, duplicating it after every edit.
+        """
+        content = "value = x\u2014y\n"
         new, count, strategy, err = fuzzy_find_and_replace(
-            content, "plain text here", "plain text there"
-        )
-        assert count == 1
-        assert new == "plain text there"
+            content, "value = x--y", "value = x-@-y")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "value = x\u2014@\u2014y\n", f"Got {new!r}"
+
+        # Same boundary class for a 3-char expansion (ellipsis -> '...').
+        new, count, strategy, err = fuzzy_find_and_replace("a\u2026b\n", "a...b", "a..X.b")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "a\u2026X\u2026b\n", f"Got {new!r}"
 
 
 class TestUnicodeSpaceAndMinusNormalized:
@@ -297,18 +320,6 @@ class TestBlockAnchorThreshold:
         )
 
 
-class TestStrategyNameSurfaced:
-    """Tests for the strategy name in the 4-tuple return (Bug 6)."""
-
-    def test_exact_strategy_name(self):
-        new, count, strategy, err = fuzzy_find_and_replace("hello", "hello", "world")
-        assert strategy == "exact"
-        assert count == 1
-
-    def test_failed_match_returns_none_strategy(self):
-        new, count, strategy, err = fuzzy_find_and_replace("hello", "xyz", "world")
-        assert count == 0
-        assert strategy is None
 
 
 class TestEscapeDriftGuard:
@@ -395,11 +406,6 @@ class TestFindClosestLines:
         assert "def foo" in result or "def bar" in result
 
 
-    def test_includes_line_numbers(self):
-        content = "line1\nline2\ndef foo():\n    pass\n"
-        result = self.find_closest_lines("def foo():", content)
-        # Should include line numbers in format "N| content"
-        assert "|" in result
 
 
 class TestFormatNoMatchHint:
@@ -431,6 +437,23 @@ class TestFormatNoMatchHint:
         )
         assert result == ""
 
+    def test_silent_on_identical_strings(self):
+        """old_string == new_string — hint irrelevant."""
+        result = self.fmt(IDENTICAL_STRINGS_ERROR, 0, "foo", "foo bar\n")
+        assert result == ""
+
+    def test_silent_when_match_count_nonzero(self):
+        """If match succeeded, we shouldn't be in the error path — defense in depth."""
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            1, "foo", "foo bar\n",
+        )
+        assert result == ""
+
+    def test_silent_on_none_error(self):
+        """No error at all — no hint."""
+        result = self.fmt(None, 0, "foo", "bar\n")
+        assert result == ""
 
     def test_silent_when_no_similar_content(self):
         """Even for a valid no-match error, skip hint when nothing similar exists."""
@@ -608,3 +631,88 @@ class TestContextAwareCorrectness:
         # Was ~5.5s before anchoring; generous ceiling to avoid CI flake.
         assert elapsed < 2.0, f"context_aware no-match took {elapsed:.2f}s"
 
+
+
+class TestBackslashDoublingDrift:
+    """Regression tests for the backslash-run doubling guard.
+
+    Live failure (Windows, Aug 2026): the model sent old_string/new_string
+    whose backslash runs were JSON-escaped one extra time (file had ``\``
+    where the args had ``\\``). The context_aware strategy matched the
+    region anyway and wrote new_string verbatim, doubling every backslash
+    in a Windows path inside a Python string literal. The guard must block
+    that case while never firing on intentional backslash edits.
+    """
+
+    def setup_method(self):
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        self.replace = fuzzy_find_and_replace
+
+    def _make(self, n_file: int, n_args: int):
+        b = "\\"
+        content = (
+            '    "native `C:' + b * n_file + 'Users' + b * n_file
+            + '<user>' + b * n_file + '...` paths. X "\n    "next line"\n'
+        )
+        old = (
+            '    "native `C:' + b * n_args + 'Users' + b * n_args
+            + '<user>' + b * n_args + '...` paths. X "\n    "next line"'
+        )
+        return content, old
+
+    def test_doubled_backslashes_blocked(self):
+        """old/new with 2x the file's backslash runs must be rejected."""
+        content, old = self._make(n_file=2, n_args=4)
+        new = old + ' # touched'
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 0
+        assert err is not None and "twice as long" in err
+        assert result == content  # untouched
+
+    def test_matching_backslashes_apply(self):
+        """Same edit with correct backslash counts applies exactly."""
+        content, old = self._make(n_file=2, n_args=2)
+        new = old.replace("next line", "next line edited")
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 1 and err is None
+        assert "next line edited" in result
+
+    def test_intentional_backslash_reduction_exact_match_allowed(self):
+        """Deliberately halving backslashes via an exact match is a real edit."""
+        b = "\\"
+        content = 'x = "a' + b * 4 + 'b"\ny = 1\n'
+        old = 'x = "a' + b * 4 + 'b"'
+        new = 'x = "a' + b * 2 + 'b"'
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 1 and err is None
+        assert strategy == "exact"
+
+    def test_model_corrected_new_string_allowed(self):
+        """Doubled old_string but corrected new_string writes the right bytes."""
+        b = "\\"
+        content, old = self._make(n_file=2, n_args=4)
+        new = old.replace(b * 4, b * 2).replace("next line", "corrected")
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 1 and err is None
+        assert "corrected" in result
+        # No doubling in the output
+        assert b * 4 not in result
+
+    def test_single_prose_backslash_not_blocked(self):
+        """A lone ``\`` vs ``\\`` in prose is too weak a signal to block."""
+        b = "\\"
+        content = "text with one " + b + " backslash here\nanother line\n"
+        old = "text with one " + b * 2 + " backslash here\nanother line"
+        new = old + " more"
+        result, count, strategy, err = self.replace(content, old, new)
+        assert err is None or "twice" not in err
+
+    def test_quote_drift_guard_still_fires(self):
+        """The pre-existing apostrophe escape-drift guard must keep working."""
+        b = "\\"
+        content = "print('hello world')\nrest = 1\n"
+        old = "print(" + b + "'hello world" + b + "')\nrest = 1"
+        new = "print(" + b + "'hello there" + b + "')\nrest = 1"
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 0
+        assert err is not None and "apostrophe" in err

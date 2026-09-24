@@ -1,0 +1,367 @@
+"""Tests for tools/bot_mode_probe.py — the Bot Mode teammate-protocol section."""
+
+import textwrap
+
+import pytest
+
+from tools import bot_mode_probe
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    bot_mode_probe._reset_cache_for_tests()
+    yield
+    bot_mode_probe._reset_cache_for_tests()
+
+
+def _make_bot_profile(root, name, *, managed=True, soul=None):
+    d = root / "profiles" / name
+    d.mkdir(parents=True, exist_ok=True)
+    if managed:
+        (d / "profile.yaml").write_text(
+            textwrap.dedent(
+                """\
+                ui_meta:
+                  hermes-bots:
+                    shape: cloud
+                    color: '#8b5cf6'
+                """
+            ),
+            encoding="utf-8",
+        )
+    if soul is not None:
+        (d / "SOUL.md").write_text(soul, encoding="utf-8")
+    return d
+
+
+def test_roster_excludes_infra_dirs_and_tombstones(tmp_path):
+    """The teammate roster applies the same identity predicate as ``profile list``: bare
+    infrastructure dirs (``@sessions``, ``@logs``) and deleted profiles are not teammates (#99392)."""
+    from hermes_constants import mark_named_profile_deleted
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    for stray in ("sessions", "logs"):
+        (home / "profiles" / stray / "cron").mkdir(parents=True)
+    ghost = _make_bot_profile(home, "ghost", managed=True)
+    mark_named_profile_deleted(ghost)
+
+    assert [name for name, _ in bot_mode_probe._roster(home)] == ["default", "researcher"]
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section
+    assert not any(f"`@{s}`" in section for s in ("sessions", "logs", "ghost", ".deleted"))
+
+
+def test_roster_excludes_dirs_failing_the_profile_id_regex(tmp_path):
+    """#116905: a directory carrying an identity marker but named like anything other than a
+    profile id (a parked backup, a dotfile staging dir) is not a teammate. ``profile list``
+    hides such dirs via ``_PROFILE_ID_RE``; the roster must agree with that predicate."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    for stray in ("_backup_removed_20260920", ".staging-area"):
+        d = home / "profiles" / stray
+        d.mkdir()
+        (d / "config.yaml").write_text("model:\n  name: test\n", encoding="utf-8")
+
+    assert [name for name, _ in bot_mode_probe._roster(home)] == ["default", "researcher"]
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section
+    assert not any(f"`@{s}`" in section for s in ("_backup_removed_20260920", ".staging-area"))
+
+
+def test_silent_when_no_profile_is_bot_managed(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=False)
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
+
+
+def test_emits_for_default_when_any_profile_is_managed(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert section.startswith("## Messaging other agents")
+    # default's callable alias is @hermes, never @default
+    assert "@hermes" in section
+    assert "@default" not in section
+    assert "@researcher" in section
+    assert "message_agent" in section
+
+
+def test_emits_for_named_profile_with_own_handle(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    profile_dir = _make_bot_profile(home, "coder", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(profile_dir)
+    assert "@coder" in section
+    # teammate roster excludes self, includes default (as @hermes)
+    roster_block = section.split("Your teammates")[1]
+    assert "`@hermes`" in roster_block
+    assert "`@coder`" not in roster_block
+
+
+def test_roster_lines_carry_roles(tmp_path):
+    """Bots must know WHO to message: the roster carries title/description."""
+    import textwrap as _tw
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    d = home / "profiles" / "researcher"
+    d.mkdir(parents=True)
+    (d / "profile.yaml").write_text(
+        _tw.dedent(
+            """\
+            description: Deep research and literature review
+            ui_meta:
+              hermes-bots:
+                title: Research Buddy
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section
+    assert "Research Buddy" in section
+    assert "Deep research and literature review" in section
+
+
+def test_soul_legacy_protocol_no_longer_suppresses_live_section(tmp_path):
+    """Plugin-era SOUL append is stripped at load time; the live roster is the only copy."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "coder", managed=True)
+    (home / "SOUL.md").write_text(
+        "# Me\n\n## Messaging other agents\nold plugin text\n", encoding="utf-8"
+    )
+    assert "`@coder`" in bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert bot_mode_probe.strip_legacy_protocol((home / "SOUL.md").read_text()) == "# Me\n"
+
+
+def test_deterministic_across_calls(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    first = bot_mode_probe.get_bot_mode_protocol_section(home)
+    # Even if the filesystem changes, the cached result must be byte-stable
+    # for the life of the process (prompt-cache invariant).
+    _make_bot_profile(home, "newbot", managed=True)
+    second = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert first == second
+
+
+def test_never_raises_on_garbage(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    profiles = home / "profiles" / "bad"
+    profiles.mkdir(parents=True)
+    (profiles / "profile.yaml").write_text("ui_meta: [unclosed", encoding="utf-8")
+    assert isinstance(bot_mode_probe.get_bot_mode_protocol_section(home), str)
+
+    monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: (_ for _ in ()).throw(OSError("boom")))
+    bot_mode_probe._reset_cache_for_tests()
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
+
+
+# ── capability epoch ─────────────────────────────────────────────────────────
+
+
+
+
+def test_fingerprint_changes_on_each_capability_axis(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    base = bot_mode_probe.capability_fingerprint(home)
+
+    # new skill installed
+    skill = home / "skills" / "web" / "scraping"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: scraping\n---\n", encoding="utf-8")
+    after_skill = bot_mode_probe.capability_fingerprint(home)
+    assert after_skill != base
+
+    # toolset pin changed
+    (home / "config.yaml").write_text("tools:\n  enabled_toolsets: [web]\n", encoding="utf-8")
+    after_tools = bot_mode_probe.capability_fingerprint(home)
+    assert after_tools != after_skill
+
+    # MCP server added
+    (home / "config.yaml").write_text(
+        "tools:\n  enabled_toolsets: [web]\nmcp_servers:\n  github:\n    preset: github\n",
+        encoding="utf-8",
+    )
+    after_mcp = bot_mode_probe.capability_fingerprint(home)
+    assert after_mcp != after_tools
+
+    # SOUL edited
+    (home / "SOUL.md").write_text("# New identity\n", encoding="utf-8")
+    after_soul = bot_mode_probe.capability_fingerprint(home)
+    assert after_soul != after_mcp
+
+    # teammate added to the roster
+    _make_bot_profile(home, "coder", managed=True)
+    assert bot_mode_probe.capability_fingerprint(home) != after_soul
+
+
+def test_fingerprint_changes_when_model_vision_override_flips(tmp_path):
+    """A Bot Chat prompt must rebuild when model.supports_vision flips."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    config = home / "config.yaml"
+
+    config.write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    vision_enabled = bot_mode_probe.capability_fingerprint(home)
+    stamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    assert vision_enabled == bot_mode_probe.capability_fingerprint(home)
+    assert not bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+
+    config.write_text("model:\n  supports_vision: false\n", encoding="utf-8")
+    vision_disabled = bot_mode_probe.capability_fingerprint(home)
+    assert vision_disabled != vision_enabled
+    assert bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+
+    restamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    assert not bot_mode_probe.stored_prompt_capability_stale(restamped, home)
+    config.write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) != vision_disabled
+
+
+def test_vision_override_spellings_share_one_fingerprint(tmp_path):
+    """YAML boolean tokens that image routing treats as the same override share an epoch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    config = home / "config.yaml"
+
+    config.write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    enabled = bot_mode_probe.capability_fingerprint(home)
+    config.write_text("model:\n  supports_vision: yes\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) == enabled
+    config.write_text("model:\n  supports_vision: false\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) != enabled
+
+
+def test_fingerprint_changes_when_model_context_length_override_changes(tmp_path):
+    """context_length truncates context files in the rebuilt prompt, so it is part of the epoch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    config = home / "config.yaml"
+
+    config.write_text("model:\n  context_length: 32768\n", encoding="utf-8")
+    narrow = bot_mode_probe.capability_fingerprint(home)
+    config.write_text("model:\n  context_length: 131072\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) != narrow
+    config.write_text("model:\n  context_length: 32768\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) == narrow
+
+
+def test_stored_prompt_staleness(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    stamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    # unchanged surface → not stale (cache preserved)
+    assert not bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+
+    # capability change → stale exactly once
+    skill = home / "skills" / "new-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: new-skill\n---\n", encoding="utf-8")
+    assert bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+    restamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    assert not bot_mode_probe.stored_prompt_capability_stale(restamped, home)
+
+    # prompts without a stamp (every non-Bot-Chat session) are never stale
+    assert not bot_mode_probe.stored_prompt_capability_stale("ordinary prompt", home)
+    assert not bot_mode_probe.stored_prompt_capability_stale("", home)
+
+
+def test_legacy_bot_chat_upgrade(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    legacy = "old prompt with no protocol and no stamp"
+    # legacy Bot Chat on a managed install → upgrade once
+    assert bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home)
+
+    # a rebuilt prompt (stamped) never re-fires
+    upgraded = legacy + "\n\n" + bot_mode_probe.get_bot_mode_protocol_section(home) + "\n\n" + bot_mode_probe.epoch_line(home)
+    assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(upgraded, home)
+
+    # SOUL-era prompt (frozen roster rode in from SOUL.md, no stamp) → upgrade once
+    assert bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(
+        "prompt containing\n## Messaging other agents\nfrom SOUL", home
+    )
+
+    # unmanaged install → probe silent → never upgrades
+    bot_mode_probe._reset_cache_for_tests()
+    home2 = tmp_path / ".hermes2"
+    home2.mkdir()
+    assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home2)
+
+
+# ── peer gateways (cross-machine DMs) ────────────────────────────────────────
+
+
+
+
+def test_peer_paragraph_lists_registered_peers(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    (home / "config.yaml").write_text(
+        textwrap.dedent(
+            """\
+            bot_peers:
+              spark:
+                url: http://spark.lan:8377
+              homelab:
+                url: http://homelab.lan:8377
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`homelab`" in section and "`spark`" in section
+
+
+def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    before = bot_mode_probe.capability_fingerprint(home)
+    (home / "config.yaml").write_text(
+        "bot_peers:\n  spark:\n    url: http://spark.lan:8377\n",
+        encoding="utf-8",
+    )
+    after = bot_mode_probe.capability_fingerprint(home)
+    assert before != after
+
+
+def test_roster_resolves_default_to_root_home_over_stray_directory(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    # A stray profiles/default/ directory must not shadow the reserved root home.
+    stray = home / "profiles" / "default"
+    stray.mkdir()
+    (stray / "state.db").write_bytes(b"")
+
+    roster = bot_mode_probe._roster(home)
+    homes = dict(roster)
+    assert homes["default"] == home
+    assert homes["researcher"] == home / "profiles" / "researcher"
+    names = [name for name, _ in roster]
+    assert names.count("default") == 1

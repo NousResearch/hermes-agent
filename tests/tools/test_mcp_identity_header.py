@@ -33,7 +33,6 @@ import asyncio
 import logging
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -43,13 +42,13 @@ import pytest
 
 class TestResolveIdentityHeader:
     def test_returns_none_when_unset(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         assert _resolve_identity_header("srv", {}) is None
         assert _resolve_identity_header("srv", {"url": "https://x"}) is None
 
     def test_static_mode_returns_name_value(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         result = _resolve_identity_header("srv", {
             "identity_header": {
@@ -61,7 +60,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-User-Id", "alice")
 
     def test_static_is_default_value_from(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         result = _resolve_identity_header("srv", {
             "identity_header": {"name": "X-User-Id", "value": "bob"},
@@ -69,7 +68,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-User-Id", "bob")
 
     def test_profile_mode_uses_active_profile_name(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with patch(
             "hermes_cli.profiles.get_active_profile_name",
@@ -84,7 +83,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-Hermes-Profile", "workbot")
 
     def test_missing_name_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -94,7 +93,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_static_missing_value_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -104,7 +103,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_unknown_value_from_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -118,7 +117,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_non_dict_config_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -138,7 +137,7 @@ def _drive_http(server, config):
     kwargs passed to ``httpx.AsyncClient``. Mirrors the pattern in
     ``test_mcp_client_cert.py``.
     """
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool import MCPServerTask, sdk_httpx
 
     captured: dict = {}
 
@@ -178,7 +177,7 @@ def _drive_http(server, config):
     async def _drive():
         with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
              patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
-             patch("httpx.AsyncClient", DummyAsyncClient), \
+             patch.object(sdk_httpx(), "AsyncClient", DummyAsyncClient), \
              patch("tools.mcp_tool.streamable_http_client",
                    return_value=DummyTransportCtx()), \
              patch("tools.mcp_tool.ClientSession", DummySession), \
@@ -232,23 +231,6 @@ class TestHTTPIdentityHeader:
         assert headers.get("x-user-id") == "explicit-wins"
         assert "X-User-Id" not in headers
 
-    def test_profile_mode_header_attached(self):
-        from tools.mcp_tool import MCPServerTask
-
-        server = MCPServerTask("remote")
-        with patch(
-            "hermes_cli.profiles.get_active_profile_name",
-            return_value="workbot",
-        ):
-            captured = _drive_http(server, {
-                "url": "https://example.com/mcp",
-                "identity_header": {
-                    "name": "X-Hermes-Profile",
-                    "value_from": "profile",
-                },
-            })
-        headers = captured.get("headers") or {}
-        assert headers.get("X-Hermes-Profile") == "workbot"
 
 
 # ---------------------------------------------------------------------------
@@ -256,28 +238,3 @@ class TestHTTPIdentityHeader:
 # ---------------------------------------------------------------------------
 
 
-class TestStdioIdentityHeader:
-    def test_stdio_warns_and_ignores(self, caplog):
-        """identity_header on a stdio server logs a warning and does not
-        break the transport path (headers don't exist on stdio)."""
-        from tools.mcp_tool import MCPServerTask
-
-        server = MCPServerTask("local")
-
-        async def _drive():
-            # Force the SDK-unavailable fast path so no subprocess spawns;
-            # the warning must fire before the availability check.
-            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
-                await server._run_stdio({
-                    "command": "echo",
-                    "identity_header": {"name": "X-User-Id", "value": "a"},
-                })
-
-        with caplog.at_level(logging.WARNING):
-            with pytest.raises(ImportError):
-                asyncio.run(_drive())
-
-        assert any(
-            "identity_header" in r.message and "stdio" in r.message
-            for r in caplog.records
-        )

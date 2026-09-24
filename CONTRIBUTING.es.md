@@ -51,7 +51,7 @@ Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es me
 
 ## Proveedores de Memoria: Publicar como Plugin Independiente
 
-**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El conjunto de proveedores integrados en `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) está cerrado. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
+**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El conjunto de proveedores integrados en `plugins/memory/` (honcho, mem0, supermemory, byterover, holographic, openviking, retaindb) está cerrado. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
 
 Los plugins de memoria independientes:
 
@@ -210,7 +210,7 @@ hermes-agent/
 | `~/.hermes/skills/` | Todas las habilidades activas (incluidas + instaladas desde hub + creadas por el agente) |
 | `~/.hermes/memories/` | Memoria persistente (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | Base de datos de sesiones SQLite |
-| `~/.hermes/sessions/` | Índice de enrutamiento del gateway (`sessions.json`), migas de pan de solicitudes, transcripciones `*.jsonl` del gateway y (opcionalmente) snapshots JSON por sesión cuando `sessions.write_json_snapshots: true` está configurado. Los snapshots por sesión están desactivados por defecto; state.db es canónica. |
+| `~/.hermes/sessions/` | Índice de enrutamiento del gateway (`sessions.json`), migas de pan de solicitudes, transcripciones `*.jsonl` del gateway y exportaciones explícitas con `/save`. Ya no se escriben snapshots JSON automáticos; los archivos existentes se conservan y state.db es canónica. |
 | `~/.hermes/cron/` | Datos de trabajos programados |
 | `~/.hermes/whatsapp/session/` | Credenciales del puente WhatsApp |
 
@@ -582,7 +582,7 @@ test(tools): añadir tests unitarios para file_operations
 ## Reportar Issues
 
 - Usa [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Incluye: SO, versión de Python, versión de Hermes (`hermes version`), traza de error completa
+- Incluye: SO, versión de Python, versión de Hermes (`hermes --version`), traza de error completa
 - Incluye pasos para reproducir
 - Verifica los issues existentes antes de crear duplicados
 - Para vulnerabilidades de seguridad, por favor reporta de forma privada

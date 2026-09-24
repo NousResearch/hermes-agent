@@ -1,3 +1,5 @@
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
@@ -19,12 +21,18 @@ import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
+import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { isSubmitEnter } from '@/lib/ime'
+import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
-import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
-import { normalize } from '@/lib/text'
+import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { foldIncludes, normalize } from '@/lib/text'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
+import { $localModelsEnabled } from '@/store/local-models-flag'
+import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -32,11 +40,12 @@ import {
   effectiveVisibleKeys,
   type ModelFamily,
   modelVisibilityKey,
+  seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import type { LocalModelLoadProgress } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
@@ -50,6 +59,10 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
 export interface ModelChoice {
   effort: string
+  /** `effort` is not reported yet, so '' is unknown rather than the default (#79807). */
+  effortPending?: boolean
+  /** Level the route actually sends for `effort` (`session.info.reasoning_effort_wire`); '' = unknown. */
+  effortWire?: string
   fast: boolean
   model: string
   provider: string
@@ -85,9 +98,15 @@ interface ModelCatalogMenuProps {
   /** Rows appended under the catalog (Refresh Models, Edit Models, …). */
   footer?: ReactNode
   gateway?: HermesGateway
+  /** Owner-routed RPC for catalog reads. Preferred over `gateway.request` so
+   *  a tile's menu queries the session owner's backend, not chrome's. */
+  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /** Render the virtual `moa` provider's presets as a selectable section.
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
+  /** Registry source owning this catalog. Profile/session names are not unique
+   * across sources, so this participates in the React Query cache key. */
+  ownerConnectionId?: string
   profile?: string
   /** Session whose catalog to fetch. A live session's catalog can differ from
    *  the profile-global one, and the app invalidates the SESSION-scoped query
@@ -113,13 +132,21 @@ export function ModelCatalogMenu({
   footer,
   gateway,
   includeMoa = false,
+  ownerConnectionId,
   profile = 'default',
+  request,
   sessionId = null
 }: ModelCatalogMenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
+  const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
+  // "Add custom model…" turns the search box into slug entry: the catalog
+  // steps aside until something is typed, and the placeholder says what to
+  // type. Typing a slug without this works too; the row just makes it findable.
+  const [slugEntry, setSlugEntry] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
   const collapsedProviders = useStoreCollapsed()
   const defaultEffort = useDefaultEffort()
   // Which models the user curated in Edit Models. Read HERE rather than taken
@@ -127,16 +154,89 @@ export function ModelCatalogMenu({
   // catalog must show the same shortlist. A per-caller opt-in is how the board
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
+  const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId })
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId })
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
+
+  // Every local-models read in this menu sits behind the --local launch
+  // flag: no status polling, no download rows, and the llamacpp provider
+  // group hides even when models are staged (the flag is strict).
+  const localModelsEnabled = $localModelsEnabled.get()
+
+  // Live load state for the managed local server: which model is loading
+  // into memory right now, with a REAL percent (per-tensor callback relayed
+  // over the router's SSE stream). Polled only while this menu is mounted
+  // (it unmounts on close); errors read as "nothing loading" — remote-only
+  // installs have no local-models routes.
+  const localStatus = useQuery({
+    queryKey: ['local-models-loading', profile],
+    queryFn: () => getLocalModelsStatus(),
+    enabled: localModelsEnabled,
+    refetchInterval: 2_000,
+    retry: false
+  })
+
+  const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
+
+  // Models on their way into the local library (downloads + quickstart runs
+  // still fetching bytes) — rendered as disabled progress rows so the user
+  // sees the model coming instead of wondering where it went. The jobs store
+  // republishes every ~700ms with fresh byte counts while anything runs; a
+  // whole-store subscription here would re-render the entire menu per tick
+  // (breaking open submenus and focus — the #72163 class). Subscribe to a
+  // STABLE identity projection instead: it changes only when a download
+  // starts or ends. Each row selects its own percent scalar.
+  const downloadsKey = useStoreSelector($localRuntimeJobs, jobs =>
+    localModelsEnabled
+      ? runningModelDownloads(jobs)
+          .map(job => `${job.job_id}\u0000${job.target}`)
+          .join('\u0001')
+      : ''
+  )
+
+  const downloads = useMemo(
+    () =>
+      downloadsKey === ''
+        ? []
+        : downloadsKey.split('\u0001').map(pair => {
+            const [jobId, target] = pair.split('\u0000')
+
+            return { jobId, target }
+          }),
+    [downloadsKey]
+  )
+
+  useEffect(() => {
+    if (localModelsEnabled) {
+      watchLocalRuntimeJobs()
+    }
+  }, [localModelsEnabled])
+
+  // A finished download turns into a real selectable model: refetch the
+  // catalog so the placeholder row is replaced while the menu is open.
+  const refetchOptions = modelOptions.refetch
+
+  useEffect(() => {
+    let prevActive = runningModelDownloads($localRuntimeJobs.get()).length > 0
+
+    return $localRuntimeJobs.listen(next => {
+      const active = runningModelDownloads(next).length > 0
+
+      if (prevActive && !active) {
+        void refetchOptions()
+      }
+
+      prevActive = active
+    })
+  }, [refetchOptions])
 
   const error = modelOptions.error
     ? modelOptions.error instanceof Error
@@ -154,15 +254,35 @@ export function ModelCatalogMenu({
   )
 
   const pickerProviders = useMemo(
-    () => providers?.filter(provider => provider.slug.toLowerCase() !== 'moa') ?? [],
-    [providers]
+    () =>
+      withCustomModels(
+        providers?.filter(
+          provider =>
+            provider.slug.toLowerCase() !== 'moa' &&
+            // Strict --local gate: staged local models exist on disk, but
+            // without the flag the GUI doesn't offer them.
+            (localModelsEnabled || provider.slug !== LOCAL_PROVIDER_SLUG)
+        ) ?? [],
+        customModels
+      ),
+    [providers, localModelsEnabled, customModels]
   )
 
   const current = controller.current
 
+  const q = normalize(search)
+
+  // In-flight downloads render inside the Local provider group when it
+  // exists, else as their own trailing 'Local' group (first download —
+  // nothing staged yet, so the catalog has no local provider row).
+  const shownDownloads = q ? downloads.filter(job => foldIncludes(job.target || '', q)) : downloads
+  const hasLocalGroup = pickerProviders.some(provider => provider.slug === LOCAL_PROVIDER_SLUG)
+
   // Resolve visibility HERE, against the catalog we actually fetched: an empty
   // provider list would otherwise resolve to an empty key set that reads as
   // "user hid everything" and blanks the menu on first open.
+  useEffect(() => seedKnownModels(pickerProviders), [pickerProviders])
+
   const shownKeys = useMemo(
     () => effectiveVisibleKeys(visibleModels, pickerProviders),
     [visibleModels, pickerProviders]
@@ -173,17 +293,43 @@ export function ModelCatalogMenu({
     [pickerProviders, search, current.model, current.provider, shownKeys]
   )
 
-  const q = normalize(search)
-
   // Presets are searchable rows like everything else — an unfiltered preset
   // sitting under zero model matches would otherwise become the "first match"
   // Enter commits.
   const shownMoaPresets = useMemo(
-    () => (q ? moaPresets.filter(preset => `moa ${preset}`.toLowerCase().includes(q)) : moaPresets),
+    () => (q ? moaPresets.filter(preset => foldIncludes(`moa ${preset}`, q)) : moaPresets),
     [moaPresets, q]
   )
 
-  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
+  const hideCatalog = slugEntry && !search
+
+  // The scrolling catalog list only mounts when it has rows; otherwise a
+  // section below it (MoA, custom slug) would sit under two separators.
+  const hasList = !hideCatalog && (groups.length > 0 || shownDownloads.length > 0)
+
+  // A typed id no provider lists is still a model to the backend. Offer it as
+  // a row per configured provider (the current one first) so a slug the
+  // catalog lacks is one Enter away, then remember it as a normal row. While
+  // the query still matches catalog rows the section stays out of the way
+  // unless the user asked for it via "Add custom model…".
+  const customSlug =
+    slugEntry || (!hasList && shownMoaPresets.length === 0) ? customModelCandidate(search, pickerProviders) : null
+
+  const customProviders = useMemo(
+    () =>
+      customSlug
+        ? pickerProviders
+            .filter(provider => (provider.models ?? []).length > 0)
+            .sort(
+              (a, b) =>
+                Number(catalogProviderMatches(b, current.provider)) -
+                Number(catalogProviderMatches(a, current.provider))
+            )
+        : [],
+    [customSlug, pickerProviders, current.provider]
+  )
+
+  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider): Promise<boolean> => {
     const caps = provider.capabilities?.[family.id]
     const preset = controller.presetFor(provider.slug, family.id)
 
@@ -194,7 +340,7 @@ export function ModelCatalogMenu({
     const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
 
     if ((await controller.select(targetId, provider.slug)) === false) {
-      return
+      return false
     }
 
     controller.applyPreset(
@@ -204,6 +350,8 @@ export function ModelCatalogMenu({
       },
       { model: family.id, provider: provider.slug }
     )
+
+    return true
   }
 
   const selectMoaPreset = async (preset: string) => {
@@ -214,10 +362,20 @@ export function ModelCatalogMenu({
     closeMenu()
   }
 
+  const selectCustom = async (slug: string, provider: ModelOptionProvider) => {
+    if (!(await selectFamily({ fastId: null, id: slug }, provider))) {
+      return
+    }
+
+    addCustomModel(provider.slug, slug, provider)
+    closeMenu()
+  }
+
   // ── Keyboard selection (cmdk semantics on a Radix menu) ───────────────────
   // One flat list mirroring EXACTLY what's rendered (collapse, filter, presets),
   // so the selection can never sit on a hidden row.
   type KbRow =
+    | { key: string; kind: 'custom'; provider: ModelOptionProvider; slug: string }
     | { family: ModelFamily; key: string; kind: 'family'; provider: ModelOptionProvider }
     | { key: string; kind: 'moa'; preset: string }
 
@@ -233,9 +391,17 @@ export function ModelCatalogMenu({
               provider: group.provider
             }))
       ),
-      ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
+      ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset })),
+      ...(customSlug
+        ? customProviders.map((provider): KbRow => ({
+            key: `custom:${provider.slug}`,
+            kind: 'custom',
+            provider,
+            slug: customSlug
+          }))
+        : [])
     ],
-    [groups, collapsedProviders, search, shownMoaPresets]
+    [groups, collapsedProviders, search, shownMoaPresets, customSlug, customProviders]
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
@@ -243,13 +409,15 @@ export function ModelCatalogMenu({
   // hover can't take rows out from under the keyboard.
   const pointerQuiet = usePointerQuiet()
 
-  const currentKey = current.provider === 'moa' ? `moa:${current.model}` : `${current.provider}:${current.model}`
+  const rowIsCurrent = (row: KbRow) =>
+    row.kind === 'moa'
+      ? current.provider === 'moa' && row.preset === current.model
+      : row.kind === 'custom'
+        ? false
+        : catalogProviderMatches(row.provider, current.provider) &&
+          (row.family.id === current.model || row.family.fastId === current.model)
 
-  const autoIndex = q
-    ? kbRows.length > 0
-      ? 0
-      : -1
-    : kbRows.findIndex(row => row.key === currentKey || (row.kind === 'family' && row.family.fastId === current.model))
+  const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
   const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
   const kbActiveKey = kbIndex >= 0 ? kbRows[kbIndex].key : null
@@ -277,7 +445,13 @@ export function ModelCatalogMenu({
       return
     }
 
-    if (row.key !== currentKey && row.family.fastId !== current.model) {
+    if (row.kind === 'custom') {
+      void selectCustom(row.slug, row.provider)
+
+      return
+    }
+
+    if (!rowIsCurrent(row)) {
       void selectFamily(row.family, row.provider)
     }
 
@@ -314,7 +488,7 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             stepKb(event.key === 'ArrowDown' ? 1 : -1)
-          } else if (event.key === 'Enter') {
+          } else if (isSubmitEnter(event)) {
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
@@ -324,13 +498,14 @@ export function ModelCatalogMenu({
           setSearch(value)
           setKbOverride(null)
         }}
-        placeholder={copy.search}
+        placeholder={slugEntry ? copyPicker.customModelPlaceholder : copy.search}
+        ref={searchRef}
         value={search}
       />
 
-      <DropdownMenuSeparator className="mx-0" />
+      {!hideCatalog && <DropdownMenuSeparator className="mx-0" />}
 
-      {loading ? (
+      {hideCatalog ? null : loading ? (
         <DropdownMenuGroup className="py-1">
           {Array.from({ length: 4 }, (_, index) => (
             <DropdownMenuItem
@@ -347,11 +522,11 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 ? (
+      ) : groups.length === 0 && moaPresets.length === 0 && shownDownloads.length === 0 && !customSlug ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
-      ) : (
+      ) : hasList ? (
         <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
@@ -371,7 +546,7 @@ export function ModelCatalogMenu({
                   textValue=""
                 >
                   <span className="truncate">
-                    <HighlightMatches query={search} text={group.provider.name} />
+                    <HighlightMatches foldSeparators query={search} text={group.provider.name} />
                   </span>
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
@@ -384,14 +559,20 @@ export function ModelCatalogMenu({
                     // The active id may be the base or its -fast sibling; either
                     // way this one family row represents both.
                     const activeId =
-                      group.provider.slug === current.provider &&
+                      catalogProviderMatches(group.provider, current.provider) &&
                       (current.model === family.id || current.model === family.fastId)
                         ? current.model
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
+
+                    // Managed local model loading into memory right now:
+                    // real load percent, keyed by exact model id (remote
+                    // providers never collide with GGUF stems).
+                    const loadProgress =
+                      loadingModels[family.id] ?? (family.fastId ? loadingModels[family.fastId] : undefined)
 
                     // Effective settings for this row: the live choice when it's
                     // the active model, otherwise its remembered preset. Row
@@ -408,8 +589,11 @@ export function ModelCatalogMenu({
                     )
 
                     const meta = [
+                      tag || null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
+                      (caps?.reasoning ?? true) && !(isCurrent && current.effortPending)
+                        ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
+                        : null
                     ]
                       .filter(Boolean)
                       .join(' ')
@@ -438,16 +622,38 @@ export function ModelCatalogMenu({
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
                           <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches query={search} text={name} />
+                            <HighlightMatches foldSeparators query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
+                          {loadProgress ? (
+                            <span
+                              className="ml-auto flex shrink-0 items-center gap-1.5"
+                              title={copyPicker.loadingIntoMemory}
+                            >
+                              <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                                <span
+                                  className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                                  style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                                />
+                              </span>
+                              <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
+                                {loadProgress.percent}%
+                              </span>
+                            </span>
+                          ) : null}
                           {isCurrent ? (
-                            <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
+                            <Codicon
+                              className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
+                              name="check"
+                              size="0.75rem"
+                            />
                           ) : null}
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
+                          canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
+                          effortWire={isCurrent ? current.effortWire : undefined}
                           fastControl={fastControl}
                           isActive={isCurrent}
                           model={family.id}
@@ -465,15 +671,30 @@ export function ModelCatalogMenu({
                       </DropdownMenuSub>
                     )
                   })}
+                {!collapsed &&
+                  slug === LOCAL_PROVIDER_SLUG &&
+                  shownDownloads.map(job => (
+                    <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+                  ))}
               </DropdownMenuGroup>
             )
           })}
+          {!hasLocalGroup && shownDownloads.length > 0 && (
+            <DropdownMenuGroup className="py-0.5" key="local-downloads">
+              <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+                {copyPicker.localDownloadsHeading}
+              </DropdownMenuLabel>
+              {shownDownloads.map(job => (
+                <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+              ))}
+            </DropdownMenuGroup>
+          )}
         </div>
-      )}
+      ) : null}
 
-      {shownMoaPresets.length > 0 ? (
+      {!hideCatalog && shownMoaPresets.length > 0 ? (
         <div className={cn(quietRows)}>
-          <DropdownMenuSeparator className="mx-0" />
+          {hasList ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
             const isCurrentMoa = current.provider === 'moa' && current.model === preset
@@ -488,12 +709,34 @@ export function ModelCatalogMenu({
                 {...kbRowProps(`moa:${preset}`)}
               >
                 <span className="min-w-0 flex-1 truncate">
-                  MoA: <HighlightMatches query={search} text={preset} />
+                  MoA: <HighlightMatches foldSeparators query={search} text={preset} />
                 </span>
                 {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
           })}
+        </div>
+      ) : null}
+
+      {customSlug && customProviders.length > 0 ? (
+        <div className={cn(quietRows)}>
+          {hasList || shownMoaPresets.length > 0 ? <DropdownMenuSeparator className="mx-0" /> : null}
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copyPicker.customModel}</DropdownMenuLabel>
+          {customProviders.map(provider => (
+            <DropdownMenuItem
+              key={`custom:${provider.slug}`}
+              onSelect={event => {
+                event.preventDefault()
+                void selectCustom(customSlug, provider)
+              }}
+              {...kbRowProps(`custom:${provider.slug}`)}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {customSlug}
+                <span className="text-(--ui-text-tertiary)"> {provider.name}</span>
+              </span>
+            </DropdownMenuItem>
+          ))}
         </div>
       ) : null}
 
@@ -505,6 +748,20 @@ export function ModelCatalogMenu({
           trailing block it has always rendered. */}
       <DropdownMenuSeparator className="mx-0" />
       {footer}
+      <DropdownMenuItem
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)', slugEntry && 'text-foreground')}
+        onSelect={event => {
+          event.preventDefault()
+          setSearch('')
+          setKbOverride(null)
+          setSlugEntry(true)
+          // Radix hands focus back to the row after onSelect; refocus after.
+          window.setTimeout(() => searchRef.current?.focus(), 0)
+        }}
+      >
+        <Codicon name="add" size="0.75rem" />
+        {copyPicker.addCustomModelAction}
+      </DropdownMenuItem>
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
@@ -519,11 +776,49 @@ export function ModelCatalogMenu({
 /** Re-exported so callers building a footer row match the catalog's rows. */
 export { dropdownMenuRow }
 
+// The backend's provider row for staged local models (inventory.py's
+// _local_runtime_row). Downloads-in-flight attach to this group.
+const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
+// A model still downloading: visible so the user knows it's coming (and
+// where it will land), disabled so it can't be selected early, with the
+// same byte progress the Local Models pane shows. Percent is selected HERE,
+// per row, so the 700ms byte ticks repaint this leaf only — the menu tree
+// above subscribes to download identity, not progress.
+function DownloadingModelRow({ jobId, target }: { jobId: string; target: string }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
+  const percent = useStoreSelector($localRuntimeJobs, jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null)
+
+  return (
+    <DropdownMenuItem
+      className={cn(dropdownMenuRow, 'opacity-60')}
+      disabled
+      onSelect={event => event.preventDefault()}
+      textValue=""
+    >
+      <span className="min-w-0 flex-1 truncate">{target}</span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5" title={copy.downloading}>
+        <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+          <span
+            className="block h-full rounded-full bg-primary transition-[width] duration-500"
+            style={{ width: `${Math.max(2, percent ?? 0)}%` }}
+          />
+        </span>
+        <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
+          {typeof percent === 'number' ? `${percent}%` : copy.downloading}
+        </span>
+      </span>
+    </DropdownMenuItem>
+  )
+}
+
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search
 // is itself a narrowing action, so we do NOT cap per-provider matches.
 function groupModels(
-  providers: ModelOptionProvider[],
+  providers: readonly ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null
@@ -539,9 +834,10 @@ function groupModels(
     }
 
     const matches = (family: ModelFamily) =>
-      `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`
-        .toLowerCase()
-        .includes(q)
+      foldIncludes(
+        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`,
+        q
+      )
 
     let shown: Set<string>
 
@@ -561,7 +857,7 @@ function groupModels(
     // stable curated order, so selecting a model can't shuffle the list. While
     // SEARCHING the pin is skipped: a query means "show me matches".
     const activeId =
-      !q && provider.slug === current.provider && current.model
+      !q && catalogProviderMatches(provider, current.provider) && current.model
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 

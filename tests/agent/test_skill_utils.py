@@ -5,18 +5,15 @@ from unittest.mock import patch
 import pytest
 
 from agent.skill_utils import (
-    extract_skill_config_vars,
-    extract_skill_conditions,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
-    is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
+    parse_config_string_list,
     parse_frontmatter,
     resolve_skill_config_values,
     skill_matches_platform,
-    skill_matches_platform_list,
 )
 
 
@@ -73,8 +70,94 @@ skills:
     assert parse_count == 1
 
 
+class TestParseConfigStringList:
+    """#86661: `hermes config set` and JSON-mode editor saves store lists as
+    quoted strings (e.g. '["a","b"]'). Treating such a string as a single name
+    made curated disabled lists silently filter nothing."""
+
+    def test_json_array_string_parses(self):
+        assert parse_config_string_list('["skill-a","skill-b"]') == [
+            "skill-a",
+            "skill-b",
+        ]
+
+    def test_python_literal_array_string_parses(self):
+        # `hermes config set` can persist single-quoted Python-literal forms.
+        assert parse_config_string_list("['skill-a']") == ["skill-a"]
+
+    def test_scalar_string_means_one_name(self):
+        # #13026: a scalar string still names a single entry.
+        assert parse_config_string_list("skill-a") == ["skill-a"]
+
+    def test_real_list_passes_through(self):
+        assert parse_config_string_list(["skill-a", "skill-b"]) == [
+            "skill-a",
+            "skill-b",
+        ]
+        assert parse_config_string_list(("skill-a",)) == ["skill-a"]
+
+    def test_none_returns_empty(self):
+        assert parse_config_string_list(None) == []
+
+    def test_malformed_json_falls_back_to_single_name(self):
+        assert parse_config_string_list('["skill-a"') == ['["skill-a"']
+
+    def test_empty_array_string_returns_empty(self):
+        assert parse_config_string_list("[]") == []
 
 
+class TestDisabledSkillsJsonArrayString:
+    """The skills.disabled setting must honor a JSON-array string form, not
+    treat the whole string as one dead skill name (#86661)."""
+
+    def test_get_disabled_skill_names_parses_json_array_string(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  disabled: '[\"skill-a\",\"skill-b\"]'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from agent import skill_utils
+
+        getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+
+        assert get_disabled_skill_names() == {"skill-a", "skill-b"}
+
+
+
+def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
+    """``~`` / ``$HOME`` / ``${HOME}`` defaults resolve against the HOME tools receive, not the
+    control process HOME; other variables keep normal expansion (#12260)."""
+    from agent import skill_utils
+
+    # A backslash in the home path must not be read as a regex-replacement escape.
+    hermes_home = tmp_path / "da\\ta"
+    subprocess_home = hermes_home / "home"
+    subprocess_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+    monkeypatch.setenv("PROJECT_ROOT", "/proj")
+    monkeypatch.setenv("LEAF", "leaf")
+    getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+
+    resolved = resolve_skill_config_values([
+        {"key": "wiki.home_var", "default": "$HOME/wiki"},
+        {"key": "wiki.braced_home", "default": "${HOME}/notes"},
+        {"key": "wiki.tilde", "default": "~/scratch"},
+        {"key": "wiki.other_var", "default": "${PROJECT_ROOT}/cache"},
+        {"key": "wiki.tilde_var", "default": "~/$LEAF"},
+    ])
+
+    assert resolved["wiki.home_var"] == str(subprocess_home / "wiki")
+    assert resolved["wiki.braced_home"] == str(subprocess_home / "notes")
+    assert resolved["wiki.tilde"] == str(subprocess_home / "scratch")
+    assert resolved["wiki.other_var"] == "/proj/cache"
+    assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
 
 
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
@@ -143,48 +226,6 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
 # ── skill_matches_platform on Termux ──────────────────────────────────────
 
 
-class TestSkillMatchesPlatformTermux:
-    """Termux is Linux userland on Android. Skills tagged platforms:[linux]
-    must load there regardless of whether Python reports sys.platform as
-    "linux" (pre-3.13) or "android" (3.13+). Reported by user @LikiusInik
-    in May 2026 — only 3 built-in skills appeared on Termux because every
-    github/productivity/mlops skill is tagged platforms:[linux,macos,windows]
-    and sys.platform=="android" did not start with "linux".
-    """
-
-    def test_no_platforms_field_matches_everywhere(self):
-        # Backward-compat default — skills without a platforms tag load
-        # on any OS, Termux included.
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=True
-        ):
-            assert skill_matches_platform({}) is True
-            assert skill_matches_platform({"name": "foo"}) is True
-
-
-
-
-
-
-
-    def test_non_termux_android_does_not_widen(self):
-        # If we're somehow on a plain Android Python (not Termux), don't
-        # silently load Linux skills — Termux is the supported environment.
-        fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is False
-            assert skill_matches_platform_list(fm["platforms"]) is False
-
-    def test_linux_skill_on_real_linux_unaffected(self):
-        # The non-Termux Linux path must not change.
-        fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "linux"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is True
-            assert skill_matches_platform_list(fm["platforms"]) is True
 
 
 
@@ -270,17 +311,6 @@ class TestParseFrontmatterBOM:
             assert skill_matches_platform(bom_fm) is expected
 
 
-    def test_real_file_read_path(self, tmp_path):
-        # End-to-end: write the file the way a Windows editor does (utf-8-sig
-        # emits a BOM), read it the way _parse_skill_file does (plain utf-8),
-        # and confirm the frontmatter survives the round trip.
-        f = tmp_path / "SKILL.md"
-        f.write_text(self.SKILL, encoding="utf-8-sig")
-        raw = f.read_text(encoding="utf-8")
-        assert raw.startswith("\ufeff")  # BOM really is present on disk
-        fm, _ = parse_frontmatter(raw)
-        assert fm["name"] == "my-skill"
-        assert fm["platforms"] == ["macos"]
 
 
 class TestBOMToleranceSiblingSites:

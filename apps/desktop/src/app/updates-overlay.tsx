@@ -14,12 +14,14 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
+import { openExternalLink } from '@/lib/external-link'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
+import { requestRoute } from '@/store/recovery-requests'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -37,6 +39,26 @@ import {
   setUpdateOverlayOpen,
   type UpdateApplyState
 } from '@/store/updates'
+
+import { SETTINGS_ROUTE } from './routes'
+
+/** Same installer page Settings → About links to. */
+const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
+
+/** Main puts the raw cause after "Details:" — show it as the dimmed line. */
+function splitDetails(text: string): [string, string | null] {
+  const marker = text.search(/\s*Details:\s*/)
+
+  return marker < 0
+    ? [text, null]
+    : [
+        text.slice(0, marker).trim(),
+        text
+          .slice(marker)
+          .replace(/^\s*Details:\s*/, '')
+          .trim()
+      ]
+}
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -80,6 +102,8 @@ export function UpdatesOverlay() {
             ? 'error'
             : 'idle'
 
+  const updateBlockers = !isBackend && apply.error === 'venv-blocked' && apply.blockers?.length ? apply.blockers : null
+
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
       return
@@ -117,9 +141,17 @@ export function UpdatesOverlay() {
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
-        {phase === 'error' && (
+        {phase === 'error' && updateBlockers ? (
+          <BlockerView
+            blockers={updateBlockers}
+            onDismiss={() => handleClose(false)}
+            onStopAndUpdate={() => void applyUpdates({ stopSafeBlockers: true })}
+          />
+        ) : null}
+
+        {phase === 'error' && !updateBlockers ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
-        )}
+        ) : null}
 
         {phase === 'idle' && (
           <IdleView
@@ -128,7 +160,7 @@ export function UpdatesOverlay() {
             commits={status?.commits ?? []}
             onInstall={handleInstall}
             onLater={() => handleClose(false)}
-            onRetryCheck={() => void check()}
+            onRetryCheck={() => void check({ force: true })}
             status={status}
             target={target}
             updateAvailable={updateAvailable}
@@ -187,9 +219,21 @@ function IdleView({
   }
 
   if (!status.supported) {
+    // A copy without version-control metadata can't self-update; the website
+    // carries the current installer (same URL as Settings → About).
+    const [lead, detail] = splitDetails(status.message ?? u.unsupportedMessage)
+
     return (
       <CenteredStatus
-        body={status.message ?? u.unsupportedMessage}
+        action={
+          status.reason === 'not-a-git-checkout' ? (
+            <Button onClick={() => openExternalLink(INSTALLER_URL)} size="sm">
+              {u.openDownloadPage}
+            </Button>
+          ) : undefined
+        }
+        body={lead}
+        detail={detail ?? undefined}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
         title={u.notAvailableTitle}
       />
@@ -200,11 +244,19 @@ function IdleView({
     return (
       <CenteredStatus
         action={
-          <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            {u.tryAgain}
-          </Button>
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button disabled={checking} onClick={onRetryCheck} size="sm">
+              {u.tryAgain}
+            </Button>
+            {target === 'backend' && (
+              <Button onClick={() => requestRoute(`${SETTINGS_ROUTE}?tab=gateway`)} size="sm" variant="outline">
+                {u.connectionSettings}
+              </Button>
+            )}
+          </div>
         }
-        body={u.connectionRetry}
+        body={status.error === 'git-unusable' ? u.gitUnusable : u.connectionRetry}
+        detail={status.message}
         icon={<ErrorIcon />}
         title={u.checkFailedTitle}
       />
@@ -221,7 +273,17 @@ function IdleView({
     )
   }
 
-  const groups = buildCommitChangelog(commits)
+  const groups = buildCommitChangelog(commits, {
+    labels: {
+      new: u.changeLogNew,
+      fixed: u.changeLogFixed,
+      faster: u.changeLogFaster,
+      improved: u.changeLogImproved,
+      other: u.changeLogOther
+    },
+    fallback: { label: u.changeLogFallbackLabel, item: u.changeLogFallbackItem }
+  })
+
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)
 
@@ -243,7 +305,7 @@ function IdleView({
       <div className="grid gap-3">
         {groups.map(group => (
           <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
             <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>
@@ -420,6 +482,106 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
   )
 }
 
+const BLOCKER_COMMAND_LINE_LIMIT = 500
+
+const SENSITIVE_ARGUMENT_NAME =
+  '(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|x[-_]?plex[-_]?token|token|password|passwd|client[-_]?secret|secret|authorization)'
+
+const SENSITIVE_COMMAND_TAIL = new RegExp(
+  `((?:^|\\s)(?:(?:--?)${SENSITIVE_ARGUMENT_NAME}(?:\\s*=\\s*|\\s+)|${SENSITIVE_ARGUMENT_NAME}\\s*(?:=|:)\\s*)).*$`,
+  'i'
+)
+
+const SENSITIVE_QUERY_ARGUMENT = new RegExp(`([?&]${SENSITIVE_ARGUMENT_NAME}=)[^&#\\s]+`, 'gi')
+
+export function formatBlockerCommandLine(commandLine: string): string {
+  const redacted = commandLine
+    .replace(SENSITIVE_QUERY_ARGUMENT, '$1[REDACTED]')
+    .replace(SENSITIVE_COMMAND_TAIL, '$1[REDACTED]')
+
+  const characters = Array.from(redacted)
+
+  return characters.length > BLOCKER_COMMAND_LINE_LIMIT
+    ? `${characters.slice(0, BLOCKER_COMMAND_LINE_LIMIT - 1).join('')}…`
+    : redacted
+}
+
+export function BlockerView({
+  blockers,
+  onDismiss,
+  onStopAndUpdate
+}: {
+  blockers: readonly DesktopUpdateBlocker[]
+  onDismiss: () => void
+  onStopAndUpdate: () => void
+}) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  const safeBlockers = blockers.filter(blocker => blocker.kind === 'local-preview' && blocker.safeToStop)
+  const hasForeignBlockers = safeBlockers.length !== blockers.length
+  const title = hasForeignBlockers ? u.foreignBlockerTitle : u.blockerTitle
+
+  const body = hasForeignBlockers
+    ? safeBlockers.length > 0
+      ? u.mixedBlockerBody
+      : u.foreignBlockerBody
+    : u.blockerBody
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <div className="grid size-12 place-items-center rounded-full bg-warning/15 text-warning">
+          <AlertCircle aria-hidden className="size-6" />
+        </div>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{title}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {body}
+        </DialogDescription>
+      </div>
+
+      <div className="grid gap-2">
+        {blockers.map(blocker => {
+          const isSafePreview = blocker.kind === 'local-preview' && blocker.safeToStop
+
+          return (
+            <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5" key={blocker.pid}>
+              <div className="text-sm font-medium">
+                {isSafePreview ? blocker.label || u.localPreview : blocker.name}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {isSafePreview && blocker.port ? u.portLabel(blocker.port) : u.pidLabel(blocker.pid)}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <details className="rounded-md border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none font-medium">{u.technicalDetails}</summary>
+        <div className="mt-2 grid gap-2 font-mono text-[11px] leading-4">
+          {blockers.map(blocker => (
+            <div className="break-all" key={blocker.pid}>
+              PID {blocker.pid} · {formatBlockerCommandLine(blocker.cmdline)}
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <div className="grid gap-1">
+        {safeBlockers.length > 0 ? (
+          <Button className="font-semibold" onClick={onStopAndUpdate} size="lg">
+            {hasForeignBlockers ? u.closePreviewsAndCheckAgain : u.closePreviewsAndUpdate}
+          </Button>
+        ) : null}
+        <Button onClick={onDismiss} variant="text">
+          {u.notNow}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
   const { t } = useI18n()
   const u = t.updates
@@ -447,11 +609,15 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
 function CenteredStatus({
   action,
   body,
+  detail,
   icon,
   title
 }: {
   action?: React.ReactNode
   body?: string
+  /** Diagnostic line from the main process (HTTP status, DNS, TLS…), shown
+   *  verbatim so a bug report carries the real cause. */
+  detail?: string
   icon: React.ReactNode
   title: string
 }) {
@@ -462,6 +628,11 @@ function CenteredStatus({
 
         <DialogTitle className="text-center text-lg">{title}</DialogTitle>
         {body && <DialogDescription className="text-center text-sm">{body}</DialogDescription>}
+        {detail && (
+          <p className="max-w-sm break-words rounded-md bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground">
+            {detail}
+          </p>
+        )}
       </div>
 
       {action && <div className="flex justify-center">{action}</div>}

@@ -13,6 +13,8 @@ import { Navigate, Route, Routes, useParams } from 'react-router'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { $activeConnectionId } from '@/store/connections'
+import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 
@@ -23,6 +25,7 @@ import { contributedRoutes, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '..
 import { useStatusSnapshot } from '../shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from '../shell/hooks/use-statusbar-items'
 import { ModelMenuPanel } from '../shell/model-menu-panel'
+import { ReasoningMenuPanel } from '../shell/reasoning-menu-panel'
 import { StatusbarControls } from '../shell/statusbar-controls'
 
 import { latestChatActions, latestSidebarActions } from './latest-actions'
@@ -34,7 +37,7 @@ import type { SidebarActions, WiringActions } from './types'
 // (agents/settings/…) are the controller's and stay in wiring.tsx.
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
-const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
+const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
 
 export function LegacySessionRedirect() {
   const { sessionId } = useParams()
@@ -76,9 +79,12 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   chatOpen: boolean
   commandCenterOpen: boolean
 }) {
+  const activeConnectionId = useStore($activeConnectionId)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
   const freshDraftReady = useStore($freshDraftReady)
-  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, actions.requestGateway)
+  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
+  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, actions.requestGateway, gatewayScope)
   const extraLeftItems = useStatusbarContributions('left')
   const extraRightItems = useStatusbarContributions('right')
 
@@ -102,10 +108,9 @@ export const StatusbarSurface = memo(function StatusbarSurface({
 })
 
 /** The workspace pane: the real route table (chat + full-page views + plugin
- *  routes). Subscribes to `$gatewayState` and ROUTES_AREA itself; the gateway
- *  instance + voice cap arrive as props so a reconnect/config load re-renders
- *  only this surface. ChatView subscribes to its own session atoms, so
- *  streaming never round-trips through the controller. */
+ *  routes). Subscribes to the gateway instance/state and ROUTES_AREA itself;
+ *  the voice cap arrives as a prop. ChatView subscribes to its own session
+ *  atoms, so streaming never round-trips through the controller. */
 export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   actions,
   maxVoiceRecordingSeconds
@@ -113,19 +118,12 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   actions: WiringActions
   maxVoiceRecordingSeconds?: number
 }) {
+  const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
+  const gateway = useStore($gateway)
   const gatewayState = useStore($gatewayState)
-  useContributions(ROUTES_AREA)
-  const routeContributions = contributedRoutes()
-
-  // Recapture the live gateway instance whenever the connection state flips.
-  // getGateway reads a controller ref, so gatewayState is the intentional
-  // re-eval trigger (not a value the computation itself reads).
-  const gateway = useMemo(
-    () => actions.getGateway(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [actions, gatewayState]
-  )
+  const routeSnapshot = useContributions(ROUTES_AREA)
+  const routeContributions = contributedRoutes(routeSnapshot)
 
   const modelMenuContent = useMemo(
     () =>
@@ -133,11 +131,26 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
         <ModelMenuPanel
           gateway={gateway || undefined}
           onSelectModel={actions.selectModel}
+          ownerConnectionId={activeConnectionId || undefined}
           profile={activeGatewayProfile}
           requestGateway={actions.requestGateway}
         />
       ) : null,
-    [actions, activeGatewayProfile, gateway, gatewayState]
+    [actions, activeConnectionId, activeGatewayProfile, gateway, gatewayState]
+  )
+
+  const reasoningMenuContent = useMemo(
+    () =>
+      gatewayState === 'open' ? (
+        <ReasoningMenuPanel
+          gateway={gateway || undefined}
+          onSelectModel={actions.selectModel}
+          ownerConnectionId={activeConnectionId || undefined}
+          profile={activeGatewayProfile}
+          requestGateway={actions.requestGateway}
+        />
+      ) : null,
+    [actions, activeConnectionId, activeGatewayProfile, gateway, gatewayState]
   )
 
   const chatActions = useMemo(() => latestChatActions(actions), [actions])
@@ -147,15 +160,21 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       gateway={gateway}
       maxVoiceRecordingSeconds={maxVoiceRecordingSeconds}
       modelMenuContent={modelMenuContent}
+      modelOptionsOwnerConnectionId={activeConnectionId || undefined}
+      modelOptionsProfile={activeGatewayProfile}
+      reasoningMenuContent={reasoningMenuContent}
+      requestModelOptionsForOwner={actions.requestGateway}
       {...chatActions}
     />
   )
 
-  // FULL-PAGE views (not chat) mark the zone body `data-zone-no-header`: a
-  // page is not a tab-able surface, so the zone's double-click header toggle
-  // stands down while one is showing (see onZoneDoubleClick).
+  // FULL-PAGE views (not chat): a page is not a tab-able surface, so the zone's
+  // tab strip stands down while one is showing. That is `paneChrome.headerVeto`
+  // on the contribution, not a DOM marker — the `data-zone-no-header` attribute
+  // that used to ride this wrapper gated a body double-click toggle that no
+  // longer exists, and nothing has read it since.
   const page = (view: ReactNode) => (
-    <div className="contents" data-zone-no-header>
+    <div className="contents">
       <Suspense fallback={null}>{view}</Suspense>
     </div>
   )
@@ -164,7 +183,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
     <Routes>
       <Route element={chatView} index />
       <Route element={chatView} path=":sessionId" />
-      <Route element={page(<SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="skills" />
+      <Route element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="capabilities" />
       <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
       <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
       <Route element={null} path="agents" />

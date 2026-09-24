@@ -50,6 +50,68 @@ def test_user_message_is_durable_at_submit_before_any_agent_turn(monkeypatch, tm
         db.close()
 
 
+def test_busy_queued_prompts_are_durable_and_each_carry_their_own_staged_row(monkeypatch, tmp_path):
+    """A queued acknowledgement is durable before its later FIFO turn begins (#121006)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    try:
+        server._ensure_session_db_row(session)
+        with session["history_lock"]:
+            session["running"] = True
+
+        first = server._handle_busy_submit("q1", sid, session, "first follow-up", "ws-1")
+        second = server._handle_busy_submit("q2", sid, session, "second follow-up", "ws-1")
+
+        assert first["result"]["status"] == second["result"]["status"] == "queued"
+        # This is the cold-resume authority; neither queued turn has started yet.
+        rows = db.get_messages_as_conversation(key, include_row_ids=True, include_inactive=True)
+        assert [(row["role"], row["content"]) for row in rows] == [
+            ("user", "first follow-up"), ("user", "second follow-up"),
+        ]
+        queued = [session["queued_prompt"], *session["queued_prompts"]]
+        assert [entry["submit_user_row"]["_row_id"] for entry in queued] == [
+            row["_row_id"] for row in rows
+        ]
+
+        # The drain hands the head's exact row to its turn; adoption keeps the durable row single.
+        session["running"] = False
+        monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args, **_kwargs: None)
+        assert server._drain_queued_prompt("drain", sid, session) is True
+        agent = _flush_agent(db, key)
+        server._adopt_submit_user_row(session, agent, "first follow-up", "first follow-up")
+        user_message, _ = _stage_turn_user_message(agent, "first follow-up", "first follow-up", None, None, None, None)
+        agent._persist_user_message_idx = 0
+        agent._flush_messages_to_session_db([user_message], [])
+        assert sum(
+            row.get("role") == "user" and row.get("content") == "first follow-up"
+            for row in db.get_messages_as_conversation(key, include_inactive=True)
+        ) == 1
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_busy_self_duplicate_does_not_create_an_orphaned_durable_row(monkeypatch, tmp_path):
+    """A deduplicated live-turn retry has no later FIFO turn to adopt a row."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    try:
+        server._ensure_session_db_row(session)
+        with session["history_lock"]:
+            session.update(running=True, inflight_turn={"user": "same prompt"})
+        reply = server._handle_busy_submit("q", sid, session, "same prompt", "ws-1")
+        assert reply["result"]["status"] == "queued"
+        assert session.get("queued_prompt") is None
+        assert db.get_messages_as_conversation(key, include_inactive=True) == []
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)

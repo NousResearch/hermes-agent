@@ -947,6 +947,8 @@ export const $sessionProfilesUsage = atom<Record<string, ProfileUsage>>({})
  *  is a damaged store, not deleted history, and the sidebar says so. */
 export const $corruptSessionStores = atom<string[]>([])
 export const $sessionsLoading = atom(true)
+/** True when the first sidebar read failed before it could populate any rows. */
+export const $sessionsLoadError = atom(false)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export interface ActiveSessionStoredIdRotation {
@@ -1313,6 +1315,7 @@ export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean
 export const setSessionProfilesUsage = (next: Updater<Record<string, ProfileUsage>>) =>
   updateAtom($sessionProfilesUsage, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
+export const setSessionsLoadError = (next: Updater<boolean>) => updateAtom($sessionsLoadError, next)
 
 /** Publish the corrupt-store profiles from one sidebar refresh; identity-stable when unchanged. */
 export function setCorruptSessionStores(storage: Record<string, string> | undefined) {

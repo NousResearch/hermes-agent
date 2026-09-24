@@ -22,6 +22,7 @@ import {
   setSelectedStoredSessionId,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
+  setSessionsLoadError,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -217,6 +218,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetLiveSync()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
+  setSessionsLoadError(false)
   resetSessionsLimit()
 
   setActiveSessionId(null)

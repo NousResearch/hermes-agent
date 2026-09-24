@@ -3247,6 +3247,7 @@ class BasePlatformAdapter(ABC):
         # Dedupe on the expanded path (first occurrence wins) so the same file referenced twice in one
         # response — e.g. a MEDIA tag inline AND in a summary footer — is uploaded once, not twice (#29131).
         seen_paths: set = set()
+        known_spans: list = []
 
         def _add(path: str) -> None:
             # is_voice only for audio: a voice-flagged image would leave the photo batch.
@@ -3254,13 +3255,20 @@ class BasePlatformAdapter(ABC):
                 seen_paths.add(path)
                 media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
         for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
+            known_spans.append(match.span())
             path = _normalize_media_tag_path(match.group("path"))
             if path:
                 try:
                     _add(os.path.expanduser(path))
                 except (OSError, RuntimeError, ValueError):
                     continue  # crafted ~\x00 path: skip it, keep the rest
-        for _, safe_path, _ in _extensionless_media_matches(scan_content):
+        for match, safe_path, _ in _extensionless_media_matches(scan_content):
+            # A known-extension tag (including one with spaces) is already taken above.
+            # The extension-less scanner still walks that same tag: its first token stops
+            # at the space, then on-disk validation returns a resolved path (symlink
+            # target, or backslashes on Windows). String dedupe treats that as a second file.
+            if any(start <= match.start() < end for start, end in known_spans):
+                continue
             _add(safe_path)
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans
         # survive).

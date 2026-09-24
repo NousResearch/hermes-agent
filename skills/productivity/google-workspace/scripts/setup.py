@@ -26,6 +26,7 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -74,6 +75,12 @@ REQUIRED_PACKAGES = [
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
 REDIRECT_URI = "http://localhost:1"
+_OAUTH_ERROR_CODES = (
+    "disabled_client",
+    "invalid_client",
+    "token_revoked",
+    "invalid_grant",
+)
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -123,6 +130,34 @@ def _missing_required_packages() -> list[str]:
         except Exception:
             missing.append(spec)
     return missing
+
+
+def _extract_oauth_error_code(exc: Exception) -> str:
+    """Extract a stable OAuth error code from google-auth exceptions."""
+    try:
+        from google.auth.exceptions import RefreshError
+    except Exception:
+        RefreshError = ()  # type: ignore[assignment]
+
+    if isinstance(exc, RefreshError) and len(getattr(exc, "args", ())) >= 2:
+        response_data = exc.args[1]
+        if isinstance(response_data, dict):
+            code = str(response_data.get("error") or "").strip().lower()
+            if code:
+                return code
+
+    err_str = str(exc).lower()
+    match = re.match(r"\s*([a-z_]+)\s*:", err_str)
+    if match and match.group(1) in _OAUTH_ERROR_CODES:
+        return match.group(1)
+
+    for code in _OAUTH_ERROR_CODES:
+        if re.search(
+            rf"[\"']error[\"']\s*[:=]\s*[\"']{re.escape(code)}[\"']",
+            err_str,
+        ):
+            return code
+    return ""
 
 
 def install_deps():
@@ -197,21 +232,46 @@ def check_auth_live():
         return False
     try:
         from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+        from google.auth.exceptions import RefreshError
         from google.oauth2.credentials import Credentials
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
         service = build("calendar", "v3", credentials=creds)
         service.calendarList().list(maxResults=1).execute()
         print("LIVE_CHECK_OK: Real API call succeeded.")
         return True
-    except Exception as e:
-        err_str = str(e).lower()
-        if "disabled_client" in err_str or "invalid_client" in err_str:
+    except RefreshError as e:
+        code = _extract_oauth_error_code(e)
+        if code in ("disabled_client", "invalid_client"):
             print(f"LIVE_CHECK_FAILED: OAuth client or account disabled: {e}")
             print("  1. Check Google Cloud Console for disabled OAuth client")
             print("  2. Check myaccount.google.com for account status")
             print("  3. Do NOT retry with a disabled account")
         else:
-            print(f"LIVE_CHECK_FAILED: {e}")
+            print(f"LIVE_CHECK_FAILED: {type(e).__name__}: {e}")
+        return False
+    except HttpError as e:
+        status = getattr(getattr(e, "resp", None), "status", None)
+        body = str(e).lower()
+        if status == 403 and (
+            "access_token_scope_insufficient" in body
+            or "insufficientpermissions" in body
+            or "insufficient authentication scopes" in body
+            or "insufficient permission" in body
+        ):
+            print(f"LIVE_CHECK_PARTIAL: Calendar scope not granted, but token is valid: {e}")
+            return True
+        print(f"LIVE_CHECK_FAILED: HTTP {status}: {e}")
+        return False
+    except Exception as e:
+        code = _extract_oauth_error_code(e)
+        if code in ("disabled_client", "invalid_client"):
+            print(f"LIVE_CHECK_FAILED: OAuth client or account disabled: {e}")
+            print("  1. Check Google Cloud Console for disabled OAuth client")
+            print("  2. Check myaccount.google.com for account status")
+            print("  3. Do NOT retry with a disabled account")
+        else:
+            print(f"LIVE_CHECK_FAILED: {type(e).__name__}: {e}")
         return False
 
 
@@ -264,8 +324,8 @@ def check_auth(quiet: bool = False):
                 print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
         except Exception as e:
-            err_str = str(e).lower()
-            if "disabled_client" in err_str or "invalid_client" in err_str:
+            code = _extract_oauth_error_code(e)
+            if code in ("disabled_client", "invalid_client"):
                 print(f"OAUTH_CLIENT_DISABLED: {e}")
                 print("  The OAuth client or Google account has been disabled.")
                 print("  Steps to resolve:")
@@ -274,7 +334,7 @@ def check_auth(quiet: bool = False):
                 print("    3. If the account is disabled, you can appeal at accounts.google.com/signin/recovery")
                 print("    4. Do NOT retry API calls with a disabled account — this may worsen the situation")
                 print("    5. If the OAuth client is disabled, create a new one in Google Cloud Console")
-            elif "token_revoked" in err_str or "invalid_grant" in err_str:
+            elif code in ("token_revoked", "invalid_grant"):
                 print(f"TOKEN_REVOKED: {e}")
                 print("  Re-run setup to re-authenticate.")
             else:

@@ -85,3 +85,32 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     adapter._message_handler.assert_awaited_once_with(event)
     adapter._busy_session_handler.assert_not_awaited()
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_suppressed_clarify_reply_does_not_publish_handler_response():
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    event = _event("private structured answer")
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    adapter._active_sessions[session_key] = asyncio.Event()
+    cm.register("clarify-suppressed", session_key, "Pick one", ["A", "B"])
+
+    async def gated_handler(gated_event):
+        gated_event.delivery_mode = "suppress"
+        return "clarification accepted publicly"
+
+    adapter._message_handler = AsyncMock(side_effect=gated_handler)
+    adapter._send_with_retry = AsyncMock(return_value=SendResult(success=True))
+
+    await adapter.handle_message(event)
+
+    adapter._message_handler.assert_awaited_once_with(event)
+    assert event.delivery_mode == "suppress"
+    adapter._send_with_retry.assert_not_awaited()

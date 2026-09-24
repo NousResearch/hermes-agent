@@ -4753,7 +4753,7 @@ class BasePlatformAdapter(ABC):
                         )
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
-                        if _text:
+                        if _text and event.delivery_mode != "suppress":
                             _r = await self._send_with_retry(
                                 chat_id=event.source.chat_id,
                                 content=_text,

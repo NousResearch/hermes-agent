@@ -185,7 +185,10 @@ def _spotify_row(config, feats):
 
 def _skills_hub_row(config, feats):
     ok = bool(_setup.get_env_value("GITHUB_TOKEN"))
-    return ("Skills Hub (GitHub)", ok, None if ok else "GITHUB_TOKEN")
+    if not ok:
+        from hermes_cli.doctor_state import _gh_authenticated
+        ok = _gh_authenticated()
+    return ("Skills Hub (GitHub)", ok, None if ok else "GITHUB_TOKEN or gh auth login")
 
 
 def _always_on_rows(config, feats):

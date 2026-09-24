@@ -1082,5 +1082,8 @@ def _configure_simple_requirements(ts_key: str, *, reconfigure: bool = False):
     else:
         print(color(f"  {ts_label} requires configuration:", Colors.YELLOW))
 
+    if ts_key == "skills":
+        print("  Or install the GitHub CLI and run `gh auth login` to use its saved login.")
+
     for var, url in requirements:
         _prompt_secret(var, var, url, "", reconfigure=reconfigure, url_label="Get key at", strip=True)

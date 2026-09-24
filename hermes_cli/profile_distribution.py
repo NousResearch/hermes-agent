@@ -403,24 +403,15 @@ def _shipped_cron_store(entries: List[Tuple[Path, Tuple[str, ...]]]) -> Optional
     return None
 
 
-def _merge_cron_store(src: Path, dest: Path) -> None:
-    """Merge a distribution's cron store by job id; new jobs arrive paused.
+def _merge_cron_store(src: Path, home: Path) -> None:
+    """Merge a distribution's cron store into profile *home* by job id; new jobs arrive paused.
 
     Nothing is written when a shipped job cannot be scheduled (unparseable schedule, past
     one-shot for a job the installer resumed); the error names the job."""
-    from hermes_time import now as _hermes_now
-
     from cron import jobs as cron_jobs
-    from cron.job_definition import merge_job_definition
+    from cron.job_definition import import_job_definitions
 
-    def merge(local: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            return merge_job_definition(local, incoming)
-        except ValueError as exc:
-            raise DistributionError(
-                f"Could not merge cron job {incoming.get('name') or local.get('id')!r} into {dest}: {exc}"
-            ) from exc
-
+    dest = home.joinpath(*_CRON_STORE_REL)
     try:
         with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
             staged_store = Path(tmp) / "cron"
@@ -431,27 +422,12 @@ def _merge_cron_store(src: Path, dest: Path) -> None:
                     job["id"]: job for job in cron_jobs.load_jobs()
                     if isinstance(job, dict) and job.get("id")
                 }
-
-        now = _hermes_now().isoformat()
-        new_state = {
-            "enabled": False,
-            "state": "paused",
-            "paused_at": now,
-            "paused_reason": "Installed from a profile distribution; review it, then resume.",
-            "created_at": now,
-            "next_run_at": None,
-        }
-        with cron_jobs.use_cron_store(dest.parent.parent), cron_jobs._jobs_lock():
-            merged = []
-            for local in cron_jobs.load_jobs():
-                incoming = shipped.pop(local.get("id"), None)
-                merged.append(local if incoming is None else merge(local, incoming))
-            merged.extend(
-                merge({"id": job_id, **new_state}, incoming)
-                for job_id, incoming in shipped.items()
-            )
-            cron_jobs.save_jobs(merged)
-    except RuntimeError as exc:  # load_jobs: corrupt/unreadable store; OSError propagates as-is
+        with cron_jobs.use_cron_store(home):
+            import_job_definitions(
+                shipped, paused_reason="Installed from a profile distribution; review it, then resume.")
+    except (RuntimeError, ValueError) as exc:
+        # RuntimeError: load_jobs on a corrupt/unreadable store; ValueError: a job-labelled
+        # unschedulable definition. OSError propagates as-is like every other copy step.
         raise DistributionError(f"Could not merge cron jobs into {dest}: {exc}") from exc
 
 
@@ -544,7 +520,8 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     # (an unschedulable job), and rejecting before any file is replaced keeps the profile whole.
     cron_store = _shipped_cron_store(entries)
     if cron_store is not None:
-        _merge_cron_store(cron_store, _real_dir(target, _CRON_STORE_REL[:-1]) / _CRON_STORE_REL[-1])
+        _real_dir(target, _CRON_STORE_REL[:-1])
+        _merge_cron_store(cron_store, target)
 
     for src, rel_parts in entries:
         if rel_parts == _CRON_STORE_REL:

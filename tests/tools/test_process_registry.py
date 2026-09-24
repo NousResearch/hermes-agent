@@ -1781,6 +1781,44 @@ class TestKillProcess:
             "kill -KILL -- -4321 2>/dev/null || kill -KILL 4321 2>/dev/null",
         ]
 
+    def test_kill_sandbox_session_waits_for_term_when_grace_is_zero(
+        self, registry, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/test-broker.sock"
+
+            def __init__(self):
+                self.commands = []
+                self.alive = True
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "", "returncode": 0}
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_broker_term_settle", command="sleep 999")
+        session.env_ref = env
+        session.pid = 4321
+        session.host_start_time = 9876
+        session.pid_scope = "sandbox"
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
+        monkeypatch.setattr(
+            registry,
+            "_host_pid_is_ours",
+            lambda *_args: env.alive,
+        )
+        monkeypatch.setattr(registry, "_daemon_term_grace_seconds", lambda: 0)
+        monkeypatch.setattr(registry, "_KILL_SETTLE_SECONDS", 0.1)
+        monkeypatch.setattr(
+            "tools.process_registry.time.sleep",
+            lambda _seconds: setattr(env, "alive", False),
+        )
+
+        assert registry._signal_kill(session, session.id, False) is None
+        assert [command for command, _kwargs in env.commands] == [
+            "kill -TERM -- -4321 2>/dev/null || kill -TERM 4321 2>/dev/null"
+        ]
+
     def test_nonlinux_broker_config_keeps_legacy_kill_protocol(
         self, registry, monkeypatch
     ):

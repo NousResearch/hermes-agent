@@ -931,7 +931,7 @@ class _BrokerKernelProcess:
 
 def _local_exec_broker_config() -> Optional[Tuple[str, int]]:
     """Resolve and validate the opt-in broker endpoint for this profile."""
-    if _IS_WINDOWS:
+    if not sys.platform.startswith("linux"):
         return None
     from hermes_cli.config import load_config_readonly
     config = (load_config_readonly() or {}).get("terminal") or {}

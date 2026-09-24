@@ -2362,6 +2362,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                                 session.pid, session.host_start_time
                             ):
                                 time.sleep(0.05)
+                    else:
+                        deadline = time.monotonic() + self._KILL_SETTLE_SECONDS
+                        while time.monotonic() < deadline and self._host_pid_is_ours(
+                            session.pid, session.host_start_time
+                        ):
+                            time.sleep(0.05)
                     if self._host_pid_is_ours(
                         session.pid, session.host_start_time
                     ):

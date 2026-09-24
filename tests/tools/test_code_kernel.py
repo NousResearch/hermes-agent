@@ -434,6 +434,25 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertEqual(kernel.response_q.get_nowait(), {"status": "protocol-error"})
         self.assertEqual(kernel.proc.stdout.read1.call_count, 1)
 
+    def test_nonlinux_platform_ignores_local_broker_config(self):
+        from tools.code_kernel import _local_exec_broker_config
+
+        with (
+            patch("tools.code_kernel.sys.platform", "darwin"),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={
+                    "terminal": {
+                        "local_exec_broker": {
+                            "socket": "/run/hermes-broker/broker.sock",
+                            "uid": 1003,
+                        }
+                    }
+                },
+            ),
+        ):
+            self.assertIsNone(_local_exec_broker_config())
+
     @pytest.mark.linux_only
     def test_configured_local_broker_failure_does_not_fall_back_to_popen(self):
         from tools.code_kernel import SessionKernel, _spawn

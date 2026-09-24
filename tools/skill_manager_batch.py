@@ -86,7 +86,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
     from tools.skill_manager_guards import _background_review_preflight
     def fail(i, msg):
-        return None, tool_error(f"operations[{i}]{msg}", success=False)
+        return None, tool_error(f"operations[{i}]{msg}\nExample schema: [{{'name':'skill-name','action':'patch','old_string':'...','new_string':'...'}}]", success=False)
     names = []
     for i, op in enumerate(operations):
         if not isinstance(op, dict) or not op.get("action"):

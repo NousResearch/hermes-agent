@@ -232,7 +232,16 @@ class DingTalkAdapter(BasePlatformAdapter):
                 else:
                     consecutive_same_error = 1
                     last_error_type = error_type
-                if consecutive_same_error <= _RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                if isinstance(e, TypeError) and consecutive_same_error == 1:
+                    # A TypeError from start() is an SDK/websockets version
+                    # mismatch, not a network blip — reconnecting won't fix it.
+                    logger.error(
+                        "[%s] Stream client error: %s — likely a dingtalk-stream / "
+                        "websockets version incompatibility; upgrade with "
+                        "`pip install -U dingtalk-stream`.",
+                        self.name, e,
+                    )
+                elif consecutive_same_error <= _RECONNECT_CIRCUIT_BREAKER_TRIPS:
                     logger.warning("[%s] Stream client error: %s", self.name, e)
                 elif consecutive_same_error == _RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
                     logger.error(

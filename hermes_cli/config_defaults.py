@@ -469,6 +469,19 @@ DEFAULT_CONFIG = {
         # browser_cdp / browser_evaluate capabilities.
         "extension_control": {"enabled": False, "developer_mode": False},
     },
+    "google_meet": {
+        "debug_status": False,
+        # Linux headed-launch policy: auto | force | disabled.
+        "xvfb": "auto",
+        "proxy": {
+            "server": "",
+            # None keeps meet_bot's pinned Google media bypass default;
+            # an empty string explicitly disables the bypass list.
+            "bypass": None,
+        },
+        "realtime_ready_timeout": 15,
+        "stall_after": 90,
+    },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
     # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.

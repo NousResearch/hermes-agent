@@ -49,9 +49,10 @@ Without v2: the "realtime" path is skipped; transcribe runs alone.
 | Path | Purpose |
 |---|---|
 | `plugin.yaml` | manifest |
-| `__init__.py` | `register(ctx)` — registers 5 tools + `on_session_end` hook + `hermes meet` CLI |
+| `__init__.py` | `register(ctx)` — registers 5 tools + session-finalize cleanup hook + `hermes meet` CLI |
 | `meet_bot.py` | Playwright bot subprocess (standalone, `python -m plugins.google_meet.meet_bot`) |
 | `process_manager.py` | local bot lifecycle + `enqueue_say` |
+| `queue_io.py` | shared locked JSONL queue; durable message IDs and removal without losing producer appends |
 | `tools.py` | agent-facing tools + node-routing helper |
 | `cli.py` | `hermes meet setup / auth / join / status / transcript / say / stop / node ...` |
 | `audio_bridge.py` | v2: PulseAudio null-sink (Linux) + BlackHole probe (macOS) |
@@ -63,15 +64,42 @@ Without v2: the "realtime" path is skipped; transcribe runs alone.
 | `node/cli.py` | v3: `hermes meet node {run,list,approve,remove,status,ping}` |
 | `SKILL.md` | agent usage guide |
 
+Caption updates revise their canonical transcript row rather than appending every
+partial hypothesis. Rows with unresolved speakers remain visible; separate rows
+are not merged merely because their text is similar.
+
 ## Local quick start
 
 ```bash
 hermes plugins enable google_meet
 hermes meet install                                      # pip + Chromium
 hermes meet setup                                        # preflight
-hermes meet auth                                         # optional
-hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
+hermes meet auth                                         # optional saved Google state
+hermes meet join https://meet.google.com/abc-defg-hij    # transcribe as guest
+# or explicitly reuse saved Google auth:
+hermes meet join --use-auth-state https://meet.google.com/abc-defg-hij
 ```
+
+## Configuration
+
+Google Meet behavior is profile-aware and belongs in `config.yaml` on the
+machine that runs the bot (the gateway for local calls, or the node host for
+remote calls):
+
+```yaml
+google_meet:
+  debug_status: false
+  xvfb: auto                 # Linux only: auto | force | disabled
+  proxy:
+    server: ""
+    bypass: null             # null = pinned media default; "" = no bypass
+  realtime_ready_timeout: 15
+  stall_after: 90
+```
+
+The proxy's WebRTC policy always disables direct UDP when a proxy is set so
+media cannot silently bypass it. Keep credentials such as `OPENAI_API_KEY` in
+`.env`; the internal `HERMES_MEET_*` child variables are not user settings.
 
 ## Realtime mode
 
@@ -98,10 +126,15 @@ be a surprising side effect.
 
 Realtime mode is **speak-only**: `speaker.pcm` is streamed into the virtual mic by a
 stdin-fed `paplay` / `ffmpeg` pump that follows the file as Realtime appends audio.
-Incoming speech is still the caption scrape (v1) — meeting audio is never sent to the
-Realtime session, so there is no barge-in on raw audio and no STT billing. After
-admission the bot unmutes itself if Meet seated it muted; `status.json` / `hermes meet
-status` report the result as `micState` (`unmuted`, `unmuted_clicked`, `unknown`).
+Incoming speech is still the caption scrape — meeting audio is never sent to the
+Realtime session, so there is no barge-in on raw audio and no STT billing. The bot
+enables its Meet microphone only after verifying the realtime session and audio
+pump. `meet_say` additionally requires an in-call bot with `localMicrophoneOn=true`,
+`realtimeAudioPumpStatus="ready"`, and a live PCM pump process. If that process or
+its PCM stream fails after admission, readiness is revoked and the bot leaves with
+`leaveReason="realtime_audio_route_failed"` instead of queuing silent speech.
+Transcription-only mode keeps both microphone and camera off and refuses to join
+if their state cannot be verified.
 
 ## Remote node host
 
@@ -121,14 +154,25 @@ hermes meet node ping my-mac
 # now any meet_* tool call accepts node='my-mac' (or 'auto')
 ```
 
+`--use-auth-state` / `use_auth_state=true` is local-only on the gateway. Remote
+nodes must manage Google auth on the node host; the gateway will reject
+`use_auth_state` when `node` is set instead of silently starting as guest.
+
 ## Safety
 
 - URL gate: only `https://meet.google.com/abc-defg-hij`, `/new`, `/lookup/<id>`.
 - No calendar scanning, no auto-dial, no auto-consent announcement.
 - Node server uses bearer-token auth; no key exchange, no TLS termination
   built in — run it on a LAN or behind a reverse proxy you trust.
+- Guest mode is the default. Saved Google auth from `hermes meet auth` is reused
+  only with `--use-auth-state` / `use_auth_state=true`, because it changes the
+  identity and meeting permissions used to join.
+- Hermes session-finalize cleanup leaves active calls by default, even with a
+  duration set. Use `--persist-after-session` / `persist_after_session=true`
+  only when the user explicitly wants a detached bot.
 - One active meeting per (gateway, node) pair. A second `meet_join` leaves the first.
-- `meet_say` refuses unless the active meeting was started with `mode='realtime'`.
+- `meet_say` refuses unless the active meeting was started with `mode='realtime'`
+  and the bot is in-call with the realtime audio pump and Meet microphone ready.
 
 ## Out of scope
 

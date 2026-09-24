@@ -276,16 +276,14 @@ Lets the agent **join, transcribe, and participate in Google Meet calls** — ta
 - A headless virtual participant that joins a Meet URL using browser automation
 - Live transcription derived from Meet's own live captions (the bot never decodes the meeting audio, so no STT billing — and captions are lossy and English-biased)
 - A `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` toolset the agent invokes to join calls, poll the live transcript, and act on what it heard
-- Post-meeting artifacts (transcript, status) saved under `~/.hermes/workspace/meetings/<meeting_id>/`
+- Post-meeting artifacts (transcript, status) saved under the active profile's `$HERMES_HOME/workspace/meetings/<meeting_id>/`
 
 **Setup:**
 
 ```bash
 hermes plugins enable google_meet
-hermes meet setup   # preflight: playwright, chromium, auth file
-hermes meet auth    # opens a browser to sign into Google and saves session state —
-                    # needs a Google account with Meet access. Host approval may be
-                    # required if the meeting enforces "only invited participants can join".
+hermes meet setup   # preflight: Playwright and Chromium
+hermes meet auth    # optional: save Google session state for explicit local reuse
 ```
 
 Usage from chat:
@@ -294,11 +292,23 @@ Usage from chat:
 
 The agent kicks off the meeting join, streams the transcription back into its context as the call proceeds, and produces a structured summary when the meeting ends (or when you tell it to stop).
 
-**Realtime mode (`mode='realtime'`) is speak-only on the audio side.** The bot's replies are synthesized by OpenAI Realtime and played into the call through a virtual microphone; what it *hears* is still the caption stream, not the meeting audio — nothing from the call is sent to the Realtime session. `meet_status` reports `micState` (`unmuted`, `unmuted_clicked` when the bot had to unmute itself after admission, or `unknown` when Meet's toggle was not found) so a silent bot can be diagnosed.
+Guest mode is the default; saved Google authentication is reused only with
+`use_auth_state=true` (`--use-auth-state` in the CLI). Remote-node joins reject
+this option rather than silently ignoring it. Calls survive individual agent
+turns, but session-finalize cleanup stops only the ending session's bots unless
+`persist_after_session=true` was explicitly requested. After leaving, retrieve
+the transcript with `meet_transcript(include_finished=true)` from the same owning
+session, specifying the original `node` for a remote meeting.
+
+Non-secret settings live in the bot host's active `config.yaml` under
+`google_meet`: debug status, Xvfb policy, proxy settings, realtime-readiness
+timeout, and stall timeout. Credentials remain separate in `.env`.
+
+**Realtime mode (`mode='realtime'`) is speak-only on the audio side.** The bot's replies are synthesized by OpenAI Realtime and played through a virtual microphone; incoming speech remains the caption stream, not meeting audio. The bot fails closed if the realtime route cannot be verified before joining. `meet_say` requires an in-call bot, a ready audio pump, and an enabled Meet microphone. Transcription-only mode keeps microphone and camera off.
 
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
-**Disabling:** `hermes plugins disable google_meet`. Any saved transcripts stay in `~/.hermes/workspace/meetings/` until you remove them.
+**Disabling:** `hermes plugins disable google_meet`. Saved transcripts remain in the active profile's `$HERMES_HOME/workspace/meetings/` until you remove them.
 
 ### hermes-achievements
 

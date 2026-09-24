@@ -9,8 +9,6 @@ via ``hermes meet node approve <name> <url> <token>``. ``websockets`` is importe
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import secrets
 import time
 from pathlib import Path
@@ -18,10 +16,19 @@ from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
 from plugins.google_meet._jsonfile import read_json
-from utils import atomic_json_write
 from plugins.google_meet.node import protocol as _proto
+from utils import atomic_json_write
 
-_START_BOT_KEYS = ("url", "guest_name", "duration", "headed", "auth_state", "session_id", "out_dir")
+_START_BOT_KEYS = (
+    "url",
+    "guest_name",
+    "duration",
+    "headed",
+    "persist_after_session",
+    "session_id",
+    "out_dir",
+    "mode",
+)
 
 
 class _RpcError(Exception):
@@ -29,35 +36,35 @@ class _RpcError(Exception):
 
 
 def _rpc_start_bot(payload: Dict[str, Any], pm) -> Dict[str, Any]:
-    # Whitelist kwargs we pass through to pm.start.
-    kwargs = {k: payload[k] for k in _START_BOT_KEYS if k in payload}
+    if "auth_state" in payload:
+        raise _RpcError(
+            "auth_state is local-only; remote nodes manage their own auth state"
+        )
+    kwargs = {key: payload[key] for key in _START_BOT_KEYS if key in payload}
     if "url" not in kwargs:
         raise _RpcError("missing 'url' in payload")
     return pm.start(**kwargs)
 
 
+def _rpc_transcript(payload: Dict[str, Any], pm) -> Dict[str, Any]:
+    return pm.transcript(
+        last=payload.get("last"),
+        include_finished=bool(payload.get("include_finished", False)),
+        session_id=payload.get("session_id"),
+    )
+
+
 def _rpc_say(payload: Dict[str, Any], pm) -> Dict[str, Any]:
-    # The bot-side consumer only exists in realtime mode: ok=True means "enqueued", not "spoken".
-    text = payload.get("text", "")
-    active = pm._read_active()
-    enqueued = False
-    if active and active.get("out_dir"):
-        with contextlib.suppress(OSError):
-            queue = Path(active["out_dir"]) / "say_queue.jsonl"
-            queue.parent.mkdir(parents=True, exist_ok=True)
-            with queue.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"text": text, "ts": time.time()}) + "\n")
-            enqueued = True
-    return {"ok": True, "enqueued": enqueued, "text": text}
+    return pm.enqueue_say(payload.get("text", ""))
 
 
-# request type → fn(payload, pm) returning the response payload.
 _RPC = {
     "start_bot": _rpc_start_bot,
-    "stop": lambda p, pm: pm.stop(reason=p.get("reason", "requested")),
-    "status": lambda p, pm: pm.status(),
-    "transcript": lambda p, pm: pm.transcript(last=p.get("last")),
-    "say": _rpc_say}
+    "stop": lambda payload, pm: pm.stop(reason=payload.get("reason", "requested")),
+    "status": lambda payload, pm: pm.status(),
+    "transcript": _rpc_transcript,
+    "say": _rpc_say,
+}
 
 
 class NodeServer:
@@ -77,30 +84,34 @@ class NodeServer:
         if self._token:
             return self._token
         data = read_json(self.token_path)
-        tok = data.get("token") if isinstance(data, dict) else None
-        if not (isinstance(tok, str) and tok):
-            tok = secrets.token_hex(16)  # 32 hex chars
-            # Owner-only: the token grants full RPC access to the meet bot.
-            atomic_json_write(self.token_path, {"token": tok, "generated_at": time.time()}, mode=0o600)
-        self._token = tok
-        return tok
+        token = data.get("token") if isinstance(data, dict) else None
+        if not (isinstance(token, str) and token):
+            token = secrets.token_hex(16)
+            atomic_json_write(
+                self.token_path,
+                {"token": token, "generated_at": time.time()},
+                mode=0o600,
+            )
+        self._token = token
+        return token
 
     async def _handle_request(self, msg: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate + dispatch one decoded request; always returns an envelope, never raises.
-        Envelope ``error`` is for auth/protocol failures and pm crashes; pm's own ``ok``/``error``
-        results travel inside a normal response payload."""
+        """Validate + dispatch one decoded request; always returns an envelope, never raises."""
         ok, reason = _proto.validate_request(msg, self.ensure_token())
         if not ok:
             return _proto.make_error(str(msg.get("id") or ""), reason)
-        req_id, t = msg["id"], msg["type"]
-        if t == "ping":
-            return {"type": "pong", "id": req_id,
-                    "payload": {"display_name": self.display_name, "ts": time.time()}}
-        handler = _RPC.get(t)
+        req_id, request_type = msg["id"], msg["type"]
+        if request_type == "ping":
+            return {
+                "type": "pong",
+                "id": req_id,
+                "payload": {"display_name": self.display_name, "ts": time.time()},
+            }
+        handler = _RPC.get(request_type)
         if handler is None:
-            return _proto.make_error(req_id, f"unhandled type: {t!r}")
-        # Import lazily so test mocks can monkeypatch freely.
+            return _proto.make_error(req_id, f"unhandled type: {request_type!r}")
         from plugins.google_meet import process_manager as pm
+
         try:
             return _proto.make_response(req_id, handler(msg["payload"], pm))
         except _RpcError as exc:

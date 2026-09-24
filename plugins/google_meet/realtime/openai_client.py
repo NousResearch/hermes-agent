@@ -1,7 +1,7 @@
 """OpenAI Realtime API WebSocket client + file-queue speaker.
 
-text → OpenAI Realtime → audio deltas appended as PCM to a file the audio bridge streams into
-Chrome's fake mic. One sync WebSocket per session; ``websockets`` is imported lazily.
+Text is sent to OpenAI Realtime and returned PCM is appended to a file that the
+Google Meet audio bridge continuously forwards to Chrome's virtual microphone.
 """
 
 from __future__ import annotations
@@ -11,29 +11,35 @@ import contextlib
 import json
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from ..queue_io import append_jsonl, read_jsonl, remove_jsonl_entry
+
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
-
 _TERMINAL_FRAMES = {"response.done", "response.completed", "response.cancelled"}
 
 
-def _decode_audio(b64: str) -> bytes:
+def _decode_audio(encoded: str) -> bytes:
     try:
-        return base64.b64decode(b64) if b64 else b""
-    except (ValueError, TypeError):
+        return base64.b64decode(encoded) if encoded else b""
+    except (TypeError, ValueError):
         return b""
 
 
 class RealtimeSession:
-    """Minimal sync client for the OpenAI Realtime WebSocket API; ``speak`` and ``cancel_response``
-    may run on different threads — a lock serializes WebSocket writes."""
+    """Synchronous OpenAI Realtime connection with serialized WebSocket writes."""
 
-    def __init__(self, api_key: str, model: str = "gpt-realtime", voice: str = "alloy",
-                 instructions: str = "", audio_sink_path: Optional[Path] = None, sample_rate: int = 24000) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-realtime",
+        voice: str = "alloy",
+        instructions: str = "",
+        audio_sink_path: Optional[Path] = None,
+        sample_rate: int = 24000,
+    ) -> None:
         self.api_key = api_key
         self.model = model
         self.voice = voice
@@ -42,26 +48,38 @@ class RealtimeSession:
         self.sample_rate = sample_rate
         self._ws: Any = None
         self._send_lock = threading.Lock()
-        self.audio_bytes_out: int = 0  # public counters for status reporting
+        self.audio_bytes_out = 0
         self.last_audio_out_at: Optional[float] = None
 
     def connect(self) -> None:
-        """Open the WS and send ``session.update`` with voice + instructions."""
+        """Open the connection and configure the server-side realtime session."""
         try:
             from websockets.sync.client import connect  # type: ignore
-        except ImportError as exc:  # pragma: no cover - exercised via test
-            raise RuntimeError("websockets package is required for OpenAI Realtime; "
-                               "install with: pip install websockets") from exc
+        except ImportError as exc:  # pragma: no cover - dependency is optional.
+            raise RuntimeError(
+                "websockets package is required for OpenAI Realtime; install with: pip install websockets"
+            ) from exc
+        headers = [
+            ("Authorization", f"Bearer {self.api_key}"),
+            ("OpenAI-Beta", "realtime=v1"),
+        ]
         url = f"{REALTIME_URL}?model={self.model}"
-        headers = [("Authorization", f"Bearer {self.api_key}"), ("OpenAI-Beta", "realtime=v1")]
-        # Newer websockets takes additional_headers=, older extra_headers=.
         try:
             self._ws = connect(url, additional_headers=headers)
         except TypeError:
             self._ws = connect(url, extra_headers=headers)
-        self._send_json({"type": "session.update", "session": {
-            "voice": self.voice, "instructions": self.instructions, "modalities": ["audio", "text"],
-            "output_audio_format": "pcm16", "input_audio_format": "pcm16"}})
+        self._send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "voice": self.voice,
+                    "instructions": self.instructions,
+                    "modalities": ["audio", "text"],
+                    "output_audio_format": "pcm16",
+                    "input_audio_format": "pcm16",
+                },
+            }
+        )
 
     def close(self) -> None:
         if self._ws is not None:
@@ -70,46 +88,61 @@ class RealtimeSession:
             self._ws = None
 
     def speak(self, text: str, timeout: float = 30.0) -> dict:
-        """Send ``text`` and append the audio response to ``audio_sink_path`` (opened 'ab' per call
-        so a streaming reader can consume it). Frames other than audio deltas/terminal/error are ignored."""
+        """Request one audio response and append its PCM deltas to the sink file."""
         if self._ws is None:
             raise RuntimeError("RealtimeSession.connect() must be called first")
-        start = time.monotonic()
-        self._send_json({"type": "conversation.item.create", "item": {
-            "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
-        self._send_json({"type": "response.create", "response": {"modalities": ["audio"]}})
+        started = time.monotonic()
+        self._send_json(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
+        self._send_json(
+            {"type": "response.create", "response": {"modalities": ["audio"]}}
+        )
         bytes_written = 0
         with contextlib.ExitStack() as stack:
-            sink_fp = None
+            sink = None
             if self.audio_sink_path is not None:
                 self.audio_sink_path.parent.mkdir(parents=True, exist_ok=True)
-                sink_fp = stack.enter_context(open(self.audio_sink_path, "ab"))
+                sink = stack.enter_context(self.audio_sink_path.open("ab"))
             while True:
-                frame = self._recv_frame(start + timeout, timeout)
-                if frame is None or frame.get("type") in _TERMINAL_FRAMES:  # peer closed / response done
+                frame = self._recv_frame(started + timeout, timeout)
+                if frame is None or frame.get("type") in _TERMINAL_FRAMES:
                     break
-                ftype = frame.get("type")
-                if ftype == "error":
+                frame_type = frame.get("type")
+                if frame_type == "error":
                     raise RuntimeError(f"realtime error: {frame.get('error') or frame}")
-                chunk = _decode_audio(frame.get("delta") or frame.get("audio") or "") if (
-                    ftype == "response.audio.delta" and sink_fp is not None) else b""
-                if chunk:
-                    sink_fp.write(chunk)
-                    sink_fp.flush()
-                    bytes_written += len(chunk)
-                    self.audio_bytes_out += len(chunk)
-                    self.last_audio_out_at = time.time()
-        return {"ok": True, "bytes_written": bytes_written, "duration_ms": (time.monotonic() - start) * 1000.0}
+                if frame_type != "response.audio.delta" or sink is None:
+                    continue
+                chunk = _decode_audio(frame.get("delta") or frame.get("audio") or "")
+                if not chunk:
+                    continue
+                sink.write(chunk)
+                sink.flush()
+                bytes_written += len(chunk)
+                self.audio_bytes_out += len(chunk)
+                self.last_audio_out_at = time.time()
+        return {
+            "ok": True,
+            "bytes_written": bytes_written,
+            "duration_ms": (time.monotonic() - started) * 1000.0,
+        }
 
     def cancel_response(self) -> bool:
-        """Barge-in: send ``response.cancel``. True if sent, False if nothing to cancel / socket closed."""
+        """Cancel the in-flight response for a human barge-in when connected."""
         if self._ws is None:
             return False
         try:
             self._send_json({"type": "response.cancel"})
-            return True
         except Exception:
             return False
+        return True
 
     def _send_json(self, payload: dict) -> None:
         assert self._ws is not None
@@ -117,28 +150,30 @@ class RealtimeSession:
             self._ws.send(json.dumps(payload))
 
     def _recv_frame(self, deadline: float, timeout: float) -> Optional[dict]:
-        """Next dict frame before *deadline* (monotonic), ``None`` once the peer closes.
-        Non-dict / unparseable frames are skipped; TimeoutError past the deadline."""
+        """Return the next JSON object before *deadline*, ignoring malformed frames."""
         assert self._ws is not None
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f"realtime response did not complete within {timeout}s")
+                raise TimeoutError(
+                    f"realtime response did not complete within {timeout}s"
+                )
             try:
                 raw = self._ws.recv(timeout=remaining)
-            except TypeError:  # older websockets: no timeout kwarg
+            except TypeError:
                 raw = self._ws.recv()
             if raw is None:
                 return None
             with contextlib.suppress(TypeError, ValueError):
-                frame = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else raw
+                frame = (
+                    json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else raw
+                )
                 if isinstance(frame, dict):
                     return frame
 
 
 class RealtimeSpeaker:
-    """JSONL queue (``{"id", "text"}`` per line) wrapper around :class:`RealtimeSession`; processed
-    lines are appended to ``processed_path`` (if set) and removed from the queue."""
+    """Consume the addressable JSONL speech queue one entry at a time."""
 
     def __init__(self, session: RealtimeSession, queue_path: Path, processed_path: Optional[Path] = None) -> None:
         self.session = session
@@ -146,48 +181,34 @@ class RealtimeSpeaker:
         self.processed_path = Path(processed_path) if processed_path else None
 
     def _read_queue(self) -> list[dict]:
-        """Parse the JSONL queue, skipping blank/malformed lines; entries lacking an ``id`` get one."""
-        if not self.queue_path.exists():
-            return []
-        out: list[dict] = []
-        for line in self.queue_path.read_text(encoding="utf-8").splitlines():
-            with contextlib.suppress(ValueError):
-                entry = json.loads(line) if line.strip() else None
-                if isinstance(entry, dict):
-                    entry.setdefault("id", str(uuid.uuid4()))
-                    out.append(entry)
-        return out
+        return read_jsonl(self.queue_path)
 
-    def _rewrite_queue(self, remaining: list[dict]) -> None:
-        # Always keep the file (empty when drained): consumers may watch its mtime.
-        body = "".join(json.dumps(e) + "\n" for e in remaining)
-        self.queue_path.write_text(body, encoding="utf-8")
+    def _remove_processed(self, entry: dict) -> None:
+        remove_jsonl_entry(self.queue_path, str(entry.get("id") or ""))
 
     def _append_processed(self, entry: dict, result: dict) -> None:
         if self.processed_path is None:
             return
-        self.processed_path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"id": entry.get("id"), "text": entry.get("text", ""), "result": result}
-        with open(self.processed_path, "a", encoding="utf-8") as fp:
-            fp.write(json.dumps(record) + "\n")
+        append_jsonl(
+            self.processed_path,
+            {"id": entry.get("id"), "text": entry.get("text", ""), "result": result},
+        )
 
-    def run_until_stopped(self, stop_fn: Callable[[], bool], poll_interval: float = 0.5) -> None:
+    def run_until_stopped(
+        self, stop_fn: Callable[[], bool], poll_interval: float = 0.5
+    ) -> None:
         while not stop_fn():
             entries = self._read_queue()
             if not entries:
                 time.sleep(poll_interval)
                 continue
-            # One entry per iteration: the queue may grow while we speak.
-            head = entries[0]
-            text = (head.get("text") or "").strip()
+            entry = entries[0]
+            text = str(entry.get("text") or "").strip()
             result = {"ok": True, "bytes_written": 0, "duration_ms": 0.0}
             if text:
                 try:
                     result = self.session.speak(text)
                 except Exception as exc:
                     result = {"ok": False, "error": str(exc)}
-            self._append_processed(head, result)
-            # Re-read (new entries may have arrived), then drop the head by position or id.
-            latest = self._read_queue()
-            self._rewrite_queue(latest[1:] if latest and latest[0].get("id") == head.get("id")
-                                else [e for e in latest if e.get("id") != head.get("id")])
+            self._append_processed(entry, result)
+            self._remove_processed(entry)

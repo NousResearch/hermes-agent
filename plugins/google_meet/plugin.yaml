@@ -13,4 +13,4 @@ provides_tools:
   - meet_transcript
   - meet_say
 provides_hooks:
-  - on_session_end
+  - on_session_finalize

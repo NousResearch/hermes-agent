@@ -48,6 +48,9 @@ def tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
 # DNS-over-HTTPS providers: discover Telegram API IPs the (possibly unreachable) local resolver may not
 # return. Bounded so connect() isn't delayed.
 _DOH_TIMEOUT = 4.0
+# Bound for the system-resolver leg of the hostname fallback so a wedged OS
+# resolver (broken VPN/DNS) cannot stall the connect walk (#96359).
+_HOSTNAME_DNS_TIMEOUT = 4.0
 _DOH_PROVIDERS: list[dict] = [
     {"url": "https://dns.google/resolve", "params": {"name": _TELEGRAM_API_HOST, "type": "A"}, "headers": {}},
     {
@@ -67,7 +70,12 @@ def _resolve_proxy_url(target_hosts=None) -> str | None:
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """Reach the Bot API via known IPv4 literals first, dual-stack hostname last. Host + SNI stay on
-    api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize()."""
+    api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize().
+
+    When every configured IPv4 literal fails, the system resolver's A records for the hostname are
+    walked next (still pure IPv4, #96359); the dual-stack hostname itself is the last resort for
+    IPv6-only networks. That system-resolver stage is *lazy*: it is only evaluated once the earlier
+    candidates have already failed, so a wedged resolver cannot delay a working literal."""
 
     # Bound every pool: httpx's 100-connection default × (wedged endpoint + seed IPs) can outgrow the fd limit.
     # See #63311.
@@ -138,11 +146,73 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             order.append(None)
         return order
 
+    async def _resolve_hostname_ipv4(self) -> list[str]:
+        """A records for api.telegram.org from the system resolver (bounded).
+
+        The dual-stack hostname path is the one place a blackholed IPv6 AAAA can pin initialize()
+        (#87015). Resolving the hostname's A records lets the connect walk use real IPv4 addresses
+        instead of dropping into the IPv6-capable hostname path. Bounded so a wedged OS resolver
+        cannot add unbounded latency (same pattern as the DoH legs - #63309).
+
+        Only called once every earlier candidate has failed (see ``handle_async_request``), so the
+        resolver never delays a working literal (#96359).
+        """
+        try:
+            results = await asyncio.wait_for(
+                asyncio.to_thread(socket.getaddrinfo, _TELEGRAM_API_HOST, 443, socket.AF_INET),
+                timeout=_HOSTNAME_DNS_TIMEOUT,
+            )
+        except Exception:
+            logger.debug("IPv4 resolution for %s did not complete in time", _TELEGRAM_API_HOST)
+            return []
+        ips: list[str] = []
+        seen: set[str] = set()
+        for addr in results:
+            ip = addr[4][0]
+            if ip not in seen:
+                seen.add(ip)
+                ips.append(ip)
+        # Filter through the same validation as configured fallback IPs so a
+        # split-horizon / hijacked resolver pointing api.telegram.org at a
+        # private or loopback address cannot be used as a connect target.
+        return _normalize_fallback_ips(ips)
+
+    def _literal_attempts(self) -> list[Optional[str]]:
+        """Sticky hostname (if that is the working path) plus the configured IPv4 literals.
+
+        Excludes the *terminal* dual-stack hostname: it and the resolved A records are appended
+        lazily, once these literals have failed (#96359).
+        """
+        order = self._attempt_order()
+        sticky_hostname = [None] if self._sticky_ip is None else []
+        return sticky_hostname + [ip for ip in order if ip is not None]
+
+    async def _resolved_a_record_attempts(self, tried: set[str]) -> list[Optional[str]]:
+        """Resolved A records, minus the literals already tried, as connect targets.
+
+        Kept as a separate stage so the system resolver is only awaited once the configured/sticky
+        IPv4 literals have all failed (#96359). ``getaddrinfo``'s ordering is not contractual
+        (RFC 3483 ordering is a hint, not a guarantee), so every returned record is walked in
+        resolver order rather than trusting a single address.
+        """
+        return [ip for ip in await self._resolve_hostname_ipv4() if ip not in tried]
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
         last_error: Exception | None = None
-        for ip in self._attempt_order():
+        # Stage 1+2: sticky/configured IPv4 literals (plus a sticky hostname when that is the path
+        # that last worked). Stage 3 - the system resolver's A records - and the terminal
+        # dual-stack hostname are appended only once every literal has failed, so a wedged resolver
+        # never delays a known-good literal (#96359).
+        attempts = self._literal_attempts()
+        tried_literals = {ip for ip in attempts if ip is not None}
+        resolved_stage = False
+        index = 0
+        while index < len(attempts):
+            ip = attempts[index]
+            index += 1
+
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
@@ -181,10 +251,15 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 if ip is None:
                     await self._reset_primary(transport)
                     logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
-                    continue
-                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
-                await self._reset_fallback(ip)
-                continue
+                else:
+                    logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
+                    await self._reset_fallback(ip)
+                # Every literal has now failed: resolve the hostname's A records *here* (not before
+                # the walk) and append them plus the dual-stack hostname for IPv6-only networks.
+                if index >= len(attempts) and not resolved_stage:
+                    resolved_stage = True
+                    attempts.extend(await self._resolved_a_record_attempts(tried_literals))
+                    attempts.append(None)
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error

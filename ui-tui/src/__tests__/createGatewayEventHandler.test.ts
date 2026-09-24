@@ -753,23 +753,28 @@ describe('createGatewayEventHandler', () => {
     expect(toolRows[0]).toContain('Read File')
   })
 
-  it('does not duplicate the buffered tail when message.complete text already contains it (#61520)', () => {
+  it.each([
+    ['final text equals the streamed tail', { text: 'Answer.' }],
+    ['no final text (#16391 buffer fallback)', {}]
+  ])('keeps the tool shelf above the answer when %s (#61520)', (_label, payload) => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    streamTailTurn(onEvent)
-    // Gateway replays the streamed tail as part of its authoritative final text.
-    onEvent({
-      payload: { text: 'The provider block looks wrong.\n\nFinal answer.' },
-      type: 'message.complete'
-    } as any)
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'Pre.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'config.yaml', name: 'read_file', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'read_file', summary: 'read', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { text: 'Answer.' }, type: 'message.delta' } as any)
+    onEvent({ payload, type: 'message.complete' } as any)
 
-    expect(appended.filter(msg => msg.role === 'assistant').map(msg => msg.text)).toEqual([
-      'Checking the config first.',
-      'The provider block looks wrong.',
-      'Final answer.'
-    ])
-    expect(appended.filter(msg => msg.text.includes('The provider block looks wrong.'))).toHaveLength(1)
+    const answerIdx = appended.findIndex(msg => msg.text === 'Answer.')
+    const toolIdx = appended.findIndex(msg => (msg.tools ?? []).length > 0)
+
+    expect(appended.filter(msg => msg.text === 'Answer.')).toHaveLength(1)
+    expect(appended[answerIdx]?.tools ?? []).toHaveLength(0)
+    expect(toolIdx).toBeGreaterThan(-1)
+    expect(toolIdx).toBeLessThan(answerIdx)
+    expect(answerIdx).toBe(appended.length - 1)
   })
 
   it('anchors inline_diff as its own segment where the edit happened', () => {

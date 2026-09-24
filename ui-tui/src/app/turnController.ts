@@ -610,21 +610,14 @@ class TurnController {
     const completionText = wireText ?? payload.rendered
     const rawText = (completionText ?? this.bufRef).trimStart()
 
-    // When the gateway sent its own final text, whatever is still sitting in
-    // `this.bufRef` is text the user watched stream AFTER the last segment
-    // flush — typically narration between a tool call and the end of the turn.
-    // `recordMessageComplete` was the only turn-end site that never flushed it,
-    // so `idle()` below wiped it and the transcript lost a block the user had
-    // already seen (#61520).
-    //
-    // Flush it as a segment rather than appending it to `finalMessages`: the
-    // segment spread below already sits ahead of the final assistant text, so
-    // stream order is preserved structurally, and `finalTail()` then strips the
-    // tail out of `finalText` when the completion payload already contains it.
-    // Skipped when `completionText` is absent, because then `rawText` IS the
-    // buffer (the #16391 fallback) and flushing would publish the final answer
-    // as a segment instead of the final message.
-    if (completionText !== undefined && this.bufRef.trim()) {
+    // Text still in `this.bufRef` streamed after the last segment flush; `idle()`
+    // below would wipe it (#61520). Flush it as a segment only when the
+    // gateway's final text does not already carry it — otherwise the tail IS
+    // the answer and flushing would move the tool shelf/trail under it. Skipped
+    // when `completionText` is absent: `rawText` is then the buffer (#16391).
+    const tail = this.bufRef.trim()
+
+    if (tail && completionText != null && !completionText.includes(tail)) {
       this.flushStreamingSegment()
     }
 

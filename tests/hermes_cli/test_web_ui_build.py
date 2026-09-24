@@ -46,6 +46,22 @@ def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
     return web_dir, dist_dir
 
 
+def test_web_ui_stamp_path_is_profile_invariant(tmp_path, monkeypatch):
+    """Web source is shared across profiles like the desktop tree, so the web
+    stamp must resolve to the profile-normalized root, not the active profile's
+    home (#105659) — otherwise a profile-context build and a root-context
+    staleness check disagree on where the stamp lives."""
+    root = tmp_path / "hermes-root"
+    profile_home = root / "profiles" / "cfo"
+    profile_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    assert _web_ui_stamp_path() == root / "web-ui-build-stamp.json"
+
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    assert _web_ui_stamp_path() == root / "web-ui-build-stamp.json"
+
+
 class TestWebUIBuildNeeded:
     """Content-hash staleness — replaces the old mtime comparison.
 

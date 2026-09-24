@@ -40,8 +40,12 @@ def source_built_gui_artifacts(hermes_home: Path) -> "list[Path]":
     node_modules (the workspace-root node_modules only carries Electron, ~200MB)."""
     agent_root = hermes_home / "hermes-agent"
     desktop_dir = agent_root / "apps" / "desktop"
+    # The desktop stamp lives at the profile-normalized root (not the active
+    # profile's home); keep the profile-home entry so older layouts are still swept.
+    from hermes_constants import get_default_hermes_root
     return [desktop_dir / "dist", desktop_dir / "release", desktop_dir / "node_modules",
-            agent_root / "node_modules", hermes_home / "desktop-build-stamp.json"]
+            agent_root / "node_modules", hermes_home / "desktop-build-stamp.json",
+            get_default_hermes_root() / "desktop-build-stamp.json"]
 
 
 def packaged_gui_app_paths() -> "list[Path]":

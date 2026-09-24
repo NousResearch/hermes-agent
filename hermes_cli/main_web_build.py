@@ -183,9 +183,13 @@ def _compute_web_ui_content_hash(project_root: Path, web_dir: Path) -> str:
 
 
 def _web_ui_stamp_path() -> Path:
-    """Path of the web UI build stamp under $HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "web-ui-build-stamp.json"
+    """Path of the web UI build stamp under the shared Hermes root.
+
+    Profile-normalized like the desktop stamp: the hashed web source is shared
+    across profiles, so the stamp must not follow the active profile (#105659).
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "web-ui-build-stamp.json"
 
 
 def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:

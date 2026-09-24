@@ -56,6 +56,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
 
   const detail = attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
+  const titlePreview = attachment.titlePreview?.trim()
 
   // Keep full image bytes out of composer state. New chips read their path only
   // when clicked; previewUrl remains a compatibility fallback for older drafts.
@@ -192,12 +193,22 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
                   {detail}
                 </span>
               )}
+              {titlePreview && (
+                <span className="mt-1 block min-w-0">
+                  <span className="block line-clamp-2 whitespace-pre-wrap break-words text-[0.65rem] leading-3.5 text-muted-foreground/80">
+                    {titlePreview}
+                  </span>
+                  <span className="mt-0.5 block text-[0.6rem] font-medium leading-3 text-primary/80">
+                    {c.previewLabel(attachment.label)}
+                  </span>
+                </span>
+              )}
             </span>
           </button>
           {onRemove && (
             <button
               aria-label={c.removeAttachment(attachment.label)}
-              className="absolute -right-1 -top-1 grid size-3.5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground opacity-0 shadow-xs transition hover:bg-accent hover:text-foreground group-hover/attachment:opacity-100 focus-visible:opacity-100"
+              className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground shadow-xs transition hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={() => onRemove(attachment.id)}
               type="button"
             >

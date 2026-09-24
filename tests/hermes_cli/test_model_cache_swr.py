@@ -158,6 +158,87 @@ class TestProviderModelsSWR:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
         spawn.assert_called_once_with("openai-codex")
 
+    def test_unrelated_auth_store_rewrite_keeps_other_providers_catalogs(
+        self, tmp_path, monkeypatch,
+    ):
+        """A Codex pool counter bump / token refresh rewrites the shared auth.json every few
+        minutes. That must NOT evict the Anthropic (or any other provider's) fresh catalog: the
+        picker would fall back to the curated list and newly released models never appeared
+        until a manual refresh."""
+        import hermes_cli.models as mod
+
+        auth_path = tmp_path / "auth.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        def write_auth(*, codex_count, codex_token, anthropic_rows, mtime_ns):
+            auth_path.write_text(json.dumps({
+                "version": 1,
+                "providers": {},
+                "credential_pool": {
+                    "openai-codex": [{
+                        "id": "cdx1", "access_token": codex_token, "refresh_token": "r",
+                        "request_count": codex_count,
+                    }],
+                    "anthropic": anthropic_rows,
+                },
+            }), encoding="utf-8")
+            os.utime(auth_path, ns=(mtime_ns, mtime_ns))
+
+        key_a = [{"id": "ant-a", "label": "key A", "auth_type": "api_key", "source": "manual",
+                  "access_token": "sk-ant-a", "secret_fingerprint": "fp-a", "request_count": 0,
+                  "priority": 0}]
+        write_auth(codex_count=0, codex_token="t1", anthropic_rows=key_a, mtime_ns=1_000_000_000)
+        live = ["claude-opus-5-5", "claude-opus-5"]
+        mod.update_provider_cache_entry("anthropic", live)
+
+        # Unrelated churn: Codex counter + token rotate, file mtime moves. Anthropic rows unchanged
+        # apart from their own usage counter/priority, which is not an identity change either.
+        key_a_used = [{**key_a[0], "request_count": 7, "priority": 1, "last_status": "ok"}]
+        write_auth(codex_count=12, codex_token="t2", anthropic_rows=key_a_used, mtime_ns=2_000_000_000)
+        with patch.object(mod, "_spawn_swr_refresh") as spawn:
+            assert mod.cached_provider_model_ids("anthropic", non_blocking=True) == live
+        spawn.assert_not_called()
+
+        # A genuinely different Anthropic credential IS a new entitlement boundary.
+        key_b = [{**key_a[0], "id": "ant-b", "label": "key B", "access_token": "sk-ant-b",
+                  "secret_fingerprint": "fp-b"}]
+        write_auth(codex_count=12, codex_token="t2", anthropic_rows=key_b, mtime_ns=3_000_000_000)
+        with patch.object(mod, "_spawn_swr_refresh") as spawn:
+            assert mod.cached_provider_model_ids("anthropic", non_blocking=True) == []
+        spawn.assert_called_once_with("anthropic")
+
+        # Removing the credential altogether also moves the key.
+        mod.update_provider_cache_entry("anthropic", live)
+        write_auth(codex_count=12, codex_token="t2", anthropic_rows=[], mtime_ns=4_000_000_000)
+        with patch.object(mod, "_spawn_swr_refresh") as spawn:
+            assert mod.cached_provider_model_ids("anthropic", non_blocking=True) == []
+
+    def test_external_credential_file_only_fingerprints_its_own_provider(self, tmp_path, monkeypatch):
+        """A Copilot device-flow re-login (hosts.json rewrite) must not evict Anthropic's catalog,
+        and vice versa: each external store is bound to the provider that actually reads it."""
+        import hermes_cli.models as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        (tmp_path / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {}}))
+
+        hosts = tmp_path / ".config" / "github-copilot" / "hosts.json"
+        hosts.parent.mkdir(parents=True)
+        hosts.write_text("{}")
+        os.utime(hosts, ns=(1_000_000_000, 1_000_000_000))
+
+        anthropic_before = mod._credential_fingerprint("anthropic")
+        copilot_before = mod._credential_fingerprint("copilot")
+
+        os.utime(hosts, ns=(2_000_000_000, 2_000_000_000))
+        assert mod._credential_fingerprint("anthropic") == anthropic_before
+        assert mod._credential_fingerprint("copilot") != copilot_before
+
     def test_force_refresh_bypasses_swr(self):
         import hermes_cli.models as mod
 

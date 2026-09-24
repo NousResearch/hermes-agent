@@ -1731,6 +1731,59 @@ def _provider_models_cache_path() -> Path:
     return get_hermes_home() / "provider_models_cache.json"
 
 
+# External credential stores whose rotation is a real catalog boundary for ONE provider. Keyed per
+# slug so a Copilot device-flow re-login cannot evict, say, the Anthropic catalog.
+_PROVIDER_EXTERNAL_CREDENTIAL_FILES: dict[str, tuple[str, ...]] = {
+    "anthropic": ("~/.claude/.credentials.json",),
+    "copilot": ("~/.config/github-copilot/hosts.json", "~/.config/github-copilot/apps.json"),
+    "copilot-acp": ("~/.config/github-copilot/hosts.json", "~/.config/github-copilot/apps.json"),
+    "minimax-oauth": ("~/.minimax/credentials.json",),
+}
+
+# Non-secret pool row fields that identify WHICH credential/account a row is. Deliberately excludes
+# tokens (rotate in place), request counters, priorities and cooldown/status fields (change on every
+# request without moving the entitlement boundary).
+_POOL_ROW_IDENTITY_FIELDS = (
+    "id", "auth_type", "source", "base_url", "inference_base_url", "secret_fingerprint",
+    "client_id", "portal_base_url", "auth_method", "account_tier", "user_id", "org_id",
+)
+
+
+def _provider_auth_identity(provider: str) -> str:
+    """Stable identity of *provider*'s own credentials in the auth store, for the catalog cache key.
+
+    Built from the provider's pool rows (and legacy singleton ``providers.<slug>`` state) using only
+    non-secret identifying fields, so the key moves when a credential is added, removed or swapped
+    for another account — and NOT when the shared ``auth.json`` is rewritten for an unrelated
+    provider's token refresh or usage counter. Any read error degrades to ``"unreadable"`` (a
+    cache miss, never a stale hit under wrong credentials).
+    """
+    try:
+        from hermes_cli.auth import _load_auth_store, _load_provider_state, read_credential_pool
+
+        rows: list[str] = []
+        for entry in read_credential_pool(provider) or []:
+            if not isinstance(entry, dict):
+                continue
+            ident = {k: entry.get(k) for k in _POOL_ROW_IDENTITY_FIELDS if entry.get(k) not in (None, "")}
+            # Rows without a persisted fingerprint (OAuth grants) still change identity when the
+            # account does: the label/expiry are the only stable-ish handles, tokens are not.
+            if "secret_fingerprint" not in ident:
+                ident["label"] = entry.get("label")
+            rows.append(json.dumps(ident, sort_keys=True, default=str))
+        rows.sort()  # rotation strategies reorder rows without changing the credential set
+
+        singleton = _load_provider_state(_load_auth_store(), provider)
+        singleton_ident = ""
+        if isinstance(singleton, dict):
+            keep = {k: singleton.get(k) for k in _POOL_ROW_IDENTITY_FIELDS if singleton.get(k) not in (None, "")}
+            singleton_ident = json.dumps(keep, sort_keys=True, default=str)
+        return f"pool={';'.join(rows)}|singleton={singleton_ident}"
+    except Exception:
+        logger.debug("provider auth identity unavailable for %s", provider, exc_info=True)
+        return "unreadable"
+
+
 def _credential_fingerprint(provider: str) -> str:
     """Short hash of the credentials ``provider_model_ids(provider)`` would see right now.
 
@@ -1814,14 +1867,12 @@ def _credential_fingerprint(provider: str) -> str:
 
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
     else:
-        try:
-            from hermes_constants import get_hermes_home
-            for rel in ("auth.json", "credentials.json"):
-                _mtime_part(rel, get_hermes_home() / rel)
-        except Exception:
-            pass
-        for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                    "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
+        # This provider's OWN credential material, not the auth.json mtime: that file is shared by
+        # every provider and rewritten on any pool counter bump or OAuth rotation (a busy Codex pool
+        # touches it every couple of minutes), which evicted every other provider's fresh catalog and
+        # left the picker on the curated list — new models never appeared without a manual refresh.
+        parts.append(f"auth_identity={_provider_auth_identity(provider)}")
+        for rel in _PROVIDER_EXTERNAL_CREDENTIAL_FILES.get(provider, ()):
             path = os.path.expanduser(rel)
             _mtime_part(path, path)
 

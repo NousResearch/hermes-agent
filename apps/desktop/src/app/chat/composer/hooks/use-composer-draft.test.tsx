@@ -342,6 +342,58 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
   })
 })
 
+describe('useComposerDraft — focused selection survives a same-draft scope repaint (#120942)', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    clearSessionDraft('lineage-root')
+    clearSessionDraft('runtime-tip')
+    markActiveComposer('main')
+  })
+
+  it('restores the focused caret even when another composer owns focus routing during the rekey', () => {
+    const draftText = 'alpha beta'
+    stashSessionDraft('lineage-root', draftText, [])
+    stashSessionDraft('runtime-tip', draftText, [])
+    let draft!: ReturnType<typeof useComposerDraft>
+
+    function DraftHarness({ scope }: { scope: string }) {
+      draft = useComposerDraft({
+        activeQueueSessionKey: scope,
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: scope
+      })
+
+      return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+    }
+
+    const { rerender } = render(<DraftHarness scope="lineage-root" />)
+    const editor = draft.editorRef.current!
+    const text = editor.firstChild!
+    const range = globalThis.document.createRange()
+    range.setStart(text, 6)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    editor.focus()
+
+    // Reconnect reconciliation can temporarily leave another surface as the
+    // focus-bus owner while this editor remains the browser's active element.
+    markActiveComposer('tile:reconnecting')
+    act(() => rerender(<DraftHarness scope="runtime-tip" />))
+
+    const selection = window.getSelection()!
+    expect(draft.editorRef.current).toBe(editor)
+    expect(composerPlainText(editor)).toBe(draftText)
+    expect(globalThis.document.activeElement).toBe(editor)
+    expect(selection.rangeCount).toBe(1)
+    expect(selection.getRangeAt(0).startContainer).toBe(editor.firstChild)
+    expect(selection.getRangeAt(0).startOffset).toBe(6)
+  })
+})
+
 describe('useComposerDraft — a closing composer hands the focus-bus key back', () => {
   afterEach(() => {
     cleanup()

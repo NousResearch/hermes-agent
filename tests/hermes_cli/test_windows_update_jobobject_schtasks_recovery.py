@@ -608,6 +608,68 @@ class TestRegisteredTaskRecoveryFollowups:
         assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
         assert not any(call[0] in ("/Delete", "/Create") for call in calls)
 
+    def test_custom_vbs_with_quoted_hermes_target_argument_is_not_reconciled(
+        self, monkeypatch, tmp_path
+    ):
+        """The first quoted VBS is the script wscript executes. A later
+        Hermes-looking argument is not evidence of task ownership."""
+        task_name = "Hermes_Gateway_beta"
+        custom = gateway_windows._build_scheduled_task_xml(
+            task_name, Path(r"C:\Custom\custom.vbs"), r"PC\me"
+        )
+        custom = custom.replace(
+            r'"C:\Custom\custom.vbs"',
+            r'"C:\Custom\custom.vbs" /target:"C:\Hermes\profiles\beta\gateway-service\Hermes_Gateway_beta.vbs"',
+        ).replace('version="1.4"', 'version="1.3"')
+        calls: list[list[str]] = []
+
+        def schtasks(args):
+            calls.append(list(args))
+            if "/XML" in args and "/Query" in args:
+                return (0, custom, "")
+            return (0, "", "")
+
+        monkeypatch.setattr(gateway_windows, "_exec_schtasks", schtasks)
+        monkeypatch.setattr(
+            gateway_windows,
+            "get_task_script_path",
+            lambda *a, **kw: tmp_path / "gateway-service" / f"{task_name}.cmd",
+        )
+        monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+        monkeypatch.setattr(
+            gateway_windows,
+            "_write_task_script",
+            lambda *a, **kw: pytest.fail("must not rewrite an unknown custom action"),
+        )
+
+        assert gateway_windows.reconcile_scheduled_task(task_name) is False
+        assert not any(call[0] in ("/Delete", "/Create") for call in calls)
+
+    def test_canonical_target_launcher_action_still_reconciles(self, monkeypatch, tmp_path):
+        """A supported canonical launcher remains eligible for the existing
+        task-drift repair path after unknown Action arguments are rejected."""
+        task_name = "Hermes_Gateway_beta"
+        script = tmp_path / "gateway-service" / f"{task_name}.cmd"
+        script.parent.mkdir()
+        launcher = script.with_suffix(".vbs")
+        registered = gateway_windows._build_scheduled_task_xml(task_name, launcher, r"PC\me")
+        registered = registered.replace('version="1.4"', 'version="1.3"')
+        calls: list[list[str]] = []
+
+        def schtasks(args):
+            calls.append(list(args))
+            if "/XML" in args and "/Query" in args:
+                return (0, registered, "")
+            return (0, "", "")
+
+        monkeypatch.setattr(gateway_windows, "_exec_schtasks", schtasks)
+        monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda *a, **kw: script)
+        monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+        monkeypatch.setattr(gateway_windows, "_write_task_script", lambda *a, **kw: script)
+
+        assert gateway_windows.reconcile_scheduled_task(task_name) is True
+        assert any(call[0] == "/Create" for call in calls)
+
     def test_target_launcher_refresh_failure_is_not_reported_as_refreshed(self, monkeypatch, tmp_path, capsys):
         """R1: a target write failure is retained as best-effort failure;
         it cannot silently count as refreshing a different profile."""
@@ -629,6 +691,53 @@ class TestRegisteredTaskRecoveryFollowups:
 
         assert writes == [beta_home]
         assert "Refreshed Windows gateway launcher scripts" not in capsys.readouterr().out
+
+    def test_mixed_cold_start_refreshes_current_and_profile_homes_before_spawning(
+        self, monkeypatch, tmp_path
+    ):
+        """The mixed plan cold-starts the actual current home first, so it
+        and beta need one target-scoped refresh each before either spawn."""
+        current_home = tmp_path / "configured-home"
+        beta_home = current_home / "profiles" / "beta"
+        refreshed: list[Path | None] = []
+        order: list[str] = []
+        _install_windows_resume_stubs(monkeypatch)
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(current_home))
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: beta_home)
+        monkeypatch.setattr(
+            hm,
+            "_refresh_windows_gateway_launchers",
+            lambda *, home=None: refreshed.append(home) or order.append(f"refresh:{home}"),
+        )
+        monkeypatch.setattr(update_cmd_windows, "_resume_windows_services", lambda _token: None)
+        monkeypatch.setattr(
+            hm,
+            "_cold_start_windows_gateway_after_update",
+            lambda _token: order.append("current-cold-start") or True,
+        )
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_cold_start_attested_profiles",
+            lambda _token: order.append("beta-cold-start"),
+        )
+
+        token = {
+            "resume_needed": True,
+            "profiles": {},
+            "unmapped": [],
+            "cold_start_if_installed": True,
+            "cold_start_profiles": {"beta": "beta-generation"},
+        }
+        _resume_windows_gateways_after_update(token)
+
+        assert refreshed == [current_home, beta_home]
+        assert refreshed.count(current_home) == 1
+        assert order == [
+            f"refresh:{current_home}",
+            f"refresh:{beta_home}",
+            "current-cold-start",
+            "beta-cold-start",
+        ]
 
     def test_partial_relaunch_attests_alpha_and_keeps_only_beta_pending(self, monkeypatch, tmp_path):
         """R2: a created watcher is not a recovered profile.  Alpha may be

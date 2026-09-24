@@ -1404,6 +1404,13 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     # unmapped process has no safe home, so retain the legacy active-home pass.
     from hermes_cli.profiles import get_profile_dir
     refresh_homes = []
+    # ``cold_start_if_installed`` starts the configured current home before
+    # per-profile cold starts.  It is a real target too; do not assume that
+    # its identity is ``default`` or leave its launcher stale in a mixed plan.
+    if token.get("cold_start_if_installed") and not profiles and not any(u.get("argv") for u in unmapped):
+        from hermes_cli.config import get_hermes_home
+
+        refresh_homes.append(Path(get_hermes_home()))
     for profile in [*profiles, *(token.get("cold_start_profiles") or {})]:
         home = Path(get_profile_dir(profile))
         if home not in refresh_homes:

@@ -1482,26 +1482,22 @@ def _task_action_is_hermes_managed(
     command = str(registered.get("Task/Actions/Exec/Command") or "").casefold()
     arguments = str(registered.get("Task/Actions/Exec/Arguments") or "")
     wanted_arguments = str(template.get("Task/Actions/Exec/Arguments") or "")
-    # A familiar file name alone is not sufficient proof: it might be a
-    # user-managed task which happens to use a Hermes-like name.  Compare the
-    # quoted launcher path rather than all flags so a known old Hermes action
-    # (which predates //B //Nologo and may have an older absolute home) remains
-    # reconcilable, while another path stays user-owned.
-    registered_paths = re.findall(r'"([^"]+)"', arguments)
-    wanted_paths = re.findall(r'"([^"]+)"', wanted_arguments)
-    if command not in {"wscript.exe", "wscript"} or not registered_paths or not wanted_paths:
-        return False
-    registered_launcher = registered_paths[-1].replace("/", "\\").casefold()
-    wanted_launcher = wanted_paths[-1].replace("/", "\\").casefold()
-    if registered_launcher == wanted_launcher:
-        return True
-    # The sole cross-home compatibility form is the historic canonical
-    # gateway-service/<this task>.vbs action.  A same-named launcher elsewhere
-    # is still unknown and therefore must not be replaced.
-    launcher_name = (
-        f"{_sanitize_filename(task_name)}.vbs" if task_name else wanted_launcher.rsplit("\\", 1)[-1]
+    # Only support the two launcher forms Hermes itself has emitted: the
+    # older single quoted script, and the current ``//B //Nologo`` form.  A
+    # quoted path elsewhere in a custom argument string (for example a
+    # ``/target:`` value) is not the script that wscript executes.
+    launcher_args = re.compile(
+        r'\s*(?://B\s+//Nologo\s+)?"([^"]+)"\s*', re.IGNORECASE
     )
-    return registered_launcher.endswith("\\gateway-service\\" + launcher_name.casefold())
+    registered_match = launcher_args.fullmatch(arguments)
+    wanted_match = launcher_args.fullmatch(wanted_arguments)
+    if command not in {"wscript.exe", "wscript"} or not registered_match or not wanted_match:
+        return False
+    # Ownership is target-scoped.  A matching task-shaped suffix in another
+    # home is insufficient evidence that changing its Action is safe.
+    registered_launcher = registered_match.group(1).replace("/", "\\").casefold()
+    wanted_launcher = wanted_match.group(1).replace("/", "\\").casefold()
+    return registered_launcher == wanted_launcher
 
 
 def scheduled_task_drift(task_name: str, home: Path | None = None) -> list[str]:

@@ -10,6 +10,7 @@ lane = the worktree path. Linked worktrees fold under their MAIN repo (common-di
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Callable, Optional
 
 # cwd -> ``{"repo_root", "worktree_root"}`` (COMMON main root / this cwd's checkout root);
@@ -62,10 +63,19 @@ def _is_windows_path(path: str) -> bool:
 
 
 def _comparison_segments(path: str) -> list[str]:
-    """Segments for identity comparison: Windows paths casefold (even on POSIX); display
-    paths and emitted IDs keep their spelling."""
-    segs = _segments(path)
-    return [s.casefold() for s in segs] if _is_windows_path(path) else segs
+    """Path segments suitable for identity comparisons on any host.
+
+    Windows paths remain case-insensitive even when tests or remote backends run
+    on POSIX. Display paths and emitted IDs keep their original spelling.
+
+    Segments are NFC-normalized before comparing: the same on-disk folder can
+    reach us as NFC (typed paths, os.getcwd()) or NFD (macOS file pickers,
+    HFS+/APFS round-trips), and ``casefold()`` does not unify the two forms —
+    an accented project folder would otherwise render empty (#65014). Mirrors
+    ``comparisonSegments`` in the desktop's ``workspace-groups.ts``.
+    """
+    segs = [unicodedata.normalize("NFC", segment) for segment in _segments(path)]
+    return [segment.casefold() for segment in segs] if _is_windows_path(path) else segs
 
 
 def _path_key(path: str) -> str:
@@ -190,11 +200,13 @@ def _place(
 
 
 def _place_session(session: dict, resolve: Optional[Resolve]) -> Optional[dict]:
-    """``_place`` for a session row; ``None`` when it has no cwd."""
-    cwd = _field(session, "cwd")
-    if not cwd:
+    """``_place`` for a session row, anchored on its cwd or else its persisted repo root;
+    ``None`` only when it has neither (the renderer's ``isDetachedSession``)."""
+    root = _field(session, "git_repo_root")
+    anchor = _field(session, "cwd") or root
+    if not anchor:
         return None
-    return _place(cwd, _field(session, "git_branch"), resolve, _field(session, "git_repo_root"))
+    return _place(anchor, _field(session, "git_branch"), resolve, root)
 
 
 def _session_repo_root(session: dict, resolve: Optional[Resolve]) -> str:
@@ -321,10 +333,11 @@ class _FolderIndex:
 def _project_for_session(
         session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
     cwd = _field(session, "cwd")
-    if not cwd:
-        return None
     repo_root = _session_repo_root(session, resolve)
-    candidates = [cwd, repo_root] if repo_root and repo_root != cwd else [cwd]
+    # A root-only row (empty cwd) still belongs to the project owning its root.
+    candidates = [t for t in dict.fromkeys((cwd, repo_root)) if t]
+    if not candidates:
+        return None
     # Longest folder match wins; ties keep the cwd match (max() keeps the first maximum).
     return max((index.match(t) for t in candidates), key=lambda hit: hit[1])[0]
 

@@ -69,6 +69,10 @@ def _core_without(*excluded, kanban=True):
 # tts, image_gen, home-assistant, cron, kanban and computer-use.
 _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", *_HA_TOOLS, kanban=False)
 
+# Toolsets a CLIENT adds to its own sessions (tui_gateway/server.py::_gui_surface_toolsets), never
+# config: another surface lacking them made no configuration choice.
+CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
+
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
@@ -149,7 +153,7 @@ TOOLSETS = {
     "setup": _ts(
         "Onboarding-only surface for the setup profile: catalog plugin/skill install "
         "requests through the approval card",
-        [],
+        ["manage_catalog"],
         role="setup",
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),

@@ -342,6 +342,10 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = (
     "no endpoints found matching your data policy",
 )
 
+# Upstream account ban relayed by an aggregator, often as HTTP 200 + an SSE error
+# event (no status): permanent for this account, so never the transient retry ladder.
+_ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
+
 # Per-prompt safety-filter blocks: deterministic for the unchanged request, so
 # fallback immediately. Each phrase is verbatim from one provider (Codex cyber
 # flags #18028, OpenAI moderation, Anthropic safety, Azure token, MiniMax
@@ -820,6 +824,9 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
         return _V_CONTENT_BLOCKED
+    # Status-agnostic: the stream-relayed ban has no status, and a 403 variant is not a bad key.
+    if any(p in msg for p in _ACCOUNT_POLICY_BLOCK_PATTERNS):
+        return _V_POLICY_BLOCKED
     # ChatGPT Codex masks a rejected encrypted-reasoning replay behind the same bare
     # ``invalid_prompt: Request blocked.`` it uses for real blocks (#92353). Exact envelope
     # + provider only. The verdict keeps format_error's abort-and-fallback hints; the one

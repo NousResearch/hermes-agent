@@ -55,7 +55,6 @@ class TestGetHermesHomeProfileWarning:
         err = capsys.readouterr().err
         assert err.count("HERMES_HOME fallback") == 1
         assert "'coder'" in err
-        assert "#18594" in err
 
         # 3. One-shot: second and third calls don't re-warn
         fresh_constants.get_hermes_home()

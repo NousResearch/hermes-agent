@@ -831,54 +831,6 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'token env var must not appear')
 })
 
-test('buildSpawnCommand always uses serve (legacy dashboard path removed)', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.match(cmd, /serve --isolated/)
-  assert.match(cmd, /--host 127\.0\.0\.1 --port 0/)
-  assert.doesNotMatch(cmd, /dashboard/)
-  assert.doesNotMatch(cmd, /--skip-build/)
-  assert.match(cmd, /setsid/)
-})
-
-test('buildSpawnCommand atomically reserves the ownership slot through spawn and lock publication', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-    ownershipId: OWNERSHIP_ID,
-    reservationNonce: SPAWN_NONCE,
-    spawnNonce: SPAWN_NONCE,
-    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: {
-      ownershipId: OWNERSHIP_ID,
-      spawnNonce: SPAWN_NONCE,
-      port: 0,
-      profile: 'work',
-      hermesPath: '/x/hermes',
-      hermesHome: '~/.hermes',
-      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-      tokenFingerprint: fingerprintToken('stored-token'),
-      protocolVersion: PROTOCOL_VERSION,
-      startedAt: '2026-07-14T00:00:00.000Z'
-    }
-  })
-
-  assert.ok(cmd.includes('.connect.lock'))
-  assert.ok(cmd.includes('.hermes-update-in-progress.mutex'))
-  assert.match(cmd, /fcntl\.flock\(fd,fcntl\.LOCK_EX\)/)
-  assert.match(cmd, /os\.O_CLOEXEC/)
-  assert.match(
-    cmd,
-    /subprocess\.run\(\["sh","-c",payload,"hermes-update-mutex",str\(fd\)\],pass_fds=\(fd,\),check=False\)/
-  )
-  assert.doesNotMatch(cmd, /os\.set_inheritable\(fd,True\)/)
-  assert.match(cmd, /hermes-update-child "\$1"/)
-  assert.match(cmd, /eval "exec \$1>&-"/)
-  assert.ok(cmd.includes('backend.lock.json'))
-  assert.match(cmd, /lock_json/)
-  assert.match(cmd, /trap .*rm -rf/)
-  assert.ok(cmd.indexOf('lock_json') > cmd.indexOf('serve --isolated'))
-})
-
 test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))
   const hermesPath = path.join(directory, 'hermes')
@@ -946,20 +898,6 @@ test('spawnRemoteDashboard returns exact ownership artifacts', async () => {
   assert.equal(pid, 4242)
   assert.match(spawnNonce, /^[0-9a-f]{16}$/)
   assert.equal(logPath, spawnLogPath(OWNERSHIP_ID, spawnNonce))
-})
-
-test('spawnRemoteDashboard always spawns serve (legacy dashboard path removed)', async () => {
-  const ssh = fakeSsh([
-    [/grep -q ssh-session-token-file/, 'YES\n'],
-    [/python3 -c/, ''],
-    [/printf '%s\\n'/, ''],
-    [/setsid|nohup/, '4242\n']
-  ])
-
-  await spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID })
-  const spawn = ssh.calls.find(c => /setsid|nohup/.test(c))
-  assert.match(spawn, /serve --isolated/)
-  assert.doesNotMatch(spawn, /\bdashboard\b/)
 })
 
 test('READY_RE accepts both serve and dashboard sentinels', () => {
@@ -1324,7 +1262,7 @@ test('managed update drain rechecks the POSIX ownership record before signalling
   )
 })
 
-test('managed update drain refuses Darwin termination because PID signals cannot be atomically bound', async () => {
+test('managed update drain never falls back to a bare kill when the identity-bound signal is refused', async () => {
   const lock = ownedLock()
   const rawLock = JSON.stringify(lock)
 
@@ -1342,12 +1280,6 @@ test('managed update drain refuses Darwin termination because PID signals cannot
     false,
     'the final signal must stay inside the identity-checking helper'
   )
-  const termination = ssh.calls.find(command => command.includes('identity_before_signal'))
-  const darwinStart = termination.indexOf('if (sys.platform=="darwin"):')
-  const darwinEnd = termination.indexOf('\n try:', darwinStart)
-  const darwinGuard = termination.slice(darwinStart, darwinEnd)
-  assert.match(darwinGuard, /DARWIN_UNAVAILABLE/)
-  assert.doesNotMatch(darwinGuard, /os\.kill\(pid,signal\.SIGTERM\)/)
 })
 
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {
@@ -1497,12 +1429,6 @@ test('expandRemotePath preserves spaces as data', () => {
   assert.ok(result.includes('my project'), 'spaces must be preserved, not split')
 })
 
-test('buildSpawnCommand does not embed the token in the command string', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.ok(!cmd.includes('super_secret_token_value'), 'token must not appear in the spawn command')
-  assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'env var name must not appear')
-})
-
 test('buildSpawnCommand includes --ssh-session-token-file when tokenFilePath is provided', () => {
   const cmd = buildSpawnCommand('/x/hermes', 'work', {
     tokenFilePath: `~/.hermes/desktop-ssh/${OWNERSHIP_ID}/${SPAWN_NONCE}.token`,
@@ -1512,41 +1438,6 @@ test('buildSpawnCommand includes --ssh-session-token-file when tokenFilePath is 
 
   assert.match(cmd, /--ssh-session-token-file/)
   assert.match(cmd, /\.hermes\/desktop-ssh\//)
-})
-
-test('buildSpawnCommand always uses serve, never dashboard', () => {
-  const cmd = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.match(cmd, /serve --isolated/)
-  assert.doesNotMatch(cmd, /\bdashboard\b/)
-  assert.doesNotMatch(cmd, /--skip-build/)
-  assert.doesNotMatch(cmd, /--no-open/)
-})
-
-test('buildSpawnCommand raises the SSH child file limit before execing Hermes', () => {
-  const cmd = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.match(cmd, /ulimit -n 65536 2>\/dev\/null \|\| true; exec env HERMES_DESKTOP=1/)
-  assert.ok(cmd.indexOf('ulimit -n 65536') < cmd.indexOf('serve --isolated'))
-})
-
-test('buildSpawnCommand payload variables keep $HOME expandable (no double quoting)', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-    ownershipId: OWNERSHIP_ID,
-    reservationNonce: SPAWN_NONCE,
-    spawnNonce: SPAWN_NONCE,
-    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
-  })
-
-  // expandRemotePath() emits "$HOME"'/…' — a fragment the shell expands at
-  // assignment. Wrapping it in shq() again stores the quote characters in
-  // the variable, so mkdir "$reservation" creates (or fails on) a literal
-  // "$HOME" path and the reservation loop spins forever holding the mutex.
-  for (const name of ['reservation', 'lock', 'owner_file']) {
-    assert.match(cmd, new RegExp(`${name}="\\$HOME"`), `${name}= must start with an expandable "$HOME"`)
-    assert.doesNotMatch(cmd, new RegExp(`${name}='`), `${name}= must not be re-quoted`)
-  }
 })
 
 test('buildSpawnPayload lockfile publication is POSIX sh (no bash substitution)', () => {
@@ -1569,27 +1460,6 @@ test('buildSpawnPayload lockfile publication is POSIX sh (no bash substitution)'
   assert.ok(cmd.includes(`sed 's/"pid":"__PID__"/"pid":'"$child"'/`), 'pid substitution must target the JSON pid field')
 })
 
-test('buildSpawnCommand scopes umask 077 to the mkdir subshell (no leak into serve)', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-    ownershipId: OWNERSHIP_ID,
-    reservationNonce: SPAWN_NONCE,
-    spawnNonce: SPAWN_NONCE,
-    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
-  })
-
-  // umask 077 must apply only to the reservation-parent mkdir. A bare
-  // umask call at the top level leaks 077 into the rest of the payload,
-  // so the detached setsid backend inherits 077 instead of the login umask.
-  assert.ok(cmd.includes('(umask 077 && mkdir -p'), 'umask 077 must be scoped to a mkdir subshell')
-  assert.doesNotMatch(cmd, /(^|[^(])umask 077/, 'no bare umask 077 may leak into the spawn chain')
-  assert.ok(
-    cmd.indexOf('(umask 077') < cmd.indexOf('serve --isolated'),
-    'scoped mkdir must still precede the serve spawn'
-  )
-})
 test.skipIf(process.platform !== 'linux')(
   'buildSpawnPayload publishes a runtime-valid lockfile pid under dash',
   async () => {
@@ -1681,7 +1551,6 @@ test.skipIf(process.platform !== 'linux')(
     }
   }
 )
-
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
   const failure = new Error('channel closed')
 

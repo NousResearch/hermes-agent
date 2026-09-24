@@ -30,7 +30,7 @@ from agent.skill_utils import (
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
-    _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
+    _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _maybe_auto_propose_org_edit,
     _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
@@ -429,12 +429,26 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(skill_dir)
+    mkdir_under_hermes_home(skill_dir.parent)
+    try:
+        skill_dir.mkdir(exist_ok=False)
+    except FileExistsError:
+        # mkdir raised EEXIST for a file, symlink (live or dangling) or dir alike; only an EMPTY
+        # real directory (leftover of an earlier create whose SKILL.md write failed) may be used.
+        # Anything else — or anything unstat-able/unlistable — is someone else's: never adopt.
+        try:
+            usable = (not _is_path_redirect(skill_dir) and skill_dir.is_dir()
+                      and not any(skill_dir.iterdir()))
+        except OSError:  # permissions / ACL
+            usable = False
+        if not usable:
+            return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
+                        "directory, or unreadable). Choose another name, or move/remove that path and retry.")
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-    if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return _err(scan_error)
+    if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
+        with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
+            skill_dir.rmdir()
+        return guard
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir
     result = {

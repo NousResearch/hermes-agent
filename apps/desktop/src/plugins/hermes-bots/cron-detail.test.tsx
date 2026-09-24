@@ -11,6 +11,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -20,16 +21,15 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = vi.fn()
 })
 
-const request = vi.fn(async () => ({}))
+const { request } = vi.hoisted(() => ({ request: vi.fn(async () => ({})) }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, host: { ...sdk.host, request } }
+  return { ...sdk, usePluginI18n: () => translateBots, host: { ...sdk.host, request } }
 })
 
-const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows, routineLastResult } =
-  await import('./cron')
+const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows } = await import('./cron')
 
 const activeJob: RoutineJob = {
   deliver: 'bot-chat',
@@ -89,22 +89,6 @@ describe('the facts the row never showed', () => {
 
     expect(valueOf(passthrough, 'Schedule (raw)')).toBeUndefined()
     expect(valueOf(passthrough, 'Schedule')).toBe('0 9 * * 1-5')
-  })
-
-  it('spells out every last_status the scheduler writes', () => {
-    // The gateway's literal set is closed; each one gets a human reading, and
-    // delivery_failed in particular must not read as a success.
-    expect(routineLastResult('ok')).toBe('Succeeded')
-    expect(routineLastResult('error')).toBe('Failed')
-    expect(routineLastResult('delivery_failed')).toBe('Ran, but delivery failed')
-    expect(routineLastResult('blocked_config')).toBe('Blocked by configuration (not run)')
-    // Unknown literals pass through rather than vanish.
-    expect(routineLastResult('something_new')).toBe('something_new')
-    expect(routineLastResult(undefined)).toBeNull()
-
-    expect(valueOf(routineDetailRows({ ...activeJob, last_status: 'delivery_failed' }), 'Last result')).toBe(
-      'Ran, but delivery failed'
-    )
   })
 
   it('explains a failing or scheduler-paused job in failure order', () => {

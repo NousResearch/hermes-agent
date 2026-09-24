@@ -8,7 +8,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
@@ -59,6 +59,10 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  intro: {
+    stock: Record<string, string[]>
+    custom: (label: string) => string[]
+  }
   connectors: {
     title: string
     connect: string
@@ -487,6 +491,7 @@ export interface Translations {
     dismiss: string
     details: string
     copyDetail: string
+    compressDeferredDone: string
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
@@ -633,6 +638,7 @@ export interface Translations {
     rebind: string
     reset: string
     resetAll: string
+    clear: string
     pressKey: string
     set: string
     conflictWith: (label: string) => string
@@ -678,6 +684,7 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      sessions: string
       about: string
       billing: string
       notifications: string
@@ -713,13 +720,10 @@ export interface Translations {
         catalogPinned: (name: string, sha: string) => string
         reviewedHeading: string
         reviewedIntro: string
-        restartToApply: string
-        restartNow: string
-        connectServers: (name: string, n: number) => string
-        connectNow: string
-        connectSub: string
-        connectFailed: string
-        liveNow: (name: string) => string
+        toolsConnected: (n: number) => string
+        skillsReady: (names: string[]) => string
+        nextChat: string
+        serverNotConnected: (server: string, reason: string) => string
         missingEnvAction: string
         alreadyInstalled: (name: string) => string
         desktopTarget: string
@@ -906,6 +910,9 @@ export interface Translations {
       backdropDesc: string
       userBubbleTitle: string
       userBubbleDesc: string
+      textDirectionTitle: string
+      textDirectionDesc: string
+      textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
       reactionsTitle: string
@@ -948,8 +955,6 @@ export interface Translations {
         title: string
         intro: string
         restartHint: string
-        on: string
-        off: string
         scaleTitle: string
         scaleDesc: string
         roamTitle: string
@@ -986,8 +991,20 @@ export interface Translations {
     fieldDescriptions: Record<string, string>
     uninstallSection: {
       dangerZone: string
-      confirmUninstall: string
+      checkingInstalled: string
       uninstallHermes: string
+      chooseHowMuch: string
+      confirmUninstall: string
+      confirmBody: (what: string) => string
+      appLabel: string
+      couldNotStart: string
+      uninstalling: string
+      yesUninstall: string
+      options: {
+        gui: { title: string; description: string; consequence: string }
+        lite: { title: string; description: string; consequence: string }
+        full: { title: string; description: string; consequence: string }
+      }
     }
     poolLimits: {
       warmBotBackendsAria: string
@@ -996,6 +1013,39 @@ export interface Translations {
       backendIdleTimeoutTitle: string
     }
     customEndpoints: {
+      active: string
+      apiKeySet: string
+      use: string
+      editTitle: string
+      addTitle: string
+      fields: {
+        name: string
+        providerId: string
+        endpointUrl: string
+        defaultModel: string
+        context: string
+        apiKey: string
+        apiKeyNewPlaceholder: string
+        apiKeyPlaceholder: string
+        useNewChats: string
+        discoverModels: string
+      }
+      test: string
+      save: string
+      newEndpoint: string
+      apiMode: string
+      autoDetect: string
+      couldNotLoad: string
+      endpointSaved: string
+      saveFailed: string
+      endpointReachable: string
+      endpointReachableTransport: (transport: string) => string
+      endpointReachableModels: (reachable: string, count: number) => string
+      endpointValidationFailed: string
+      validationFailed: string
+      activationFailed: string
+      deleteConfirm: (name: string) => string
+      deleteFailed: string
       title: string
       deleteEndpoint: string
       emptyDescription: string
@@ -1066,10 +1116,14 @@ export interface Translations {
       keepAwakeDesc: string
       disableF12Title: string
       disableF12Desc: string
+      alwaysExternalLinksTitle: string
+      alwaysExternalLinksDesc: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      voiceShortcutHintTitle: string
+      voiceShortcutHintDesc: string
       showOptions: string
     }
     hudModifier: {
@@ -1391,6 +1445,22 @@ export interface Translations {
       deepLinkErrorTooLarge: string
     }
     model: {
+      setupProviderFallback: string
+      setUpProvider: (name: string) => string
+      staleAuxBefore: (count: number, names: string) => string
+      staleAuxAfter: string
+      staleAuxOtherProviders: string
+      moaEnabled: string
+      moaSetDefault: string
+      moaNewPresetPlaceholder: string
+      moaAddPreset: string
+      customModel: string
+      customModelPlaceholder: string
+      chooseFromList: string
+      moaDefault: string
+      moaReferenceToggle: (enabled: boolean, index: number) => string
+      moaReferenceTitle: (index: number) => string
+      moaAddReference: string
       loading: string
       appliesDesc: string
       provider: string
@@ -1526,6 +1596,218 @@ export interface Translations {
       deleteConfirm: (model: string) => string
       deleted: (model: string) => string
       deleteFailed: string
+    }
+    billing: {
+      perMonth: (amount: string) => string
+      creditsPerMonth: (amount: string) => string
+      usageLabel: (label: string) => string
+      freeTier: {
+        signIn: string
+        title: string
+        message: string
+        caption: string
+        name: string
+        footnote: string
+        plan: string
+        model: string
+        connectors: string
+        included: string
+      }
+      amountValidation: {
+        reloadTo: string
+        greaterThanThreshold: string
+        decimal: (label: string) => string
+        positive: (label: string) => string
+        minimum: (label: string, amount: string) => string
+        maximum: (label: string, amount: string) => string
+      }
+      stepUp: {
+        openVerification: string
+        dismiss: string
+        waiting: string
+        verify: string
+        deniedTitle: string
+        deniedBody: string
+        successTitle: string
+        successBody: string
+      }
+      charge: {
+        added: (amount: string) => string
+        failedTitle: string
+        unconfirmedTitle: string
+        unconfirmedBody: (message: string) => string
+        checkTitle: string
+        checkBody: string
+        untrackedTitle: string
+        untrackedBody: string
+        timeoutTitle: string
+        timeoutBody: string
+        authenticationRequired: string
+        expired: string
+        declined: string
+        failedBody: (reason: string) => string
+      }
+      title: string
+      preview: string
+      summary: {
+        balance: string
+        plan: string
+        autoRefill: string
+      }
+      sections: {
+        invoices: string
+
+        plan: string
+        paymentAndCredits: string
+        usage: string
+      }
+      usage: {
+        title: string
+      }
+      buyCredits: {
+        customAmount: string
+        title: string
+        buyButton: string
+        processing: string
+        added: (amount: string) => string
+        retry: string
+        openPortal: string
+      }
+      plan: {
+        title: string
+        changePlan: string
+        viewPlans: string
+        backAria: string
+        current: string
+        scheduled: string
+        empty: string
+        undo: string
+        undoing: string
+        downgrade: string
+        confirmDowngrade: string
+        tryAgain: string
+        checkingChange: string
+        cannotChange: string
+        alreadyOn: (name: string) => string
+        notScheduleable: string
+        scheduling: string
+        cancel: string
+        effectScheduled: (targetName: string, effectiveAt: string, creditsDelta: string) => string
+      }
+      autoReload: {
+        threshold: string
+        thresholdAria: string
+        reloadTo: string
+        reloadToAria: string
+        turnOffConfirm: string
+        turnOff: string
+        disable: string
+        updated: string
+        turnedOff: string
+        manage: string
+        save: string
+        saving: string
+        cancel: string
+      }
+      state: {
+        notice: {
+          loggedOut: { title: string; message: string; action: string }
+          openPortal: string
+          noCard: { title: string; message: string; action: string }
+        }
+        paymentMethod: {
+          title: string
+          description: string
+          addAction: string
+          updateAction: string
+          provenance: {
+            autoRefill: string
+            customerDefault: string
+            subPin: string
+            suffix: (label: string) => string
+          }
+        }
+        buyCredits: {
+          description: string
+        }
+        autoRefill: {
+          title: string
+          genericDescription: string
+          offPill: string
+          enabledPill: string
+          notAvailablePill: string
+          manageCaption: string
+          turnOnCaption: string
+          chargesDescription: (reloadTo: string, threshold: string) => string
+          distinctCardCaption: (cardLabel: string) => string
+          distinctCardFallback: string
+          reconcileAction: string
+        }
+        usage: {
+          subscriptionCredits: {
+            title: string
+            barLabel: string
+            captionResets: (date: string) => string
+            valueOf: (remaining: string, monthly: string) => string
+            valueOver: (remaining: string, monthly: string, over: string) => string
+          }
+          topupCredits: {
+            title: string
+            caption: string
+          }
+          monthlyCap: {
+            title: string
+            barLabel: string
+            captionDefault: string
+            captionSpending: string
+            valueUsed: (spent: string, limit: string) => string
+          }
+        }
+        planCard: {
+          freeTier: string
+          chooseAction: string
+          adjustPlanAction: string
+          unavailableCaption: string
+          downgradeCaption: (tierName: string, when: string) => string
+          cancellationCaption: (when: string) => string
+          renewsCaption: (date: string) => string
+          noSubscriptionCaption: string
+        }
+      }
+      errors: {
+        consentRequired: { title: string; message: string }
+        insufficientScope: { title: string; message: string }
+        remoteSpendingRevoked: {
+          title: string
+          messageByAdmin: string
+          messageBySelf: string
+        }
+        remoteSpendingReconnect: (who: string) => string
+        sessionRevoked: { title: string; message: string }
+        cliBillingDisabled: { title: string; message: string }
+        roleRequired: { title: string; message: string }
+        idempotencyConflict: { title: string; message: string }
+        noPaymentMethod: { title: string; message: string }
+        orgAccessDenied: { title: string; message: string }
+        monthlyCapExceeded: {
+          title: string
+          messageReached: string
+          messageHeadroom: (remaining: string) => string
+        }
+        rateLimited: {
+          title: string
+          message: (mins: number) => string
+        }
+        stripeUnavailable: {
+          title: string
+          message: (mins: number) => string
+        }
+        upgradeCapExceeded: { title: string; message: string }
+        endpointUnavailable: { title: string; message: string }
+        timeout: { title: string; message: string }
+        transport: { title: string; message: string }
+        default: { title: string; message: string }
+      }
     }
     providers: {
       connectAccount: string
@@ -2575,6 +2857,37 @@ export interface Translations {
   }
 
   sidebar: {
+    filter: {
+      grouping: string
+      ordering: string
+      show: string
+      filters: string
+      status: string
+      pullRequest: string
+      profile: string
+      project: string
+      archived: string
+      resetToDefaults: string
+      expandAll: string
+      collapseAll: string
+      inboxStyle: string
+      updated: string
+      created: string
+      tokens: string
+      cost: string
+      manual: string
+      preview: string
+      pr: string
+      needsInput: string
+      working: string
+      unread: string
+      draft: string
+      idle: string
+      open: string
+      merged: string
+      closed: string
+      noPR: string
+    }
     gatewayGroups: {
       grouping: string
       rename: string
@@ -2612,6 +2925,12 @@ export interface Translations {
     projectEmpty: string
     projectLoadFailed: string
     noSessions: string
+    storageCorrupt: {
+      title: string
+      body: (profiles: string) => string
+      action: string
+      guide: string
+    }
     noFilterMatches: string
     projects: {
       showAllSessions: string
@@ -3101,6 +3420,13 @@ export interface Translations {
     everythingSkipped: string
     everythingRowFailed: string
     everythingFanoutFailedTitle: string
+    changeLogNew: string
+    changeLogFixed: string
+    changeLogFaster: string
+    changeLogImproved: string
+    changeLogOther: string
+    changeLogFallbackLabel: string
+    changeLogFallbackItem: string
     applyStatus: {
       preparing: string
       pulling: string
@@ -3344,6 +3670,9 @@ export interface Translations {
     freeTier: string
     priceTitle: string
     wasPrice: string
+    customModel: string
+    addCustomModelAction: string
+    customModelPlaceholder: string
   }
 
   modelVisibility: {
@@ -3351,6 +3680,8 @@ export interface Translations {
     search: string
     noAuthenticatedProviders: string
     addProvider: string
+    addCustomModel: string
+    removeCustomModel: string
   }
 
   shell: {
@@ -3519,6 +3850,11 @@ export interface Translations {
     remotePickerTitle: string
     remotePickerDescription: string
     remotePickerSelect: string
+    remotePickerNewFolder: string
+    remotePickerFolderName: string
+    remotePickerCreateFolder: string
+    remotePickerInvalidFolderName: string
+    remotePickerCreateFolderFailed: (error: string) => string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string
@@ -3879,6 +4215,29 @@ export interface Translations {
       lateAnswerTip: string
       lateAnswerHint: string
     }
+    catalogInstall: {
+      preparing: string
+      install: string
+      advanced: string
+      skip: string
+      installing: string
+      installed: string
+      notInstalled: string
+      failed: string
+      showNames: string
+      hideNames: string
+      skill: (name: string) => string
+      kind: { plugin: string; skill: string }
+      tier: { official: string; community: string }
+      targetProfile: (profile: string) => string
+      sendFailed: string
+      commitLabel: string
+      subdirLabel: string
+      securityHeading: string
+      scan: { passed: string; warnings: string; failed: string }
+      requirementsLabel: string
+      credentialsHeading: string
+    }
     mcpSetup: {
       installTitle: string
       enableTitle: string
@@ -3972,6 +4331,7 @@ export interface Translations {
     sudoTitle: string
     sudoDesc: string
     sudoCommandUnavailable: string
+    sudoInstallDesc: string
     sudoPlaceholder: string
     secretTitle: string
     secretDesc: string

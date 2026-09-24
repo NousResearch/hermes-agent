@@ -19,7 +19,7 @@ from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
 )
-from utils import is_truthy_value
+from utils import fast_safe_load, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +177,11 @@ _Platform__bundled_plugin_aliases: Optional[dict] = None  # manifest ``name:`` (
 def _bundled_platform_manifest_name(plugin_dir: Path) -> Optional[str]:
     """Lowercased ``name:`` from a bundled platform's plugin manifest (None when absent/unreadable)."""
     try:
-        import yaml
         manifest_file = next(
             (plugin_dir / m for m in ("plugin.yaml", "plugin.yml") if (plugin_dir / m).exists()), None)
         if manifest_file is None:
             return None
-        data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
         name = data.get("name") if isinstance(data, dict) else None
         return str(name).strip().lower() or None
     except Exception:

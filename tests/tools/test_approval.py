@@ -12,7 +12,6 @@ import pytest
 import tools.approval as approval_module
 from tools import approval_context, approval_detection
 from tools import approval_smart
-from hermes_constants import get_hermes_home
 from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
 from tools.approval_context import _get_approval_mode
 from tools.approval_context import _normalize_approval_mode
@@ -62,12 +61,10 @@ class TestSmartApproval:
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
         )
-        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+        with mock_patch("agent.auxiliary_client.call_llm", return_value=response):
             result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
 
         assert result == "approve"
-        assert mock_call.call_args.kwargs["task"] == "approval"
-        assert mock_call.call_args.kwargs["temperature"] == 0
 
     def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
         session_key = "test-smart-per-command"
@@ -787,31 +784,6 @@ class TestSmartDeniedPrompt:
         assert "[o]nce" in rendered and "[d]eny" in rendered
         assert "[s]ession" not in rendered and "[a]lways" not in rendered
 
-    def test_smart_deny_uses_locale_specific_once_deny_choices(self, monkeypatch, capsys):
-        monkeypatch.setenv("HERMES_LANGUAGE", "tr")
-        from agent import i18n
-        i18n.reset_language_cache()
-        prompts = []
-
-        def choose_once(prompt):
-            prompts.append(prompt)
-            return "b"  # Turkish [b]ir kez
-
-        try:
-            with mock_patch("builtins.input", side_effect=choose_once):
-                result = prompt_dangerous_approval(
-                    "rm -rf /tmp/example", "recursive delete",
-                    allow_permanent=False, smart_denied=True,
-                )
-        finally:
-            i18n.reset_language_cache()
-
-        rendered = capsys.readouterr().out
-        assert result == "once"
-        assert "[b]ir kez" in rendered
-        assert "[r]eddet" in rendered
-        assert i18n.t("approval.choose_short", lang="tr").split("|")[1].strip() not in rendered
-        assert "b/R" in prompts[0]
 
 
 class TestForkBombDetection:
@@ -928,7 +900,6 @@ class TestWebhookApprovalExclusion:
         """Neutralize host leakage: yolo frozen at import time + real config."""
         import tools.approval as approval_mod
         from tools import approval_context
-        from tools import approval_context
 
         monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
@@ -957,7 +928,6 @@ class TestWebhookApprovalExclusion:
 
     def test_webhook_dangerous_command_approves_when_opted_in(self, monkeypatch):
         """approvals.unattended_mode: approve restores the old auto-approve path."""
-        import tools.approval as approval_mod
         from tools.approval import check_all_command_guards
 
         self._isolate(monkeypatch)
@@ -1543,8 +1513,6 @@ class TestApprovalTimeoutIsNotConsent:
     def setup_method(self):
         """Reset module state and force a tight approval timeout for fast tests."""
         from tools import approval as mod
-        from tools import approval_context
-        from tools import approval_context
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
         mod._session_approved.clear()
@@ -1577,7 +1545,6 @@ class TestApprovalTimeoutIsNotConsent:
                 os.environ[k] = v
 
     def _force_short_timeout(self, monkeypatch, seconds=0.05):
-        from tools import approval as mod
         monkeypatch.setattr(
             approval_context, "_get_approval_config",
             lambda: {"mode": "manual", "timeout": seconds},

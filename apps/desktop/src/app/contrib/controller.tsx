@@ -58,6 +58,7 @@ import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -105,6 +106,7 @@ import {
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
+import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
@@ -593,9 +595,9 @@ bindToolPaneCollapse(
   () => setTerminalTakeover(true),
   $showsAdvancedChrome
 )
-// Policies may consult the install: the profile rail stays in Simple when a
-// second profile makes it the only remaining way to switch.
+// Without the statusbar, the rail is the only way to switch profiles or gateways.
 $profiles.subscribe(profiles => setModeContext({ profileCount: profiles.length }))
+$connectionsRegistry.subscribe(registry => setModeContext({ connectionCount: registry?.connections.length ?? 0 }))
 // ⌘K door onto the same pane the keybind and statusbar pill flip — was a
 // one-way "open" row under Go to, so it never showed on/off and couldn't hide.
 // Reads the TREE like every other pane toggle: `$terminalTakeover` stays true
@@ -609,7 +611,7 @@ registry.register(
     icon: Terminal,
     keywords: ['terminal', 'shell', 'console', 'pty'],
     get: () => isPaneVisible('terminal'),
-    set: () => togglePaneVisible('terminal')
+    set: () => toggleTerminalPane()
   })
 )
 

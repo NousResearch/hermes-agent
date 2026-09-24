@@ -24,6 +24,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
+  $activeSessionId,
   $sessions,
   resolveComposerSessionKey,
   setActiveSessionId,
@@ -393,6 +394,36 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
+      // Point the pane at a runtime this submit just resumed for its stored
+      // session. ChatView renders the `$sessionStates` slice named by
+      // `$activeSessionId`, while the optimistic row and every stream event
+      // land in the resumed runtime's slice — pinning only the ref left the
+      // chat painting the dead runtime, so the prompt, its reply, and every
+      // later turn stayed invisible until a relaunch (#71733, #117867).
+      // `session.resume` omits messages, so carry the transcript the pane is
+      // showing into the empty slice (same conversation only — lineage-
+      // matched, since compression rotates the tip id) instead of collapsing
+      // the thread to the new prompt until the next refresh.
+      const rebindPaneToResumedRuntime = (sid: string, storedId: string) => {
+        const paneRuntimeId = $activeSessionId.get()
+        const paneState = paneRuntimeId && paneRuntimeId !== sid ? $sessionStates.get()[paneRuntimeId] : undefined
+        const sessions = $sessions.get()
+
+        if (
+          paneState?.messages.length &&
+          paneState.storedSessionId &&
+          resolveComposerSessionKey(paneState.storedSessionId, sessions) ===
+            resolveComposerSessionKey(storedId, sessions)
+        ) {
+          const carried = paneState.messages
+
+          updateSessionState(sid, state => (state.messages.length ? state : { ...state, messages: carried }), storedId)
+        }
+
+        activeSessionIdRef.current = sid
+        setActiveSessionId(sid)
+      }
+
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {
@@ -635,7 +666,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             sessionId = resumed.session_id
 
             if (targetIsCurrentView()) {
-              activeSessionIdRef.current = sessionId
+              rebindPaneToResumedRuntime(sessionId, targetStoredSessionId)
             }
           }
         } catch {

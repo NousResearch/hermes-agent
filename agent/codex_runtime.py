@@ -1058,14 +1058,22 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if getattr(agent, "_last_api_first_chunk_at", None) is None:
             agent._last_api_first_chunk_at = now
         has_progress = _codex_event_has_content(event)
+        first_event = first_progress = False
         if watchdog_state is not None:
             with watchdog_state.lock:
-                if watchdog_state.retry_started_ts is not None:
-                    watchdog_state.retry_started_ts = None
-                    watchdog_state.last_progress_ts = None
+                first_event = watchdog_state.last_event_ts is None
                 watchdog_state.last_event_ts = now
                 if has_progress:
+                    first_progress = watchdog_state.last_progress_ts is None
                     watchdog_state.last_progress_ts = now
+                    if watchdog_state.phase_aware:
+                        watchdog_state.retry_started_ts = None
+        if first_event:
+            logger.info("Codex stream first parsed event at %.3f (attempt=%s/%s, model=%s)",
+                now, attempt + 1, max_stream_retries + 1, model)
+        if first_progress:
+            logger.info("Codex stream first substantive progress at %.3f (attempt=%s/%s, model=%s)",
+                now, attempt + 1, max_stream_retries + 1, model)
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:
@@ -1105,6 +1113,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
         writer_token["raw_stream"] = _raw_stream
+        logger.debug("Codex stream opened (attempt=%s/%s, model=%s)",
+            attempt + 1, max_stream_retries + 1, model)
 
     def _drain_for_finalizer(event_stream: Any) -> None:
         # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error
@@ -1166,10 +1176,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
         if attempt > 0 and watchdog_state is not None and watchdog_state.phase_aware:
-            # A physical reconnect has its own no-event TTFB phase. Its first parsed
-            # event clears this marker and starts a fresh model-progress phase.
+            # One origin for the whole physical attempt: lifecycle frames may change
+            # diagnostics, but cannot restart the first-progress budget.
             with watchdog_state.lock:
                 watchdog_state.retry_started_ts = time.time()
+                watchdog_state.last_event_ts = None
+                watchdog_state.last_progress_ts = None
+                logger.info("Codex physical stream retry at %.3f (attempt=%s/%s, model=%s)",
+                    watchdog_state.retry_started_ts, attempt + 1, max_stream_retries + 1, model)
         intercepted_events: list = []
         writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         writer_token["superseded_logged"] = False

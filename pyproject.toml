@@ -449,10 +449,8 @@ override-dependencies = [
   "cryptography>=50,<51",
 ]
 exclude-newer = "14 days"
-# h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
-# request-smuggling) fix in 4.4.1, published 2026-08-03. Remove after 2026-08-17.
-# aiohttp, cryptography: same shape — the advisory fixes are newer than the
-# 14-day window, so the resolver cannot see them without an exception.
+# aiohttp, cryptography: their advisory fixes are newer than the 14-day window, so the
+# resolver cannot see them without an exception.
 #
 # defusedxml, python-olm, unpaddedbase64: the OPPOSITE shape (#80387, #79434,
 # #78227 family). These are ancient, effectively frozen releases (2021-2023)
@@ -531,7 +529,6 @@ google-auth = false
 google-auth-httplib2 = false
 google-auth-oauthlib = false
 google-cloud-pubsub = false
-h2 = false
 honcho-ai = false
 httplib2 = false
 httpx = false

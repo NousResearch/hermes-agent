@@ -685,21 +685,24 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
 
 
 @pytest.mark.parametrize(
-    "status_code, body, expected_code, expected_retryable",
+    "status_code, body, expected_code, expected_terminal",
     [
-        (500, None, "temporarily_unavailable", True),
-        (503, None, "temporarily_unavailable", True),
-        (599, None, "temporarily_unavailable", True),
-        (429, {"code": "429", "message": "rate limited"}, None, None),
-        (404, {"message": "not found"}, None, None),
-        (400, ValueError("not json"), None, None),
+        (500, None, "temporarily_unavailable", False),
+        (503, None, "temporarily_unavailable", False),
+        (599, None, "temporarily_unavailable", False),
+        (429, {"code": "429", "message": "rate limited"}, None, False),
+        (404, {"message": "not found"}, None, False),
+        (400, ValueError("not json"), None, False),
+        (401, {"message": "unauthorized"}, "invalid_grant", True),
+        (403, ValueError("not json"), "invalid_grant", True),
     ],
 )
 def test_refresh_token_exchange_without_grant_error_code_is_not_terminal(
-    status_code, body, expected_code, expected_retryable
+    status_code, body, expected_code, expected_terminal
 ):
     """A Portal 5xx is transient even when its body is not OAuth JSON (#120976), and a
-    non-5xx body that carries no OAuth ``error`` code must not be treated as a dead grant."""
+    non-5xx body that carries no OAuth ``error`` code must not be treated as a dead grant --
+    except a 401/403, which always means the refresh token itself was rejected."""
     from hermes_cli.auth import _is_terminal_nous_refresh_error, _refresh_access_token
 
     class _FakeResponse:
@@ -726,9 +729,10 @@ def test_refresh_token_exchange_without_grant_error_code_is_not_terminal(
         )
 
     assert exc_info.value.code == expected_code
-    assert exc_info.value.relogin_required is False
-    assert exc_info.value.retryable is expected_retryable
-    assert _is_terminal_nous_refresh_error(exc_info.value) is False
+    assert exc_info.value.relogin_required is expected_terminal
+    assert _is_terminal_nous_refresh_error(exc_info.value) is expected_terminal
+    if expected_code == "temporarily_unavailable":
+        assert exc_info.value.retryable is True
 
 
 def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):

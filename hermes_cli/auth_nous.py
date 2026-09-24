@@ -616,12 +616,16 @@ def _refresh_access_token(
     from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     try:
         error_payload = response.json()
-    except Exception as exc:
-        raise _nous_err("Refresh token exchange failed") from exc
+    except Exception:
+        error_payload = {}
     # Only an explicit OAuth grant-dead code is terminal: a 429/404 gateway body without an
     # ``error`` key says nothing about the refresh token, so it must not wipe credentials.
-    code = error_payload.get("error")
-    code = str(code) if code is not None else None
+    # A 401/403 from the token endpoint is the exception: it always means the refresh token
+    # itself was rejected (same rule as the Codex sibling), so keep the base grant-dead default.
+    raw_code = error_payload.get("error")
+    if raw_code is None and response.status_code in {401, 403}:
+        raw_code = "invalid_grant"
+    code = None if raw_code is None else str(raw_code)
     description = str(error_payload.get("error_description") or "Refresh token exchange failed")
     relogin = code in _OAUTH_GRANT_DEAD_CODES
     # OAuth 2.1 "refresh token reuse": an external process (health check, monitoring tool, custom

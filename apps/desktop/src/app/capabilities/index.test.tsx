@@ -126,6 +126,33 @@ afterEach(() => {
 // all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
 // Give this file headroom; the tests are not slow individually.
 describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
+  it('a page opens on the scope a link hands over; an embedded view keeps its host pin', async () => {
+    const capabilityScope = { connectionId: 'homelab', profile: 'researcher' }
+    const entry = { pathname: '/capabilities', search: '?tab=plugins', state: { capabilityScope } }
+
+    for (const embedded of [false, true]) {
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={[entry]}>
+              {embedded ? (
+                <CapabilitiesView embedded fixedConnection="pinned" fixedProfile="bot" />
+              ) : (
+                <CapabilitiesView />
+              )}
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      const expected = embedded ? { connectionId: 'pinned', profile: 'bot' } : capabilityScope
+      await waitFor(() => expect(getSkills).toHaveBeenLastCalledWith(expected))
+      expect(getToolsets).toHaveBeenLastCalledWith(expected)
+      cleanup()
+      queryClient.clear()
+    }
+  })
+
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 

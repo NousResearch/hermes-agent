@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+from datetime import date, datetime
 import json
 import re
 import sys
@@ -51,6 +52,55 @@ class Vulnerability:
 class Finding:
     component: Component
     vuln: Vulnerability
+
+
+@dataclass(frozen=True)
+class AcceptedAdvisory:
+    """A time-bounded, documented exception to audit failure gating."""
+
+    reason: str
+    review_by: date
+
+
+def _parse_review_by(value: object) -> Optional[date]:
+    """Return an ISO calendar date, rejecting timestamps and malformed values."""
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _accepted_advisories(today: Optional[date] = None) -> dict[str, AcceptedAdvisory]:
+    """Load valid, unexpired advisory acceptances from ``security.accepted_advisories``.
+
+    Invalid, incomplete, and expired entries deliberately fail open: their findings remain
+    blocking until the operator supplies a reason and a future review date.
+    """
+    from hermes_cli.config import load_config
+
+    raw = ((load_config().get("security") or {}).get("accepted_advisories") or [])
+    if not isinstance(raw, list):
+        return {}
+    today = today or date.today()
+    accepted: dict[str, AcceptedAdvisory] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        advisory_id = entry.get("id")
+        reason = entry.get("reason")
+        review_by = _parse_review_by(entry.get("review_by"))
+        if not isinstance(advisory_id, str) or not advisory_id.strip():
+            continue
+        if not isinstance(reason, str) or not reason.strip() or review_by is None or review_by <= today:
+            continue
+        accepted[advisory_id.strip()] = AcceptedAdvisory(reason=reason.strip(), review_by=review_by)
+    return accepted
 
 
 def _discover_venv() -> list[Component]:
@@ -250,12 +300,15 @@ def run_audit(*, components: Optional[list[Component]] = None, **discover_kwargs
     return findings
 
 
-def _render_human(findings: list[Finding], total_components: int) -> str:
+def _render_human(
+    findings: list[Finding], total_components: int, accepted: Optional[dict[str, AcceptedAdvisory]] = None
+) -> str:
     if not findings:
         return f"No known vulnerabilities found across {total_components} component(s)."
 
     lines = [f"Found {len(findings)} known vulnerability finding(s) across {total_components} component(s):", ""]
     last_source = None
+    accepted = accepted or {}
     for f in findings:
         c, v = f.component, f.vuln
         if c.source != last_source:
@@ -266,10 +319,15 @@ def _render_human(findings: list[Finding], total_components: int) -> str:
             lines.append(f"           {summary if len(summary) <= 100 else summary[:97] + '...'}")
         if v.fixed_versions:
             lines.append(f"           fixed in: {', '.join(v.fixed_versions[:3])}")
+        if acceptance := accepted.get(v.osv_id):
+            lines.append(f"           ACCEPTED: {acceptance.reason} (review by {acceptance.review_by.isoformat()})")
     return "\n".join(lines)
 
 
-def _render_json(findings: list[Finding], total_components: int) -> str:
+def _render_json(
+    findings: list[Finding], total_components: int, accepted: Optional[dict[str, AcceptedAdvisory]] = None
+) -> str:
+    accepted = accepted or {}
     payload = {
         "total_components_scanned": total_components,
         "finding_count": len(findings),
@@ -278,6 +336,9 @@ def _render_json(findings: list[Finding], total_components: int) -> str:
             "ecosystem": f.component.ecosystem, "source": f.component.source,
             "vuln_id": f.vuln.osv_id, "severity": f.vuln.severity,
             "summary": f.vuln.summary, "fixed_versions": f.vuln.fixed_versions,
+            "accepted": f.vuln.osv_id in accepted,
+            "acceptance_reason": acceptance.reason if (acceptance := accepted.get(f.vuln.osv_id)) else None,
+            "review_by": acceptance.review_by.isoformat() if acceptance else None,
         } for f in findings],
     }
     return json.dumps(payload, indent=2)
@@ -306,7 +367,11 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
         print(f"audit failed: {exc}", file=sys.stderr)
         return 2
 
-    print((_render_json if output_json else _render_human)(findings, total))
-    # Exit code: 1 iff any finding meets or exceeds the --fail-on threshold.
+    accepted = _accepted_advisories()
+    print((_render_json if output_json else _render_human)(findings, total, accepted))
+    # Exit code: 1 iff an unaccepted finding meets or exceeds the --fail-on threshold.
     threshold = SEVERITY_ORDER[fail_on]
-    return int(any(SEVERITY_ORDER.get(f.vuln.severity, 0) >= threshold for f in findings))
+    return int(any(
+        SEVERITY_ORDER.get(f.vuln.severity, 0) >= threshold and f.vuln.osv_id not in accepted
+        for f in findings
+    ))

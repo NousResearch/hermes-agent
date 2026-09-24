@@ -274,6 +274,10 @@ def setup_logging(
     level = getattr(logging, level_name, logging.INFO)
     max_bytes = (max_size_mb or cfg_max_size or 5) * 1024 * 1024
     backups = backup_count or cfg_backup or 3
+    # ``gui.log`` kept 5 backups before it was configurable; preserve that as its
+    # floor so an unset (or lower) ``logging.backup_count`` cannot shrink GUI and
+    # WebSocket history, which is the only place ws lifecycle lines are retained.
+    gui_backups = max(backups, 5)
 
     from agent.redact import RedactingFormatter  # lazy: circular at module load
 
@@ -285,7 +289,7 @@ def setup_logging(
         ("agent.log", level, max_bytes, backups, None),
         ("errors.log", logging.WARNING, 2 * 1024 * 1024, 2, None),
         ("gateway.log", logging.INFO, 5 * 1024 * 1024, 3, "gateway"),
-        ("gui.log", logging.INFO, 10 * 1024 * 1024, 5, "gui"),
+        ("gui.log", logging.INFO, 10 * 1024 * 1024, gui_backups, "gui"),
     )
     for filename, lvl, size, count, component in handler_specs:
         if component is not None and mode != component:

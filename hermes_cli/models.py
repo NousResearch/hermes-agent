@@ -703,7 +703,13 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # All provider IDs and aliases valid on the left of the ``provider:model`` syntax.
-_KNOWN_PROVIDER_NAMES: set[str] = set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES) | {"openrouter", "custom"}
+# The managed local runtime is resolved dynamically rather than catalogued, so its
+# aliases are not present in the static provider labels or aliases above.
+_KNOWN_PROVIDER_NAMES: set[str] = (
+    set(_PROVIDER_LABELS)
+    | set(_PROVIDER_ALIASES)
+    | {"openrouter", "custom", "llamacpp", "llama.cpp", "llama-cpp"}
+)
 
 
 _CONFIG_ERRORS = (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError)

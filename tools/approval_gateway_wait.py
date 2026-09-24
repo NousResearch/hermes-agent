@@ -42,7 +42,8 @@ class _ApprovalEntry:
         self.cancelled: str | None = None
 
 
-def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
+def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str,
+                approval_id: str | None = None, entry=None) -> str:
     """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
     elapses; returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
     slices so activity heartbeats reach the agent's inactivity tracker every ~10s —
@@ -54,7 +55,11 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     fail-closed: the command does not run. Who caused it is read from the
     per-thread interrupt-cause channel (``get_interrupt_reason()``, a trusted fixed
     category), never inferred from message text, so the caller can report a
-    withdrawn prompt without inventing a user refusal."""
+    withdrawn prompt without inventing a user refusal.
+
+    When *approval_id* and *entry* are set, each tick also checks the
+    cross-process handshake dir for an external supervisor decision (#21563)."""
+    from tools import approval as _approval
     deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
@@ -70,6 +75,12 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
                 return "timeout"
             if event.wait(timeout=min(1.0, remaining)):
                 return "set"
+            if approval_id is not None and entry is not None:
+                external_choice = _approval._consume_external_decision(approval_id)
+                if external_choice is not None:
+                    entry.result = external_choice
+                    entry.event.set()
+                    return "set"
             heartbeat()
 
 
@@ -162,6 +173,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             return adopted
 
     entry = _ApprovalEntry(approval_data)
+    approval_id = uuid.uuid4().hex[:12]
     with _approval._lock:
         register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
@@ -180,6 +192,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
+            # Keep the cross-process mirror in sync on every exit path (#21563).
+            _approval._retract_pending_approval(approval_id)
         if settle is not None:
             # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
             # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
@@ -206,8 +220,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
         return {"resolved": False, "choice": None, "notify_failed": True}
 
+    # Mirror the pending approval for external supervisors (e.g. the MCP
+    # bridge) now that the user has been notified; the wait loop below
+    # consumes their decision each tick (#21563).
+    timeout = _ctx._get_approval_timeout()
+    _approval._publish_pending_approval(approval_id, session_key, approval_data,
+                                        timeout, surface)
+
     state = _poll_event(entry.event, session_key,
-                        interrupt_log="Approval wait interrupted — returning deny for session %s")
+                        interrupt_log="Approval wait interrupted — returning deny for session %s",
+                        approval_id=approval_id, entry=entry)
     cancelled = _cancel_cause(state, entry)
     if state == "interrupted":
         # Coalesced followers wake with the cause instead of a deny nobody issued.

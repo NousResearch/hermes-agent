@@ -81,6 +81,33 @@ class TestPlatformConfigRoundtrip:
         assert restored.enabled is False
 
 
+    def test_from_dict_normalizes_legacy_bool_reply_to_mode(self):
+        """Regression for issue #121430: `hermes config set platforms.<plat>.reply_to_mode
+        off` stores the YAML boolean False, and a hand-written config.yaml with
+        `reply_to_mode: off`/`no` (YAML 1.1 boolean words) hits the same path. Every
+        adapter's own `getattr(config, 'reply_to_mode', 'first') or 'first'` fallback then
+        treats False as unset and silently discards the explicit "never thread" setting."""
+        restored = PlatformConfig.from_dict({"enabled": True, "reply_to_mode": False})
+        assert restored.reply_to_mode == "off"
+        # What every adapter's own fallback actually sees:
+        assert (getattr(restored, "reply_to_mode", "first") or "first") == "off"
+
+    def test_from_dict_normalizes_legacy_bool_reply_to_mode_true(self):
+        """A bare `reply_to_mode: true`/`yes` maps to this field's own default, matching
+        what it already implied before this normalization existed."""
+        restored = PlatformConfig.from_dict({"enabled": True, "reply_to_mode": True})
+        assert restored.reply_to_mode == "first"
+
+    def test_from_dict_reply_to_mode_string_values_pass_through(self):
+        for mode in ("off", "first", "all"):
+            restored = PlatformConfig.from_dict({"enabled": True, "reply_to_mode": mode})
+            assert restored.reply_to_mode == mode
+
+    def test_from_dict_reply_to_mode_defaults_when_absent(self):
+        restored = PlatformConfig.from_dict({"enabled": True})
+        assert restored.reply_to_mode == "first"
+
+
     def test_gateway_restart_notification_roundtrip_false(self):
         pc = PlatformConfig(enabled=True, gateway_restart_notification=False)
         restored = PlatformConfig.from_dict(pc.to_dict())

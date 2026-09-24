@@ -7,6 +7,11 @@ export interface NativeAccessTokenOptions {
 }
 
 export interface NativeAccessTokenCoordinatorDeps {
+  /**
+   * Whether a stored set can be renewed at all. Defaults to "has a refresh
+   * token"; Hermes Cloud agent bearers carry none but renew by re-exchange.
+   */
+  canRefresh?: (tokens: NativeTokenSet) => boolean
   clearTokens: (baseUrl: string) => void
   isRefreshAuthRejection: (error: unknown) => boolean
   loadTokens: (baseUrl: string) => NativeTokenSet | null
@@ -69,7 +74,7 @@ export function createNativeAccessTokenCoordinator(deps: NativeAccessTokenCoordi
       return tokens.accessToken
     }
 
-    if (!tokens.refreshToken) {
+    if (!(deps.canRefresh ? deps.canRefresh(tokens) : Boolean(tokens.refreshToken))) {
       deps.clearTokens(baseUrl)
 
       return null

@@ -177,8 +177,37 @@ describe('GatewaySettings', () => {
         cloudName: 'Research Bot'
       })
     )
-    expect(agentSignIn).toHaveBeenCalledExactlyOnceWith('https://new-a.example')
+    // The discovered agent id rides along so main can exchange for it directly.
+    expect(agentSignIn).toHaveBeenCalledExactlyOnceWith('https://new-a.example', 'new-a')
     expect(applyConnectionConfig).toHaveBeenCalledTimes(1)
+  })
+  it('"Change org" re-runs the browser sign-in (the session is pinned to one org) and re-discovers', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+    const login = vi.fn().mockResolvedValue({ ok: true, signedIn: true })
+    const logout = vi.fn()
+
+    const discover = vi.fn().mockResolvedValue({
+      agents: [{ id: 'a1', name: 'Team A agent', dashboardUrl: 'https://a1.example' }],
+      org: { id: 'org-a' }
+    })
+
+    Object.assign(window.hermesDesktop, {
+      cloud: { status: vi.fn().mockResolvedValue({ signedIn: true }), login, logout, discover, agentSignIn: vi.fn() }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('Team A agent')
+    discover.mockResolvedValue({
+      agents: [{ id: 'b1', name: 'Team B agent', dashboardUrl: 'https://b1.example' }],
+      org: { id: 'org-b' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Change org' }))
+    await screen.findByText('Team B agent')
+    expect(login).toHaveBeenCalledTimes(1)
+    // The old session is replaced by the new sign-in, never torn down first.
+    expect(logout).not.toHaveBeenCalled()
+    // Discovery never sends a team: the bearer pins it.
+    expect(discover.mock.lastCall?.[0]).toBeUndefined()
   })
   // #114856: an env-pinned remote (HERMES_DESKTOP_REMOTE_URL) whose session
   // lapsed could not be re-authenticated from Settings → Gateway at all — the

@@ -257,14 +257,15 @@ declare global {
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
-      // Hermes Cloud: one portal login powers discovery + silent per-agent
-      // sign-in (cloud-auto-discovery Phase 3).
+      // Hermes Cloud: one system-browser sign-in powers discovery + silent
+      // per-agent sign-in (portal token exchange). `agentId` is optional; main
+      // resolves it from discovery / its persisted registry when omitted.
       cloud: {
         status: () => Promise<DesktopCloudStatus>
         login: () => Promise<DesktopCloudStatus & { ok: boolean }>
         logout: () => Promise<DesktopCloudStatus & { ok: boolean }>
         discover: (org?: string) => Promise<DesktopCloudDiscoverResult>
-        agentSignIn: (dashboardUrl: string) => Promise<DesktopCloudAgentSignInResult>
+        agentSignIn: (dashboardUrl: string, agentId?: string) => Promise<DesktopCloudAgentSignInResult>
       }
       profile: {
         getDefault: () => Promise<DesktopProfileRoute | null>
@@ -1223,7 +1224,7 @@ export type DesktopCloudDiscoverResult =
 export interface DesktopCloudAgentSignInResult {
   // The agent gateway base URL the silent sign-in targeted.
   baseUrl: string
-  // Whether the agent's gateway session cookie landed (silent cascade done).
+  // Whether an agent bearer was minted and stored for this gateway.
   connected: boolean
 }
 

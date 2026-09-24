@@ -861,14 +861,14 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     void discoverCloud(ref)
   }
 
-  // "Change org": clear the selected org and re-discover with no org arg. A
-  // multi-org user gets NAS's 409 → the picker; a single-org user auto-resolves
-  // back to their one org. Also clear the agent list so the current org's
-  // agents don't linger under the picker while discovery re-runs.
+  // "Change org": the Hermes Cloud sign-in is pinned to the org chosen in the
+  // browser, so switching team = signing in again and picking the other org
+  // there. The current session stays in place until the new sign-in lands (a
+  // cancelled browser flow changes nothing); cloudSignIn re-runs discovery.
   const changeCloudOrg = () => {
     setCloudOrg(null)
     setCloudAgents([])
-    void discoverCloud()
+    void cloudSignIn()
   }
 
   // On entering cloud mode, read the portal session status and
@@ -1044,7 +1044,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         return
       }
 
-      const result = await desktop.cloud.agentSignIn(agent.dashboardUrl)
+      const result = await desktop.cloud.agentSignIn(agent.dashboardUrl, agent.id)
 
       if (seq !== contextSeq.current) {
         return
@@ -1391,13 +1391,9 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                   </div>
                   <div className="flex items-center gap-2">
                     {cloudOrg ? (
-                      // Let the user switch orgs. Gating on cloudOrgs.length would
-                      // hide this after a restore-open (which discovers straight
-                      // into the saved org and never populates the org list). So
-                      // show it whenever an org is selected: clicking clears the
-                      // org and re-runs discovery with no org arg — a multi-org
-                      // user gets the picker (NAS 409), a single-org user simply
-                      // auto-resolves back to their one org (harmless).
+                      // Let the user switch orgs whenever an org is selected:
+                      // clicking re-runs the browser sign-in, where the portal's
+                      // org picker chooses the team the new session is pinned to.
                       <Button onClick={() => changeCloudOrg()} size="sm" variant="text">
                         {g.cloudOrgChange}
                       </Button>

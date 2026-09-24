@@ -2,9 +2,11 @@
  * native-oauth-login.ts
  *
  * Electron-coupled driver for the RFC 8252 native-app login: it runs the
- * loopback HTTP listener that catches the gateway's browser redirect, opens
- * the system browser, redeems the one-time code for tokens, and hands them
- * back. The PURE logic (PKCE, URL building, callback parsing, token-response
+ * loopback HTTP listener that catches the authorization server's browser
+ * redirect, opens the system browser, redeems the one-time code for tokens,
+ * and hands them back. The same loopback core drives both a gateway's
+ * `/auth/native/*` broker (runNativeLogin) and the portal's `hermes-desktop`
+ * client (portal-session.ts). The PURE logic (PKCE, URL building, callback parsing, token-response
  * normalization) lives in native-oauth.ts and is unit-tested separately; this
  * module is the thin I/O shell around it.
  *
@@ -42,21 +44,23 @@ import {
 // authenticates, gets redirected back). Matches the server-side pending TTL.
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 
-// The minimal page the browser lands on after the gateway redirect. No tokens,
-// no secrets — just a close affordance. Served for any loopback request so a
+// The minimal page the browser lands on after the redirect. No tokens, no
+// secrets — just a close affordance. Served for any loopback request so a
 // favicon probe doesn't look like a failure.
-const DONE_HTML =
-  '<!doctype html><meta charset="utf-8"><title>Signed in</title>' +
+const closePage = (heading: string) =>
+  '<!doctype html><meta charset="utf-8"><title>Hermes</title>' +
   '<body style="font:15px system-ui;margin:3rem;text-align:center">' +
-  '<h2>&#10003; Signed in to Hermes</h2>' +
+  `<h2>${heading}</h2>` +
   '<p>You can close this window and return to the app.</p>' +
   '<script>setTimeout(()=>window.close(),800)</script>'
 
-export interface NativeLoginDeps {
+const DONE_HTML = closePage('&#10003; Signed in to Hermes')
+const CANCELLED_HTML = closePage('Sign-in cancelled')
+
+/** The I/O shared by every loopback authorization (gateway or portal). */
+export interface LoopbackAuthorizationDeps {
   /** Open a URL in the user's system browser (shell.openExternal). */
   openExternal: (url: string) => Promise<void>
-  /** POST JSON and resolve the parsed body (electron.net-backed in prod). */
-  postJson: (url: string, body: unknown, opts?: { timeoutMs?: number }) => Promise<any>
   /** http.createServer, injectable for tests. */
   createServer?: typeof http.createServer
   /** Clock + timeout, injectable for tests. */
@@ -66,20 +70,34 @@ export interface NativeLoginDeps {
   rememberLog?: (line: string) => void
 }
 
+export interface NativeLoginDeps extends LoopbackAuthorizationDeps {
+  /** POST JSON and resolve the parsed body (electron.net-backed in prod). */
+  postJson: (url: string, body: unknown, opts?: { timeoutMs?: number }) => Promise<any>
+}
+
 /**
- * Drive a full native login against `baseUrl` and return the token set.
- *
- * Steps: bind a loopback listener → open the system browser at the gateway's
- * /auth/native/authorize with our PKCE challenge + loopback redirect_uri →
- * await the ?code= redirect → verify state → POST /auth/native/token with the
- * verifier → return tokens. Rejects on timeout, state mismatch, a gateway
- * error param, or a token-exchange failure. Always tears the listener down.
+ * What differs between authorization servers: where the browser goes, and
+ * how the one-time code is redeemed. The loopback redirect URI handed to
+ * `redeem` is byte-identical to the one `buildAuthorizeUrl` received, which
+ * servers that bind the code to its redirect_uri (the portal, §2) require.
  */
-export async function runNativeLogin(
-  baseUrl: string,
-  deps: NativeLoginDeps,
-  opts: { provider?: string } = {}
-): Promise<NativeTokenSet> {
+export interface LoopbackAuthorizationFlow<T> {
+  buildAuthorizeUrl: (params: { challenge: string; redirectUri: string; state: string }) => string
+  redeem: (params: { code: string; verifier: string; redirectUri: string }) => Promise<T>
+}
+
+/**
+ * The RFC 8252 loopback core: bind 127.0.0.1 on an ephemeral port → open the
+ * system browser at the flow's authorize URL with our PKCE challenge + state →
+ * await the ?code= (or ?error=) redirect → verify state → redeem. Rejects on
+ * timeout, state mismatch, an error param (access_denied rejects with
+ * NativeLoginCancelledError), or a redeem failure. Always tears the listener
+ * down.
+ */
+export async function runLoopbackAuthorization<T>(
+  deps: LoopbackAuthorizationDeps,
+  flow: LoopbackAuthorizationFlow<T>
+): Promise<T> {
   const createServer = deps.createServer || http.createServer
   const timeoutMs = deps.timeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS
   const log = deps.rememberLog || (() => undefined)
@@ -87,19 +105,20 @@ export async function runNativeLogin(
   const { verifier, challenge } = generatePkcePair()
   const state = generateState()
 
-  return new Promise<NativeTokenSet>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     let settled = false
     let timer: NodeJS.Timeout | null = null
+    let redirectUri = ''
 
     const server = createServer((req, res) => {
       // Only the callback path carries the code; any other path (favicon,
       // etc.) still gets the friendly page so the browser tab looks sane.
       const url = req.url || '/'
 
-      // Always answer the browser with the close page — we never surface the
-      // outcome to the browser, only to the app.
+      // Always answer the browser with a close page — we never surface the
+      // outcome (let alone tokens) to the browser, only to the app.
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-      res.end(DONE_HTML)
+      res.end(/[?&]error=/.test(url) ? CANCELLED_HTML : DONE_HTML)
 
       if (settled) {
         return
@@ -112,15 +131,7 @@ export async function runNativeLogin(
 
       try {
         const { code } = parseLoopbackCallback(url, state)
-        finishWith(async () => {
-          const tokenBody = await deps.postJson(
-            nativeTokenUrl(baseUrl),
-            { code, code_verifier: verifier },
-            { timeoutMs: 15_000 }
-          )
-
-          return parseTokenResponse(tokenBody)
-        })
+        finishWith(() => flow.redeem({ code, verifier, redirectUri }))
       } catch (error) {
         fail(error instanceof Error ? error : new Error(String(error)))
       }
@@ -148,7 +159,7 @@ export async function runNativeLogin(
       reject(error)
     }
 
-    const finishWith = (produce: () => Promise<NativeTokenSet>) => {
+    const finishWith = (produce: () => Promise<T>) => {
       if (settled) {
         return
       }
@@ -157,9 +168,9 @@ export async function runNativeLogin(
       // Keep the listener up just long enough to have answered the browser,
       // then redeem the code out-of-band.
       produce()
-        .then(tokens => {
+        .then(result => {
           cleanup()
-          resolve(tokens)
+          resolve(result)
         })
         .catch(error => {
           cleanup()
@@ -179,14 +190,17 @@ export async function runNativeLogin(
         return
       }
 
-      const redirectUri = `http://127.0.0.1:${addr.port}/callback`
+      redirectUri = `http://127.0.0.1:${addr.port}/callback`
 
-      const authorizeUrl = buildNativeAuthorizeUrl(baseUrl, {
-        challenge,
-        redirectUri,
-        state,
-        provider: opts.provider
-      })
+      let authorizeUrl: string
+
+      try {
+        authorizeUrl = flow.buildAuthorizeUrl({ challenge, redirectUri, state })
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)))
+
+        return
+      }
 
       timer = setTimeout(() => {
         fail(
@@ -209,6 +223,26 @@ export async function runNativeLogin(
         )
       })
     })
+  })
+}
+
+/**
+ * Drive a full native login against a GATEWAY's `/auth/native/*` broker and
+ * return the token set: authorize at /auth/native/authorize, redeem at
+ * /auth/native/token with the verifier.
+ */
+export async function runNativeLogin(
+  baseUrl: string,
+  deps: NativeLoginDeps,
+  opts: { provider?: string } = {}
+): Promise<NativeTokenSet> {
+  return runLoopbackAuthorization(deps, {
+    buildAuthorizeUrl: ({ challenge, redirectUri, state }) =>
+      buildNativeAuthorizeUrl(baseUrl, { challenge, redirectUri, state, provider: opts.provider }),
+    redeem: async ({ code, verifier }) =>
+      parseTokenResponse(
+        await deps.postJson(nativeTokenUrl(baseUrl), { code, code_verifier: verifier }, { timeoutMs: 15_000 })
+      )
   })
 }
 

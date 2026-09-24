@@ -191,8 +191,9 @@ export function BootFailureOverlay() {
   }
 
   // Clear this gateway's stale auth first, then re-establish it through the
-  // connection's owning login flow. Hermes Cloud must reuse its portal session
-  // and per-agent cascade; generic remote gateways use native/embedded OAuth.
+  // connection's owning login flow. Hermes Cloud reuses its desktop session
+  // (browser sign-in only when absent) and the per-agent token exchange;
+  // generic remote gateways use native/embedded OAuth.
   // Reload after success so boot mints a fresh ticket against the new session.
   const signInRemote = async () => {
     if (!remoteReauth) {

@@ -38,7 +38,6 @@ import {
   htmlResponseError,
   httpStatusError,
   jsonAgentFor,
-  readJsonErrorBody,
   readStatusCode,
   withRetry
 } from './api-transport'
@@ -100,7 +99,14 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
-import { discoverWithTeamFallback } from './cloud-discovery'
+import {
+  canRefreshNativeTokenSet,
+  createCloudAgentAuth,
+  createCloudAgentRegistry,
+  createNativeTokenRefresher,
+  isCloudAuthLoss
+} from './cloud-agent-auth'
+import { discoverCloudAgentsWithBearer } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
@@ -8337,19 +8343,31 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
 
 // All explicit mutations go through the coordinator; only its refresh/store
 // dependencies may call the raw persistence helpers above.
+//
+// The refresh strategy is per connection: a gateway-brokered token set rotates
+// through that gateway's /auth/native/refresh, while a Hermes Cloud agent
+// bearer (minted by the portal token exchange, no refresh token) renews by
+// exchanging a fresh portal access token again. Losing the portal session or
+// the agent's access during that re-exchange signs the connection out.
 const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator({
+  canRefresh: canRefreshNativeTokenSet,
   clearTokens: _clearNativeTokens,
-  isRefreshAuthRejection: error => readStatusCode(error) === 401,
+  isRefreshAuthRejection: error => readStatusCode(error) === 401 || isCloudAuthLoss(error),
   loadTokens: _loadNativeTokens,
   normalizeBaseUrl: normalizeRemoteBaseUrl,
-  refreshTokens: async (baseUrl, tokens) =>
-    parseTokenResponse(
-      await postJsonNoAuth(
-        nativeRefreshUrl(baseUrl),
-        { refresh_token: tokens.refreshToken, provider: tokens.provider },
-        { timeoutMs: 10_000 }
-      )
-    ),
+  refreshTokens: createNativeTokenRefresher({
+    refreshGatewayTokens: async (baseUrl, tokens) =>
+      parseTokenResponse(
+        await postJsonNoAuth(
+          nativeRefreshUrl(baseUrl),
+          { refresh_token: tokens.refreshToken, provider: tokens.provider },
+          { timeoutMs: 10_000 }
+        )
+      ),
+    // Resolved at call time: cloudAgentAuth is defined with the Hermes Cloud
+    // helpers below, long before any request can need a refresh.
+    reexchangeCloudAgent: (baseUrl, tokens) => cloudAgentAuth.reexchange(baseUrl, tokens)
+  }),
   storeTokens: _storeNativeTokens,
   tokenNeedsRefresh
 })
@@ -8665,19 +8683,17 @@ async function freshGatewayWsUrl(profile) {
   return connection.wsUrl
 }
 
-// --- Hermes Cloud discovery + silent per-agent sign-in (cloud-auto-discovery
-// Phase 3) ---------------------------------------------------------------
+// --- Hermes Cloud: system-browser sign-in, discovery, per-agent bearers -----
 //
-// The "cloud" connection mode lets a user sign in to the Nous portal ONCE in
-// the OAuth session partition, then (a) discover their hosted agents and (b)
-// connect to any of them with no second interactive sign-in. Both ride the one
-// portal session cookie living in `persist:hermes-remote-oauth`:
-//   - discovery  → GET {portal}/api/agents over the partition-bound net; the
-//     portal session cookie authenticates it (NAS Phase 2.5 accepts the cookie).
-//   - cascade    → opening an agent's own /login in the same partition hits the
-//     portal's silent auto-approve (org member, existing session) and 302s back
-//     with that agent's session cookie — no prompt. Each agent still completes
-//     its own PKCE exchange; SSO removes the human click, not a security check.
+// The "cloud" connection mode signs the desktop in to the Nous portal ONCE as
+// the public OAuth client `hermes-desktop` — in the user's default browser
+// (RFC 8252 loopback + PKCE), where the portal handles login, team choice and
+// consent. The resulting desktop token set (portal-session.ts) then:
+//   - authenticates discovery   → GET {portal}/api/agents with a bearer;
+//   - mints per-agent bearers   → RFC 8693 token exchange with
+//     `audience=agent:<id>`, stored as that connection's native token set so
+//     the existing bearer transport (REST + ws-ticket) is reused as-is.
+// No embedded window and no partition cookies are involved for cloud.
 
 // Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
 // convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
@@ -8690,191 +8706,73 @@ function resolvePortalBaseUrl() {
   return String(raw).trim().replace(/\/+$/, '')
 }
 
-const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } =
-  createPortalSession({
-    isReady: () => app.isReady(),
-    getOauthSession,
-    resolvePortalBaseUrl,
-    warmOauthCookieStore,
-    createWindow: options => new BrowserWindow(options),
-    rememberLog
+// The desktop portal session shares the encrypted native token store (and so
+// its keychain-optional policy) with gateway tokens, keyed by the portal URL.
+const portalSession = createPortalSession({
+  resolvePortalBaseUrl,
+  loadTokens: _loadNativeTokens,
+  storeTokens: (key, tokens) => _storeNativeTokens(normalizeRemoteBaseUrl(key), tokens),
+  clearTokens: key => _clearNativeTokens(normalizeRemoteBaseUrl(key)),
+  postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
+  openExternal: url => shell.openExternal(url),
+  rememberLog
+})
+
+function _cloudAgentRegistryPath() {
+  return path.join(app.getPath('userData'), 'hermes-cloud-agents.json')
+}
+
+// dashboardUrl → AgentInstance id, so a cloud connection can re-exchange
+// after a restart (or a sign-out/sign-in) without a discovery round trip.
+const cloudAgentRegistry = createCloudAgentRegistry(
+  {
+    readText: () => fs.readFileSync(_cloudAgentRegistryPath(), 'utf8'),
+    writeText: text => {
+      fs.mkdirSync(path.dirname(_cloudAgentRegistryPath()), { recursive: true })
+      fs.writeFileSync(_cloudAgentRegistryPath(), text, { mode: 0o600 })
+    }
+  },
+  normalizeRemoteBaseUrl
+)
+
+async function discoverCloudAgentsRaw() {
+  return discoverCloudAgentsWithBearer({
+    portalBaseUrl: resolvePortalBaseUrl(),
+    getAccessToken: options => portalSession.getPortalAccessToken(options),
+    fetchJson: (url, token, options) => fetchJson(url, token, options)
   })
-
-// Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
-// the NAS trimmed-summary endpoint over the partition-bound net, so the portal
-// session cookie is attached automatically (no bearer needed — NAS accepts the
-// cookie). Returns { agents } on success, or { needsOrgSelection: true, orgs }
-// when the user belongs to multiple orgs and hasn't picked one yet (NAS 409
-// org_selection_required). Pass `org` (a slug/id from a prior org list) to
-// scope discovery to that org. Throws a needsCloudLogin-tagged error when no
-// portal session is present.
-async function discoverCloudAgents(org?: string) {
-  const portalBaseUrl = resolvePortalBaseUrl()
-
-  if (!(await hasLivePortalSession())) {
-    const err = new Error(
-      'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
-    ) as any
-
-    err.needsCloudLogin = true
-    throw err
-  }
-
-  // Access cookies expire before refresh credentials. Let the portal renew
-  // whichever session this browser currently holds before discovery.
-  if (!(await hasPortalAccessToken())) {
-    await renewPortalAccessSilently()
-  }
-
-  let body
-
-  const fetchAgents = () =>
-    discoverWithTeamFallback(
-      selectedOrg =>
-        fetchJsonViaOauthSession(
-          `${portalBaseUrl}/api/agents${selectedOrg ? `?org=${encodeURIComponent(selectedOrg)}` : ''}`,
-          {
-            method: 'GET',
-            timeoutMs: 15_000
-          }
-        ),
-      org
-    )
-
-  try {
-    body = (await fetchAgents()) as any
-  } catch (initialError) {
-    let error = initialError as any
-
-    // A 401 with renewal material still in the jar: attempt ONE bounded silent
-    // renewal and retry, so a lapsed access token doesn't surface as a full
-    // interactive re-login while a 30-day refresh session sits unused. Only a
-    // rejected/failed renewal (or a second 401 on genuinely fresh access)
-    // falls through to needsCloudLogin.
-    if (error && error.statusCode === 401 && (await renewPortalAccessSilently({ force: true }))) {
-      try {
-        body = (await fetchAgents()) as any
-      } catch (retryError) {
-        error = retryError
-      }
-    }
-
-    if (body === undefined) {
-      // A 401 means the portal session lapsed (and silent renewal could not
-      // recover it) — surface it as a re-login, not a generic failure.
-      if (error && error.statusCode === 401) {
-        const err = new Error(
-          'Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.'
-        ) as any
-
-        err.needsCloudLogin = true
-        err.cause = error
-        throw err
-      }
-
-      // A 409 means we're a multi-org user who hasn't picked an org. The body
-      // carries the user's org list; surface it so the renderer shows a picker
-      // and re-calls discovery with the chosen org. (fetchJsonViaOauthSession
-      // throws on >=400 with err.statusCode + err.message "409: <json body>".)
-      if (error && error.statusCode === 409) {
-        const orgs = parseOrgSelectionError(error)
-
-        if (orgs) {
-          return { needsOrgSelection: true, orgs }
-        }
-      }
-
-      throw error
-    }
-  }
-
-  return { agents: trimCloudAgents(body), org: trimCloudOrg(body?.org) }
 }
 
-// Project a NAS response org ({ id, slug, name, isPersonal }) to the trimmed
-// shape the renderer persists, or null when absent/malformed.
-function trimCloudOrg(org) {
-  if (!org || typeof org !== 'object' || typeof org.id !== 'string') {
-    return null
-  }
+const cloudAgentAuth = createCloudAgentAuth({
+  normalizeBaseUrl: normalizeRemoteBaseUrl,
+  registry: cloudAgentRegistry,
+  exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
+  storeAgentTokens: (baseUrl, tokens) => nativeAccessTokenCoordinator.storeTokens(baseUrl, tokens),
+  clearAgentTokens: baseUrl => nativeAccessTokenCoordinator.clearTokens(baseUrl),
+  clearPortalSession: () => portalSession.logout(),
+  discoverAgents: async () => (await discoverCloudAgentsRaw()).agents
+})
 
-  return {
-    id: org.id,
-    slug: typeof org.slug === 'string' ? org.slug : null,
-    name: typeof org.name === 'string' ? org.name : org.id,
-    isPersonal: Boolean(org.isPersonal),
-    role: typeof org.role === 'string' ? org.role : 'MEMBER'
-  }
+// Discover the hosted (Hermes Cloud) agents the signed-in user can see, in
+// the org the desktop token is pinned to. Throws a needsCloudLogin-tagged
+// error when there is no usable portal session. `org` is accepted for IPC
+// compatibility but ignored: with a bearer the portal pins the org from the
+// token, so switching team means signing in again and choosing it in the
+// browser (the 409 team picker can no longer occur here).
+async function discoverCloudAgents(_org?: string) {
+  const result = await discoverCloudAgentsRaw()
+
+  cloudAgentAuth.rememberDiscovered(result.agents)
+
+  return result
 }
 
-// Extract the org list from a 409 org_selection_required error body. Parse
-// defensively and return null if it isn't the shape we expect (caller then
-// rethrows).
-function parseOrgSelectionError(error) {
-  const parsed = readJsonErrorBody(error)
-
-  if (parsed?.error !== 'org_selection_required' || !Array.isArray(parsed.orgs)) {
-    return null
-  }
-
-  return parsed.orgs
-    .filter(o => o && typeof o === 'object' && typeof o.id === 'string')
-    .map(o => ({
-      id: o.id,
-      slug: typeof o.slug === 'string' ? o.slug : null,
-      name: typeof o.name === 'string' ? o.name : o.id,
-      isPersonal: Boolean(o.isPersonal),
-      role: typeof o.role === 'string' ? o.role : 'MEMBER'
-    }))
-}
-
-// Project NAS's agent rows to the trimmed DTO the renderer consumes.
-function trimCloudAgents(body) {
-  const agents = Array.isArray(body?.agents) ? body.agents : []
-
-  return agents
-    .filter(a => a && typeof a === 'object' && typeof a.id === 'string')
-    .map(a => ({
-      id: a.id,
-      name: typeof a.name === 'string' ? a.name : a.id,
-      status: typeof a.status === 'string' ? a.status : 'unknown',
-      dashboardUrl: typeof a.dashboardUrl === 'string' ? a.dashboardUrl : null,
-      dashboardGatewayState: typeof a.dashboardGatewayState === 'string' ? a.dashboardGatewayState : 'unknown'
-    }))
-}
-
-// Silent per-agent sign-in: open the selected agent dashboard's /login in the
-// SAME OAuth partition. Because the user already holds a live portal session
-// there, the agent's /oauth/authorize auto-approves (org member) and 302s back,
-// setting that agent's gateway session cookie WITHOUT a second interactive
-// prompt. Reuses openOauthLoginWindow — the window self-closes the instant the
-// agent's session cookie lands (a silent flow finishes in well under a second;
-// if the portal session were absent it would fall through to an interactive
-// login, which the discovery gate already prevents). Returns once the agent's
-// gateway session cookie is present.
-async function cloudAgentSilentSignIn(dashboardUrl) {
-  const baseUrl = normalizeRemoteBaseUrl(dashboardUrl)
-
-  // Pre-req: a live portal session must exist, or this would surface an
-  // interactive prompt rather than a silent cascade. Discovery already gates on
-  // this, but a selection can arrive after the session lapsed.
-  if (!(await hasLivePortalSession())) {
-    const err = new Error('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.') as any
-    err.needsCloudLogin = true
-    throw err
-  }
-
-  // The cascade rides the portal's auto-approve, which needs the short-lived
-  // access state just like discovery. If only renewal material survived the
-  // restart, mint a fresh access token first so the hidden cascade window
-  // auto-SSOs instead of stalling on an interactive chooser (#73495).
-  if (!(await hasPortalAccessToken())) {
-    await renewPortalAccessSilently()
-  }
-
-  await openOauthLoginWindow(baseUrl, { silent: true })
-
-  return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+// Silent per-agent sign-in: exchange the desktop token for this agent's
+// dashboard bearer and store it as the connection's native token set. The
+// agent id comes from the caller when known, else from the last discovery /
+// persisted registry, else one live discovery.
+async function cloudAgentSignIn(dashboardUrl: string, agentId?: null | string) {
+  return cloudAgentAuth.signIn(dashboardUrl, agentId)
 }
 
 // ---------------------------------------------------------------------------
@@ -16807,33 +16705,37 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   return { ok: true, connected }
 })
 
-// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
-// One portal login in the OAuth partition powers both discovery and the silent
-// per-agent cascade. See the discovery/cascade helpers above.
+// --- Hermes Cloud ---
+// One system-browser sign-in (client `hermes-desktop`) powers discovery and the
+// silent per-agent token exchange. See the Hermes Cloud helpers above.
 ipcMain.handle('hermes:cloud:status', async () => ({
   portalBaseUrl: resolvePortalBaseUrl(),
-  signedIn: await hasLivePortalSession()
+  signedIn: portalSession.hasLivePortalSession()
 }))
 ipcMain.handle('hermes:cloud:login', async () => {
-  await openPortalLoginWindow()
+  // Opens the default browser; resolves when the loopback redirect lands. A
+  // Deny in the browser is a clean `{ ok: false, signedIn: false }`.
+  const result = await portalSession.login()
 
-  return { ok: true, signedIn: await hasLivePortalSession() }
+  return { ok: result.signedIn && !result.cancelled, signedIn: result.signedIn }
 })
 ipcMain.handle('hermes:cloud:logout', async () => {
-  await clearOauthSession(resolvePortalBaseUrl())
+  // Clears the desktop portal session AND every derived agent bearer. The
+  // contract has no revoke endpoint; the refresh token simply stops being used.
+  cloudAgentAuth.logout()
 
-  return { ok: true, signedIn: await hasLivePortalSession() }
+  return { ok: true, signedIn: portalSession.hasLivePortalSession() }
 })
 ipcMain.handle('hermes:cloud:discover', async (_event, org) => {
   // Returns { agents } or { needsOrgSelection: true, orgs }. `org` (optional)
   // scopes discovery to a chosen org for multi-org users.
   return discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
 })
-ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
-  // Silent per-agent sign-in via the shared portal session. Returns the agent's
-  // gateway baseUrl + whether its session cookie landed; the renderer then
-  // saves a cloud-mode connection pointed at this dashboardUrl.
-  return cloudAgentSilentSignIn(dashboardUrl)
+ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl, agentId) => {
+  // Silent per-agent sign-in via the portal token exchange. Returns the agent's
+  // gateway baseUrl + connected; the renderer then saves a cloud-mode
+  // connection pointed at this dashboardUrl. `agentId` is optional.
+  return cloudAgentSignIn(String(dashboardUrl || ''), typeof agentId === 'string' && agentId ? agentId : null)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()

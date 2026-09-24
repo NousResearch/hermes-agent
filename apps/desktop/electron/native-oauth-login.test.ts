@@ -12,7 +12,8 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { runNativeLogin } from './native-oauth-login'
+import { NativeLoginCancelledError } from './native-oauth'
+import { runLoopbackAuthorization, runNativeLogin } from './native-oauth-login'
 
 // A fake http.Server: captures the request handler, lets the test drive a
 // synthetic browser callback, and records listen/close lifecycle.
@@ -140,6 +141,77 @@ test('runNativeLogin surfaces a gateway error param', async () => {
   state.hitCallback('error=access_denied&error_description=user_declined')
 
   await assert.rejects(promise, /access_denied/i)
+})
+
+test('a Deny (error=access_denied with our state) rejects as a typed cancel, not a failure', async () => {
+  const { createServer, state } = makeFakeServerFactory()
+  let opened = ''
+
+  const promise = runNativeLogin('https://gw.example.com', {
+    openExternal: async url => {
+      opened = url
+    },
+    postJson: async () => ({}),
+    createServer,
+    timeoutMs: 5_000
+  })
+
+  await new Promise(r => setTimeout(r, 5))
+  state.hitCallback(`error=access_denied&state=${new URL(opened).searchParams.get('state')}`)
+
+  const error = await promise.catch(e => e)
+  assert.ok(error instanceof NativeLoginCancelledError)
+  assert.match(error.message, /access_denied/)
+})
+
+test('an error callback carrying a FOREIGN state is a CSRF failure, never a cancel', async () => {
+  const { createServer, state } = makeFakeServerFactory()
+
+  const promise = runNativeLogin('https://gw.example.com', {
+    openExternal: async () => undefined,
+    postJson: async () => ({}),
+    createServer,
+    timeoutMs: 5_000
+  })
+
+  await new Promise(r => setTimeout(r, 5))
+  state.hitCallback('error=access_denied&state=attacker')
+
+  const error = await promise.catch(e => e)
+  assert.ok(!(error instanceof NativeLoginCancelledError))
+  assert.match(error.message, /state mismatch/i)
+})
+
+test('runLoopbackAuthorization hands redeem the exact redirect_uri it authorized with', async () => {
+  const { createServer, state } = makeFakeServerFactory(40404)
+  let authorizeRedirect = ''
+  let authorizeState = ''
+  let redeemed: any = null
+
+  const promise = runLoopbackAuthorization(
+    { openExternal: async () => undefined, createServer, timeoutMs: 5_000 },
+    {
+      buildAuthorizeUrl: ({ redirectUri, state: s }) => {
+        authorizeRedirect = redirectUri
+        authorizeState = s
+
+        return `https://idp.example/authorize?state=${s}`
+      },
+      redeem: async params => {
+        redeemed = params
+
+        return 'ok'
+      }
+    }
+  )
+
+  await new Promise(r => setTimeout(r, 5))
+  state.hitCallback(`code=C1&state=${authorizeState}`)
+  assert.equal(await promise, 'ok')
+  assert.equal(authorizeRedirect, 'http://127.0.0.1:40404/callback')
+  assert.equal(redeemed.redirectUri, authorizeRedirect)
+  assert.equal(redeemed.code, 'C1')
+  assert.ok(redeemed.verifier.length >= 43)
 })
 
 test('runNativeLogin times out when no callback arrives', async () => {

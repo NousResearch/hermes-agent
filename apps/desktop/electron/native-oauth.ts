@@ -154,10 +154,25 @@ export function nativeRefreshUrl(baseUrl: string): string {
 }
 
 /**
+ * The user pressed Deny (or otherwise backed out) on the authorization
+ * server's page: RFC 6749 §4.1.2.1 `error=access_denied`. A clean cancel,
+ * not a failure — callers report "not signed in" without an error toast.
+ */
+export class NativeLoginCancelledError extends Error {
+  readonly cancelled = true
+
+  constructor(detail = 'access_denied') {
+    super(`Sign-in was cancelled in the browser (${detail}).`)
+    this.name = 'NativeLoginCancelledError'
+  }
+}
+
+/**
  * Parse the loopback redirect the gateway sends the browser to. Returns the
  * `code` + `state`, or throws with the gateway's `error` if the flow failed.
  * `expectedState` MUST match (CSRF defense — RFC 6749 §10.12); a mismatch
- * throws rather than proceeding.
+ * throws rather than proceeding. An error redirect that carries a state must
+ * carry OURS: a foreign page must not be able to fake a Deny.
  */
 export function parseLoopbackCallback(requestUrl: string, expectedState: string): { code: string } {
   // requestUrl is the path+query the loopback server received, e.g.
@@ -166,7 +181,18 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
   const error = parsed.searchParams.get('error')
 
   if (error) {
+    const errorState = parsed.searchParams.get('state')
+
+    if (errorState !== null && errorState !== expectedState) {
+      throw new Error('Loopback callback state mismatch (possible CSRF)')
+    }
+
     const desc = parsed.searchParams.get('error_description') || ''
+
+    if (error === 'access_denied') {
+      throw new NativeLoginCancelledError(desc ? `${error}: ${desc}` : error)
+    }
+
     throw new Error(`Gateway rejected native login: ${error}${desc ? ` (${desc})` : ''}`)
   }
 

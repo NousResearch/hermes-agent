@@ -524,7 +524,16 @@ export function LocalModelsSettings() {
       <SettingsSection icon={Monitor} title={copy.hardwareTitle}>
         {hardware ? (
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 py-1 text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-            {hardware.gpu_name && (
+            {hardware.gpus && hardware.gpus.length > 1 ? (
+              <span className="inline-flex flex-wrap items-center gap-x-4 gap-y-1">
+                {hardware.gpus.map(g => (
+                  <span className="inline-flex items-center gap-1.5" key={g.index}>
+                    <Zap className="size-3.5" />
+                    {g.name} · {gbLabel(g.vram_total_bytes)}
+                  </span>
+                ))}
+              </span>
+            ) : hardware.gpu_name && (
               <span className="inline-flex items-center gap-1.5">
                 <Zap className="size-3.5" />
                 {hardware.gpu_name}

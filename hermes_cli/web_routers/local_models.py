@@ -15,7 +15,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -508,16 +507,17 @@ def local_models_status():
 
 # ── hardware: what this machine can do ───────────────────────
 def _nvidia_smi_facts() -> dict:
-    """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts)."""
-    smi_exe = hardware._nvidia_smi_path()
-    if not smi_exe:
+    """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts).
+    Multi-GPU: gpu_name is the biggest-VRAM card (the one the catalog prices against); gpus lists them all."""
+    gpus = hardware.list_nvidia_gpus()
+    if not gpus:
         return {}
-    smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, timeout=5)
-    if smi.returncode != 0 or not smi.stdout.strip():
-        return {}
-    name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
-    return dict(gpu_name=name, gpu_util_percent=int(util), vram_used_bytes=int(used_mib) << 20)
+    main = max(gpus, key=lambda g: g.total_mib)
+    return dict(
+        gpu_name=main.name, gpu_util_percent=main.util_percent,
+        vram_used_bytes=(main.used_mib << 20) if main.used_mib is not None else None,
+        gpus=[dict(index=g.index, name=g.name, vram_total_bytes=g.total_mib << 20,
+                    vram_free_bytes=g.free_mib << 20) for g in gpus])
 
 
 @router.get("/api/local-models/hardware")
@@ -528,7 +528,7 @@ def local_models_hardware():
     out = {
         "uma": budget.uma, "vram_total_bytes": budget.total_device_bytes, "vram_usable_bytes": budget.usable_vram_bytes,
         "ram_total_bytes": ram_total, "ram_available_bytes": ram_avail, "vram_label": _human_gb(budget.total_device_bytes),
-        "gpu_name": None, "gpu_util_percent": None, "vram_used_bytes": None,
+        "gpu_name": None, "gpu_util_percent": None, "vram_used_bytes": None, "gpus": None,
     }
     out.update(_quiet(_nvidia_smi_facts, {}))
     return out

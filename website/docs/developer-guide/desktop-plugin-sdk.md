@@ -704,14 +704,21 @@ lazy loading. Never mount a raw Electron `<webview>`: it lands on the app's
 `persist:` preview partition, sharing the app's cookies and storage.
 
 ```ts
-interface SandboxedFrameProps extends Omit<ComponentProps<'iframe'>, 'src'> {
-  src: string     // http(s): or data: URL to embed
-  title: string   // required — an untitled frame is unlabelled in the a11y tree
-  sandbox?: string // extra tokens; filtered through sanitizeFrameSandbox
+interface SandboxedFrameProps {
+  src: string      // absolute http(s): or data: URL; any other scheme renders nothing (console.warn)
+  title: string    // required — an untitled frame is unlabelled in the a11y tree
+  sandbox?: string // extra tokens; filtered through the allowlist below
+  className?: string; style?: CSSProperties
+  onLoad?, onError?: ReactEventHandler<HTMLIFrameElement>
+  ref?: Ref<HTMLIFrameElement>
 }
-SANDBOXED_FRAME_DEFAULT_SANDBOX = 'allow-scripts'
-sanitizeFrameSandbox(sandbox?: string): string
 ```
+
+The props are an explicit allowlist, not `ComponentProps<'iframe'>`: `allow`
+(Permissions-Policy delegation — would hand a third-party site the mic/camera
+grant the app holds), `srcdoc`, `name`, `allowFullScreen`, `csp`,
+`credentialless` and every other iframe attribute are not props and nothing is
+spread onto the element, so they cannot reach the DOM even through a cast.
 
 *Arbitration (allowlist, not blocklist):* the only tokens a caller may add are
 `allow-scripts`, `allow-forms`, `allow-downloads`, `allow-pointer-lock`,
@@ -719,10 +726,11 @@ sanitizeFrameSandbox(sandbox?: string): string
 `allow-same-origin`, `allow-top-navigation*`, `allow-popups*`, `allow-modals`,
 `allow-storage-access-by-user-activation`, and any token the primitive does not
 know — is dropped case-insensitively even if passed; an emptied set falls back
-to the default posture, because a frame with **no** `sandbox` attribute is
-fully privileged. `loading="lazy"` and `referrerPolicy="no-referrer"` cannot be
-overridden through props. The opaque origin IS the containment: guest content
-cannot reach the app, its storage, or the preload bridge.
+to the default posture (`allow-scripts`), because a frame with **no** `sandbox`
+attribute is fully privileged. `loading="lazy"` and
+`referrerPolicy="no-referrer"` are not props. The opaque origin IS the
+containment: guest content cannot reach the app, its storage, or the preload
+bridge.
 
 *Teardown:* it is a plain React element — unmounting your pane/page removes the
 frame and its realm; nothing is registered app-side.

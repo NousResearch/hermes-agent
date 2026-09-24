@@ -1778,12 +1778,7 @@ export { RowButton } from '@/components/ui/row-button'
 /** The sanctioned embed primitive for external web content: a sandboxed
  *  iframe (opaque origin, `allow-scripts` by default) — never a raw
  *  `<webview>`, which would land on the app's own preview partition. */
-export {
-  SANDBOXED_FRAME_DEFAULT_SANDBOX,
-  SandboxedFrame,
-  type SandboxedFrameProps,
-  sanitizeFrameSandbox
-} from '@/components/ui/sandboxed-frame'
+export { SandboxedFrame, type SandboxedFrameProps } from '@/components/ui/sandboxed-frame'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
 export { SegmentedControl } from '@/components/ui/segmented-control'

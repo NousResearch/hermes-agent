@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SANDBOXED_FRAME_DEFAULT_SANDBOX, SandboxedFrame, sanitizeFrameSandbox } from './sandboxed-frame'
 
@@ -49,10 +49,23 @@ describe('SandboxedFrame', () => {
   })
 
   it('keeps its posture when a caller tries to re-open it through props', () => {
+    // The props type is an explicit allowlist, so a plugin has to cast to get
+    // these past the compiler — and the DOM must still never see them:
+    // `allow` delegates Permissions-Policy (the electron permission handlers
+    // grant media without checking the frame's origin), `srcdoc` overrides
+    // `src`, `name` makes the frame a navigation target.
+    const hostile = {
+      allow: 'camera; microphone',
+      allowFullScreen: true,
+      loading: 'eager',
+      name: 'target',
+      referrerPolicy: 'unsafe-url',
+      srcDoc: '<script>1</script>'
+    } as Record<string, unknown>
+
     const { container } = render(
       <SandboxedFrame
-        loading="eager"
-        referrerPolicy="unsafe-url"
+        {...hostile}
         sandbox="allow-scripts allow-same-origin allow-popups"
         src="https://example.com"
         title="Feed"
@@ -64,5 +77,23 @@ describe('SandboxedFrame', () => {
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
     expect(frame.getAttribute('loading')).toBe('lazy')
+
+    for (const attr of ['allow', 'allowfullscreen', 'name', 'srcdoc']) {
+      expect(frame.hasAttribute(attr), attr).toBe(false)
+    }
+  })
+
+  it('renders nothing for a src outside http(s)/data and says why', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    for (const src of ['file:///etc/passwd', 'blob:https://example.com/x', 'javascript:1', '/relative']) {
+      const { container, unmount } = render(<SandboxedFrame src={src} title="Feed" />)
+
+      expect(container.querySelector('iframe'), src).toBeNull()
+      unmount()
+    }
+
+    expect(warn).toHaveBeenCalledTimes(4)
+    warn.mockRestore()
   })
 })

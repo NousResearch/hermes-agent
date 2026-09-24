@@ -45,9 +45,28 @@ export function sanitizeFrameSandbox(sandbox: string | undefined): string {
   return tokens.length > 0 ? [...new Set(tokens)].join(' ') : SANDBOXED_FRAME_DEFAULT_SANDBOX
 }
 
-export interface SandboxedFrameProps extends Omit<React.ComponentProps<'iframe'>, 'src'> {
-  /** Absolute `http(s):` (or `data:`) URL to embed. */
+/** Schemes an embed may point at. `file:` would read the user's disk into a
+ *  scripted frame, `blob:`/`javascript:` are host-realm content, and a
+ *  relative path resolves against the app's own origin. */
+const ALLOWED_SRC_SCHEMES = new Set(['data:', 'http:', 'https:'])
+
+/** Explicit allowlist, NOT `ComponentProps<'iframe'>`: an iframe's attribute
+ *  surface is how a frame gains authority — `allow` delegates
+ *  Permissions-Policy (the electron permission handlers grant media capture
+ *  without checking which frame asked), `srcdoc` replaces `src` with caller
+ *  markup, `name` makes the frame a navigation target, `csp`/`credentialless`
+ *  change the guest realm. None of those are props here, and no spread reaches
+ *  the element, so a plugin cannot smuggle one through a cast either. */
+export interface SandboxedFrameProps {
+  className?: string
+  onError?: React.ReactEventHandler<HTMLIFrameElement>
+  onLoad?: React.ReactEventHandler<HTMLIFrameElement>
+  ref?: React.Ref<HTMLIFrameElement>
+  /** Extra sandbox tokens; filtered through the allowlist above. */
+  sandbox?: string
+  /** Absolute `http(s):` or `data:` URL to embed. Anything else renders nothing. */
   src: string
+  style?: React.CSSProperties
   /** Accessible title (required — an untitled frame is unlabelled in the a11y tree). */
   title: string
 }
@@ -63,20 +82,37 @@ export interface SandboxedFrameProps extends Omit<React.ComponentProps<'iframe'>
  *  navigation/popup/modals family, and any token this primitive does not know —
  *  is dropped, case-insensitively. See {@link sanitizeFrameSandbox}.
  *
- * `loading` and `referrerPolicy` are the primitive's posture, not defaults: the
- * spread comes first so a caller cannot re-open them (`unsafe-url` would leak
- * the app's origin to the embedded site, which is the point of `no-referrer`).
+ * `loading` and `referrerPolicy` are the primitive's posture, not props
+ * (`unsafe-url` would leak the app's origin to the embedded site, which is the
+ * point of `no-referrer`).
  */
-export function SandboxedFrame({ className, sandbox, src, title, ...props }: SandboxedFrameProps) {
+export function SandboxedFrame({ className, onError, onLoad, ref, sandbox, src, style, title }: SandboxedFrameProps) {
+  if (!hasAllowedScheme(src)) {
+    console.warn(`[SandboxedFrame] refusing to embed ${JSON.stringify(src)}: only http(s): and data: URLs are allowed`)
+
+    return null
+  }
+
   return (
     <iframe
-      {...props}
       className={cn('size-full border-0 bg-transparent', className)}
       loading="lazy"
+      onError={onError}
+      onLoad={onLoad}
+      ref={ref}
       referrerPolicy="no-referrer"
       sandbox={sanitizeFrameSandbox(sandbox)}
       src={src}
+      style={style}
       title={title}
     />
   )
+}
+
+function hasAllowedScheme(src: string): boolean {
+  try {
+    return ALLOWED_SRC_SCHEMES.has(new URL(src).protocol)
+  } catch {
+    return false
+  }
 }

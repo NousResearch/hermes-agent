@@ -3266,6 +3266,11 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
     ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
     isinstance-gated readers see real structures; the trigger is conservative."""
+    # Platform names are dynamic, so this string field has no DEFAULT_CONFIG leaf.
+    # Preserve its enum before scalar coercion turns the documented "off" into False.
+    parts = _split_key_path(key)
+    if len(parts) == 3 and parts[0] == "platforms" and parts[2] == "reply_to_mode":
+        return value
     if isinstance(_default_value_for_key(key), str):
         return value
     stripped = value.strip()

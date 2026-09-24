@@ -12,6 +12,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,6 +65,10 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
   const ctrl = s.control
 
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editPrompt, setEditPrompt] = useState('')
+  const [editInterval, setEditInterval] = useState('')
+  const [editError, setEditError] = useState<string | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const isBusy = Boolean(pendingAction)
 
@@ -114,12 +119,24 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
     })
   }
 
+  const openEditHeartbeat = () => {
+    setEditPrompt(heartbeat.prompt)
+    setEditInterval(formatHeartbeatInterval(heartbeat.interval_seconds, t).replace(/^every\s+/, ''))
+    setEditError(null)
+    setEditOpen(true)
+  }
+
   const renderMenuItems = (isContext = false) => {
     const Item = isContext ? ContextMenuItem : DropdownMenuItem
     const Sep = isContext ? ContextMenuSeparator : DropdownMenuSeparator
 
     return (
       <>
+        <Item disabled={isBusy} onSelect={openEditHeartbeat}>
+          <Codicon name="edit" size="0.8rem" />
+          <span>{`${t.common.edit} ${ctrl.heartbeatActions.toLowerCase()}`}</span>
+        </Item>
+        <Sep />
         {heartbeat.status === 'active' && (
           <Item disabled={isBusy} onSelect={() => void handleAction('heartbeat.pause')}>
             <Codicon name="debug-pause" size="0.8rem" />
@@ -210,6 +227,77 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
           title={confirmState.title}
         />
       )}
+
+      <Dialog
+        onOpenChange={open => {
+          if (!open && !isBusy) {
+            setEditOpen(false)
+            setEditError(null)
+          }
+        }}
+        open={editOpen}
+      >
+        <DialogContent className="max-w-md">
+          <form
+            onSubmit={async event => {
+              event.preventDefault()
+              const prompt = editPrompt.trim()
+              const interval = editInterval.trim()
+              if (!prompt || !interval || isBusy) {
+                return
+              }
+              setEditError(null)
+              const saved = await handleAction('heartbeat.update', { prompt, interval })
+              if (saved) {
+                setEditOpen(false)
+              } else {
+                setEditError(ctrl.actionFailed('Unable to update heartbeat'))
+              }
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{`${t.common.edit} ${ctrl.heartbeatActions.toLowerCase()}`}</DialogTitle>
+              <DialogDescription>Update the recurring instruction and frequency.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-3">
+              <label className="block space-y-1 text-xs font-medium" htmlFor="heartbeat-edit-message">
+                {t.composer.message}
+                <textarea
+                  aria-label="Heartbeat message"
+                  autoFocus
+                  className="mt-1 w-full rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                  disabled={isBusy}
+                  id="heartbeat-edit-message"
+                  onChange={event => setEditPrompt(event.target.value)}
+                  rows={3}
+                  value={editPrompt}
+                />
+              </label>
+              <label className="block space-y-1 text-xs font-medium" htmlFor="heartbeat-edit-interval">
+                Interval
+                <input
+                  aria-label="Heartbeat interval"
+                  className="mt-1 w-full rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                  disabled={isBusy}
+                  id="heartbeat-edit-interval"
+                  onChange={event => setEditInterval(event.target.value)}
+                  placeholder="10m"
+                  value={editInterval}
+                />
+              </label>
+            </div>
+            {editError && <div className="text-xs text-destructive" role="alert">{editError}</div>}
+            <DialogFooter>
+              <Button disabled={isBusy} onClick={() => setEditOpen(false)} type="button" variant="ghost">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={isBusy || !editPrompt.trim() || !editInterval.trim()} type="submit">
+                {t.common.save}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </>
   )
 })

@@ -92,6 +92,7 @@ export type SessionControlAction =
   | 'heartbeat.clear'
   | 'heartbeat.pause'
   | 'heartbeat.resume'
+  | 'heartbeat.update'
   | 'loop.pause'
   | 'loop.resume'
   | 'loop.stop'
@@ -99,7 +100,7 @@ export type SessionControlAction =
   | 'subgoal.clear'
   | 'subgoal.remove'
 
-export type SessionControlActionArgs = { index: number } | { text: string }
+export type SessionControlActionArgs = { index: number } | { text: string } | { interval: string; prompt: string }
 
 export interface SessionControlDispatch {
   display: string | null

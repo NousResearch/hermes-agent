@@ -73,16 +73,21 @@ data "aws_iam_policy_document" "console_access" {
     }
   }
 
-  # Ending or resuming one's own session only. Session ids begin with the caller's name for
-  # an IAM user and with the caller's user id for a federated (Identity Center) session.
+  # Ending or resuming one's own session only. Matched on the tag Session Manager stamps
+  # with the starter's user id, which is AWS's documented form and holds for IAM users and
+  # Identity Center sessions alike — a session-id prefix does not: an Identity Center
+  # session is named after the person's sign-in, which neither aws:username nor aws:userid
+  # is, so a prefix rule left those users unable to close their own sessions.
   statement {
-    sid     = "ManageOwnSessionsOnly"
-    effect  = "Allow"
-    actions = ["ssm:TerminateSession", "ssm:ResumeSession"]
-    resources = [
-      "arn:${local.partition}:ssm:*:${local.account_id}:session/$${aws:username}-*",
-      "arn:${local.partition}:ssm:*:${local.account_id}:session/$${aws:userid}-*",
-    ]
+    sid       = "ManageOwnSessionsOnly"
+    effect    = "Allow"
+    actions   = ["ssm:TerminateSession", "ssm:ResumeSession"]
+    resources = ["arn:${local.partition}:ssm:*:${local.account_id}:session/*"]
+    condition {
+      test     = "StringLike"
+      variable = "ssm:resourceTag/aws:ssmmessages:session-id"
+      values   = ["$${aws:userid}"]
+    }
   }
 }
 

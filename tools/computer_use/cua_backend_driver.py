@@ -4,6 +4,7 @@ Config-derived policy (``_cua_no_overlay``, ``_run_driver`` ...) is looked up la
 from __future__ import annotations
 
 import functools
+import glob
 import json
 import logging
 import os
@@ -73,11 +74,55 @@ def _wsl_windows_path_to_posix(path: str) -> str:
     drive = (win.drive or "").rstrip(":").lower()
     return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:])) if wsl and drive else path
 
+def wsl_interop_available() -> bool:
+    """True when Hermes runs in WSL with Windows interop reachable (cmd.exe on PATH).
+
+    This is the cmd.exe interop probe: without it a Windows host cua-driver.exe
+    could neither be located nor executed from Linux, so Windows host candidates
+    are withheld.
+    """
+    try:
+        from hermes_constants import is_wsl
+        if not is_wsl():
+            return False
+    except Exception:
+        return False
+    return shutil.which("cmd.exe") is not None
+
+def _wsl_windows_host_candidates() -> List[str]:
+    """Windows host cua-driver.exe locations as seen from WSL via DrvFS (/mnt/<drive>/...).
+
+    Empty unless wsl_interop_available() is true. The per-user upstream installer
+    lands under %LOCALAPPDATA%\\Programs\\Cua\\cua-driver\\bin, whose Windows user name
+    is unknown from Linux, so glob /mnt/c/Users/*/ (sorted for a stable order);
+    machine-wide Program Files fallbacks are appended after.
+    """
+    if not wsl_interop_available():
+        return []
+    per_user = sorted(glob.glob("/mnt/c/Users/*/AppData/Local/Programs/Cua/cua-driver/bin/cua-driver.exe"))
+    return per_user + ["/mnt/c/Program Files/Cua/cua-driver/bin/cua-driver.exe",
+                       "/mnt/c/Program Files (x86)/Cua/cua-driver/bin/cua-driver.exe"]
+
+def cua_driver_candidate_hosts(override: Optional[str] = None) -> Dict[str, Any]:
+    """Guest-vs-host candidate partition surfacing the WSL host choice.
+
+    Returns a dict with guest, host and interop keys, mirroring
+    _candidate_cua_driver_commands order (Linux guest first, Windows host last).
+    Outside WSL host is empty and interop is False.
+    """
+    candidates = _candidate_cua_driver_commands(override)
+    return {"guest": [c for c in candidates if not str(c).startswith("/mnt/")],
+            "host": [c for c in candidates if str(c).startswith("/mnt/")],
+            "interop": wsl_interop_available() if sys.platform != "win32" else False}
+
 def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     """Candidate commands in resolution order. ``override`` / a non-empty ``HERMES_CUA_DRIVER_CMD`` is authoritative
     (if wrong, report the driver missing rather than silently picking another binary). Otherwise PATH, then
     canonical installer locations — Finder/Dock-launched apps inherit a narrow PATH without ``~/.local/bin``;
-    fresh Windows sessions inherit a stale one."""
+    fresh Windows sessions inherit a stale one. Under WSL with Windows interop (cmd.exe reachable),
+    Windows host cua-driver.exe locations (/mnt/c/...) are appended after the Linux guest
+    candidates, so a guest install wins when both exist — see cua_driver_candidate_hosts
+    for the surfaced guest-vs-host choice."""
     configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
     if configured:
         return [configured]
@@ -86,8 +131,10 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
         local_app_data = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
         return [_CUA_DRIVER_DEFAULT_CMD, os.path.join(local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"),
                 os.path.join(home, ".local", "bin", "cua-driver.exe"), os.path.join(home, ".local", "bin", "cua-driver")]
-    return [_CUA_DRIVER_DEFAULT_CMD, os.path.join(home, ".local", "bin", "cua-driver"),
-            os.path.join(home, ".cargo", "bin", "cua-driver"), "/opt/homebrew/bin/cua-driver", "/usr/local/bin/cua-driver"]
+    guests = [_CUA_DRIVER_DEFAULT_CMD, os.path.join(home, ".local", "bin", "cua-driver"),
+              os.path.join(home, ".cargo", "bin", "cua-driver"), "/opt/homebrew/bin/cua-driver",
+              "/usr/local/bin/cua-driver"]
+    return guests + _wsl_windows_host_candidates()
 
 def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
     """Resolve the cua-driver executable for every runtime/status surface; an override is never silently replaced."""

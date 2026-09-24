@@ -317,6 +317,22 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
   }, [bot])
 
+  const stop = useCallback(async () => {
+    setBusy(true)
+
+    try {
+      const next = await displayRequest<DisplayStatus>(bot, 'display.stop')
+      // A stopped runtime cannot provide new frames. Drop the RFB client so its
+      // last canvas cannot make an ended session look live.
+      detach()
+      setScreenStatus(bot, next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [bot, detach])
+
   const takeOver = useCallback(async () => {
     // The button is disabled without a viewer; the guard keeps a keyboard-activated
     // stale closure from sending an empty viewer_id the server rejects.
@@ -443,6 +459,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             </Button>
           </>
         )}
+        {lease?.holder !== 'human' ? (
+          <Button disabled={busy} onClick={() => void stop()} size="sm" variant="secondary">
+            <Codicon name="debug-stop" /> {t.screen.stop}
+          </Button>
+        ) : null}
         <Tip label={t.screen.reconnect}>
           <Button
             aria-label={t.screen.reconnect}

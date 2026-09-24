@@ -388,6 +388,7 @@ type BotsMessages = {
     stoppedTitle: string
     stoppedBody: string
     start: string
+    stop: string
     attaching: string
     streamLost: string
     reconnect: string
@@ -816,6 +817,7 @@ const en: BotsMessages = {
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
     start: 'Start screen',
+    stop: 'Stop screen',
     attaching: 'Connecting to the screen\u2026',
     streamLost: 'Screen stream ended',
     reconnect: 'Reconnect',
@@ -1244,6 +1246,7 @@ const ja: BotsMessages = {
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
     start: '画面を起動',
+    stop: '画面を停止',
     attaching: '画面に接続中…',
     streamLost: '画面ストリームが終了しました',
     reconnect: '再接続',
@@ -1657,6 +1660,7 @@ const zh: BotsMessages = {
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
     start: '启动屏幕',
+    stop: '停止屏幕',
     attaching: '正在连接屏幕…',
     streamLost: '屏幕流已结束',
     reconnect: '重新连接',
@@ -2070,6 +2074,7 @@ const zhHant: BotsMessages = {
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
     start: '啟動螢幕',
+    stop: '停止螢幕',
     attaching: '正在連線至螢幕…',
     streamLost: '螢幕串流已結束',
     reconnect: '重新連線',

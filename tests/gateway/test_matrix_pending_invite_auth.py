@@ -10,6 +10,7 @@ must apply the same gate, reading the inviter from the stripped invite
 state.
 """
 
+import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -85,6 +86,25 @@ class TestPendingInviteAuthorization:
             "!pending_room:example.org", "@alice:example.org"
         )
 
+    @pytest.mark.asyncio
+    async def test_own_invite_with_different_localpart_case_is_joined(self, caplog):
+        """The invite_state selector uses _on_invite's identity check
+        (_is_self_sender), so localpart case drift between homeserver
+        surfaces neither loses the DM signal nor logs a false rejection."""
+        adapter = _make_adapter()
+
+        event = _member_invite_event(state_key="@Hermes:example.org")
+        sync_data = _invite_sync_data(invite_state={"events": [event]})
+        with caplog.at_level(logging.WARNING):
+            adapter._schedule_pending_invite_joins(sync_data)
+            await _drain_invite_tasks(adapter)
+
+        adapter._join_room_by_id.assert_awaited_once_with("!pending_room:example.org")
+        adapter._record_dm_room.assert_awaited_once_with(
+            "!pending_room:example.org", "@alice:example.org"
+        )
+        assert not [r for r in caplog.records if "rejecting invite" in r.getMessage()]
+
     @pytest.mark.parametrize(
         "invite_state",
         [
@@ -101,6 +121,15 @@ class TestPendingInviteAuthorization:
             pytest.param(
                 {"events": [_member_invite_event(sender="")]},
                 id="missing-inviter",
+            ),
+            pytest.param(
+                {
+                    "events": [
+                        _member_invite_event(state_key="@Hermes:example.org"),
+                        _member_invite_event(sender="@mallory:evil.example"),
+                    ]
+                },
+                id="exact-event-wins-over-case-folded-look-alike",
             ),
         ],
     )

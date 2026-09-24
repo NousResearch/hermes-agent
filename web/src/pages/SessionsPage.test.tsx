@@ -185,3 +185,35 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-worker", "worker");
   });
 });
+
+describe("SessionsPage live transcript following", () => {
+  it("keeps refreshing messages while a session row is expanded", async () => {
+    let followTick: (() => void) | undefined;
+    const nativeSetInterval = globalThis.setInterval;
+    const intervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation((handler, timeout, ...args) => {
+        if (timeout === 2000) {
+          followTick = () => (handler as (...callbackArgs: unknown[]) => void)(...args);
+          return 1 as unknown as ReturnType<typeof setInterval>;
+        }
+        return nativeSetInterval(handler, timeout, ...args);
+      });
+
+    await renderSessionsPage([
+      { id: "sid-live", profile: "default", source: "telegram", model: null, title: "Live", started_at: 1,
+        ended_at: null, last_active: 1, is_active: true, message_count: 1, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "hi" },
+    ]);
+
+    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+    await waitFor(() => apiMocks.getSessionMessages.mock.calls.length === 1);
+    expect(followTick).toBeTypeOf("function");
+
+    await act(async () => followTick?.());
+    await waitFor(() => apiMocks.getSessionMessages.mock.calls.length === 2);
+    expect(apiMocks.getSessionMessages).toHaveBeenLastCalledWith("sid-live", "default");
+
+    intervalSpy.mockRestore();
+  });
+});

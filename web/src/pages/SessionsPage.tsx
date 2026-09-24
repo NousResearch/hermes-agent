@@ -487,20 +487,34 @@ function SessionRow({
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!isExpanded || messages !== null) return;
+    if (!isExpanded) return;
     let cancelled = false;
-    api
-      .getSessionMessages(session.id, session.profile)
-      .then((resp) => {
-        if (!cancelled) setMessages(resp.messages);
-      })
-      .catch((err) => {
+    let loading = false;
+
+    const refreshMessages = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const resp = await api.getSessionMessages(session.id, session.profile);
+        if (!cancelled) {
+          setMessages(resp.messages);
+          setError(null);
+        }
+      } catch (err) {
         if (!cancelled) setError(errorMessage(err));
-      });
+      } finally {
+        loading = false;
+      }
+    };
+
+    void refreshMessages();
+    const interval = setInterval(() => void refreshMessages(), 2000);
+
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
-  }, [isExpanded, session.id, session.profile, messages]);
+  }, [isExpanded, session.id, session.profile]);
 
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source

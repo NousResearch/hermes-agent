@@ -33,6 +33,18 @@ export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResum
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
 
+const SESSION_FOLLOW_INTERVAL_MS = 2000
+
+interface FollowedSession {
+  messageCount: number
+  runtimeId: string
+}
+
+interface SessionHistorySnapshot {
+  count: number
+  messages: unknown[]
+}
+
 const statusFromLiveSession = (status?: string, running = false) => {
   if (status === 'waiting') {
     return 'waiting for input…'
@@ -152,10 +164,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
+  const followedSessionRef = useRef<FollowedSession | null>(null)
 
   const resetSession = useCallback(() => {
     cancelResumeScrollRef.current?.()
     cancelResumeScrollRef.current = null
+    followedSessionRef.current = null
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
@@ -168,6 +182,60 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     // the user resumes back to the prior session.
     evictInkCaches('half')
   }, [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording])
+
+  useEffect(() => {
+    let disposed = false
+    let refreshing = false
+
+    const refreshFollowedSession = async () => {
+      const followed = followedSessionRef.current
+      const ui = getUiState()
+
+      if (!followed || refreshing || ui.busy || ui.sid !== followed.runtimeId) {
+        return
+      }
+
+      refreshing = true
+
+      try {
+        const snapshot = await rpc<SessionHistorySnapshot>('session.history', { session_id: followed.runtimeId })
+        const current = followedSessionRef.current
+
+        const latestUi = getUiState()
+
+        if (disposed || !snapshot || latestUi.busy || current?.runtimeId !== followed.runtimeId || latestUi.sid !== followed.runtimeId) {
+          return
+        }
+
+        if (snapshot.count === current.messageCount) {
+          return
+        }
+
+        current.messageCount = snapshot.count
+        const transcript = toTranscriptMessages(snapshot.messages)
+        setHistoryItems(previous => {
+          const intro = previous[0]?.kind === 'intro' ? [previous[0]] : []
+
+          return [...intro, ...transcript]
+        })
+
+        if (scrollRef.current?.isSticky()) {
+          scrollRef.current.scrollToBottom()
+        }
+      } catch {
+        // Following is best-effort; a transient DB/RPC failure must not disrupt the active chat.
+      } finally {
+        refreshing = false
+      }
+    }
+
+    const interval = setInterval(() => void refreshFollowedSession(), SESSION_FOLLOW_INTERVAL_MS)
+
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
+  }, [rpc, scrollRef, setHistoryItems])
 
   useEffect(
     () => () => {
@@ -393,6 +461,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
             writeActiveSessionFile(storedSid)
+            followedSessionRef.current = {
+              messageCount: r.message_count ?? r.messages.length,
+              runtimeId: r.session_id
+            }
             patchUiState({
               busy: running,
               info,

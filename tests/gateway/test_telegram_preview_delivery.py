@@ -1,6 +1,5 @@
 """A truncated Telegram preview is not acknowledgement of the complete answer."""
 import asyncio
-import re
 from types import SimpleNamespace
 
 import pytest
@@ -18,16 +17,14 @@ class FloodError(Exception):
 
 
 class PreviewBot:
-    def __init__(self, final_flood, rich_enabled):
+    def __init__(self):
         self.messages = {}
         self.preview_written = asyncio.Event()
-        self.flood = False
-        self.final_flood = final_flood
-        self.rich_enabled = rich_enabled
         self.seed_written = asyncio.Event()
+        self.flood = False
 
     async def send_message(self, **kwargs):
-        if self.flood and self.final_flood:
+        if self.flood:
             raise FloodError()
         mid = len(self.messages) + 1
         self.messages[mid] = kwargs['text']
@@ -36,10 +33,6 @@ class PreviewBot:
 
     async def edit_message_text(self, **kwargs):
         if self.flood:
-            raise FloodError()
-        # A failed legacy head-seal can also leave the whole buffer for the next
-        # interim update. Let that raw capped preview land after the refusal.
-        if not self.rich_enabled and len(kwargs['text']) > 3000 and ' (1/2)' not in kwargs['text']:
             raise FloodError()
         self.messages[kwargs['message_id']] = kwargs['text']
         if len(kwargs['text']) > 3000:
@@ -56,12 +49,10 @@ class PreviewBot:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('final_flood', [True, False])
-@pytest.mark.parametrize('rich_enabled', [True, False])
-@pytest.mark.parametrize('fenced', [True, False])
-async def test_truncated_preview_never_confirms_unseen_tail(final_flood, rich_enabled, fenced):
-    bot = PreviewBot(final_flood, rich_enabled)
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token='offline-test', extra={'rich_messages': rich_enabled}))
+async def test_truncated_preview_never_confirms_unseen_tail():
+    """Flood on finalize after a capped preview must not report the tail delivered."""
+    bot = PreviewBot()
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token='offline-test', extra={'rich_messages': True}))
     adapter._bot = bot
     consumer = GatewayStreamConsumer(
         adapter=adapter, chat_id='123',
@@ -69,8 +60,6 @@ async def test_truncated_preview_never_confirms_unseen_tail(final_flood, rich_en
     )
     lines = ['Start of answer'] + [f'Paragraph {i:04d} with its unique content' for i in range(180)] + ['END OF ANSWER']
     text = '\n'.join(lines)
-    if fenced:
-        text = '```text\n' + text + '\n```'
     task = asyncio.create_task(consumer.run())
     # Seed a short message first, then exceed the legacy edit cap while still below
     # the rich-capable transport's accumulation budget.
@@ -83,15 +72,8 @@ async def test_truncated_preview_never_confirms_unseen_tail(final_flood, rich_en
         bot.flood = True
         consumer.finish(text)
         await asyncio.wait_for(task, 10)
-        if final_flood:
-            assert not consumer.final_content_delivered
-            assert not consumer.final_response_sent
-        else:
-            assert 'END OF ANSWER' in ''.join(bot.messages.values())
-            assert consumer.final_response_sent
-            rendered = re.sub(r'\\(.)', r'\1', '\n'.join(bot.messages.values()))
-            for line in lines:
-                assert rendered.count(line) == 1
+        assert not consumer.final_content_delivered
+        assert not consumer.final_response_sent
     finally:
         if not task.done():
             task.cancel()

@@ -1405,20 +1405,18 @@ def _headers_of(exc: Any) -> Any:
 
 
 def _status_code_from_body(body: Any) -> Optional[int]:
-    """Numeric HTTP status (100-599) from ``error.code``/``code`` in a structured body.
+    """Numeric HTTP error status (400-599) from ``error.code``/``code`` in a structured body.
     An aggregator/relay can deliver the upstream failure only this way — as an
     error object inside an HTTP-200 SSE stream — leaving the SDK to raise a
     status-less ``APIError`` whose ``body`` carries the status (#121270). String
-    codes stay symbolic (``_code_from_payload``'s ``"400" is not a code``)."""
+    codes stay symbolic (``_code_from_payload``'s ``"400" is not a code``), unlike the
+    string-parsing text-SSE sibling ``chat_completion_helpers._status_code_from_payload``."""
     if not isinstance(body, dict):
         return None
-    candidates = []
-    error_obj = body.get("error")
-    if isinstance(error_obj, dict):
-        candidates.extend(error_obj.get(k) for k in ("status_code", "status", "http_status", "code"))
-    candidates.append(body.get("code"))
+    error_obj = _error_obj(body)
+    candidates = [error_obj.get(k) for k in ("status_code", "status", "http_status", "code")] + [body.get("code")]
     return next(
-        (c for c in candidates if isinstance(c, int) and not isinstance(c, bool) and 100 <= c < 600),
+        (c for c in candidates if isinstance(c, int) and not isinstance(c, bool) and 400 <= c < 600),
         None,
     )
 

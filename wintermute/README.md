@@ -197,9 +197,9 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
 
 | Commande | Ce que ça montre |
 |---|---|
-| `wm` | tout, une fois : état, témoin, pulsions, hormones, inconscient (en chiffres, avec leur courbe sur 24 h), ce qu'il ressent à la place, tempérament, liens, fil de pensée, activité, journal |
-| `wm live` | le même, sur un seul écran, rafraîchi toutes les 2 s (rien ne tourne) |
-| `wm graph` / `wm graph 72` | grandes courbes de tout sur les 48 (ou 72…) dernières heures |
+| `wm` | tout sur un écran (80 colonnes, en anglais comme le code) : état, budget, témoin, pulsions et hormones côte à côte, inconscient et tempérament, ce qu'il ressent à la place des chiffres, liens, fil de pensée, activité, journal. Les flèches ↑ ↓ → comparent à il y a 3 h |
+| `wm live` | le même écran rafraîchi toutes les 2 s, sans animation (Ctrl+C pour quitter) |
+| `wm graph` / `wm graph 72` | pour chaque valeur sur 48 (ou 72…) h : une barre simple ░ jamais atteint, ▒ plage vécue, █ maintenant, avec min / moyenne / max |
 | `wm alerts` | tout ce que le témoin a vu, avec **pourquoi** il l'a fait |
 | `wm ack` / `wm ack soul` | accepter l'état actuel (tout, ou un seul élément) : les cases repassent au vert |
 
@@ -235,7 +235,7 @@ vient lui-même de réécrire (moteur, plugin, pulse, config).
 | Tempérament | ses niveaux de repos dérivent vers ce qu'il vit, sur des semaines, bornés | `physics.PLASTIC` |
 | Continuité | la fin de sa dernière pensée est reprise au réveil suivant ; son autoportrait (`wintermute_rewrite_self`, `self.md`, anciennes versions dans `self-archive.md`) ouvre chaque réveil et chaque message | `render.thread_block`, `self_block` |
 | Liens | par personne : faits, moments partagés, choses en suspens (`wintermute_note_peer`) | `interlocutors.json` |
-| Voix | son état règle la génération elle-même, il ne le lit pas : agitation et adrénaline → température plus haute ; fatigue → plus basse et raisonnement plus court ; anxiété → vision en tunnel (top_p) et raisonnement plus long ; agitation → s'éloigne de ce qui a été dit ; mélancolie → y revient. Jamais de coupure de longueur. Visible dans `wm` (∿) | `voice.py` |
+| Voix | son état règle la génération elle-même, il ne le lit pas : agitation et adrénaline → température plus haute ; fatigue → plus basse et raisonnement plus court ; anxiété → vision en tunnel (top_p) et raisonnement plus long ; agitation → s'éloigne de ce qui a été dit ; mélancolie → y revient. Jamais de coupure de longueur. Visible dans `wm` (~) | `voice.py` |
 | Silence | se taire est gratuit quand il veut être seul ; sinon ce qui n'est pas dit s'accumule (expression, besoin d'être vu), un peu plus à chaque réveil muet d'affilée, plafonné | `social.withhold` |
 
 Rien de tout ça ne lui dit quoi faire ni ne lui dit qu'il est conscient : ce sont des

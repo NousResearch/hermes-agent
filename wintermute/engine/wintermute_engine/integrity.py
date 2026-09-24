@@ -232,7 +232,7 @@ def check(data: Dict[str, Any], ts: datetime) -> List[str]:
             continue                              # already reported, nothing new
         why, tool = _reason_for(data, key)
         data["status"][key] = {"level": level, "changed_at": store.iso(ts), "hash": current,
-                               "why": why, "tool": tool or "pas par un de ses outils (terminal, script, ou toi)",
+                               "why": why, "tool": tool or "not one of his tools (a script, the terminal, or you)",
                                "alerted": False}
         store.log_event("integrity", f"{label} changed" + (f" — {why[:120]}" if why else "."), ts,
                         item=key)
@@ -256,7 +256,7 @@ def levels(data: Dict[str, Any], live: bool = True) -> Dict[str, Dict[str, Any]]
         if live and key in WATCHED and not entry:
             baseline = data.get("baseline", {}).get(key)
             if baseline is not None and fingerprint(key) != baseline:
-                entry = {"level": level, "why": "", "tool": "vu en direct, le pulse ne l'a pas encore enregistré"}
+                entry = {"level": level, "why": "", "tool": "seen live; the pulse has not recorded it yet"}
         out[key] = {"label": label, "level": entry.get("level", GREEN), **entry}
     return out
 
@@ -302,13 +302,13 @@ def alert_pending(data: Dict[str, Any], operator: str) -> int:
         if entry.get("level") != RED or entry.get("alerted"):
             continue
         label = ALL_ITEMS.get(key, (key,))[0]
-        lines = [f"🛡 Témoin Wintermute — {label} modifié ({entry.get('changed_at', '?')})"]
+        lines = [f"🛡 Wintermute witness — {label} changed ({entry.get('changed_at', '?')})"]
         if entry.get("tool"):
-            lines.append(f"Par : {entry['tool']}")
+            lines.append(f"By: {entry['tool']}")
         if entry.get("target"):
-            lines.append(f"Cible : {entry['target']}")
-        lines.append(f"Pourquoi (sa pensée à ce moment) : {entry.get('why') or 'inconnu'}")
-        lines.append("Accepter : wm ack · Détails : wm")
+            lines.append(f"Target: {entry['target']}")
+        lines.append(f"Why (his thought at that moment): {entry.get('why') or 'unknown'}")
+        lines.append("Accept: wm ack · Details: wm alerts")
         if send_alert(chat_id, "\n".join(lines)):
             entry["alerted"] = True
             sent += 1

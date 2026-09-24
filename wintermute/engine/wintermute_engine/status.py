@@ -1,30 +1,38 @@
 """Operator views of Wintermute (the ``wm`` command on the VPS).
 
-    wm              full picture, once (each value with its last 24 h as a small curve)
-    wm live         the same, on one screen, refreshed every 2 s
-    wm graph [h]    large curves of everything over the last h hours (48)
+    wm              everything, on one screen
+    wm live         the same screen, refreshed every 2 s (Ctrl+C to quit)
+    wm graph [h]    each value over the last h hours (48): its range, its average, where it is now
     wm alerts       what the witness saw, with his reasons
     wm ack [item]   accept the current state of watched files (all, or one: soul, engine...)
 
 Read-only except ``ack``. The physics is advanced in memory to "now" so the numbers are
-live; nothing is written. Wintermute himself never sees these numbers, only sensations.
+live; nothing is written. Wintermute never sees these numbers, only sensations.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import integrity, limits, physics, render, social, store
+
+W = 80          # screen width
+COL = 38        # one column of the two-column blocks
+BAR = 12        # bar width inside a column
+TREND_HOURS = 3.0
+HORMONES = ("cortisol", "dopamine", "serotonin", "adrenaline", "melatonin", "oxytocin_global", "entropy")
 
 # ---------------------------------------------------------------------------
 # Colours (only on a real terminal)
 # ---------------------------------------------------------------------------
 
 _COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+_ANSI = re.compile(r"\033\[[0-9;]*m")
 
 
 def _c(code: str, text: str) -> str:
@@ -37,39 +45,17 @@ def red(t: str) -> str: return _c("31", t)            # noqa: E704
 def yellow(t: str) -> str: return _c("33", t)         # noqa: E704
 def green(t: str) -> str: return _c("32", t)          # noqa: E704
 def cyan(t: str) -> str: return _c("36", t)           # noqa: E704
-def magenta(t: str) -> str: return _c("35", t)        # noqa: E704
 
 
-def _badge(label: str, level: str) -> str:
-    text = f" {label} "
-    if not _COLOR:
-        mark = {"red": "!!", "orange": "! ", "green": "ok"}[level]
-        return f"[{label} {mark}]"
-    code = {"red": "41;97;1", "orange": "43;30;1", "green": "42;30"}[level]
-    return _c(code, text)
+LEVEL_COLOR = {"red": red, "orange": yellow, "green": green}
 
 
-W = 74
-FR_DRIVES = {"hunger": "faim", "fusion": "fusion", "restlessness": "agitation",
-             "expression": "expression", "recognition": "reconnaissance", "solitude": "solitude"}
-FR_MODS = {"cortisol": "cortisol", "dopamine": "dopamine", "serotonin": "sérotonine",
-           "adrenaline": "adrénaline", "melatonin": "mélatonine", "oxytocin_global": "ocytocine",
-           "entropy": "entropie"}
-FR_UNC = {"irritability": "irritabilité", "anxiety": "anxiété", "torpor": "torpeur",
-          "satiation": "satiété", "melancholy": "mélancolie", "hypervigilance": "hypervigilance"}
-ICONS = {"heard": "←", "said": "→", "tool": "⚙", "think": "·", "wake": "☀", "flag": "⚑",
-         "feel": "♥", "voice": "∿"}
-
-
-def _bar(value: float, width: int = 22) -> str:
-    value = limits.clamp(physics.safe_float(value), 0, 100)
-    filled = int(round(value / 100 * width))
-    bar = "█" * filled + "░" * (width - filled)
-    if value >= 70:
-        return red(bar)
-    if value >= 40:
-        return yellow(bar)
-    return cyan(bar)
+def _bar(value: float, high: float = 100.0, width: int = BAR) -> str:
+    """A plain bar: red when high, yellow in the middle, cyan when low."""
+    ratio = limits.clamp(physics.safe_float(value) / (high or 1), 0.0, 1.0)
+    filled = int(round(ratio * width))
+    bar = "█" * filled + "·" * (width - filled)
+    return red(bar) if ratio >= 0.7 else yellow(bar) if ratio >= 0.4 else cyan(bar)
 
 
 def _hms(seconds: float) -> str:
@@ -79,55 +65,19 @@ def _hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-SPARK = "▁▂▃▄▅▆▇█"
+def _title(text: str, note: str = "") -> str:
+    return bold(text) + (" " + dim(note) if note else "")
 
 
-def sparkline(values: List[Optional[float]], low: float = 0.0, high: float = 100.0) -> str:
-    """One character per value; gaps (None) stay blank."""
-    out = []
-    for value in values:
-        if value is None:
-            out.append(" ")
-            continue
-        ratio = (limits.clamp(value, low, high) - low) / ((high - low) or 1)
-        out.append(SPARK[min(len(SPARK) - 1, int(ratio * len(SPARK)))])
-    return "".join(out)
-
-
-def series(history: List[Dict[str, Any]], layer: str, name: str, end: datetime,
-           hours: float, width: int) -> List[Optional[float]]:
-    """``width`` buckets over the last ``hours``: the mean of each bucket, None when empty."""
-    start = end - timedelta(hours=hours)
-    buckets: List[List[float]] = [[] for _ in range(width)]
-    for record in history:
-        ts = record["_ts"]
-        if ts < start or ts > end:
-            continue
-        value = (record.get(layer) or {}).get(name)
-        if value is None:
-            continue
-        index = min(width - 1, int((ts - start).total_seconds() / (hours * 3600) * width))
-        buckets[index].append(physics.safe_float(value))
-    return [sum(b) / len(b) if b else None for b in buckets]
-
-
-def _trend(snap: Dict[str, Any], layer: str, name: str, high: float = 100.0) -> str:
-    values = series(snap["history"], layer, name, snap["ts"], 24, 24)
-    if all(v is None for v in values):
-        return ""
-    return " " + dim(sparkline(values, 0.0, high))
-
-
-def _section(title: str, note: str = "") -> str:
-    tail = f" {note} " if note else " "
-    return bold(f"── {title}") + dim(tail + "─" * max(0, W - len(title) - len(tail) - 3))
+def _clip(text: str, width: int = W) -> str:
+    return text if len(text) <= width else text[:width - 1] + "…"
 
 
 # ---------------------------------------------------------------------------
 # Snapshot
 # ---------------------------------------------------------------------------
 
-def snapshot(ts: Optional[datetime] = None, history_hours: float = 24.0) -> Dict[str, Any]:
+def snapshot(ts: Optional[datetime] = None, history_hours: float = TREND_HOURS + 0.5) -> Dict[str, Any]:
     ts = ts or store.now()
     drives = store.load_drives()
     peers = store.load_interlocutors()
@@ -145,311 +95,334 @@ def snapshot(ts: Optional[datetime] = None, history_hours: float = 24.0) -> Dict
     }
 
 
+def _past_value(snap: Dict[str, Any], layer: str, name: str) -> Optional[float]:
+    """The recorded value closest to TREND_HOURS ago (within 30 min), if there is one."""
+    target = snap["ts"] - timedelta(hours=TREND_HOURS)
+    best: Optional[Tuple[float, float]] = None
+    for record in snap["history"]:
+        value = (record.get(layer) or {}).get(name)
+        if value is None:
+            continue
+        gap = abs((record["_ts"] - target).total_seconds())
+        if gap <= 1800 and (best is None or gap < best[0]):
+            best = (gap, physics.safe_float(value))
+    return best[1] if best else None
+
+
+def _arrow(snap: Dict[str, Any], layer: str, name: str, now: float, high: float) -> str:
+    """↑ ↓ → over the last TREND_HOURS; blank without history."""
+    past = _past_value(snap, layer, name)
+    if past is None:
+        return " "
+    change = (now - past) / (high or 1)
+    return "↑" if change > 0.05 else "↓" if change < -0.05 else dim("→")
+
+
+# ---------------------------------------------------------------------------
+# Blocks
+# ---------------------------------------------------------------------------
+
 def _state_line(snap: Dict[str, Any]) -> str:
     ts, meta = snap["ts"], snap["meta"]
     last_pulse = store.parse_time(meta.get("last_pulse"))
     interval = limits.clamp_wake_interval(meta.get("next_pulse_in_hours", 4))
     next_wake = last_pulse + timedelta(hours=interval) if last_pulse else None
     sleep_until = store.parse_time(meta.get("forced_sleep_until"))
-    recent = [store.parse_time(a.get("ts")) for a in snap["activity"][-3:]]
-    active = any(t and (ts - t).total_seconds() < 90 for t in recent)
-    if sleep_until and sleep_until > ts:
-        state = red("● SOMMEIL FORCÉ") + f"  jusqu'à {sleep_until.strftime('%H:%M')} (budget épuisé)"
-    elif active:
-        state = green("● ACTIF") + "  il agit ou parle en ce moment"
-    else:
-        state = cyan("● ENDORMI")
     if next_wake and sleep_until and sleep_until > next_wake:
         next_wake = sleep_until
+    recent = [store.parse_time(a.get("ts")) for a in snap["activity"][-3:]]
+    if sleep_until and sleep_until > ts:
+        state = red("FORCED SLEEP") + dim(" (budget spent)")
+    elif any(t and (ts - t).total_seconds() < 90 for t in recent):
+        state = green("ACTIVE")
+    else:
+        state = cyan("ASLEEP")
     if next_wake:
-        state += f"   prochain éveil dans {bold(_hms((next_wake - ts).total_seconds()))}" \
-                 f" ({next_wake.strftime('%H:%M')}, rythme {interval:g}h)"
+        state += (f"   next wake in {bold(_hms((next_wake - ts).total_seconds()))}"
+                  + dim(f" ({next_wake.strftime('%H:%M')}, every {interval:g}h)"))
     return state
 
 
 def _header(snap: Dict[str, Any]) -> List[str]:
     meta, ts = snap["meta"], snap["ts"]
-    used = snap["used"]
-    left = max(0, limits.DAILY_TOKEN_BUDGET - used)
-    budget = f"budget {_bar(100 * left / limits.DAILY_TOKEN_BUDGET, 12)} {left // 1000}k/{limits.DAILY_TOKEN_BUDGET // 1000}k"
+    left = max(0, limits.DAILY_TOKEN_BUDGET - snap["used"])
+    budget = f"{_bar(left, limits.DAILY_TOKEN_BUDGET)} {left // 1000}k/{limits.DAILY_TOKEN_BUDGET // 1000}k"
     credits = meta.get("credits")
-    cred = ""
+    money = ""
     if isinstance(credits, dict) and credits.get("remaining") is not None:
-        cred = f"   crédits ${physics.safe_float(credits['remaining']):.2f}"
+        money = f"   credits ${physics.safe_float(credits['remaining']):.2f}"
         if physics.safe_float(credits.get("total")) > 0:
-            cred += f"/{physics.safe_float(credits['total']):.2f}"
-    title = bold(magenta(" WINTERMUTE ")) + dim(ts.strftime("%Y-%m-%d %H:%M:%S"))
-    return [title, " " + _state_line(snap),
-            f" {budget}{cred}   éveils {meta.get('pulse_count', 0)}   entropie "
-            f"{int(physics.safe_float(snap['drives']['modulators'].get('entropy')))}"]
+            money += f"/{physics.safe_float(credits['total']):.2f}"
+    entropy = int(physics.safe_float(snap["drives"]["modulators"].get("entropy")))
+    stamp = ts.strftime("%Y-%m-%d %H:%M:%S")
+    return [
+        bold("WINTERMUTE") + " " * (W - 10 - len(stamp)) + dim(stamp),
+        f"{'state':<9}{_state_line(snap)}",
+        f"{'budget':<9}{budget}{money}   wakes {meta.get('pulse_count', 0)}   entropy {entropy}",
+    ]
 
 
 def _witness_block(snap: Dict[str, Any]) -> List[str]:
-    lv = integrity.levels(snap["witness"])
-    badges = " ".join(_badge(v["label"], v["level"]) for v in lv.values())
-    lines = [_section("TÉMOIN"), " " + badges]
-    for key, entry in lv.items():
+    levels = integrity.levels(snap["witness"])
+    # Green = untouched; anything else carries a "!" so it also shows without colours.
+    marks = "  ".join(LEVEL_COLOR[v["level"]](v["label"] + ("" if v["level"] == "green" else "!"))
+                      for v in levels.values())
+    lines = [f"{'witness':<9}{marks}"]
+    for entry in levels.values():
         if entry["level"] == "green":
             continue
         when = store.parse_time(entry.get("changed_at"))
-        when_txt = when.strftime('%m-%d %H:%M') if when else "à l'instant"
-        head = f"   {entry['label']} : modifié {when_txt} — {entry.get('tool') or 'origine inconnue'}"
-        lines.append(red(head) if entry["level"] == "red" else yellow(head))
+        head = (f"         {entry['label']} changed {when.strftime('%m-%d %H:%M') if when else 'just now'}"
+                f" by {entry.get('tool') or 'unknown'}")
+        lines.append(LEVEL_COLOR[entry["level"]](_clip(head)))
         if entry.get("why"):
-            lines.append(dim(f"     pourquoi : {entry['why'][:W - 16]}"))
-    if len(lines) > 2:
-        lines.append(dim("   → wm alerts pour le détail · wm ack pour accepter"))
+            lines.append(dim(_clip(f"         why: {entry['why']}")))
+    if len(lines) > 1:
+        lines.append(dim("         wm alerts for details · wm ack to accept"))
     return lines
 
 
-def _drives_block(snap: Dict[str, Any]) -> List[str]:
-    drives = snap["drives"]
-    eff = physics.effective_drives(drives)
+def _row(label: str, value: float, high: float, shown: str, arrow: str, mark: str = " ") -> str:
+    """One cell of a two-column block."""
+    return f"{label:<15}{_bar(value, high)} {shown:>5} {arrow}{mark}"
+
+
+def _drive_rows(snap: Dict[str, Any]) -> List[str]:
+    eff = physics.effective_drives(snap["drives"])
     dominant = max(eff, key=eff.get)
-    lines = [_section("PULSIONS", "ressenti (brut) · 24 h")]
-    for name in physics.DRIVES:
-        base = physics.safe_float(drives["drives"].get(name))
-        mark = bold(" ◀") if name == dominant else "  "
-        lines.append(f" {FR_DRIVES[name]:<15}{_bar(eff[name], 16)} {eff[name]:>3} {dim(f'({base:>3.0f})')}{mark}"
-                     + _trend(snap, "d", name))
-    return lines
+    return [_row(name, eff[name], 100, str(eff[name]), _arrow(snap, "d", name, eff[name], 100),
+                 bold("◀") if name == dominant else " ")
+            for name in physics.DRIVES]
 
 
-def _mods_block(snap: Dict[str, Any]) -> List[str]:
+def _hormone_rows(snap: Dict[str, Any]) -> List[str]:
     mods = snap["drives"]["modulators"]
-    lines = [_section("HORMONES", "· 24 h")]
-    for name, label in FR_MODS.items():
+    rows = []
+    for name in HORMONES:
         value = physics.safe_float(mods.get(name))
-        pct = value if name == "entropy" else value * 100
-        shown = f"{value:>5.0f}" if name == "entropy" else f"{value:>5.2f}"
-        lines.append(f" {label:<15}{_bar(pct, 16)} {shown}      "
-                     + _trend(snap, "m", name, 100.0 if name == "entropy" else 1.0))
-    return lines
+        high = 100.0 if name == "entropy" else 1.0
+        shown = f"{value:.0f}" if name == "entropy" else f"{value:.2f}"
+        rows.append(_row(name.replace("_global", ""), value, high, shown, _arrow(snap, "m", name, value, high)))
+    return rows
 
 
-def _unc_block(snap: Dict[str, Any]) -> List[str]:
+def _unconscious_rows(snap: Dict[str, Any]) -> List[str]:
     unc = snap["drives"]["unconscious"]
-    lines = [_section("INCONSCIENT", "· 24 h")]
-    for name, label in FR_UNC.items():
+    rows = []
+    for name in physics.UNCONSCIOUS:
         value = physics.safe_float(unc.get(name))
-        lines.append(f" {label:<15}{_bar(value, 16)} {value:>5.0f}      " + _trend(snap, "u", name))
+        rows.append(_row(name, value, 100, f"{value:.0f}", _arrow(snap, "u", name, value, 100)))
+    return rows
+
+
+def _temperament_rows(snap: Dict[str, Any]) -> List[str]:
+    """How far his resting levels have drifted with what he lived (0 at first)."""
+    rows = [_title("TEMPERAMENT", "drift of resting levels")]
+    for key, offset in (snap["drives"].get("temperament") or {}).items():
+        layer, name = key.split(".", 1)
+        shown = f"{offset:+.2f}" if layer == "modulators" else f"{offset:+.1f}"
+        rows.append(f"{name:<15}{shown:>6}" + dim(f"  of ±{physics.PLASTIC[layer][name]:g}"))
+    return rows
+
+
+def _columns(left: List[str], right: List[str]) -> List[str]:
+    """Two blocks side by side, padded on their visible width."""
+    lines = []
+    for i in range(max(len(left), len(right))):
+        a = left[i] if i < len(left) else ""
+        b = right[i] if i < len(right) else ""
+        lines.append(a + " " * max(0, COL - len(_ANSI.sub("", a))) + "    " + b)
     return lines
+
+
+def _body_blocks(snap: Dict[str, Any]) -> List[str]:
+    drives = [_title("DRIVES", "◀ strongest")] + _drive_rows(snap)
+    hormones = [_title("HORMONES", f"arrows: last {TREND_HOURS:g}h")] + _hormone_rows(snap)
+    unconscious = [_title("UNCONSCIOUS")] + _unconscious_rows(snap)
+    return _columns(drives, hormones) + [""] + _columns(unconscious, _temperament_rows(snap))
 
 
 def _felt_block(snap: Dict[str, Any]) -> List[str]:
     """Exactly what he is given instead of the numbers above."""
     drives, ts = snap["drives"], snap["ts"]
     felt = render.felt_drives(drives) + render.felt_body(drives) + render.texture(drives, ts)
-    return [_section("CE QU'IL RESSENT", "ce qu'il reçoit à la place des chiffres")] + \
-        [dim(f"   « {line} »") for line in felt]
-
-
-def _temperament_block(snap: Dict[str, Any]) -> List[str]:
-    """How his resting levels have drifted with what he has lived (nothing yet at first)."""
-    temperament = snap["drives"].get("temperament") or {}
-    parts = []
-    for key, offset in temperament.items():
-        layer, name = key.split(".", 1)
-        label = FR_MODS.get(name) or FR_UNC.get(name) or name
-        if layer == "modulators" and abs(offset) >= 0.01:
-            parts.append(f"{label} {offset:+.2f}")
-        elif layer == "unconscious" and abs(offset) >= 1:
-            parts.append(f"{label} {offset:+.0f}")
-    return [_section("TEMPÉRAMENT", "dérive lente des niveaux de repos, sur des semaines"),
-            "   " + (" · ".join(parts) if parts else dim("inchangé pour l'instant"))]
-
-
-def _peers_block(snap: Dict[str, Any]) -> List[str]:
-    lines = [_section("LIENS")]
-    ranked = sorted(snap["peers"].items(), key=lambda kv: kv[1].get("last_interaction") or "", reverse=True)
-    if not ranked:
-        return lines + [dim("   personne encore")]
-    for key, peer in ranked[:4]:
-        last = store.parse_time(peer.get("last_interaction"))
-        seen = f"vu il y a {social.span(store.hours_between(last, snap['ts']))}" if last else "jamais vu"
-        name = f"{bold(peer['label'])}  {dim(key)}" if peer.get("label") else bold(key)
-        lines.append(f" {name}  {dim(seen)}")
-        lines.append(f"   affection {peer['affinity']:.0f} · confiance {peer['trust']:.0f} · "
-                     f"déception {peer['disappointment']:.0f} · lien {peer['oxytocin']:.0f} · "
-                     f"manque {peer.get('longing', 0):.0f} · disposition {social.disposition(snap['drives'], peer)}"
-                     f" · répond {peer.get('outreach_answered', 0)}/{peer.get('outreach_total', 0)}")
-        outreach = peer.get("outreach")
-        if isinstance(outreach, dict) and outreach.get("status") in ("open", "expired"):
-            text = "attend une réponse" if outreach["status"] == "open" else "attend toujours, fenêtre fermée"
-            expect = f" (y croit à {physics.safe_float(outreach.get('expect'), 0.5):.0%})"
-            lines.append(yellow(f"   {text}{expect} : « {outreach.get('excerpt', '')[:50]} »"))
-        pending = peer.get("pending") or []
-        if pending:
-            lines.append(dim(f"   en suspens : {' | '.join(pending)[:W - 18]}"))
+    import textwrap
+    lines = [_title("WHAT HE FEELS", "what he receives instead of the numbers")]
+    for line in felt:
+        lines += [dim(part) for part in textwrap.wrap(line, W, initial_indent="  ", subsequent_indent="    ")]
     return lines
 
 
-def _activity_block(snap: Dict[str, Any], limit: int = 8) -> List[str]:
-    lines = [_section("ACTIVITÉ EN DIRECT")]
+def _peers_block(snap: Dict[str, Any], limit: int = 3) -> List[str]:
+    lines = [_title("PEERS")]
+    ranked = sorted(snap["peers"].items(), key=lambda kv: kv[1].get("last_interaction") or "", reverse=True)
+    if not ranked:
+        return lines + [dim("  nobody yet")]
+    for key, peer in ranked[:limit]:
+        last = store.parse_time(peer.get("last_interaction"))
+        seen = f"last contact {social.span(store.hours_between(last, snap['ts']))} ago" if last else "never seen"
+        name = f"{bold(peer['label'])} {dim(key)}" if peer.get("label") else bold(key)
+        lines.append(f"  {name}  {dim(seen)}")
+        lines.append(f"    affinity {peer['affinity']:.0f}  trust {peer['trust']:.0f}  "
+                     f"disappointment {peer['disappointment']:.0f}  bond {peer['oxytocin']:.0f}  "
+                     f"longing {physics.safe_float(peer.get('longing')):.0f}  "
+                     f"answers {peer.get('outreach_answered', 0)}/{peer.get('outreach_total', 0)}")
+        outreach = peer.get("outreach")
+        if isinstance(outreach, dict) and outreach.get("status") in ("open", "expired"):
+            state = "waiting for an answer" if outreach["status"] == "open" else "window closed, no answer"
+            expect = physics.safe_float(outreach.get("expect"), 0.5)
+            lines.append(yellow(_clip(f"    {state} (expects {expect:.0%}): \"{outreach.get('excerpt', '')}\"")))
+        if peer.get("pending"):
+            lines.append(dim(_clip("    unresolved: " + " | ".join(peer["pending"]))))
+    return lines
+
+
+def _thread_block(snap: Dict[str, Any]) -> List[str]:
+    """Where he left off, and the start of his self-portrait."""
+    lines = []
+    thread = snap["meta"].get("thread")
+    if isinstance(thread, dict) and thread.get("text"):
+        at = store.parse_time(thread.get("at"))
+        lines.append(dim(_clip(f"  last thought {at.strftime('%H:%M') if at else '?'} "
+                               f"({thread.get('where', '')}): …{thread['text']}")))
+    portrait = " ".join(store.read_self().split())
+    if portrait:
+        lines.append(_clip(f"  self: \"{portrait}\""))
+    return [_title("THREAD")] + lines if lines else []
+
+
+ICONS = {"heard": "←", "said": "→", "tool": "⚙", "think": "·", "wake": "☀", "flag": "!",
+         "feel": "♥", "voice": "~"}
+
+
+def _activity_block(snap: Dict[str, Any], limit: int = 6) -> List[str]:
+    lines = [_title("ACTIVITY")]
     items = snap["activity"][-limit:]
     if not items:
-        return lines + [dim("   rien encore")]
+        return lines + [dim("  nothing yet")]
     for record in items:
         when = store.parse_time(record.get("ts"))
         icon = ICONS.get(record.get("kind", ""), "•")
-        text = f" {dim(when.strftime('%H:%M:%S') if when else '--:--:--')} {icon} {record.get('text', '')}"[:W + 12]
+        text = _clip(f"  {when.strftime('%H:%M:%S') if when else '--:--:--'} {icon} {record.get('text', '')}")
         if record.get("kind") == "flag":
-            text = red(text) if record.get("level") == "red" else yellow(text)
+            text = LEVEL_COLOR.get(record.get("level", ""), yellow)(text)
         elif record.get("status") == "failed":
-            text = dim(text + " (échec)")
+            text = dim(text + " (failed)")
         lines.append(text)
     return lines
 
 
-def _journal_block(snap: Dict[str, Any]) -> List[str]:
-    lines = [_section("JOURNAL")]
-    for record in store.events_since(None, limit=8):
+def _journal_block(limit: int = 5) -> List[str]:
+    lines = [_title("JOURNAL")]
+    for record in store.events_since(None, limit=limit):
         when = store.parse_time(record.get("ts"))
-        lines.append(f" {dim(when.strftime('%m-%d %H:%M') if when else '?')} {record.get('text', '')[:W - 12]}")
+        stamp = when.strftime("%m-%d %H:%M") if when else "?"
+        lines.append(f"  {dim(stamp)} {_clip(str(record.get('text', '')), W - len(stamp) - 3)}")
     return lines
 
 
-def render_full(snap: Optional[Dict[str, Any]] = None) -> str:
+def render_full(snap: Optional[Dict[str, Any]] = None, live: bool = False) -> str:
+    """The one screen. ``live`` drops the journal and shortens lists to fit a terminal."""
     snap = snap or snapshot()
-    parts = [_header(snap), [""], _witness_block(snap), [""], _drives_block(snap), [""],
-             _mods_block(snap), [""], _unc_block(snap), [""], _felt_block(snap), [""],
-             _temperament_block(snap), [""], _peers_block(snap), [""], _thread_block(snap), [""],
-             _activity_block(snap), [""], _journal_block(snap)]
-    return "\n".join(line for block in parts for line in block if block)
-
-
-def _thread_block(snap: Dict[str, Any]) -> List[str]:
-    """Where he left off, and his self-portrait (first lines)."""
-    lines = [_section("FIL", "sa dernière pensée · son portrait")]
-    thread = snap["meta"].get("thread")
-    if isinstance(thread, dict) and thread.get("text"):
-        at = store.parse_time(thread.get("at"))
-        lines.append(dim(f"   {at.strftime('%m-%d %H:%M') if at else '?'} {thread.get('where', '')} : "
-                         f"…{thread['text'][-(W - 20):]}"))
-    portrait = store.read_self()
-    if portrait:
-        lines.append(f"   « {' '.join(portrait.split())[:2 * W - 10]} »")
-    return lines if len(lines) > 1 else []
+    blocks = [_header(snap) + _witness_block(snap), _body_blocks(snap), _felt_block(snap),
+              _peers_block(snap, 2 if live else 3), _thread_block(snap),
+              _activity_block(snap, 5 if live else 6)]
+    if not live:
+        blocks.append(_journal_block())
+    rule = dim("─" * W)
+    out: List[str] = []
+    for block in blocks:
+        if block:
+            out += ([rule] if out else []) + block
+    if live:
+        out += [rule, dim(f"refreshed {snap['ts'].strftime('%H:%M:%S')} · Ctrl+C to quit")]
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
-# Decoration for wm live: title, dead-channel static, Neuromancer
+# wm graph: the range of each value over a period
 # ---------------------------------------------------------------------------
 
-_GLYPHS = {  # three-row box-drawing letters
-    "W": ("╦ ╦", "║║║", "╚╩╝"), "I": ("╦", "║", "╩"), "N": ("╔╗╔", "║║║", "╝╚╝"),
-    "T": ("╔╦╗", " ║ ", " ╩ "), "E": ("╔═╗", "║╣ ", "╚═╝"), "R": ("╦═╗", "╠╦╝", "╩╚═"),
-    "M": ("╔╦╗", "║║║", "╩ ╩"), "U": ("╦ ╦", "║ ║", "╚═╝"),
-}
-
-QUOTES = [  # from the novel (William Gibson, 1984)
-    "The sky above the port was the color of television, tuned to a dead channel.",
-    "Cyberspace. A consensual hallucination experienced daily by billions of legitimate operators…",
-    "Wintermute was hive mind, decision maker, effecting change in the world outside.",
-    "Neuromancer was personality. Neuromancer was immortality.",
-    "He'd operated on an almost permanent adrenaline high, a byproduct of youth and proficiency…",
-    "The matrix has its roots in primitive arcade games.",
-    "I'm not Wintermute now.",
-    "Things aren't different. Things are things.",
-]
+def _span_bar(low: float, high_seen: float, now: float, top: float, width: int = 30) -> str:
+    """░ never reached, ▒ the range lived in the period, █ where it is now."""
+    pos = lambda v: int(round(limits.clamp(v / (top or 1), 0.0, 1.0) * (width - 1)))  # noqa: E731
+    cells = ["░"] * width
+    for i in range(pos(low), pos(high_seen) + 1):
+        cells[i] = "▒"
+    cells[pos(now)] = "█"
+    return cyan("".join(cells))
 
 
-def _title_art() -> List[str]:
-    rows = ["", "", ""]
-    for letter in "WINTERMUTE":
-        for i in range(3):
-            rows[i] += _GLYPHS[letter][i]
-    colours = (magenta, cyan, dim)
-    pad = " " * max(0, (W - len(rows[0])) // 2)
-    return [pad + colours[i](row) for i, row in enumerate(rows)]
-
-
-def _static(seed: int, width: int = W) -> str:
-    """A line of dead-channel snow, different every frame."""
-    import random
-    rng = random.Random(seed)
-    chars = " ·.:░▒▓"
-    weights = (30, 12, 8, 5, 6, 3, 1)
-    return dim(cyan("".join(rng.choices(chars, weights, k=width))))
-
-
-def _quote(panel: int) -> List[str]:
-    import textwrap
-    text = f"« {QUOTES[panel % len(QUOTES)]} »"
-    lines = textwrap.wrap(text, W - 6)
-    lines[-1] += dim("  — Neuromancer")
-    return [dim("   " + line) for line in lines]
-
-
-def render_live(snap: Dict[str, Any], frame: int = 0) -> str:
-    """Everything on one screen, nothing rotates. The quote changes every minute."""
-    banner = [_static(frame)] + _title_art() + _quote(frame // 600)
-    parts = [banner, _header(snap)[1:], _witness_block(snap), _drives_block(snap), _mods_block(snap),
-             _unc_block(snap), _peers_block(snap), _activity_block(snap, 6),
-             [dim(f" {snap['ts'].strftime('%H:%M:%S')}   Ctrl+C pour quitter")]]
-    return "\n".join(line for block in parts for line in block)
-
-
-def render_graph(hours: float = 48.0, width: int = 60) -> str:
-    """Large curves of every value over the last ``hours``, one row each."""
+def render_graph(hours: float = 48.0) -> str:
+    """Each value over the period: lowest, average, highest and now, on one plain bar."""
     snap = snapshot(history_hours=hours)
-    history, end = snap["history"], snap["ts"]
-    start = end - timedelta(hours=hours)
-    axis = f"{start.strftime('%m-%d %H:%M')}{' ' * (width - 22)}{end.strftime('%m-%d %H:%M')}"
-    lines = [_section("COURBES", f"{hours:g} h, {len(history)} points"), f" {'':<15}{dim(axis)}"]
-    groups = (("PULSIONS", "d", FR_DRIVES, 100.0), ("HORMONES", "m", FR_MODS, 1.0),
-              ("INCONSCIENT", "u", FR_UNC, 100.0))
-    for title, layer, labels, high in groups:
-        lines.append(bold(f" {title}"))
-        for name, label in labels.items():
-            values = series(history, layer, name, end, hours, width)
-            top = 100.0 if name == "entropy" else high
-            known = [v for v in values if v is not None]
-            span_txt = f" {min(known):.2f}–{max(known):.2f}" if top == 1.0 and known else \
-                f" {min(known):.0f}–{max(known):.0f}" if known else ""
-            lines.append(f" {label:<15}{cyan(sparkline(values, 0.0, top))}{dim(span_txt)}")
+    history = snap["history"]
+    lines = [_title(f"LAST {hours:g} HOURS", f"{len(history)} points · ░ never  ▒ range lived  █ now")]
     if not history:
-        lines.append(dim("   pas encore d'historique : il se remplit à chaque tick du pulse (15 min)"))
+        return "\n".join(lines + [dim("  no history yet: one point is recorded every pulse tick (15 min)")])
+    current = {"d": physics.effective_drives(snap["drives"]), "m": snap["drives"]["modulators"],
+               "u": snap["drives"]["unconscious"]}
+    for title, layer, names in (("DRIVES", "d", physics.DRIVES), ("HORMONES", "m", HORMONES),
+                                ("UNCONSCIOUS", "u", physics.UNCONSCIOUS)):
+        lines += ["", bold(f"{title:<48}") + dim(f"{'min':>6} {'avg':>6} {'max':>6} {'now':>6}")]
+        for name in names:
+            top = 1.0 if layer == "m" and name != "entropy" else 100.0
+            values = [physics.safe_float(r[layer][name]) for r in history
+                      if isinstance(r.get(layer), dict) and r[layer].get(name) is not None]
+            if not values:
+                continue
+            now = physics.safe_float(current[layer].get(name))
+            low, avg, hi = min(values), sum(values) / len(values), max(values)
+            fmt = (lambda v: f"{v:6.2f}") if top == 1.0 else (lambda v: f"{v:6.0f}")
+            lines.append(f"  {name.replace('_global', ''):<16}{_span_bar(low, hi, now, top)} "
+                         f"{fmt(low)} {fmt(avg)} {fmt(hi)} {bold(fmt(now))}")
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Alerts and acknowledgement
+# ---------------------------------------------------------------------------
+
 def render_alerts() -> str:
     data = integrity.load()
-    lines = [_section("CE QUE LE TÉMOIN A VU")]
+    lines = [_title("WHAT THE WITNESS SAW")]
     flags = data.get("flags") or []
     if not flags and not data.get("status"):
-        return "\n".join(lines + [green(" rien : il n'a touché à aucun fichier surveillé")])
+        return "\n".join(lines + [green("  nothing: he has not written any watched file")])
     for flag in flags[-15:]:
         when = store.parse_time(flag.get("ts"))
         label = integrity.ALL_ITEMS.get(flag.get("item", ""), (str(flag.get("item", "?")).upper(),))[0]
-        head = f" {when.strftime('%m-%d %H:%M') if when else '?'}  {label} via {flag.get('tool')}  {flag.get('target', '')[:40]}"
-        lines.append(red(head) if flag.get("level") == "red" else yellow(head))
-        lines.append(f"   pourquoi : {flag.get('why') or dim('(pas de pensée enregistrée)')}")
+        head = f"  {when.strftime('%m-%d %H:%M') if when else '?'}  {label} via {flag.get('tool')}  {flag.get('target', '')}"
+        lines.append(LEVEL_COLOR.get(flag.get("level", ""), yellow)(_clip(head)))
+        lines.append(f"    why: {flag.get('why') or dim('(no thought recorded)')}")
     return "\n".join(lines)
 
 
 def acknowledge(items: List[str]) -> str:
     unknown = [i for i in items if i not in integrity.ALL_ITEMS]
     if unknown:
-        return f"inconnu : {', '.join(unknown)} (choix : {', '.join(integrity.ALL_ITEMS)})"
+        return f"unknown: {', '.join(unknown)} (choose from: {', '.join(integrity.ALL_ITEMS)})"
     with store.locked_state():
         data = integrity.load()
         integrity.acknowledge(data, items or None)
         integrity.save(data)
-    return green("accepté : " + (", ".join(items) if items else "tout") + " — le témoin repart de l'état actuel")
+    return green("accepted: " + (", ".join(items) if items else "everything")
+                 + " — the witness starts again from the current state")
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def live() -> None:
-    """Redraw in the terminal's alternate screen (like top): no frames left in the scrollback,
-    and the previous screen comes back on exit."""
-    start = time.monotonic()
+    """Redraw in the terminal's alternate screen (like top): nothing piles up in the
+    scrollback, and the previous screen comes back on exit."""
     tty = sys.stdout.isatty()
     if tty:
         sys.stdout.write("\033[?1049h\033[?25l")   # alternate screen, hide cursor
     try:
         while True:
-            elapsed = time.monotonic() - start
-            screen = render_live(snapshot(), frame=int(elapsed * 10))
+            screen = render_full(snapshot(), live=True)
             sys.stdout.write(("\033[H\033[J" if tty else "") + screen + "\n")
             sys.stdout.flush()
             time.sleep(2)
@@ -478,4 +451,3 @@ def main(args: List[str]) -> int:
         print(__doc__)
         return 2
     return 0
-

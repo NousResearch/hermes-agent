@@ -22306,7 +22306,11 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert live.get("explicit_cwd") is True
 
 
-def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path):
+@pytest.mark.parametrize("replacement", [
+    "atomic",
+    pytest.param("in_place", marks=pytest.mark.linux_only),
+])
+def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path, replacement):
     """#111105: the raw-config cache must not serve (and later write back) a stale document after a
     same-size replacement that keeps the old mtime."""
     import shutil
@@ -22321,6 +22325,11 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     st = cfg.stat()
     other = tmp_path / "other.yaml"
     other.write_text("model:\n  default: aaaa-route\n", encoding="utf-8")
-    shutil.copy2(other, cfg)
+    if replacement == "atomic":
+        os.replace(other, cfg)
+    else:
+        # POSIX ctime detects in-place metadata-preserving overwrites. Windows
+        # ctime is creation time, an explicit limit of utils.file_signature.
+        shutil.copy2(other, cfg)
     os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"

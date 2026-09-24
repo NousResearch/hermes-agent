@@ -7,6 +7,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
+import type { HermesConfigRecord } from '@/types/hermes'
 
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 
@@ -15,6 +16,16 @@ export const SIDEBAR_GROUP_PAGE = 5
 
 // Recent sessions previewed under each project in the overview.
 export const PROJECT_PREVIEW_COUNT = 3
+
+export function projectPreviewCountFromConfig(config: HermesConfigRecord | undefined): number {
+  const desktop = config?.desktop
+  const sidebar = desktop && typeof desktop === 'object' && !Array.isArray(desktop) ? (desktop as Record<string, unknown>).sidebar : undefined
+  const value = sidebar && typeof sidebar === 'object' && !Array.isArray(sidebar)
+    ? (sidebar as Record<string, unknown>).project_preview_count
+    : undefined
+
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : PROJECT_PREVIEW_COUNT
+}
 
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4

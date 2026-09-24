@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { orderProjectsByIds, sortProjectsForOverview } from './model'
+import { orderProjectsByIds, projectPreviewCountFromConfig, sortProjectsForOverview } from './model'
 import { NO_PROJECT_ID, type SidebarProjectTree } from './workspace-groups'
 
 function makeProject(id: string, sessionCount: number): SidebarProjectTree {
@@ -66,6 +66,18 @@ describe('orderProjectsByIds', () => {
 
     expect(ids(orderProjectsByIds(projects, ['b', 'a']))).toEqual([NO_PROJECT_ID, 'b', 'a'])
   })
+})
+
+describe('projectPreviewCountFromConfig', () => {
+  it('reads the nested project preview count', () => {
+    expect(projectPreviewCountFromConfig({ desktop: { sidebar: { project_preview_count: 7 } } })).toBe(7)
+  })
+
+  it.each([undefined, {}, { desktop: { sidebar: { project_preview_count: 0 } } }, { desktop: { sidebar: { project_preview_count: 2.5 } } }, { desktop: { sidebar: { project_preview_count: '7' } } }])(
+    'falls back to 3 for invalid config: %j', config => {
+      expect(projectPreviewCountFromConfig(config)).toBe(3)
+    }
+  )
 })
 
 describe('sortProjectsForOverview', () => {

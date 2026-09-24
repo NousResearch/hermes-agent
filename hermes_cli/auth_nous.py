@@ -611,7 +611,7 @@ def _refresh_access_token(
         return payload
     if 500 <= response.status_code <= 599:
         raise AuthError(
-            f"Nous Portal is temporarily unavailable (HTTP {response.status_code}); retry shortly.",
+            f"Nous Portal is temporarily unavailable (HTTP {response.status_code}).",
             provider="nous", code="temporarily_unavailable", retryable=True)
     from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     try:

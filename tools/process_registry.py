@@ -558,14 +558,14 @@ class ProcessSession:
     _watch_consecutive_strikes: int = field(default=0, repr=False)
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
 
     def __post_init__(self):
         # A session built without an explicit owner is owned by its own task, so ownership checks compare
         # ``owner_task_id`` alone instead of repeating an ``or task_id`` fallback at every call site.
         if not self.owner_task_id:
             self.owner_task_id = self.task_id
-    _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
-    _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
 
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
@@ -811,7 +811,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "session_id": session.id,
             "session_key": session.session_key,
             "task_id": session.task_id,
-            "owner_task_id": session.owner_task_id or session.task_id,
+            "owner_task_id": session.owner_task_id,
             "command": session.command,
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
         }
@@ -1110,7 +1110,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
-            owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
+            owner_task_id=owner_task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
             started_at=time.time(), **extra)
 
@@ -1615,7 +1615,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "task_id": session.task_id,
-                "owner_task_id": session.owner_task_id or session.task_id,
+                "owner_task_id": session.owner_task_id,
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
@@ -2310,7 +2310,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "command": s.command[:200],
                 "cwd": s.cwd,
                 "pid": s.pid,
-                "owner_task_id": s.owner_task_id or s.task_id,
+                "owner_task_id": s.owner_task_id,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",

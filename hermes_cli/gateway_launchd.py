@@ -7,6 +7,7 @@ intercepting the moved code.
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 import contextlib
 import json
 import os
@@ -212,7 +213,37 @@ def _gateway_run_command() -> list[str]:
     return [_gw().get_python_path(), "-m", "hermes_cli.main", *_gw()._profile_arg().split(), "gateway", "run", "--replace"]
 
 
-def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: Path) -> list[str]:
+def _launchd_direct_program_enabled(config: Mapping[str, object] | None = None) -> bool:
+    """Whether ``ProgramArguments`` should skip the osascript wrapper (opt-in, issue #120545).
+
+    Explicit env ``HERMES_LAUNCHD_DIRECT_PROGRAM`` (``1/true/yes/on`` or ``0/false/no/off``) wins;
+    otherwise ``gateway.launchd_direct_program`` from the loaded config decides. Missing, malformed
+    or unresolvable settings keep the wrapper (fail-safe default: the wrapper is what gives the
+    job its Local Network identity, #71206).
+    """
+    raw_env = os.environ.get("HERMES_LAUNCHD_DIRECT_PROGRAM", "").strip().lower()
+    if raw_env in {"1", "true", "yes", "on"}:
+        return True
+    if raw_env in {"0", "false", "no", "off"}:
+        return False
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            return False
+    if not isinstance(config, Mapping):
+        return False
+    gateway_config = config.get("gateway")
+    if not isinstance(gateway_config, Mapping):
+        return False
+    return gateway_config.get("launchd_direct_program") is True
+
+
+def launchd_program_arguments(
+    command: list[str], stdout_log: Path, stderr_log: Path, *, direct: bool | None = None
+) -> list[str]:
     """launchd ``ProgramArguments`` that run ``command`` with a Local Network identity macOS accepts (#71206).
 
     macOS Local Network Privacy attributes a socket to the process launchd spawned for the job. A bare
@@ -229,7 +260,19 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     gateway a direct child in the job's process group, so ``launchctl bootout`` / ``kickstart -k`` still
     deliver SIGTERM to it and KeepAlive's ``SuccessfulExit`` semantics are preserved (osascript exits 0
     exactly when the shell did).
+
+    ``direct=True`` skips the wrapper and returns ``command`` verbatim for launchd to spawn: stdio
+    lands through the plist's ``StandardOutPath``/``StandardErrorPath`` (the shell redirections
+    exist only to defeat ``do shell script`` buffering). The wrapper is implicated in a ~20-30 s
+    Fast User Switching console-handoff stall on macOS 26 (#120545), so hosts that hit it can opt
+    out via ``gateway.launchd_direct_program`` / ``HERMES_LAUNCHD_DIRECT_PROGRAM`` - giving up the
+    Local Network Privacy exemption above (#71206): LAN-bound platforms then need the user grant.
+    ``direct=None`` resolves the opt-out from config/env (default keeps the wrapper).
     """
+    if direct is None:
+        direct = _launchd_direct_program_enabled()
+    if direct:
+        return [str(part) for part in command]
     shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
     applescript = shell.replace("\\", "\\\\").replace('"', '\\"')
     return ["/usr/bin/osascript", "-e", f'do shell script "{applescript}"']

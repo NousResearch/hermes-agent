@@ -1748,6 +1748,58 @@ class TestProfileArg:
         # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
         assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
 
+    def test_launchd_direct_program_opt_out_emits_bare_command(self, tmp_path, monkeypatch):
+        """#120545: HERMES_LAUNCHD_DIRECT_PROGRAM=1 swaps the osascript wrapper for the bare command."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("HERMES_LAUNCHD_DIRECT_PROGRAM", "1")
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        program_args = plist["ProgramArguments"]
+
+        assert program_args == [
+            "/usr/bin/python3",
+            "-m",
+            "hermes_cli.stderr_timestamp",
+            "--error-log",
+            str(profile_dir / "logs" / "gateway.error.log"),
+            "--",
+            "/usr/bin/python3",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "mybot",
+            "gateway",
+            "run",
+            "--external-supervisor",
+        ]
+        # No wrapper: launchd spawns the command directly, so stdio must flow through the
+        # plist's own log keys (the shell redirections only exist for `do shell script`).
+        assert plist["StandardOutPath"] == str(profile_dir / "logs" / "gateway.log")
+        assert plist["StandardErrorPath"] == str(profile_dir / "logs" / "gateway.error.log")
+        # stop/status must recognize the bare argv as the gateway (the wrapper case asserts False).
+        assert status.looks_like_gateway_command_line(" ".join(program_args)) is True
+
+    def test_launchd_direct_program_resolves_from_config(self, monkeypatch):
+        from hermes_cli.gateway_launchd import _launchd_direct_program_enabled
+
+        monkeypatch.delenv("HERMES_LAUNCHD_DIRECT_PROGRAM", raising=False)
+        assert _launchd_direct_program_enabled({"gateway": {"launchd_direct_program": True}}) is True
+        assert _launchd_direct_program_enabled({"gateway": {"launchd_direct_program": False}}) is False
+        assert _launchd_direct_program_enabled({}) is False
+        assert _launchd_direct_program_enabled({"gateway": "bogus"}) is False
+        assert _launchd_direct_program_enabled({"gateway": {"launchd_direct_program": "yes"}}) is False
+
+    def test_launchd_direct_program_env_off_overrides_config(self, monkeypatch):
+        from hermes_cli.gateway_launchd import _launchd_direct_program_enabled
+
+        monkeypatch.setenv("HERMES_LAUNCHD_DIRECT_PROGRAM", "0")
+        assert _launchd_direct_program_enabled({"gateway": {"launchd_direct_program": True}}) is False
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

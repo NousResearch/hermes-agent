@@ -18,6 +18,9 @@ import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
+# These tests simulate git movement, so retain the shared fleet/process stubs.
+pytestmark = pytest.mark.usefixtures("isolated_update_runtime")
+
 
 def _make_head_pinned_side_effect(sha="abc123"):
     """Simulate a detached checkout pinned to ``sha``: HEAD never moves."""

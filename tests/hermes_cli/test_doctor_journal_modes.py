@@ -434,12 +434,13 @@ class TestConfiguredDeleteNeverApplied:
         monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
         holder = subprocess.Popen(
             [sys.executable, "-c",
-             "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('SELECT count(*) FROM t'); "
-             "print('ready', flush=True); sys.stdin.readline()", str(db)],
+             "import os, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('SELECT count(*) FROM t'); "
+             "print(f'held:{os.getpid()}', flush=True); sys.stdin.readline()", str(db)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
         )
         try:
-            assert holder.stdout.readline().strip() == "ready"
+            marker, sqlite_pid = holder.stdout.readline().strip().split(":", 1)
+            assert marker == "held"  # child-reported: Popen.pid is the venv launcher on Windows
             doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
         finally:
             holder.stdin.write("\n")
@@ -447,7 +448,7 @@ class TestConfiguredDeleteNeverApplied:
             holder.wait(timeout=30)
 
         out = capsys.readouterr().out
-        assert f"state.db is held by PID {holder.pid}" in out and "state.db" in out.split("held by PID")[1]
+        assert f"state.db is held by PID {sqlite_pid}" in out and "state.db" in out.split("held by PID")[1]
         assert "no other process holds it" not in out and "cannot prove" not in out
 
     def test_partial_holder_scan_is_never_an_all_clear(self, tmp_path, capsys, monkeypatch):

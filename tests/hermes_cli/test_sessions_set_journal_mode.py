@@ -8,7 +8,6 @@ import argparse
 import sqlite3
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -45,7 +44,7 @@ def test_set_journal_mode_converts_wal_store_offline(tmp_path, monkeypatch, caps
     assert "wal → delete" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("force", [False, True], ids=["normal", "deprecated-force"])
+@pytest.mark.parametrize("force", [False, True], ids=["normal", "force"])
 def test_set_journal_mode_refuses_while_another_process_holds_the_store(
     force, tmp_path, monkeypatch, capsys
 ):
@@ -69,7 +68,7 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(
         marker, pid_text = holder.stdout.readline().strip().split(":", 1)
         assert marker == "held"
         sqlite_pid = int(pid_text)
-        # --force is compatibility syntax, never a holder-verification bypass.
+        # --force never waives a process the scan actually found.
         assert cmd_sessions(_args("delete", force=force)) == 1
     finally:
         holder.kill()
@@ -78,6 +77,12 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(
     out = capsys.readouterr().out
     assert f"pid {sqlite_pid}" in out
     assert db.read_bytes()[18:20] == b"\x02\x02", "a refused switch must leave the file untouched"
+
+    # A failed scan (pid <= 0 sentinel) is refused too, and is the ONLY thing --force waives.
+    monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda path: [(-1, "scan failed")])
+    assert cmd_sessions(_args("delete", force=force)) == (0 if force else 1)
+    assert db.read_bytes()[18:20] == (b"\x01\x01" if force else b"\x02\x02")
+    assert ("scan: scan failed" in capsys.readouterr().out) is not force
 
 
 @pytest.mark.parametrize("target,current,cross_vm,expected", [

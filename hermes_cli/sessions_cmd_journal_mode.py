@@ -69,6 +69,10 @@ def cmd_set_journal_mode(args) -> int:
               "(https://sqlite.org/wal.html#walresetbug). Upgrade to 3.51.3+ first.")
         return 1
     holders = foreign_state_db_holders(db_path)
+    if getattr(args, "force", False):
+        # Same override the optimize/prune dispatcher honours, narrowed: --force waives only an incomplete
+        # scan (the pid <= 0 sentinel), never a process the scan actually found.
+        holders = [holder for holder in holders if holder[0] > 0]
     if holders:
         print(f"✗ Refusing to change the journal mode of {db_path}: other processes hold it open "
               "(a live switch would destroy their uncheckpointed commits). Stop them and re-run:")

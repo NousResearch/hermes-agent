@@ -1,5 +1,7 @@
 """Request-local worker lifecycle, watchdog polling, and wait status."""
 
+from typing import Optional
+
 from agent import chat_completion_helpers as h
 from agent import chat_completion_wait_notice as wn
 
@@ -125,47 +127,75 @@ class _NonStreamRequest:
         with state.lock:
             return state.last_event_ts, state.last_progress_ts, state.retry_started_ts
 
+    def _wait_phase(self, now: float, snapshot) -> tuple[Optional[str], float]:
+        """Which wait this request is in, and for how long — ``(None, silence)`` when
+        it is not one worth a status line.
+
+        Transport silence outranks the metadata-only phases: once frames stop, that is
+        the more specific fact. While they keep arriving, the wait the operator cannot
+        otherwise see is the semantic one — no model output — and neither event
+        watchdog can fire, because every frame re-arms both (``_on_event``).
+        """
+        wd = self.wd
+        last_event_ts, last_progress_ts, retry_started_ts = snapshot
+        activity_ts = retry_started_ts if retry_started_ts is not None else last_event_ts
+        silence = now - (activity_ts if activity_ts is not None else self.call_start)
+        if silence >= wn.NOTICE_SECS:
+            return ("reconnect" if retry_started_ts is not None
+                    else "post_event" if last_event_ts is not None else "first_event"), silence
+        if retry_started_ts is not None or last_event_ts is None:
+            return None, silence  # a reconnect's own no-event phase, or nothing yet
+        # Frames are arriving. Measure from the last model output, or from the request
+        # start when there has never been one.
+        no_output = now - (last_progress_ts if last_progress_ts is not None else self.call_start)
+        if no_output < wn.no_output_notice_secs(idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout):
+            return None, silence
+        return ("output_paused" if last_progress_ts is not None else "no_output"), no_output
+
     def _emit_wait_notice(self, elapsed: float, *, heartbeat: bool = True) -> None:
         wd = self.wd
         try:
-            last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
+            snapshot = last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
             activity_ts = retry_started_ts if retry_started_ts is not None else last_event_ts
             # Only undo a notice this request owns, promptly rather than at the
             # next heartbeat: reasoning callbacks do not reset the CLI spinner.
-            if (self.wait_notice_started_ts is not None and activity_ts is not None
-                    and activity_ts > self.wait_notice_started_ts):
+            # A notice about missing model output is undone by model output alone —
+            # the lifecycle frames it reports would otherwise clear it as "recovered".
+            resumed_ts = (last_progress_ts if self.wait_notice.phase in wn.METADATA_ONLY_PHASES
+                          else activity_ts)
+            if (self.wait_notice_started_ts is not None and resumed_ts is not None
+                    and resumed_ts > self.wait_notice_started_ts):
                 self.agent._emit_wait_notice("")
                 self.wait_notice_started_ts = None
                 self.wait_notice.reset()
             if not heartbeat:
                 return
-            silence = self.call_start + elapsed - (
-                activity_ts if activity_ts is not None else self.call_start)
-            if silence < 60.0:
+            now = self.call_start + elapsed
+            phase, waited = self._wait_phase(now, snapshot)
+            if phase is None:
                 self.agent._touch_activity(
                     "waiting for first stream event after reconnect"
                     if retry_started_ts is not None else "waiting for provider response")
                 return
-            phase = "first_event"
-            if retry_started_ts is not None:
-                phase = "reconnect"
-            elif last_event_ts is not None:
-                phase = "post_event"
+            # Every phase names the deadline the CURRENT snapshot implies — for the
+            # metadata phases, the one that fires if the frames stop now. Predicting that
+            # they keep arriving would hide a nearer armed watchdog.
             watchdog = wn.codex_watchdog_deadline(stale_timeout=wd.stale_timeout,
                 ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=wd.ttfb_timeout,
                 last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
                 retry_started_ts=retry_started_ts,
-                call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
+                call_start=self.call_start, idle_enabled=wd.idle_enabled,
+                idle_timeout=wd.idle_timeout,
                 idle_requires_progress=wd.idle_requires_progress,
                 elapsed=elapsed)
             # One neutral notice per silence; repeating it every heartbeat made
             # healthy long calls read as provider trouble (#92550).
             if not self.wait_notice.should_emit(phase, watchdog):
-                self.agent._touch_activity(f"waiting for provider response ({int(silence)}s, {phase})")
+                self.agent._touch_activity(f"waiting for provider response ({int(waited)}s, {phase})")
                 return
             self.agent._emit_wait_notice(wn.wait_notice_text(
-                self.api_kwargs.get('model', 'the provider'), silence, phase, watchdog))
-            self.wait_notice_started_ts = self.call_start + elapsed
+                self.api_kwargs.get('model', 'the provider'), waited, phase, watchdog))
+            self.wait_notice_started_ts = now
         except Exception:
             h.logger.debug("wait-notice construction failed", exc_info=True)
 

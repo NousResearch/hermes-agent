@@ -74,7 +74,7 @@ from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
     _print_items, _run_config_check_fresh, _run_migrate_config_fresh)
 from hermes_cli.update_cmd_deps import (  # noqa: F401
-    _INSTALL_DEFINING_FILES, _SELF_LOCKING_NATIVE_MODULES, _UPDATE_CRITICAL_MODULES,
+    _INSTALL_DEFINING_FILES, _UPDATE_CRITICAL_MODULES,
     _abort_dependency_sync_if_self_locked, _capture_active_lazy_features,
     _capture_active_tool_dependencies, _critical_module_import_failures,
     _defer_update_for_self_lock, _dependency_sync_would_rewrite, _desktop_app_present,

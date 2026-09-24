@@ -1318,7 +1318,7 @@ def list_picker_providers(
     custom endpoints, where the user may supply their own model set through config.
     ``non_blocking_catalogs`` makes every catalog read cache-only: provider catalogs warm in the
     background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
-    from hermes_cli.model_switch import list_authenticated_providers
+    from hermes_cli.model_switch import list_authenticated_providers, _declared_model_ids
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
@@ -1337,6 +1337,12 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
+            # The live refresh replaces only the discovered catalog: a providers.openrouter.models
+            # block extends the row exactly as _lap_builtin_rows extends every other built-in row,
+            # so declared IDs survive the refresh (#121903).
+            configured = user_providers.get("openrouter") if isinstance(user_providers, dict) else None
+            declared = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+            live_ids = list(dict.fromkeys([*declared, *live_ids]))
             p["models"] = live_ids[:max_models] if max_models is not None else live_ids
             p["total_models"] = len(live_ids)
 

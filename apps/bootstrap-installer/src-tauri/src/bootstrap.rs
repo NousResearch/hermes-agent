@@ -405,13 +405,16 @@ fn spawn_detached_desktop(cmd: &mut std::process::Command) -> std::io::Result<st
 
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
 /// exists or the spawn fails, so the caller can fall back to showing the
-/// installer UI.
-pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io::Result<()> {
+/// installer UI. The caller owns the bounded hand-off poll and decides whether
+/// an observed child exit represents a successful launch.
+pub(crate) fn spawn_installed_desktop(
+    install_root: &std::path::Path,
+) -> std::io::Result<std::process::Child> {
     let exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
     })?;
     let mut cmd = desktop_launch_command_std(&exe, install_root);
-    spawn_detached_desktop(&mut cmd).map(|_child| ())
+    spawn_detached_desktop(&mut cmd)
 }
 
 // The installer exits right after launch, so the Desktop must not keep the

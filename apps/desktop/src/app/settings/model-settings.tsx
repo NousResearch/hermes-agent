@@ -716,12 +716,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
       await refresh()
     } catch (err) {
-      setCaughtError(err, m.loadFailed)
+      setCaughtError(err, m.defaultsFailed)
     } finally {
       setApplying(false)
     }
   }, [
-    m.loadFailed,
+    m.defaultsFailed,
     onMainModelChanged,
     refresh,
     scopeProfile,

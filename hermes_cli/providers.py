@@ -402,6 +402,9 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     entry = user_config.get(name) if isinstance(user_config, dict) and user_config else None
     if not isinstance(entry, dict):
         return None
+    endpoint_keys = ("api", "url", "base_url", "key_env", "api_key_env", "transport")
+    if get_provider(name) is not None and not any(entry.get(key) for key in endpoint_keys):
+        return None
     return _user_pdef(name, entry.get("name", "") or name,
                       entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or "",
                       entry.get("key_env") or entry.get("api_key_env") or "",

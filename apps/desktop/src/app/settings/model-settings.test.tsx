@@ -276,6 +276,16 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('reports an apply failure as a save failure rather than a load failure', async () => {
+    setModelAssignment.mockRejectedValueOnce(new Error(''))
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    expect(await screen.findByText('Failed to save model defaults')).toBeTruthy()
+    expect(screen.queryByText('Could not load models')).toBeNull()
+  })
+
   it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
     // The cached record is a default-expanded snapshot; a CLI pin made after it
     // loaded is not in it. Echoing the whole record back would reset that

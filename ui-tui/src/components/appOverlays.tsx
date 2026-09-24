@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
-import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { $uiSessionId, $uiState, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -76,11 +76,12 @@ export function PromptZone({
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
+  const screenReader = useStore($uiState).screenReader
 
   if (overlay.approval) {
     return (
       <PromptCell cols={cols} id="approval">
-        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} screenReader={screenReader} t={theme} />
       </PromptCell>
     )
   }

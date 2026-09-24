@@ -1,9 +1,11 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
 import { compactNumber } from '@hermes/shared/format'
+import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
+import { $uiState } from '../app/uiStore.js'
 import { sectionMode } from '../domain/details.js'
 import {
   buildSubagentTree,
@@ -152,6 +154,7 @@ function TreeNode({
 }
 
 export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
+  const screenReader = useStore($uiState).screenReader
   const spin = useMemo(() => {
     const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
 
@@ -165,12 +168,16 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
   }, [spin])
 
   useEffect(() => {
+    if (screenReader) {
+      return
+    }
+
     const id = setInterval(() => setFrame(f => (f + 1) % spin.frames.length), spin.interval)
 
     return () => clearInterval(id)
-  }, [spin])
+  }, [screenReader, spin])
 
-  return <Text color={color}>{spin.frames[frame]}</Text>
+  return <Text color={color}>{screenReader ? 'working' : spin.frames[frame]}</Text>
 }
 
 interface DetailRow {
@@ -202,10 +209,11 @@ function StreamCursor({
   streaming?: boolean
   visible?: boolean
 }) {
+  const screenReader = useStore($uiState).screenReader
   const [on, setOn] = useState(true)
 
   useEffect(() => {
-    if (!visible || !streaming) {
+    if (screenReader || !visible || !streaming) {
       setOn(true)
 
       return
@@ -214,7 +222,7 @@ function StreamCursor({
     const id = setInterval(() => setOn(v => !v), 420)
 
     return () => clearInterval(id)
-  }, [streaming, visible])
+  }, [screenReader, streaming, visible])
 
   if (!visible) {
     return null
@@ -222,10 +230,10 @@ function StreamCursor({
 
   return dimColor ? (
     <Text color={color} dim>
-      {streaming && on ? '▍' : ' '}
+      {streaming && on && !screenReader ? '▍' : ' '}
     </Text>
   ) : (
-    <Text color={color}>{streaming && on ? '▍' : ' '}</Text>
+    <Text color={color}>{streaming && on && !screenReader ? '▍' : ' '}</Text>
   )
 }
 
@@ -723,6 +731,7 @@ export const ToolTrail = memo(function ToolTrail({
   trail?: string[]
   activity?: ActivityItem[]
 }) {
+  const screenReader = useStore($uiState).screenReader
   const visible = useMemo(
     () => ({
       thinking: sectionMode('thinking', detailsMode, sections, commandOverride),
@@ -757,14 +766,14 @@ export const ToolTrail = memo(function ToolTrail({
   const [openMeta, setOpenMeta] = useState(visible.activity === 'expanded')
 
   useEffect(() => {
-    if (!tools.length || (visible.tools !== 'expanded' && !openTools)) {
+    if (screenReader || !tools.length || (visible.tools !== 'expanded' && !openTools)) {
       return
     }
 
     const id = setInterval(() => setNow(Date.now()), 500)
 
     return () => clearInterval(id)
-  }, [openTools, tools.length, visible.tools])
+  }, [openTools, screenReader, tools.length, visible.tools])
 
   // Effects run after the FIRST render too, not just on later updates — so
   // this re-sync was clobbering the reasoningAlwaysVisible mount value above

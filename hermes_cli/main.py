@@ -1838,6 +1838,7 @@ def cmd_chat(args):
             tui_dev=getattr(args, "tui_dev", False),
             model=getattr(args, "model", None),
             accept_hooks=getattr(args, "accept_hooks", False),
+            screen_reader=getattr(args, "screen_reader", False),
             **passthrough,
         )
 

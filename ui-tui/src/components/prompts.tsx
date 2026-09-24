@@ -81,7 +81,7 @@ export function approvalAction(
   return { kind: 'noop' }
 }
 
-export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
+export function ApprovalPrompt({ cols = 80, onChoice, req, screenReader = false, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
   const opts = approvalOptions(req)
 
@@ -104,8 +104,19 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
     .split('\n')
     .flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
 
-  const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
+  const shown = screenReader ? rawLines : rawLines.slice(0, CMD_PREVIEW_LINES)
   const overflow = rawLines.length - shown.length
+
+  if (screenReader) {
+    return (
+      <Box flexDirection="column">
+        <Text color={t.color.warn}>prompt: approval required — {req.description}</Text>
+        {shown.map((line, i) => <Text color={t.color.text} key={i}>{line || ' '}</Text>)}
+        {opts.map((o, i) => <Text key={o}>{i + 1}. {LABELS[o]}</Text>)}
+        <Text color={t.color.muted}>type a number to choose; Escape denies</Text>
+      </Box>
+    )
+  }
 
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
@@ -480,6 +491,7 @@ interface ApprovalPromptProps {
   cols?: number
   onChoice: (s: string) => void
   req: ApprovalReq
+  screenReader?: boolean
   t: Theme
 }
 

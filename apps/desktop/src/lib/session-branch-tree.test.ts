@@ -68,6 +68,17 @@ describe('flattenSessionsWithBranches', () => {
     ])
   })
 
+  it('nests a branch of a collapsed stale tip under the live tip', () => {
+    const oldTip = session('old-tip', { _lineage_root_id: 'root', last_active: 30 })
+    const tip = session('tip', { _lineage_root_id: 'root', last_active: 90, parent_session_id: 'old-tip' })
+    const branch = session('branch', { last_active: 70, parent_session_id: 'old-tip' })
+
+    expect(flattenSessionsWithBranches([oldTip, tip, branch])).toEqual([
+      { session: tip },
+      { branchStem: '└─ ', session: branch }
+    ])
+  })
+
   it('keeps same-lineage ids from different profiles apart', () => {
     const work = session('tip', { _lineage_root_id: 'root', last_active: 20, profile: 'work' })
     const home = session('tip-home', { _lineage_root_id: 'root', last_active: 10, profile: 'home' })

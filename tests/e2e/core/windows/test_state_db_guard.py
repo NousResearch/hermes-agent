@@ -21,7 +21,6 @@ from tests.e2e.core.windows._helpers import (
     hermes,
     hermes_argv,
     kill_tree,
-    known,
     make_home,
     process_tree,
     wait_until,
@@ -29,11 +28,6 @@ from tests.e2e.core.windows._helpers import (
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [pytest.mark.windows_only, pytest.mark.integration, pytest.mark.live_system_guard_bypass]
-
-KNOWN: dict[str, str] = {
-    "foreign_holder": "#120205 foreign_state_db_holders() returns [] on Windows; the write-guard never refuses",
-}
-
 
 def _running(home) -> bool:
     try:
@@ -43,7 +37,6 @@ def _running(home) -> bool:
     return state.get("gateway_state") == "running"
 
 
-@known("foreign_holder", KNOWN)
 def test_optimize_storage_refuses_while_gateway_holds_store(tmp_path: Path) -> None:
     with FakeLLMServer() as srv:
         home = make_home(tmp_path, srv.base_url)

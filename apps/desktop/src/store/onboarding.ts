@@ -233,6 +233,10 @@ function schedulePollExpiry(start: DeviceStart, onExpire: () => void) {
 async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string): Promise<RuntimeReadinessResult> {
   return evaluateRuntimeReadiness(ctx.requestGateway, {
     defaultReason: DEFAULT_ONBOARDING_REASON,
+    // The owner that just signed in: `startProviderOAuth` binds this same profile to
+    // the OAuth session, so an unscoped probe here answers for the backend's launch
+    // home instead and reports a completed sign-in as an unusable provider.
+    profile: ctx.profile,
     requestedProvider,
     unknownReady: false
   })

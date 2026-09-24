@@ -3688,7 +3688,8 @@ class GatewayRunner(
             _appr_mode = str(
                 cfg_get(_appr_cfg, "approvals", "mode", default="manual") or "manual"
             ).strip().lower()
-            _tirith_on = bool(cfg_get(_appr_cfg, "security", "tirith_enabled", default=True))
+            from hermes_cli.tirith_config import tirith_enabled
+            _tirith_on = tirith_enabled(_appr_cfg)
             _aux_approval = cfg_get(_appr_cfg, "auxiliary", "approval", default=None)
             if _appr_mode == "manual" and not _tirith_on and not _aux_approval:
                 logger.warning(

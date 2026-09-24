@@ -30,11 +30,6 @@ _COSIGN_IDENTITY_REGEXP = f"^https://github.com/{_REPO}/\\.github/workflows/rele
 _COSIGN_ISSUER = "https://token.actions.githubusercontent.com"
 
 # --- Config helpers ---
-def _env_bool(key: str, default: bool) -> bool:
-    val = os.getenv(key)
-    return default if val is None else val.lower() in {"1", "true", "yes"}
-
-
 def _env_int(key: str, default: int) -> int:
     try:
         return int(os.environ[key])
@@ -43,17 +38,16 @@ def _env_int(key: str, default: int) -> int:
 
 
 def _load_security_config() -> dict:
-    """Security settings from config.yaml, with env var overrides."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly().get("security", {}) or {}
-    except Exception:
-        cfg = {}
+    """Security settings from config.yaml, with env var overrides (the two flags through
+    ``hermes_cli.tirith_config``, which every other reader of them uses too)."""
+    from hermes_cli import tirith_config
+    cfg = tirith_config.security_section()
+    section = {"security": cfg}
     return {
-        "tirith_enabled": _env_bool("TIRITH_ENABLED", cfg.get("tirith_enabled", True)),
+        "tirith_enabled": tirith_config.tirith_enabled(section),
         "tirith_path": os.getenv("TIRITH_BIN", cfg.get("tirith_path", "tirith")),
         "tirith_timeout": _env_int("TIRITH_TIMEOUT", cfg.get("tirith_timeout", 5)),
-        "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", True))}
+        "tirith_fail_open": tirith_config.tirith_fail_open(section)}
 
 
 # --- Module state ---

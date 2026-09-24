@@ -306,15 +306,11 @@ def _get_unattended_approval_mode() -> str:
 
 
 def _tirith_fail_open() -> bool:
-    """``security.tirith_fail_open`` (default True; True when config is unreadable).
-    False means the operator opted into fail-closed: an un-importable scanner
-    must not silently grant access."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        _sec = (load_config_readonly() or {}).get("security", {}) or {}
-        return bool(_sec.get("tirith_fail_open", True)) if _sec.get("tirith_enabled", True) else True
-    except Exception:
-        return True
+    """``security.tirith_fail_open`` / ``TIRITH_FAIL_OPEN`` (default True; True when config is
+    unreadable or tirith is disabled). False means the operator opted into fail-closed: an
+    un-importable scanner must not silently grant access."""
+    from hermes_cli.tirith_config import fail_open_when_scanner_unavailable
+    return fail_open_when_scanner_unavailable()
 
 
 def _get_approval_transport_config() -> tuple[str, str | None]:

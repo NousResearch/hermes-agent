@@ -1952,8 +1952,10 @@ class TestTirithImportErrorFailOpenPolicy:
 
         assert result.get("approved") is True
 
-    def test_fail_open_false_escalates_to_approval_on_import_error(self):
+    def test_fail_open_false_escalates_to_approval_on_import_error(self, monkeypatch):
         """Fail-closed: ImportError must NOT silently allow when tirith_fail_open=false."""
+        # conftest sets TIRITH_ENABLED=false; the env override now reaches this path too.
+        monkeypatch.delenv("TIRITH_ENABLED", raising=False)
         import builtins
         from unittest.mock import patch as _patch
         from tools.approval import check_all_command_guards

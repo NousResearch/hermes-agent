@@ -82,6 +82,46 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+# npm's install footprint per platform: on Windows both the POSIX shell shim
+# (bare ``<name>``, ``#!/bin/sh``) and a runnable ``<name>.cmd`` coexist; on
+# POSIX only the bare file exists.  The shim probe below reads only the first
+# line of the extensionless candidate, which decides self-heal eligibility.
+_POSIX_SHIM_PREFIX = b"#!"
+
+# A stale POSIX shim copied into ``lsp/bin/`` by an earlier installer budget
+# (403 bytes of ``#!/bin/sh``) survives upgrades.  It is extensionless, so the
+# wrapper-first ordering alone cannot skip it — Windows probing must treat it
+# as absent and repair it in place.
+_QUARANTINE_SUFFIX = ".quarantined-shim"
+
+
+def _is_posix_shim(path: Path) -> bool:
+    """True when ``path`` is npm's extensionless POSIX ``#!/bin/sh`` shim."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(2) == _POSIX_SHIM_PREFIX
+    except OSError:
+        return False
+
+
+def _quarantine_stale_shim(path: Path) -> None:
+    """Rename a stale extensionless POSIX shim aside so it stops shadowing.
+
+    Best-effort: a missing file (lost race) or a locked file (a server spawned
+    from it is mid-start) leaves the original in place and resolution simply
+    skips it for this call.
+    """
+    sidecar = path.with_name(path.name + _QUARANTINE_SUFFIX)
+    try:
+        if sidecar.exists():
+            sidecar.unlink()
+        path.rename(sidecar)
+        logger.warning("[install] quarantined stale POSIX shim %s -> %s", path, sidecar)
+    except OSError as e:
+        logger.debug("[install] could not quarantine stale shim %s: %s", path, e)
+
+
+
 def hermes_lsp_bin_dir() -> Path:
     """Return the Hermes-owned bin staging dir for LSP servers."""
     from hermes_constants import get_hermes_home
@@ -108,8 +148,22 @@ def _native_binary_candidates(base: Path, *, is_windows: Optional[bool] = None) 
 
 
 def _first_existing(*bases: Path, is_windows: Optional[bool] = None) -> Optional[Path]:
-    """First platform-native candidate of any ``base`` that exists on disk."""
-    return next((c for base in bases for c in _native_binary_candidates(base, is_windows=is_windows) if c.exists()), None)
+    """First platform-native candidate of any ``base`` that exists on disk.
+
+    On Windows an extensionless POSIX ``#!/bin/sh`` shim is never selected: ``CreateProcess``
+    cannot run it (WinError 193), and staging it into ``lsp/bin/`` is the poison path behind
+    #116947.  Wrappers sort ahead of the bare name anyway; this only matters when the shim is
+    the *only* candidate left.
+    """
+    win = _is_windows() if is_windows is None else is_windows
+    for base in bases:
+        for cand in _native_binary_candidates(base, is_windows=win):
+            if not cand.exists():
+                continue
+            if win and cand.suffix == "" and _is_posix_shim(cand):
+                continue
+            return cand
+    return None
 
 
 def _npm_bin_dir() -> Path:
@@ -121,12 +175,25 @@ def _existing_binary(name: str, *, is_windows: Optional[bool] = None) -> Optiona
     """Probe the staging dir (+ npm's bin dir on Windows) then PATH for a binary named ``name``.
 
     ``is_windows`` overrides the host check so the Windows resolution is testable as data on every lane.
+    A stale extensionless POSIX shim in the staging dir (left by an installer that staged the bare
+    ``node_modules/.bin/<name>`` file) is quarantined aside on Windows: wrappers are preferred on
+    every pass, and the shim is never returned — it would fail ``CreateProcess`` with WinError 193.
     """
     win = _is_windows() if is_windows is None else is_windows
-    bases = [hermes_lsp_bin_dir() / name] + ([_npm_bin_dir() / name] if win else [])
+    staged_bin = hermes_lsp_bin_dir() / name
+    if win and staged_bin.suffix == "" and staged_bin.exists() and _is_posix_shim(staged_bin):
+        # Legacy poison from an installer that staged the bare POSIX shim: quarantine it now so the
+        # pass below either picks the sibling wrapper or reports missing (→ fresh reinstall).
+        _quarantine_stale_shim(staged_bin)
+    bases = [staged_bin] + ([_npm_bin_dir() / name] if win else [])
     for staged in (c for base in bases for c in _native_binary_candidates(base, is_windows=win)):
-        if staged.exists() and os.access(staged, os.X_OK):
-            return str(staged)
+        if not (staged.exists() and os.access(staged, os.X_OK)):
+            continue
+        if win and staged.suffix == "" and _is_posix_shim(staged):
+            # npm's own ``node_modules/.bin/<name>`` must stay untouched (npm owns it); skipping is
+            # enough because the wrapper-first ordering already selected ``<name>.cmd`` above it.
+            continue
+        return str(staged)
     suffixes = (*_WINDOWS_WRAPPER_SUFFIXES, "") if win else ("",)
     return next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
 
@@ -168,7 +235,12 @@ def _do_install(pkg: str) -> Optional[str]:
 
 
 def _run_installer(tool: str, pkg: str, cmd: list, *, timeout: int, env: Optional[dict] = None) -> bool:
-    """Run one install subprocess; log and return False on non-zero exit or error."""
+    """Run one install subprocess; log and return False on non-zero exit or error.
+
+    Catches ``Exception`` (not just timeout/OS errors): the installer is invoked from a gateway
+    background thread, and an escaping exception there silences the process (issue #116947) with
+    only the "npm install --prefix ..." line left in the log.
+    """
     try:
         proc = subprocess.run(
             cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -179,7 +251,7 @@ def _run_installer(tool: str, pkg: str, cmd: list, *, timeout: int, env: Optiona
             detail = (proc.stderr.strip() or proc.stdout.strip())[:500]
             logger.warning("[install] %s install failed for %s: %s", tool, pkg, detail)
             return False
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except Exception as e:  # noqa: BLE001 — installer failure must degrade to "no diagnostics", never kill the host
         logger.warning("[install] %s install errored for %s: %s", tool, pkg, e)
         return False
     return True
@@ -284,7 +356,7 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
         if proc.returncode != 0:
             logger.warning("[install] pip install failed for %s: %s", pkg, (proc.stderr or "").strip()[:500])
             return None
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except Exception as e:  # noqa: BLE001 — installer failure must degrade to "no diagnostics", never kill the host
         logger.warning("[install] pip install errored for %s: %s", pkg, e)
         return None
     # POSIX wheels write console scripts to bin/, native Windows to Scripts/.

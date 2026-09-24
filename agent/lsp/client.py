@@ -260,6 +260,10 @@ class LSPClient:
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(f"LSP server binary not found: {cmd[0]} ({e})") from e
+        except (OSError, ValueError) as e:
+            # WinError 193 (a stale POSIX shim reached the spawn) and friends must surface as a
+            # spawn failure the manager quarantines, never as an escaping background-loop error.
+            raise LSPProtocolError(f"LSP server binary not runnable: {cmd[0]} ({e})") from e
         # stderr must be drained or the pipe buffer fills and the server hangs.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._reader_task = asyncio.create_task(self._reader_loop())

@@ -3649,12 +3649,14 @@ class _StreamingCall(StreamingWaitMonitor):
             raise  # the outer handler routes user interrupts; never swallow them
         except Exception as probe_err:
             probe_status = _extract_status_code(probe_err)
+            log_status = probe_status if type(probe_status) is int and 100 <= probe_status < 600 else "unknown"
             if probe_status is not None and probe_status < 500:
                 # The provider's REAL validation error beats the opaque 5xx.
-                logger.info("Non-streaming unmask probe surfaced the underlying error: %s", probe_err)
+                logger.info("Non-streaming unmask probe surfaced the underlying error: %s (HTTP %s)",
+                            type(probe_err).__name__, log_status)
                 self.result["error"] = probe_err
                 return True
-            logger.info("Non-streaming unmask probe failed: %s", probe_err)
+            logger.info("Non-streaming unmask probe failed: %s (HTTP %s)", type(probe_err).__name__, log_status)
             return False
         finally:
             self._stream_stale_timeout = stale_timeout
@@ -3670,7 +3672,14 @@ class _StreamingCall(StreamingWaitMonitor):
             replayed = _with_stream_emitters(self.agent, lambda: self._replay_final_response(probe))
         except Exception as replay_err:
             # A response we cannot replay must not escape into _call()'s except block.
-            logger.exception("Non-streaming unmask probe response could not be replayed: %s", replay_err)
+            # Replay failures are local; do not inherit the original stream's HTTP status.
+            try:
+                replay_status = getattr(replay_err, "status_code", None)
+            except Exception:
+                replay_status = None
+            log_status = replay_status if type(replay_status) is int and 100 <= replay_status < 600 else "unknown"
+            logger.error("Non-streaming unmask probe response could not be replayed: %s (HTTP %s)",
+                         type(replay_err).__name__, log_status)
             return False
         self.result["response"] = replayed
         return True

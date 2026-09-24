@@ -17,7 +17,11 @@ Gating invariants (from cross-vendor review):
   see deltas after the failed attempt's terminal on_stream_end)
 - user interrupts re-raise; never swallowed
 """
+import io
+import logging
 from types import SimpleNamespace
+
+import pytest
 
 from agent import chat_completion_helpers as h
 
@@ -102,3 +106,72 @@ def test_stream_5xx_unmasked_by_probe_4xx(monkeypatch):
     assert not handled  # loop stops, error propagates
     assert call.result["error"] is real  # the REAL validation error replaces the opaque 500
     assert call.result["response"] is None
+
+
+@pytest.fixture
+def plain_probe_log(monkeypatch):
+    stream = io.StringIO()
+    logger = logging.Logger("probe-log-regression", level=logging.INFO)
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(message)s"))
+    logger.addHandler(handler)
+    monkeypatch.setattr(h, "logger", logger)
+    yield stream
+    handler.close()
+
+
+@pytest.mark.parametrize("status,handled,safe_status", [
+    (400, True, 400), (503, False, 503), (None, False, None),
+    (0, True, None), (600, False, None), (True, True, None),
+    ("SYNTHETIC_STATUS_SECRET_MARKER", False, None),
+])
+def test_probe_error_logs_exclude_provider_payload(monkeypatch, plain_probe_log, status, handled, safe_status):
+    class SyntheticProbeError(Exception):
+        pass
+
+    marker = "SYNTHETIC_PROVIDER_SECRET_MARKER"
+    error = SyntheticProbeError(marker)
+    error.status_code = status
+    call = _make_call({"model": "m", "messages": []})
+
+    def fail_probe(agent, kwargs):
+        raise error
+
+    monkeypatch.setattr(h, "interruptible_api_call", fail_probe)
+    assert call._unmask_server_error_with_nonstreaming(_StreamErr(500)) is handled
+    assert call.result["error"] is (error if handled else None)
+    assert call.result["response"] is None
+    assert call._stream_stale_timeout == 180.0
+    output = plain_probe_log.getvalue()
+    assert marker not in output and "SYNTHETIC_STATUS_SECRET_MARKER" not in output
+    assert "Traceback" not in output
+    assert "SyntheticProbeError" in output
+    assert f"HTTP {safe_status if safe_status is not None else 'unknown'}" in output
+
+
+@pytest.mark.parametrize("status", [502, None, "property-raises"])
+def test_replay_error_logs_exclude_exception_traceback(monkeypatch, plain_probe_log, status):
+    marker = "SYNTHETIC_REPLAY_SECRET_MARKER"
+
+    class SyntheticReplayError(Exception):
+        @property
+        def status_code(self):
+            if status == "property-raises":
+                raise ValueError(marker)
+            return status
+
+    error = SyntheticReplayError(marker)
+    call = _make_call({"model": "m", "messages": []})
+    monkeypatch.setattr(h, "interruptible_api_call", lambda agent, kwargs: object())
+
+    def fail_replay(response):
+        raise error from _StreamErr(500)
+
+    monkeypatch.setattr(call, "_replay_final_response", fail_replay)
+    assert call._unmask_server_error_with_nonstreaming(_StreamErr(500)) is False
+    assert call.result["response"] is None and call.result["error"] is None
+    assert call._stream_stale_timeout == 180.0
+    output = plain_probe_log.getvalue()
+    assert marker not in output and "Traceback" not in output
+    assert "SyntheticReplayError" in output
+    assert f"HTTP {502 if status == 502 else 'unknown'}" in output

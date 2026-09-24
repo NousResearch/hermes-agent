@@ -196,3 +196,41 @@ def test_drained_turn_adopts_the_replaced_row_and_writes_no_duplicate(monkeypatc
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypatch, tmp_path):
+    """Two non-mergeable (image-bearing) prompts accepted mid-turn; only the FIRST drains, then the
+    process dies (the in-memory queue is lost). Acceptance order must still hold in the transcript:
+    the second prompt must never render before the first. Without queue-wide re-placement at each
+    drain, the second prompt's accept-time row stays ahead of the in-flight reply while the first's
+    heals past it — permanently rendering the later prompt before the earlier one."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        server._ensure_session_db_row(session)  # the lazy row a real first submit would have written
+        db.append_message(key, "user", content="prompt A")  # turn A's row
+        _busy(session)
+        session["attached_images"] = ["/tmp/b.png"]
+        assert server._handle_busy_submit("r1", sid, session, "prompt B QUEUED-B", "ws-1",
+                                          queued=True, display_kind=None)["result"]["status"] == "queued"
+        session["attached_images"] = ["/tmp/c.png"]
+        assert server._handle_busy_submit("r2", sid, session, "prompt C QUEUED-C", "ws-1",
+                                          queued=True, display_kind=None)["result"]["status"] == "queued"
+        db.append_message(key, "assistant", content="reply A")  # turn A concludes
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        monkeypatch.setattr(server, "_run_prompt_submit",
+                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+        assert server._drain_queued_prompt("r3", sid, session) is True  # drains B only
+        # The crash: the queue (and C's turn intent) is gone with the process.
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        rendered = "".join(str(r["content"]) for r in _active_rows(db, key))
+        assert "prompt B QUEUED-B" in rendered and "prompt C QUEUED-C" in rendered  # durable, both kept
+        assert rendered.index("prompt B QUEUED-B") < rendered.index("prompt C QUEUED-C"), \
+            "a later-accepted prompt rendered before an earlier one after a partial drain"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

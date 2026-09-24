@@ -315,7 +315,7 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
             envelope["_queued_display_kind"] = display_kind
 
 
-def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> None:
+def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | None:
     """Re-place a queued prompt's accept-time row at the transcript END before dispatching its turn.
 
     The accept-time write lands BEFORE the in-flight turn's assistant rows (raw ``[uA, uB, aA]``), and
@@ -328,13 +328,13 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> None:
     """
     early = queued.get("_submit_user_row")
     if not (isinstance(early, dict) and isinstance(early.get("_row_id"), int)):
-        return  # no accept-time row (write failed / pre-feature envelope): the turn persists as before
+        return None  # no accept-time row (write failed / pre-feature envelope): the turn persists as before
     # Append the replacement FIRST: if that write fails nothing is deactivated, the accept-time row
     # stays active (the message stays visible) and the turn's crash persist persists it as before.
     _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
-        return  # re-append wrote nothing: keep the accept-time row active
+        return None  # re-append wrote nothing: keep the accept-time row active
     queued["_submit_user_row"] = fresh  # the envelope follows the live row (a retry drains cleanly)
     with _session_db(session) as db:
         if db is None:
@@ -345,6 +345,7 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> None:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.
             logger.debug("queued-prompt row re-placement deactivate failed", exc_info=True)
+    return fresh
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
@@ -431,11 +432,24 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
-    # Re-place the accept-time row (if any) at the transcript END before the turn's rows follow it,
-    # and slot the fresh row for adoption. Under history_lock so a concurrent submit can't interleave
+    # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
+    # them, and slot the dispatching envelope's fresh row for adoption. EVERY queued envelope is
+    # re-placed in acceptance order: a later-accepted prompt's row must never sit behind while an
+    # earlier one heals past it, or a crash between drains would permanently render the later
+    # prompt before the earlier one. Under history_lock so a concurrent submit can't interleave
     # its own row write between the re-append and the deactivation.
     with session["history_lock"]:
-        _replace_queued_user_row_for_turn(session, queued)
+        dispatch_row = _replace_queued_user_row_for_turn(session, queued)
+        still_queued = (([session["queued_prompt"]] if session.get("queued_prompt") else [])
+                        + list(session.get("queued_prompts") or []))
+        for envelope in still_queued:
+            _replace_queued_user_row_for_turn(session, envelope)
+        # The single adoption slot must hold the DISPATCHING envelope's row (the loop above leaves
+        # the last processed one there) or the turn would adopt the wrong prompt's row.
+        if dispatch_row is not None:
+            session["_submit_user_row"] = dispatch_row
+        else:
+            session.pop("_submit_user_row", None)
     # The compute-host frame has no author field, so only the inline runner receives it.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False

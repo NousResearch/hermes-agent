@@ -12,7 +12,7 @@ import yaml
 WORKTREE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(WORKTREE))
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="live Windows E2E")
+pytestmark = pytest.mark.windows_only
 
 
 def test_fleet_config_migration_live_windows(tmp_path, monkeypatch):

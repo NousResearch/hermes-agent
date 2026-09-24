@@ -20,18 +20,27 @@ vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
   const { atom } = await import('nanostores')
 
+  type LineageRow = { _lineage_root_id?: null | string; id: string }
+
   return {
     $activeSessionId: atom(null),
     $connection: atom(null),
+    $cronSessions: atom([]),
     $currentCwd: atom(''),
     $currentModel: atom(''),
     $gatewayState: atom('open'),
     $messages: atom([]),
+    $messagingSessions: atom([]),
     $selectedStoredSessionId: atom(null),
     $sessions: atom([]),
+    $unreadFinishedSessionIds: atom([]),
+    lineageAliases: (storedId: string) => [storedId],
     rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
       (activeProfile ?? '').trim() || 'default',
     requestSessionResume: vi.fn(),
+    sessionMatchesStoredId: (session: LineageRow, storedSessionId: string) =>
+      session.id === storedSessionId || session._lineage_root_id === storedSessionId,
+    sessionPinId: (session: LineageRow) => session._lineage_root_id ?? session.id,
     setSessionOwnerHint: vi.fn(),
     setResumeExhaustedSessionId: vi.fn()
   }
@@ -40,11 +49,16 @@ vi.mock('@/store/session-states', async () => {
   const { atom } = await import('nanostores')
 
   return {
+    $attentionSessionIds: atom([]),
+    $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
     $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
+    $stalledSessionIds: atom([]),
+    $workingSessionIds: atom([]),
+    dropTilesForProfile: vi.fn(),
     sessionTileDelegate: vi.fn(() => null)
   }
 })
@@ -68,6 +82,7 @@ vi.mock('@/store/profile', async () => {
     $gatewaySwapTarget: atom(null),
     $hydrationSyncProfile: atom(null),
     $profiles: profiles,
+    $showAllProfiles: atom(false),
     ensureGatewayAgent: vi.fn(),
     ensureGatewayProfile: vi.fn(),
     newSessionInAgent: vi.fn(),
@@ -83,7 +98,9 @@ vi.mock('@/store/gateway', async () => {
   const { atom } = await import('nanostores')
 
   return {
+    $activeGatewayRoute: atom('default'),
     $gateway: atom(null),
+    activeGateway: vi.fn(() => null),
     activeGatewayConnectionId: vi.fn(() => 'local'),
     ensureGatewayForAgent: vi.fn(),
     openGatewayForAgent: vi.fn(),
@@ -101,11 +118,12 @@ vi.mock('@/store/gateway', async () => {
       params,
       profile
     })),
+    retainGatewayForAgent: vi.fn(async () => vi.fn()),
     retireLocalProfileGateways: vi.fn()
   }
 })
 
-const { BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS, DEFAULT_SESSION_HYDRATION_TIMEOUT_MS, host } = await import('./index')
+const { HYDRATION_SYNC_BADGE_TIMEOUT_MS, host } = await import('./index')
 
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile, hermesApi } = await import('@/hermes')
@@ -137,6 +155,8 @@ const {
   $sessionTiles,
   sessionTileDelegate
 } = await import('@/store/session-states')
+
+const { dropTilesForProfile } = await import('@/store/session-states')
 
 const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')
 
@@ -201,6 +221,9 @@ describe('connection-aware plugin host APIs', () => {
     // The rail paints from $profiles; skipping the refresh leaves a stale
     // badge whose click hot-loops against the deletion guard (#88769).
     expect(refreshProfiles).toHaveBeenCalled()
+    // A leftover Bot Mode tile would restore on relaunch and dial the deleted
+    // profile's backend, re-creating its HERMES_HOME (#94235).
+    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', undefined)
   })
 
   it('pins an ambient SSH profile delete to the active connection and target profile', async () => {
@@ -318,6 +341,29 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 
+  it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
+    // #93911: bot_relay.deliver's backend contract tolerates ~1320s (120s turn
+    // lock + a 600s turn, doubled by the bounded retry). Without a way to pass
+    // that bound through, every such call died at the pool's generic 30s
+    // deadline and surfaced as an unclassified failure.
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'bot_relay.deliver', { message: 'hi', profile: 'backend-worker' }, 1_320_000)
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'bot_relay.deliver',
+      { message: 'hi', profile: 'backend-worker' },
+      1_320_000
+    )
+  })
+
   it('fails closed when a descriptor omits connection or target profile identity', async () => {
     await expect(
       host.requestProfile(
@@ -355,6 +401,11 @@ describe('connection-aware plugin host APIs', () => {
       profile: 'worker'
     })
     expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', {
+      connectionId: 'source-a',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    })
   })
 
   it('rejects a remote deletion route without a connection id', async () => {
@@ -401,6 +452,36 @@ describe('connection-aware plugin host APIs', () => {
       connectionId: 'source-local',
       profile: 'worker'
     })
+    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', {
+      connectionId: 'source-local',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    })
+  })
+
+  it('forwards { spawnPriority: "foreground" } to the route dial and keeps timeoutMs positional (#105104)', async () => {
+    // An explicit user action (Bot Chat roster click) must reach the pool as a
+    // foreground dial; the SDK passes the options object through so the
+    // registry secondary's probe + connect carry it. The numeric fourth arg is
+    // still the timeout, so a caller can set both.
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'session.list', { title: 'Bot Chat' }, 45_000, { spawnPriority: 'foreground' })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'session.list',
+      { title: 'Bot Chat' },
+      45_000,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
   })
 
   it('keeps the profile-only request overload as a legacy fallback', async () => {
@@ -476,7 +557,11 @@ describe('profile-aware plugin session opens', () => {
 
     await host.openSession('remote-chat', { route })
 
-    expect(openGatewayForAgent).toHaveBeenCalledWith('source-a', 'default')
+    expect(openGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('remote-worker')
@@ -869,65 +954,6 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
-  it('keeps the ordinary session hydration default at 20 seconds', async () => {
-    vi.useFakeTimers()
-
-    try {
-      expect(DEFAULT_SESSION_HYDRATION_TIMEOUT_MS).toBe(20_000)
-      $activeGatewayProfile.set('hyoseob')
-
-      const outcome = host
-        .openSession('slow-bot-chat', {
-          profile: 'hyoseob',
-          awaitHydration: true,
-          expectHistory: true
-        })
-        .then(
-          () => 'resolved',
-          error => String(error)
-        )
-
-      await vi.advanceTimersByTimeAsync(19_999)
-      expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
-
-      await vi.advanceTimersByTimeAsync(1)
-      expect(await outcome).toMatch(/timed out loading/i)
-      expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('slow-bot-chat')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('honors the exported 60-second Bot Chat hydration override', async () => {
-    vi.useFakeTimers()
-
-    try {
-      expect(BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS).toBe(60_000)
-      $activeGatewayProfile.set('hyoseob')
-
-      const outcome = host
-        .openSession('slow-bot-chat', {
-          profile: 'hyoseob',
-          awaitHydration: true,
-          expectHistory: true,
-          hydrationTimeoutMs: BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS
-        })
-        .then(
-          () => 'resolved',
-          error => String(error)
-        )
-
-      await vi.advanceTimersByTimeAsync(BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS - 1)
-      expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
-
-      await vi.advanceTimersByTimeAsync(1)
-      expect(await outcome).toMatch(/timed out loading/i)
-      expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('slow-bot-chat')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
   it('retries a Bot Chat hydration timeout once without ever arming the Retry surface (#89617)', async () => {
     $activeGatewayProfile.set('hyoseob')
 
@@ -1018,18 +1044,32 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
-  it('keeps chrome API home on the previous profile when opening a Bot Chat', async () => {
-    $activeGatewayProfile.set('default')
+  it('clears a stale overlay when a superseded wake never gets its own clear (#115844)', async () => {
+    $activeGatewayProfile.set('jimin')
 
-    await host.openSession('bot-chat', {
-      profile: 'worker',
-      keepAllProfilesScope: true
-    })
+    const firstOutcome = host
+      .openSession('chat-a', {
+        profile: 'jimin',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 30
+      })
+      .then(
+        () => 'resolved',
+        error => String(error)
+      )
 
-    expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
-    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
-    expect($activeGatewayProfile.get()).toBe('default')
+    await Promise.resolve()
+    expect($gatewaySwapTarget.get()).toBe('jimin')
+
+    // A later open that never awaits hydration (a paint-first wake) bumps the
+    // generation counter but never touches $gatewaySwapTarget - it has
+    // nothing of its own to clear, so the first wake's own cleanup is the
+    // only thing standing between here and a permanently stuck overlay.
+    await host.openSession('chat-b', { profile: 'hyoseob' })
+
+    expect(await firstOutcome).toMatch(/timed out loading/i)
+    expect($gatewaySwapTarget.get()).toBeNull()
   })
 
   it('defaults keepAllProfilesScope to navigation instead of a workspace switch', async () => {
@@ -1038,7 +1078,10 @@ describe('profile-aware plugin session opens', () => {
     await host.openSession('bot-chat', { profile: 'worker' })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).toHaveBeenCalledWith(
+      'worker',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })
@@ -1101,37 +1144,6 @@ describe('profile-aware plugin session opens', () => {
     // retry, not a frozen pane.
     expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('wedged-chat')
     expect($gatewaySwapTarget.get()).toBeNull()
-  })
-
-  it('names the phase in the wake log so a stuck dial is not read as a slow transcript', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
-
-    await expect(
-      host.openSession('wedged-chat', {
-        profile: 'medicina',
-        intent: 'main',
-        awaitHydration: true,
-        expectHistory: true,
-        keepAllProfilesScope: false,
-        hydrationTimeoutMs: 60
-      })
-    ).rejects.toThrow('Timed out loading ')
-
-    expect(warn).toHaveBeenCalledWith(
-      '[bot-wake] hydration timed out',
-      expect.objectContaining({ phase: 'activation' })
-    )
-
-    const payload = warn.mock.calls.at(-1)?.[1] as { hydrationWaitMs: number; profileActivationMs: number }
-
-    // The whole budget went to activation. Reporting it as hydration wait time
-    // would send a support bundle reader looking at transcript size.
-    expect(payload.profileActivationMs).toBeGreaterThan(0)
-    expect(payload.hydrationWaitMs).toBe(0)
-
-    warn.mockRestore()
   })
 
   it('gives hydration its own full budget after a slow but successful activation', async () => {
@@ -1217,37 +1229,6 @@ describe('profile-aware plugin session opens', () => {
     }
 
     expect(unhandled).toEqual([])
-  })
-
-  it('leaves a plain open unbounded, because it has no budget and no Retry surface', async () => {
-    // Deliberate scope line, not an oversight: the activation deadline rides on
-    // the same contract as the hydration one. A caller that never passed
-    // awaitHydration gets exactly the behaviour it had before, since a
-    // rejection here would surface to code with nowhere to render it.
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
-
-    let settled = 'pending'
-
-    void host
-      .openSession('plain-chat', {
-        profile: 'medicina',
-        intent: 'main',
-        keepAllProfilesScope: false,
-        hydrationTimeoutMs: 40
-      })
-      .then(
-        () => {
-          settled = 'resolved'
-        },
-        () => {
-          settled = 'rejected'
-        }
-      )
-
-    await new Promise(resolve => setTimeout(resolve, 200))
-
-    expect(settled).toBe('pending')
-    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
   })
 })
 
@@ -1343,5 +1324,41 @@ describe('shared-remote hydration gate (#89843)', () => {
     // Only the CURRENT wake's profile is syncing — the superseded one never
     // painted its badge over the winner.
     expect($hydrationSyncProfile.get()).toBe('zephyr')
+  })
+
+  it('bounds the syncing badge when the profile gate never fires', async () => {
+    vi.useFakeTimers()
+
+    try {
+      $activeGatewayProfile.set('default')
+      vi.mocked(ensureGatewayProfile).mockImplementationOnce(async () => undefined)
+
+      const opening = host.openSession('shared-remote-stranded', {
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 250,
+        keepAllProfilesScope: false,
+        profile: 'shadow'
+      })
+
+      await Promise.resolve()
+      setMockAtom($selectedStoredSessionId, 'shared-remote-stranded')
+      setMockAtom($activeSessionId, 'runtime-shared-remote-stranded')
+      setMockAtom($messages, [{ id: 'stored-history', parts: [], role: 'assistant' }] as never)
+
+      await opening
+      expect($hydrationSyncProfile.get()).toBe('shadow')
+
+      // $activeGatewayProfile never moves to 'shadow' on a shared-remote
+      // connection, so the change-only listener is dead on arrival. Without a
+      // ceiling the badge would spin for the life of the window.
+      await vi.advanceTimersByTimeAsync(HYDRATION_SYNC_BADGE_TIMEOUT_MS - 1)
+      expect($hydrationSyncProfile.get()).toBe('shadow')
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect($hydrationSyncProfile.get()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

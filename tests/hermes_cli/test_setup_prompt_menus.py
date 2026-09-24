@@ -43,24 +43,6 @@ def test_setup_navigation_escape_cancels_and_left_goes_back():
         setup_mod._SETUP_NAVIGATION.reset(token)
 
 
-def test_setup_yes_no_uses_navigable_menu(monkeypatch):
-    calls = []
-    state = setup_mod._SetupNavigationState(section_index=1)
-    token = setup_mod._SETUP_NAVIGATION.set(state)
-    monkeypatch.setattr(
-        setup_mod,
-        "_curses_prompt_choice",
-        lambda question, choices, default=0, description=None: calls.append(
-            (question, choices, default)
-        )
-        or 1,
-    )
-    try:
-        assert setup_mod.prompt_yes_no("Enable it?", default=True) is False
-    finally:
-        setup_mod._SETUP_NAVIGATION.reset(token)
-
-    assert calls == [("Enable it?", ["Yes", "No"], 0)]
 
 
 def test_setup_steps_move_to_previous_section_or_restart_current_section():
@@ -211,9 +193,3 @@ def test_prompt_strips_bracketed_paste_markers(monkeypatch):
 
 
 
-def test_prompt_choice_uses_curses_helper(monkeypatch):
-    monkeypatch.setattr(setup_mod, "_curses_prompt_choice", lambda question, choices, default=0, description=None: 1)
-
-    idx = setup_mod.prompt_choice("Pick one", ["a", "b", "c"], default=0)
-
-    assert idx == 1

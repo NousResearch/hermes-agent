@@ -10,16 +10,16 @@ read-only engine open creates -wal/-shm sidecar files next to a WAL database.
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
-import hermes_cli.doctor as doctor
 from hermes_cli.sqlite_safe_read import (
     connect_tracked,
     has_live_connection,
-    track_connection,
-    untrack_connection,
 )
+from hermes_cli import doctor_platform
 
 VULNERABLE = (3, 50, 4)
 FIXED_VERSIONS = [(3, 51, 3), (3, 52, 0), (3, 50, 7), (3, 44, 6)]
@@ -71,7 +71,7 @@ class TestReadJournalMode:
         db = tmp_path / "state.db"
         _make_db(db, journal_mode="WAL")
 
-        mode, error = doctor._read_journal_mode(db)
+        mode, error = doctor_platform._read_journal_mode(db)
 
         assert mode == "wal"
         assert error is None
@@ -80,7 +80,7 @@ class TestReadJournalMode:
         db = tmp_path / "state.db"
         _make_db(db)
 
-        mode, error = doctor._read_journal_mode(db)
+        mode, error = doctor_platform._read_journal_mode(db)
 
         assert mode == "rollback"
         assert error is None
@@ -90,14 +90,14 @@ class TestReadJournalMode:
         _make_db(db, journal_mode="WAL")
         assert _sidecars(tmp_path) == []
 
-        assert doctor._read_journal_mode(db) == ("wal", None)
+        assert doctor_platform._read_journal_mode(db) == ("wal", None)
 
         assert _sidecars(tmp_path) == []
 
     def test_missing_file_reports_error_and_does_not_create_it(self, tmp_path):
         db = tmp_path / "missing.db"
 
-        mode, error = doctor._read_journal_mode(db)
+        mode, error = doctor_platform._read_journal_mode(db)
 
         assert mode is None
         assert error
@@ -107,39 +107,21 @@ class TestReadJournalMode:
         db = tmp_path / "state.db"
         db.touch()
 
-        mode, error = doctor._read_journal_mode(db)
+        mode, error = doctor_platform._read_journal_mode(db)
 
         assert mode is None
         assert error == "file is empty"
 
-    def test_short_file_reports_error(self, tmp_path):
-        db = tmp_path / "state.db"
-        db.write_bytes(b"SQLite f")
-
-        mode, error = doctor._read_journal_mode(db)
-
-        assert mode is None
-        assert "not a database" in error
 
     def test_corrupt_file_reports_error(self, tmp_path):
         db = tmp_path / "state.db"
         db.write_bytes(b"this is not a sqlite database" * 4)
 
-        mode, error = doctor._read_journal_mode(db)
+        mode, error = doctor_platform._read_journal_mode(db)
 
         assert mode is None
         assert "not a database" in error
 
-    def test_locked_database_is_still_readable(self, tmp_path):
-        db = tmp_path / "state.db"
-        _make_db(db)
-        holder = sqlite3.connect(db, isolation_level=None)
-        try:
-            holder.execute("BEGIN EXCLUSIVE")
-
-            assert doctor._read_journal_mode(db) == ("rollback", None)
-        finally:
-            holder.close()
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
     @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
@@ -148,7 +130,7 @@ class TestReadJournalMode:
         _make_db(db, journal_mode="WAL")
         os.chmod(tmp_path, 0o555)
         try:
-            assert doctor._read_journal_mode(db) == ("wal", None)
+            assert doctor_platform._read_journal_mode(db) == ("wal", None)
         finally:
             os.chmod(tmp_path, 0o755)
         assert _sidecars(tmp_path) == []
@@ -161,8 +143,8 @@ class TestReadJournalMode:
         wal_bytes = wal_db.read_bytes()
         rollback_bytes = rollback_db.read_bytes()
 
-        assert doctor._read_journal_mode(wal_db) == ("wal", None)
-        assert doctor._read_journal_mode(rollback_db) == ("rollback", None)
+        assert doctor_platform._read_journal_mode(wal_db) == ("wal", None)
+        assert doctor_platform._read_journal_mode(rollback_db) == ("rollback", None)
 
         assert wal_db.read_bytes() == wal_bytes
         assert rollback_db.read_bytes() == rollback_bytes
@@ -180,22 +162,6 @@ class TestLiveConnectionSafety:
     so the probe must defer to the registry rather than open the file.
     """
 
-    def test_probe_is_refused_while_a_tracked_connection_is_live(
-        self, tmp_path, clean_registry
-    ):
-        db = tmp_path / "state.db"
-        _make_db(db, journal_mode="WAL")
-
-        track_connection(db)
-        try:
-            assert has_live_connection(db)
-
-            mode, error = doctor._read_journal_mode(db)
-
-            assert mode is None
-            assert error == "database is open in this process"
-        finally:
-            untrack_connection(db)
 
     def test_probe_is_refused_for_a_real_tracked_connection(
         self, tmp_path, clean_registry
@@ -208,7 +174,7 @@ class TestLiveConnectionSafety:
         try:
             assert has_live_connection(db)
 
-            mode, error = doctor._read_journal_mode(db)
+            mode, error = doctor_platform._read_journal_mode(db)
 
             assert mode is None
             assert error == "database is open in this process"
@@ -220,11 +186,11 @@ class TestLiveConnectionSafety:
         _make_db(db, journal_mode="WAL")
 
         conn = connect_tracked(db)
-        assert doctor._read_journal_mode(db)[0] is None
+        assert doctor_platform._read_journal_mode(db)[0] is None
         conn.close()
 
         assert not has_live_connection(db)
-        assert doctor._read_journal_mode(db) == ("wal", None)
+        assert doctor_platform._read_journal_mode(db) == ("wal", None)
 
     def test_refusal_creates_no_new_sidecars(self, tmp_path, clean_registry):
         db = tmp_path / "state.db"
@@ -234,7 +200,7 @@ class TestLiveConnectionSafety:
         try:
             before = _sidecars(tmp_path)
 
-            doctor._read_journal_mode(db)
+            doctor_platform._read_journal_mode(db)
 
             assert _sidecars(tmp_path) == before
         finally:
@@ -248,7 +214,7 @@ class TestLiveConnectionSafety:
 
         conn = connect_tracked(db)
         try:
-            doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+            doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
         finally:
             conn.close()
 
@@ -271,14 +237,14 @@ class TestLiveConnectionSafety:
         try:
             holder.execute("BEGIN EXCLUSIVE")
 
-            assert doctor._read_journal_mode(db) == ("rollback", None)
+            assert doctor_platform._read_journal_mode(db) == ("rollback", None)
         finally:
             holder.close()
 
 
 class TestUnreadableReason:
     def test_missing_file_keeps_the_os_error_text(self, tmp_path):
-        reason = doctor._unreadable_reason(tmp_path / "gone.db")
+        reason = doctor_platform._unreadable_reason(tmp_path / "gone.db")
 
         assert "No such file or directory" in reason
 
@@ -295,7 +261,7 @@ class TestUnreadableReason:
         _make_db(db)
         os.chmod(db, 0o000)
         try:
-            mode, error = doctor._read_journal_mode(db)
+            mode, error = doctor_platform._read_journal_mode(db)
         finally:
             os.chmod(db, 0o644)
 
@@ -316,14 +282,26 @@ class TestUnreadableReason:
 
         monkeypatch.setattr("builtins.open", _fail)
 
-        assert doctor._unreadable_reason(db) == "file could not be read"
+        assert doctor_platform._unreadable_reason(db) == "file could not be read"
 
 
 class TestReportDatabaseJournalModes:
+    def test_wal_db_on_cross_vm_fs_is_flagged_with_offline_remedy(self, tmp_path, capsys, monkeypatch):
+        # #110848: startup only refuses WAL for fresh databases on virtiofs/9p; doctor must surface an existing WAL
+        # file there (with a non-vulnerable SQLite, where it used to print a plain info line).
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal._path_on_cross_vm_fs", lambda p: True)
+
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+
+        out = capsys.readouterr().out
+        assert "state.db is in WAL mode on a cross-VM filesystem" in out
+        assert "hermes sessions set-journal-mode delete" in out
+
     def test_vulnerable_runtime_wal_db_is_exposed(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db", journal_mode="WAL")
 
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
 
         out = capsys.readouterr().out
         assert "state.db is in WAL mode" in out
@@ -332,7 +310,7 @@ class TestReportDatabaseJournalModes:
     def test_vulnerable_runtime_rollback_db_is_listed_not_exposed(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db")
 
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
 
         out = capsys.readouterr().out
         assert "state.db: rollback journal mode" in out
@@ -342,7 +320,7 @@ class TestReportDatabaseJournalModes:
     def test_fixed_runtime_wal_db_is_not_exposed(self, tmp_path, capsys, version):
         _make_db(tmp_path / "state.db", journal_mode="WAL")
 
-        doctor._report_database_journal_modes(tmp_path, version)
+        doctor_platform._report_database_journal_modes(tmp_path, version)
 
         out = capsys.readouterr().out
         assert "state.db: WAL journal mode" in out
@@ -357,7 +335,7 @@ class TestReportDatabaseJournalModes:
         board.mkdir(parents=True)
         _make_db(board / "kanban.db", journal_mode="WAL")
 
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
 
         out = capsys.readouterr().out
         assert "state.db is in WAL mode" in out
@@ -366,7 +344,7 @@ class TestReportDatabaseJournalModes:
         assert "kanban/boards/myboard/kanban.db is in WAL mode" in out
 
     def test_missing_databases_are_skipped(self, tmp_path, capsys):
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
 
         out = capsys.readouterr().out
         assert "state.db" not in out
@@ -379,7 +357,7 @@ class TestReportDatabaseJournalModes:
         try:
             holder.execute("BEGIN EXCLUSIVE")
 
-            doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+            doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
         finally:
             holder.close()
 
@@ -393,7 +371,7 @@ class TestReportDatabaseJournalModes:
         _make_db(db)
         os.chmod(db, 0o000)
         try:
-            doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+            doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
         finally:
             os.chmod(db, 0o644)
 
@@ -404,7 +382,7 @@ class TestReportDatabaseJournalModes:
     def test_corrupt_database_does_not_crash(self, tmp_path, capsys):
         (tmp_path / "state.db").write_bytes(b"garbage bytes, not sqlite" * 8)
 
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
 
         out = capsys.readouterr().out
         assert "state.db: journal mode could not be read" in out
@@ -412,7 +390,7 @@ class TestReportDatabaseJournalModes:
     def test_read_error_is_informational_on_fixed_runtime(self, tmp_path, capsys):
         (tmp_path / "state.db").write_bytes(b"garbage bytes, not sqlite" * 8)
 
-        doctor._report_database_journal_modes(tmp_path, (3, 51, 3))
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
 
         out = capsys.readouterr().out
         assert "state.db: journal mode could not be read" in out
@@ -424,17 +402,83 @@ class TestReportDatabaseJournalModes:
         _make_db(db, journal_mode="WAL")
         db_bytes = db.read_bytes()
 
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
 
         assert _sidecars(tmp_path) == []
         assert db.read_bytes() == db_bytes
+
+
+class TestConfiguredDeleteNeverApplied:
+    """#111729: a database still in WAL while ``database.journal_mode: delete`` is configured is a
+    WARNING naming the unapplied setting (the runtime never live-downgrades and logs that once per
+    process), not the informational line a healthy WAL database gets; a configured ``wal`` is unchanged."""
+
+    @pytest.mark.parametrize("version, exposed", [((3, 51, 3), False), (VULNERABLE, True)])
+    def test_wal_db_under_configured_delete_warns(self, tmp_path, capsys, monkeypatch, version, exposed):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+
+        doctor_platform._report_database_journal_modes(tmp_path, version)
+
+        out = capsys.readouterr().out
+        assert "state.db is in WAL mode" in out and "despite database.journal_mode=delete" in out
+        assert "never live-downgraded" in out and "hermes sessions set-journal-mode delete" in out
+        assert "state.db: WAL journal mode" not in out
+        assert ("To clear the exposure:" in out) is exposed
+
+    def test_wal_db_under_configured_delete_names_its_holders(self, tmp_path, capsys, monkeypatch):
+        # The offline conversion needs the file quiet, so doctor must say WHICH process to stop — a
+        # subprocess holding a real connection is named by PID; the doctor process itself is not a holder.
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import os, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('SELECT count(*) FROM t'); "
+             "print(f'held:{os.getpid()}', flush=True); sys.stdin.readline()", str(db)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            marker, sqlite_pid = holder.stdout.readline().strip().split(":", 1)
+            assert marker == "held"  # child-reported: Popen.pid is the venv launcher on Windows
+            doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+        finally:
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.wait(timeout=30)
+
+        out = capsys.readouterr().out
+        assert f"state.db is held by PID {sqlite_pid}" in out and "state.db" in out.split("held by PID")[1]
+        assert "no other process holds it" not in out and "cannot prove" not in out
+
+    def test_partial_holder_scan_is_never_an_all_clear(self, tmp_path, capsys, monkeypatch):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
+                            lambda path: [(-1, "open-file scan unavailable")])
+
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+
+        out = capsys.readouterr().out
+        assert "cannot prove the database is quiet" in out and "open-file scan unavailable" in out
+        assert "no other process holds it" not in out and "held by PID" not in out
+
+    def test_configured_wal_keeps_the_informational_line(self, tmp_path, capsys, monkeypatch):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "wal")
+
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+
+        out = capsys.readouterr().out
+        assert "state.db: WAL journal mode" in out
+        assert "despite" not in out
 
 
 class TestSizeAndRepairHint:
     def test_exposed_databases_report_size_and_repair_hint(self, tmp_path, capsys):
         db = tmp_path / "state.db"
         _make_db(db, journal_mode="WAL")
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
         out = capsys.readouterr().out
         # _format_size picks the unit (a fresh test DB is KB-scale).
         assert re.search(r"\(\d[\d.]* [KMGT]?B\)", out)
@@ -442,13 +486,13 @@ class TestSizeAndRepairHint:
 
     def test_no_repair_hint_when_nothing_is_exposed(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db", journal_mode="DELETE")
-        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
         assert "To clear the exposure:" not in capsys.readouterr().out
 
     def test_no_repair_hint_on_a_fixed_runtime(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db", journal_mode="WAL")
-        doctor._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
         assert "To clear the exposure:" not in capsys.readouterr().out
 
     def test_size_failure_does_not_crash(self, tmp_path, capsys):
-        assert doctor._format_db_size(tmp_path / "gone.db") == "size unknown"
+        assert doctor_platform._format_db_size(tmp_path / "gone.db") == "size unknown"

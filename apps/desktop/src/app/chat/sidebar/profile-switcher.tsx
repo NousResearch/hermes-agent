@@ -18,6 +18,7 @@ import {
   useSortable
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -50,6 +51,7 @@ import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
+import { profileShortLabel } from '@/lib/profile-short-label'
 import {
   REORDER_DRAG_TRANSITION_CSS,
   REORDER_RAIL_TRANSITION,
@@ -97,6 +99,7 @@ import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
 import { ConnectionGlyph } from './connection-glyph'
 import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
+import { ProfileLaunchContextMenu, ProfileLaunchMenuSection } from './profile-launch-menu'
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
@@ -178,8 +181,9 @@ export function ProfileRail() {
   const connections = registry?.connections
 
   const restGroups = useMemo(
-    () => (multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], roster }) : []),
-    [activeConnectionId, connections, multipleConnections, roster]
+    () =>
+      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster }) : [],
+    [activeConnectionId, connections, multipleConnections, order, roster]
   )
 
   // Fleet mode needs something to show beside the active gateway. Two
@@ -190,6 +194,9 @@ export function ProfileRail() {
   // Registry order for the whole strip, active group included — the active
   // gateway keeps its slot instead of jumping to the front on a switch.
   const activeConnection = connections?.find(connection => connection.id === activeConnectionId) ?? null
+  // Named picks on This device retain the legacy profile door, which resolves
+  // per-profile remote overrides. At-rest fleet actions keep their exact source.
+  const namedProfileConnectionId = activeConnectionId === LOCAL_CONNECTION_ID ? null : activeConnectionId
 
   const fleetSequence = useMemo(() => {
     const byId = new Map(restGroups.map(group => [group.connectionId, group]))
@@ -369,8 +376,10 @@ export function ProfileRail() {
                 <ProfileSquare
                   active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                   color={resolveProfileColor(profile.name, colors)}
+                  connectionId={namedProfileConnectionId}
                   key={profile.name}
                   label={profileLabel(profile)}
+                  name={profile.name}
                   // The legacy per-profile remote override predates the
                   // gateway registry; once the rail shows machines directly
                   // it only confuses, so it is offered on single-gateway
@@ -425,9 +434,11 @@ export function ProfileRail() {
           // profile) → return to default. So leaving a profile never lands on all.
           <ProfilePill
             active={isAll || onDefault}
+            connectionId={activeConnectionId ?? undefined}
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
+            profile={defaultProfile.name}
           />
         ) : (
           <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
@@ -437,20 +448,23 @@ export function ProfileRail() {
       {!fleet && !multiProfile && defaultProfile && (
         <ProfilePill
           active
+          connectionId={activeConnectionId ?? undefined}
           glyph="home"
           label={profileLabel(defaultProfile)}
           onSelect={() => selectProfile(defaultProfile.name)}
+          profile={defaultProfile.name}
         />
       )}
 
       {condensed ? (
         // Condensed path: one compact dropdown instead of N squares. No drag
-        // reorder, no long-press recolor, no per-square context menu — Manage
-        // covers rename/delete at this scale.
+        // reorder or long-press recolor; right-click rows keeps launch actions
+        // available, while Manage covers rename/delete at this scale.
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <ProfileDropdown
             activeKey={isAll ? null : activeKey}
             colors={colors}
+            connectionId={namedProfileConnectionId}
             onCreate={() => setCreateOpen(true)}
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
@@ -488,9 +502,11 @@ export function ProfileRail() {
                       {defaultProfile && (
                         <ProfilePill
                           active={onDefault}
+                          connectionId={activeConnectionId ?? undefined}
                           glyph="home"
                           label={profileLabel(defaultProfile)}
                           onSelect={() => selectProfile(defaultProfile.name)}
+                          profile={defaultProfile.name}
                         />
                       )}
                       {activeStrip}
@@ -725,6 +741,7 @@ function ImportProfileButton({ label }: { label: string }) {
 function ProfileDropdown({
   activeKey,
   colors,
+  connectionId,
   onCreate,
   onImport,
   onSelect,
@@ -734,6 +751,7 @@ function ProfileDropdown({
 }: {
   activeKey: null | string
   colors: Record<string, string>
+  connectionId: null | string
   onCreate: () => void
   onImport: () => void
   onSelect: (name: string) => void
@@ -791,6 +809,7 @@ function ProfileDropdown({
           {profiles.map(profile => (
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
+              connectionId={connectionId}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
@@ -806,22 +825,28 @@ function ProfileDropdown({
               {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
             </DropdownMenuLabel>
             {[group.defaultAgent, ...group.named].map(agent => (
-              <DropdownMenuItem
-                aria-label={p.fleet.onGateway(agent.profile, group.label)}
-                className="min-w-0"
+              <ProfileLaunchContextMenu
+                connectionId={agent.connectionId}
                 key={agent.profile}
-                onSelect={() => onSelectRest(agent)}
+                label={p.fleet.onGateway(agent.profile, group.label)}
+                profile={agent.profile}
               >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <ProfileGlyph
-                    aria-hidden="true"
-                    color={resolveProfileColor(agent.profile, colors)}
-                    isDefault={agent.isDefault}
-                    name={agent.profile}
-                  />
-                  <span className="truncate">{agent.profile}</span>
-                </span>
-              </DropdownMenuItem>
+                <DropdownMenuItem
+                  aria-label={p.fleet.onGateway(agent.profile, group.label)}
+                  className="min-w-0"
+                  onSelect={() => onSelectRest(agent)}
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <ProfileGlyph
+                      aria-hidden="true"
+                      color={resolveProfileColor(agent.profile, colors)}
+                      isDefault={agent.isDefault}
+                      name={agent.profile}
+                    />
+                    <span className="truncate">{agent.profile}</span>
+                  </span>
+                </DropdownMenuItem>
+              </ProfileLaunchContextMenu>
             ))}
           </div>
         ))}
@@ -832,21 +857,34 @@ function ProfileDropdown({
 
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
-function ProfileDropdownItem({ color, label, name }: { color: null | string; label: string; name: string }) {
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
+function ProfileDropdownItem({
+  color,
+  connectionId,
+  label,
+  name
+}: {
+  color: null | string
+  connectionId: null | string
+  label: string
+  name: string
+}) {
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
 
   return (
-    <DropdownMenuRadioItem
-      className="min-w-0"
-      onPointerEnter={startPrewarm}
-      onPointerLeave={cancelPrewarm}
-      value={name}
-    >
-      <span className="flex min-w-0 items-center gap-1.5">
-        <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
-        <span className="truncate">{label}</span>
-      </span>
-    </DropdownMenuRadioItem>
+    <ProfileLaunchContextMenu connectionId={connectionId} label={label} profile={name}>
+      <DropdownMenuRadioItem
+        className="min-w-0"
+        onPointerEnter={startPrewarm}
+        onPointerLeave={cancelPrewarm}
+        onPointerMove={notePointerMove}
+        value={name}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+          <span className="truncate">{label}</span>
+        </span>
+      </DropdownMenuRadioItem>
+    </ProfileLaunchContextMenu>
   )
 }
 
@@ -861,6 +899,7 @@ interface ProfilePillProps {
   pending?: boolean
   slot?: string
   connectionId?: string
+  profile?: string
 }
 
 function ProfilePill({
@@ -871,9 +910,10 @@ function ProfilePill({
   muted = false,
   onSelect,
   pending = false,
+  profile,
   slot
 }: ProfilePillProps) {
-  return (
+  const button = (
     <Tip label={label}>
       <Button
         aria-busy={pending || undefined}
@@ -898,6 +938,14 @@ function ProfilePill({
         )}
       </Button>
     </Tip>
+  )
+
+  return profile ? (
+    <ProfileLaunchContextMenu connectionId={connectionId ?? null} label={profile} profile={profile}>
+      {button}
+    </ProfileLaunchContextMenu>
+  ) : (
+    button
   )
 }
 
@@ -989,6 +1037,7 @@ function FleetRestGroup({
           muted
           onSelect={() => onSelect(group.defaultAgent)}
           pending={pendingRoute === defaultKey}
+          profile={group.defaultAgent.profile}
           slot="profile-rail-rest-home"
         />
         {group.named.map(agent => (
@@ -1067,7 +1116,7 @@ function RestSquare({
                     {pending ? (
                       <Loader2 aria-hidden="true" className="size-3 animate-spin" />
                     ) : (
-                      agent.profile.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'
+                      profileShortLabel(agent.profile)
                     )}
                   </button>
                 </TooltipTrigger>
@@ -1079,10 +1128,11 @@ function RestSquare({
 
         <ContextMenuContent
           aria-label={p.actions}
-          className="w-44"
+          className="min-w-52"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
           onCloseAutoFocus={event => event.preventDefault()}
         >
+          <ProfileLaunchMenuSection connectionId={agent.connectionId} label={label} profile={agent.profile} />
           <ContextMenuItem onSelect={onSelect}>
             <Codicon name="arrow-right" size="0.875rem" />
             <span className="truncate">{p.fleet.switchTo(agent.profile, agent.connectionLabel)}</span>
@@ -1132,7 +1182,9 @@ function RestSquare({
 interface ProfileSquareProps {
   active: boolean
   color: null | string
+  connectionId: null | string
   label: string
+  name: string
   onSelect: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
@@ -1160,7 +1212,9 @@ const LONG_PRESS_MS = 450
 function ProfileSquare({
   active,
   color,
+  connectionId,
   label,
+  name,
   onConnectRemote,
   onDelete,
   onEditSoul,
@@ -1177,10 +1231,10 @@ function ProfileSquare({
   const suppressClick = useRef(false)
   // Hovering a square telegraphs the switch — start that profile's backend
   // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(label)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
-    id: label,
+    id: name,
     transition: RAIL_TRANSITION
   })
 
@@ -1272,9 +1326,10 @@ function ProfileSquare({
                       clearPress()
                       cancelPrewarm()
                     }}
+                    onPointerMove={notePointerMove}
                     onPointerUp={clearPress}
                   >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    {profileShortLabel(label)}
                     {/* The "remote" badge: a tiny globe pinned to the corner of an
                         overridden profile's square, so which profiles leave this
                         machine is visible at a glance (#91349). */}
@@ -1299,13 +1354,14 @@ function ProfileSquare({
             statusbar) — Radix then flips the menu up instead of squishing it. */}
         <ContextMenuContent
           aria-label={p.actions}
-          className="w-40"
+          className="min-w-52"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
           // Menu close refocuses the trigger — which doubles as the popover
           // anchor — so the picker reads it as focus-outside and dies on open.
           // Suppress the refocus and the picker survives.
           onCloseAutoFocus={event => event.preventDefault()}
         >
+          <ProfileLaunchMenuSection connectionId={connectionId} label={label} profile={name} />
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
             <span>{p.color}</span>
@@ -1318,9 +1374,9 @@ function ProfileSquare({
             <Codicon name="edit" size="0.875rem" />
             <span>{p.editSoul}</span>
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => void runExportProfileFlow(label)}>
+          <ContextMenuItem onSelect={() => void runExportProfileFlow(name)}>
             <Codicon name="package" size="0.875rem" />
-            <span>{p.exportProfile}</span>
+            <span>{p.exportMenu}</span>
           </ContextMenuItem>
           {onConnectRemote && (
             <ContextMenuItem onSelect={onConnectRemote}>

@@ -47,6 +47,7 @@ def fake_telegram_sdk(monkeypatch):
             "Application",
             "CommandHandler",
             "CallbackQueryHandler",
+            "InlineQueryHandler",
             "MessageHandler",
             "TypeHandler",
             "HTTPXRequest",
@@ -69,6 +70,7 @@ def fake_telegram_sdk(monkeypatch):
         "Application",
         "CommandHandler",
         "CallbackQueryHandler",
+        "InlineQueryHandler",
         "MessageHandler",
         "TypeHandler",
     ):
@@ -119,6 +121,7 @@ def test_lazy_install_rebinds_every_placeholder(monkeypatch, fake_telegram_sdk):
         "Application",
         "CommandHandler",
         "CallbackQueryHandler",
+        "InlineQueryHandler",
         "TelegramMessageHandler",
         "TypeHandler",
         "ContextTypes",

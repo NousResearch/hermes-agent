@@ -1,3 +1,5 @@
+import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
+
 import {
   REASONING_PULSE_MS,
   STREAM_BATCH_MS,
@@ -5,17 +7,19 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
-  buildToolTrailLine,
-  buildVerboseToolTrailLine,
   estimateTokensRough,
+  formatToolCall,
+  formatToolLabel,
   isTransientTrailLine,
   sameToolTrailGroup,
-  toolTrailLabel
+  toolTrailLabel,
+  toolTrailLine,
+  verboseToolTrailLine
 } from '../lib/text.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
@@ -24,6 +28,28 @@ import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+
+function toolTrailLines(
+  done: ActiveTool | undefined,
+  name: string,
+  labels: readonly ToolLabel[],
+  summary: string,
+  resultText: string,
+  took?: number
+): string[] {
+  const heads = labels.length ? labels.map(formatToolLabel) : [formatToolCall(name, done?.context || '')]
+  const verbose = Boolean(done?.verboseArgs || resultText)
+
+  return heads.map((head, index) => {
+    if (index < heads.length - 1) {
+      return toolTrailLine(head)
+    }
+
+    return verbose
+      ? verboseToolTrailLine(head, false, took, done?.verboseArgs, resultText || summary)
+      : toolTrailLine(head, false, summary, took)
+  })
+}
 
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
@@ -66,10 +92,14 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
+      const id = String(row.id ?? '').trim()
+      const parent = String(row.parent ?? '').trim()
+
       return {
         content: String(row.content ?? '').trim(),
-        id: String(row.id ?? '').trim(),
-        status
+        id,
+        status,
+        ...(parent && parent !== id ? { parent } : {})
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))
@@ -132,7 +162,6 @@ class TurnController {
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
-  private toolProgressTimer: Timer = null
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -293,7 +322,7 @@ class TurnController {
       tools: [],
       turnTrail: []
     })
-    patchUiState({ busy: false })
+    patchUiState({ busy: false, compacting: false })
     resetFlowOverlays()
   }
 
@@ -552,6 +581,9 @@ class TurnController {
   }
 
   recordError() {
+    // A failed turn discards the whole unsealed turn (flushed segments AND the
+    // streaming tail) — unlike recordMessageComplete, which must keep the tail
+    // (#61520), and interruptTurn, which preserves it as `partial`.
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -564,12 +596,7 @@ class TurnController {
     this.flushPendingNotice()
   }
 
-  recordMessageComplete(payload: {
-    rendered?: string
-    reasoning?: string
-    response_previewed?: boolean
-    text?: string
-  }) {
+  recordMessageComplete(payload: MessageCompletePayload) {
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -578,7 +605,22 @@ class TurnController {
     // `display.final_response_markdown: render` because raw ANSI escapes
     // pass through into the React tree.  Prefer raw text and fall back
     // only when the gateway elected not to send any (#16391).
-    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
+    // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
+    const wireText = typeof payload.text === 'string' ? payload.text : undefined
+    const completionText = wireText ?? payload.rendered
+    const rawText = (completionText ?? this.bufRef).trimStart()
+
+    // Text still in `this.bufRef` streamed after the last segment flush; `idle()`
+    // below would wipe it (#61520). Flush it as a segment only when the
+    // gateway's final text does not already carry it — otherwise the tail IS
+    // the answer and flushing would move the tool shelf/trail under it. Skipped
+    // when `completionText` is absent: `rawText` is then the buffer (#16391).
+    const tail = this.bufRef.trim()
+
+    if (tail && completionText != null && !completionText.includes(tail)) {
+      this.flushStreamingSegment()
+    }
+
     const split = splitReasoning(rawText)
     // Only dedupe segments AFTER the interim boundary — interim-sealed
     // segments are preserved even if the final text includes them.
@@ -675,7 +717,7 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
     if (this.interrupted || !text) {
       return
     }
@@ -796,20 +838,20 @@ class TurnController {
   recordToolComplete(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
     todos?: unknown,
-    resultText?: string
+    resultText?: string,
+    labels?: ToolLabel[]
   ) {
     if (this.interrupted) {
       return
     }
 
     this.recordTodos(todos)
-    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
+    const lines = this.completeTool(toolId, fallbackName, summary, duration, resultText, labels)
 
-    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+    this.pendingSegmentTools = [...this.pendingSegmentTools, ...lines]
     this.flushPendingToolsIntoLastSegment()
     this.publishToolState()
   }
@@ -818,49 +860,37 @@ class TurnController {
     diffText: string,
     toolId: string,
     fallbackName?: string,
-    error?: string,
     duration?: number,
-    resultText?: string
+    resultText?: string,
+    labels?: ToolLabel[]
   ) {
     if (this.interrupted) {
       return
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
+    this.pushInlineDiffSegment(diffText, this.completeTool(toolId, fallbackName, '', duration, resultText, labels))
     this.publishToolState()
   }
 
+  // `tool.complete` carries no error flag on the wire (tui_gateway/tool_progress.py::_on_tool_complete);
+  // a failed tool surfaces through its result text, so every trail line renders as non-error.
   private completeTool(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
-    resultText?: string
+    resultText?: string,
+    eventLabels?: ToolLabel[]
   ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
+    const labels = eventLabels?.length ? eventLabels : (done?.labels ?? [])
     const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
+    const took = duration ?? fallbackDuration
 
-    const line =
-      done?.verboseArgs || resultText
-        ? buildVerboseToolTrailLine(
-            name,
-            done?.context || '',
-            Boolean(error),
-            duration ?? fallbackDuration,
-            done?.verboseArgs,
-            error || resultText || summary || ''
-          )
-        : buildToolTrailLine(
-            name,
-            done?.context || '',
-            Boolean(error),
-            error || summary || '',
-            duration ?? fallbackDuration
-          )
+    const lines = toolTrailLines(done, name, labels, summary || '', resultText || '', took)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -872,7 +902,7 @@ class TurnController {
 
     this.turnTools = next.slice(-TRAIL_LIMIT)
 
-    return line
+    return lines
   }
 
   private publishToolState() {
@@ -883,30 +913,7 @@ class TurnController {
     })
   }
 
-  recordToolProgress(toolName: string, preview: string) {
-    if (this.interrupted) {
-      return
-    }
-
-    const index = this.activeTools.findIndex(tool => tool.name === toolName)
-
-    if (index < 0) {
-      return
-    }
-
-    this.activeTools = this.activeTools.map((tool, i) => (i === index ? { ...tool, context: preview } : tool))
-
-    if (this.toolProgressTimer) {
-      return
-    }
-
-    this.toolProgressTimer = setTimeout(() => {
-      this.toolProgressTimer = null
-      patchTurnState({ tools: [...this.activeTools] })
-    }, STREAM_BATCH_MS)
-  }
-
-  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
+  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string, labels?: ToolLabel[]) {
     if (this.interrupted) {
       return
     }
@@ -919,7 +926,7 @@ class TurnController {
     const sample = `${name} ${context}`.trim()
 
     this.toolTokenAcc += sample ? estimateTokensRough(sample) : 0
-    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now(), verboseArgs }]
+    this.activeTools = [...this.activeTools, { context, id: toolId, labels, name, startedAt: Date.now(), verboseArgs }]
 
     patchTurnState({ toolTokens: this.toolTokenAcc, tools: this.activeTools })
   }
@@ -1036,11 +1043,12 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
+        delegationId: p.delegation_id ?? undefined,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
         index: p.task_index,
-        model: p.model,
+        model: p.model ?? undefined,
         notes: [],
         parentId: p.parent_id ?? null,
         startedAt: Date.now(),
@@ -1049,7 +1057,7 @@ class TurnController {
         thinking: [],
         toolCount: p.tool_count ?? 0,
         tools: [],
-        toolsets: p.toolsets
+        toolsets: p.toolsets ?? undefined
       }
 
       // Map snake_case payload keys onto camelCase state.  Only overwrite
@@ -1066,13 +1074,12 @@ class TurnController {
       const next: SubagentProgress = {
         ...base,
         apiCalls: p.api_calls ?? base.apiCalls,
-        costUsd: p.cost_usd ?? base.costUsd,
+        delegationId: p.delegation_id ?? base.delegationId,
         depth: p.depth ?? base.depth,
         filesRead: p.files_read ?? base.filesRead,
         filesWritten: p.files_written ?? base.filesWritten,
         goal: p.goal || base.goal,
         inputTokens: p.input_tokens ?? base.inputTokens,
-        iteration: p.iteration ?? base.iteration,
         model: p.model ?? base.model,
         outputTail,
         outputTokens: p.output_tokens ?? base.outputTokens,

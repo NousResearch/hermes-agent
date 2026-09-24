@@ -1,5 +1,5 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
@@ -67,6 +67,101 @@ describe('ThemeProvider ← backend skin sync', () => {
       ingestBackendSkin({ name: 'forest', colors: { background: '#001100', ui_text: '#66ff66' } }, { apply: false })
     )
     expect(cssVar('--theme-foreground')).toBe('#ff9f0a')
+  })
+
+  // The relaunch bug: the persisted pick was a backend skin, and the boot paint
+  // ran before the gateway seeded it. `normalizeSkin` could not resolve the
+  // name, flattened it to the default, and the connect-time seed (apply: false,
+  // by design) never repainted — so the theme "didn't stick" until `/skin`.
+  it('paints a persisted backend skin once the connect-time seed makes it resolvable', () => {
+    window.localStorage.setItem('hermes-desktop-theme-v2', 'bloomberg')
+
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    // Boot: nothing resolves 'bloomberg' yet → default paint...
+    expect(cssVar('--theme-background-seed')).not.toBe('#000000')
+
+    // ...but the pick survives, so the seed alone repaints it.
+    act(() => ingestBackendSkin(bloomberg('#ff9f0a'), { apply: false }))
+
+    expect(cssVar('--theme-background-seed')).toBe('#000000')
+    expect(skinPref.resolve('default')).toBe('bloomberg')
+  })
+
+  it('uses the local bridge skin when a remote gateway has not connected yet', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const [{ ThemeProvider: FreshThemeProvider }, freshSync] = await Promise.all([
+        import('./context'),
+        import('./backend-sync')
+      ])
+
+      expect(freshSync.$backendThemes.get().bloomberg?.name).toBe('bloomberg')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(cssVar('--theme-background-seed')).toBe('#000000')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
+  })
+
+  it('keeps a saved desktop appearance ahead of the local bridge fallback', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      window.localStorage.setItem('hermes-desktop-theme-v2', 'everforest')
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const { ThemeProvider: FreshThemeProvider } = await import('./context')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(window.document.documentElement.dataset.hermesTheme).toBe('everforest')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
   })
 })
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
@@ -13,6 +14,9 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $bargeInThresholdMultiplier } from '@/store/voice-prefs'
+
+import { useComposerScope } from '../scope'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -60,6 +64,12 @@ export function useVoiceConversation({
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level } = useMicRecorder(voiceCopy)
+  // The scope's session owner (a Bot's own connection + profile) picks the TTS
+  // voice; a ref keeps the long-lived turn closures below reading the current
+  // value.
+  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
+  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
+  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
@@ -118,6 +128,14 @@ export function useVoiceConversation({
     statusRef.current = status
   }, [status])
 
+  // The sentence-by-sentence fallback polls the pending reply on a timer; it
+  // must not outlive the session or the hook (a stray tick after unmount hits
+  // a torn-down window).
+  const cancelFallbackPollRef = useRef<(() => void) | null>(null)
+
+   
+  useEffect(() => () => cancelFallbackPollRef.current?.(), [])
+
   const clearTurnTimeout = () => {
     if (turnTimeoutRef.current) {
       window.clearTimeout(turnTimeoutRef.current)
@@ -126,6 +144,7 @@ export function useVoiceConversation({
   }
 
   const dropSpeechSession = () => {
+    cancelFallbackPollRef.current?.()
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
@@ -385,6 +404,7 @@ export function useVoiceConversation({
 
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
+      thresholdMultiplier: $bargeInThresholdMultiplier.get(),
       onSpeech: () => {
         bargeCapturePendingRef.current = true
         bargedRef.current = true
@@ -422,8 +442,14 @@ export function useVoiceConversation({
           spokenSourceLengthRef.current = response.text.length
         }
 
-        if (!response.pending && !busyRef.current) {
-          session.finish()
+        if (!response.pending) {
+          // A sealed interim is a committed boundary even while its tool runs.
+          // Keep the session open for the next bubble, but speak this tail now.
+          if (busyRef.current) {
+            session.flush?.()
+          } else {
+            session.finish()
+          }
         }
       } else if (!busyRef.current) {
         // Reply consumed/vanished while we were speaking — close out the turn.
@@ -433,46 +459,141 @@ export function useVoiceConversation({
     [pendingResponse]
   )
 
-  /** Whole-text fallback: wait for the reply to complete, then speak it. */
+  /** Non-streaming providers still speak completed sentences during generation. */
   const awaitFallbackSpeech = useCallback(
     (responseId: string) => {
+      const sentenceBuffer = new IncrementalSpeechSentenceBuffer()
+      const speechQueue: string[] = []
+      let sourceLength = 0
+      let responseFinished = false
+      let playing = false
+      let settled = false
+      let pollTimer: number | null = null
+      let ownedSequence = $voicePlayback.get().sequence
+
+      const cancelPoll = () => {
+        settled = true
+
+        if (pollTimer !== null) {
+          window.clearTimeout(pollTimer)
+          pollTimer = null
+        }
+
+        if (cancelFallbackPollRef.current === cancelPoll) {
+          cancelFallbackPollRef.current = null
+        }
+      }
+
+      cancelFallbackPollRef.current = cancelPoll
+
+      const finishFallback = (barged: boolean, stopped = false) => {
+        if (settled) {
+          return
+        }
+
+        cancelPoll()
+        awaitingSpokenResponseRef.current = false
+        settleAfterSpeech(barged, stopped)
+      }
+
+      const playNext = () => {
+        if (settled || playing || responseIdRef.current !== responseId) {
+          return
+        }
+
+        if ($voicePlayback.get().sequence > ownedSequence) {
+          finishFallback(false, true)
+
+          return
+        }
+
+        const sentence = speechQueue.shift()
+
+        if (!sentence) {
+          if (responseFinished) {
+            finishFallback(bargedRef.current)
+          }
+
+          return
+        }
+
+        ensureBargeMonitor()
+        playing = true
+
+        // The stream path (client-direct, else WS relay) already answered
+        // `fallback` or was unavailable for this reply — POST each sentence
+        // straight to /api/audio/speak (same server TTS) instead of re-probing.
+        const playback = playSpeechText(sentence, {
+          ...ownerRef.current,
+          source: 'voice-conversation',
+          syncOnly: true
+        })
+
+        ownedSequence = $voicePlayback.get().sequence
+        speechStartSequenceRef.current = ownedSequence
+        let playbackFailed = false
+
+        void playback
+          .catch(error => {
+            playbackFailed = true
+            notifyError(error, voiceCopy.playbackFailed)
+          })
+          .finally(() => {
+            if (settled || responseIdRef.current !== responseId) {
+              return
+            }
+
+            playing = false
+
+            if (playbackFailed) {
+              finishFallback(bargedRef.current)
+
+              return
+            }
+
+            const stopped = $voicePlayback.get().sequence > ownedSequence
+
+            if (bargedRef.current || stopped) {
+              finishFallback(bargedRef.current, stopped && !bargedRef.current)
+
+              return
+            }
+
+            playNext()
+          })
+      }
+
       const poll = () => {
-        if (responseIdRef.current !== responseId) {
+        if (settled || responseIdRef.current !== responseId) {
           return
         }
 
         const response = pendingResponse()
 
         if (!response || response.id !== responseId) {
-          settleAfterSpeech(false)
+          finishFallback(false)
 
           return
         }
 
-        if (response.pending || busyRef.current) {
-          window.setTimeout(poll, 250)
-
-          return
+        if (response.text.length > sourceLength) {
+          speechQueue.push(...sentenceBuffer.append(response.text.slice(sourceLength)))
+          sourceLength = response.text.length
         }
 
-        // The full-duplex monitor is normally already live (armed at submit);
-        // this is a safety net for read-aloud-style entries into the loop.
-        ensureBargeMonitor()
+        if (!response.pending && !responseFinished) {
+          // A sealed interim bubble while a tool runs: speak its trimmed last
+          // sentence now (mirrors feedSpeechSession's session.flush) instead
+          // of holding it for the whole tool run. Finished only once idle.
+          speechQueue.push(...sentenceBuffer.flush())
+          responseFinished = !busyRef.current
+        }
 
-        const playback = playSpeechText(response.text, { source: 'voice-conversation' })
-        // playSpeechText performs its normal cleanup synchronously before
-        // returning. Capture the sequence after that internal increment so
-        // only a later, external stop suppresses the next listen cycle.
-        speechStartSequenceRef.current = $voicePlayback.get().sequence
+        playNext()
 
-        void playback
-          .catch(error => notifyError(error, voiceCopy.playbackFailed))
-          .finally(() => {
-            if (responseIdRef.current === responseId) {
-              awaitingSpokenResponseRef.current = false
-              settleAfterSpeech(bargedRef.current)
-            }
-          })
+        if (!responseFinished) {
+          pollTimer = window.setTimeout(poll, 150)
+        }
       }
 
       poll()
@@ -487,6 +608,10 @@ export function useVoiceConversation({
    */
   const openLiveSpeech = useCallback(
     (responseId: string) => {
+      if (responseIdRef.current === responseId) {
+        return
+      }
+
       const sequenceBeforeStart = $voicePlayback.get().sequence
 
       responseIdRef.current = responseId
@@ -500,7 +625,7 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const session = await startSpeechStream({ source: 'voice-conversation' })
+        const session = await startSpeechStream({ ...ownerRef.current, source: 'voice-conversation' })
 
         // The session may resolve after the loop moved on (barge, disable).
         if (responseIdRef.current !== responseId) {

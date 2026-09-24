@@ -1609,6 +1609,11 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
     return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
 
 
+def _posix_relpath(path: Path, start: Path) -> str:
+    """``os.path.relpath`` with forward slashes, so a label reads the same on every platform."""
+    return os.path.relpath(path, start).replace(os.sep, "/")
+
+
 def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
     ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
@@ -1620,7 +1625,11 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
             if not _exists_or_denied(candidate):
                 continue
             content = _read_context_file(candidate)
-            label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
+            # Forward slashes on every platform: the label is a provenance heading in the system
+            # prompt ("## ../AGENTS.md"), not a path to open, and the sibling .cursor/rules labels
+            # are already spelled that way. os.path.relpath alone made the prompt, and the /context
+            # listing, read "..\AGENTS.md" on Windows.
+            label = name if directory == cwd_resolved else _posix_relpath(candidate, cwd_resolved)
             found.append((label, candidate, content))
             if content:
                 break  # first name match wins per directory

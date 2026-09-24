@@ -99,3 +99,47 @@ def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypat
     assert "evil identity text" in prompt and "[BLOCKED: SOUL.md" not in prompt and "[BLOCKED: AGENTS.md" in prompt
     assert any("SOUL.md" in line and "review the file" in line
                for line in render_context_file_lines(list(entries.values())))
+
+
+# ── provenance labels are spelled the same on every platform ────────────────
+
+
+def test_chain_labels_use_forward_slashes_on_every_platform(project, tmp_path_factory):
+    """The label is a provenance heading in the system prompt ("## ../AGENTS.md"), not a path to
+    open. Building it with ``os.path.relpath`` alone made the prompt — and the ``/context``
+    listing — read "..\\AGENTS.md" on Windows, while the sibling ``.cursor/rules`` labels next to
+    it are spelled with forward slashes, so one manifest carried both conventions."""
+    (project / "AGENTS.md").write_text("root rules")
+    mid = project / "pkg"
+    mid.mkdir()
+    (mid / "AGENTS.md").write_text("pkg rules")
+    deep = mid / "inner"
+    deep.mkdir()
+    (deep / "AGENTS.md").write_text("deep rules")
+    home = tmp_path_factory.mktemp("home")
+
+    sources = list_context_file_sources(cwd=str(deep), home_override=home, skip_soul=True)
+    labels = [s["label"] for s in sources]
+    assert labels == ["../../AGENTS.md", "../AGENTS.md", "AGENTS.md"]
+    assert not any("\\" in label for label in labels)
+
+    # The same spelling is what the model actually sees.
+    prompt = build_context_files_prompt(cwd=str(deep), home_override=home, skip_soul=True)
+    headings = [line for line in prompt.splitlines() if line.startswith("## ")]
+    assert headings == ["## ../../AGENTS.md", "## ../AGENTS.md", "## AGENTS.md"]
+
+
+def test_every_discovered_label_is_slash_spelled(project, tmp_path_factory):
+    """One convention across kinds: the `.cursor/rules/*.mdc` labels were already slash-spelled."""
+    import agent.prompt_builder as pb
+
+    (project / "AGENTS.md").write_text("root rules")
+    sub = project / "pkg"
+    sub.mkdir()
+    (sub / "AGENTS.md").write_text("pkg rules")
+    (sub / ".cursor" / "rules").mkdir(parents=True)
+    (sub / ".cursor" / "rules" / "a.mdc").write_text("mdc rule")
+
+    labels = [label for _kind, label, _path, _content in pb.discover_context_files(sub.resolve())]
+    assert "../AGENTS.md" in labels and ".cursor/rules/a.mdc" in labels
+    assert not any("\\" in label for label in labels)

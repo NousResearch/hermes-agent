@@ -82,7 +82,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
 
 ## Kanban (multi-agent work queue)
 
-Durable SQLite-backed board letting multiple profiles/workers collaborate. Users: `hermes kanban
+Durable SQLite- or PostgreSQL-backed board letting multiple profiles/workers collaborate. Users: `hermes kanban
 <verb>`; dispatcher-spawned workers use a dedicated `kanban_*` toolset so their schema footprint is
 zero outside a kanban task (footprint ladder rung 3).
 
@@ -103,6 +103,10 @@ zero outside a kanban task (footprint ladder rung 3).
   (`kanban.dispatch_in_gateway: true`). Standalone: `plugins/kanban/systemd/hermes-kanban-dispatcher.service`.
 - **Plugin assets:** `plugins/kanban/dashboard/` (web UI) + systemd unit. `kanban_db.connect` is its
   own connection helper — do not alias it to `projects_db.connect` (a path-proximity generator did).
+- **Storage:** SQLite keeps one database file per board. PostgreSQL derives one schema per durable
+  board id from the shared root's `database.schema`; workspaces, attachment bytes, logs, and board
+  metadata remain on the filesystem. Both per-write and whole-dispatch-tick serialization must be
+  preserved across backends.
 
 Isolation: **board** is the hard boundary — workers get `HERMES_KANBAN_BOARD` pinned in their env and
 cannot see other boards; **tenant** is a soft namespace within a board (workspace-path + memory-key

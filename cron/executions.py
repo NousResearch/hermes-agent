@@ -30,6 +30,7 @@ MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
+OWNER_LEASE_SECONDS = 5 * 60.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -94,7 +95,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
+def _transaction(*, write: bool = True) -> Iterator[sqlite3.Connection]:
+    from cron.database import postgres_transaction, uses_postgres
+
+    if uses_postgres(sqlite_override=EXECUTIONS_FILE):
+        with postgres_transaction(store="executions", write=write) as conn:
+            yield conn
+        return
+
     from hermes_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
@@ -175,7 +183,8 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
              WHERE status IN ('completed','failed','unknown')
-             ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
+             ORDER BY finished_at DESC, claimed_at DESC, id DESC
+             LIMIT 9223372036854775807 OFFSET ?
            )""",
         (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
     )
@@ -191,13 +200,23 @@ def create_execution(
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        postgres = is_postgres_connection(conn)
+        columns = ", owner_lease_expires_at" if postgres else ""
+        values = ", ?" if postgres else ""
+        params = [
+            execution_id, str(job_id), str(source), _PROCESS_ID, pid,
+            _process_start_time(pid), now, canonical_instant(scheduled_instant),
+        ]
+        if postgres:
+            params.append(time.time() + OWNER_LEASE_SECONDS)
         conn.execute(
-            """INSERT INTO executions
-               (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at, scheduled_instant)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)""",
-            (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now, canonical_instant(scheduled_instant)),
+            f"""INSERT INTO executions
+                (id, job_id, source, process_id, pid, process_started_at,
+                 status, claimed_at, scheduled_instant{columns})
+                VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?{values})""",
+            params,
         )
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)
@@ -209,10 +228,18 @@ def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
     from cron.occurrences import scheduled_instant
 
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        lease_update = ", owner_lease_expires_at=?" if is_postgres_connection(conn) else ""
+        params = [scheduled_instant(instant)]
+        if lease_update:
+            params.append(time.time() + OWNER_LEASE_SECONDS)
+        params.extend((execution_id, _PROCESS_ID, os.getpid()))
         cur = conn.execute(
-            "UPDATE executions SET scheduled_instant=? WHERE id=? AND status='claimed' "
+            f"UPDATE executions SET scheduled_instant=?{lease_update} "
+            "WHERE id=? AND status='claimed' "
             "AND handoff_pending=0 AND process_id=? AND pid=?",
-            (scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
+            params,
         )
         if cur.rowcount != 1:
             raise RuntimeError("Cron occurrence could not be bound before dispatch")
@@ -221,12 +248,19 @@ def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
 def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:
     """Fence restart recovery while an external worker is adopting a claim."""
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        lease_update = ", owner_lease_expires_at=?" if is_postgres_connection(conn) else ""
+        params = [time.time()]
+        if lease_update:
+            params.append(time.time() + HANDOFF_ADOPTION_GRACE_SECONDS)
+        params.extend((execution_id, _PROCESS_ID, os.getpid()))
         cur = conn.execute(
-            """UPDATE executions
-               SET handoff_pending=1, handoff_started_at=?
+            f"""UPDATE executions
+               SET handoff_pending=1, handoff_started_at=?{lease_update}
                WHERE id=? AND status='claimed'
                  AND process_id=? AND pid=?""",
-            (time.time(), execution_id, _PROCESS_ID, os.getpid()),
+            params,
         )
         if cur.rowcount != 1:
             return None
@@ -246,13 +280,20 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     process_started_at = _process_start_time(pid)
     now = _hermes_now().isoformat()
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        lease_update = ", owner_lease_expires_at=?" if is_postgres_connection(conn) else ""
+        params = [_PROCESS_ID, pid, process_started_at, now]
+        if lease_update:
+            params.append(time.time() + OWNER_LEASE_SECONDS)
+        params.append(execution_id)
         cur = conn.execute(
-            """UPDATE executions
+            f"""UPDATE executions
                SET process_id=?, pid=?, process_started_at=?,
                    status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
+                   handoff_started_at=NULL{lease_update}
                WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (_PROCESS_ID, pid, process_started_at, now, execution_id),
+            params,
         )
         if cur.rowcount != 1:
             return None
@@ -265,13 +306,20 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
     now = _hermes_now().isoformat()
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        lease_update = ", owner_lease_expires_at=?" if is_postgres_connection(conn) else ""
+        params = [now]
+        if lease_update:
+            params.append(time.time() + OWNER_LEASE_SECONDS)
+        params.extend((execution_id, _PROCESS_ID, os.getpid()))
         cur = conn.execute(
-            """UPDATE executions
+            f"""UPDATE executions
                SET status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
+                   handoff_started_at=NULL{lease_update}
                WHERE id=? AND status='claimed' AND handoff_pending=0
                  AND process_id=? AND pid=?""",
-            (now, execution_id, _PROCESS_ID, os.getpid()),
+            params,
         )
         if cur.rowcount != 1:
             return None
@@ -289,10 +337,13 @@ def finish_execution(
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        lease_update = ", owner_lease_expires_at=NULL" if is_postgres_connection(conn) else ""
         cur = conn.execute(
-            """UPDATE executions
+            f"""UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL, delivery_outcome=?
+                   handoff_started_at=NULL, delivery_outcome=?{lease_update}
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
             (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
@@ -316,6 +367,34 @@ _OWNER_WEDGED_REASON = (
 )
 
 
+def heartbeat_execution(execution_id: str) -> bool:
+    """Renew this process's PostgreSQL ownership while a cron run is active."""
+    from cron.database import uses_postgres
+
+    if not uses_postgres(sqlite_override=EXECUTIONS_FILE):
+        return True
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET owner_lease_expires_at=?
+               WHERE id=? AND status IN ('claimed','running')
+                 AND process_id=? AND pid=?""",
+            (
+                time.time() + OWNER_LEASE_SECONDS,
+                execution_id,
+                _PROCESS_ID,
+                os.getpid(),
+            ),
+        )
+    return cur.rowcount == 1
+
+
+def execution_lease_enabled() -> bool:
+    """Whether this profile needs cross-host execution heartbeats."""
+    from cron.database import uses_postgres
+
+    return uses_postgres(sqlite_override=EXECUTIONS_FILE)
+
+
 def recover_interrupted_executions() -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
@@ -328,31 +407,34 @@ def recover_interrupted_executions() -> int:
     stale_after: Optional[float] = None
     stale_after_resolved = False
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        postgres = is_postgres_connection(conn)
+        lease_column = ", owner_lease_expires_at" if postgres else ""
         rows = conn.execute(
-            """SELECT id, status, process_id, pid, process_started_at,
-                      handoff_pending, handoff_started_at, claimed_at
+            f"""SELECT id, status, process_id, pid, process_started_at,
+                       handoff_pending, handoff_started_at, claimed_at{lease_column}
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
         for row in rows:
-            if row["process_id"] == _PROCESS_ID:
-                continue
             reason = _OWNER_GONE_REASON
-            if _owner_is_live(int(row["pid"]), row["process_started_at"]):
-                # A live owner is normally a legitimately running job. A worker permanently
-                # deadlocked (e.g. futex_wait behind a route/proxy flip, #115692) also passes
-                # this check, so a claim older than the derived bound is treated as wedged
-                # and released — the external-worker wait loop polls this ledger for a
-                # terminal status, so the job can fire again. The wedged worker PROCESS is
-                # NOT terminated here (leaked until host restart); rows owned by this process
-                # (process_id == _PROCESS_ID, in-process runs) are skipped above and remain
-                # out of scope.
-                if not stale_after_resolved:
-                    stale_after = _live_owner_stale_after_seconds()
-                    stale_after_resolved = True
-                if stale_after is None or _claim_age_seconds(row["claimed_at"]) <= stale_after:
+            if postgres:
+                lease_expires_at = row["owner_lease_expires_at"]
+                if lease_expires_at is not None and float(lease_expires_at) > time.time():
                     continue
-                reason = _OWNER_WEDGED_REASON
+            else:
+                if row["process_id"] == _PROCESS_ID:
+                    continue
+                if _owner_is_live(int(row["pid"]), row["process_started_at"]):
+                    # A live owner is normally a running job. A claim older than
+                    # the derived stale bound may instead belong to a wedged worker.
+                    if not stale_after_resolved:
+                        stale_after = _live_owner_stale_after_seconds()
+                        stale_after_resolved = True
+                    if stale_after is None or _claim_age_seconds(row["claimed_at"]) <= stale_after:
+                        continue
+                    reason = _OWNER_WEDGED_REASON
             handoff_started_at = row["handoff_started_at"]
             if (
                 row["handoff_pending"]
@@ -361,15 +443,34 @@ def recover_interrupted_executions() -> int:
                 < HANDOFF_ADOPTION_GRACE_SECONDS
             ):
                 continue
+            lease_guard = ""
+            params: List[Any] = [
+                now,
+                reason,
+                row["id"], row["status"], row["process_id"], row["pid"],
+                row["handoff_pending"],
+            ]
+            if postgres:
+                handoff_guard = "handoff_started_at IS NOT DISTINCT FROM ?"
+                lease_guard = " AND owner_lease_expires_at IS NOT DISTINCT FROM ?"
+                params.extend(
+                    (row["handoff_started_at"], row["owner_lease_expires_at"])
+                )
+            else:
+                handoff_guard = (
+                    "(handoff_started_at=? OR "
+                    "(handoff_started_at IS NULL AND ? IS NULL))"
+                )
+                params.extend((row["handoff_started_at"], row["handoff_started_at"]))
             cur = conn.execute(
-                """UPDATE executions
+                f"""UPDATE executions
                    SET status='unknown', finished_at=?, error=?,
-                       handoff_pending=0, handoff_started_at=NULL
+                       handoff_pending=0, handoff_started_at=NULL{', owner_lease_expires_at=NULL' if postgres else ''}
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
-                     AND handoff_started_at IS ?""",
-                (now, reason, row["id"], row["status"], row["process_id"], row["pid"],
-                 row["handoff_pending"], row["handoff_started_at"]),
+                     AND {handoff_guard}
+                     {lease_guard}""",
+                params,
             )
             changed += cur.rowcount
             if cur.rowcount:
@@ -397,7 +498,7 @@ def list_executions(
         params.append(str(before_claimed_at))
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
-    with _transaction() as conn:
+    with _transaction(write=False) as conn:
         rows = conn.execute(
             "SELECT * FROM executions" + where
             + " ORDER BY claimed_at DESC, id DESC LIMIT ?",
@@ -408,7 +509,7 @@ def list_executions(
 
 def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Return one exact execution attempt, or ``None`` when it is absent."""
-    with _transaction() as conn:
+    with _transaction(write=False) as conn:
         row = conn.execute(
             "SELECT * FROM executions WHERE id=?",
             (str(execution_id),),
@@ -427,7 +528,7 @@ def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     if not clean:
         return {}
     placeholders = ",".join("?" for _ in clean)
-    with _transaction() as conn:
+    with _transaction(write=False) as conn:
         rows = conn.execute(
             f"""SELECT e.* FROM executions e
                 WHERE e.job_id IN ({placeholders})

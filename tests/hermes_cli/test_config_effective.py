@@ -96,6 +96,20 @@ def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):
         load_user_config_effective(home / "config.yaml", fail_closed=True)
 
 
+@pytest.mark.parametrize("body", ["- postgres\n", "postgres\n"])
+@pytest.mark.parametrize("warm_cache", [False, True])
+def test_fail_closed_rejects_non_mapping_root_even_after_permissive_read(homes, body, warm_cache):
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    config_path = home / "config.yaml"
+    _write(config_path, body)
+    if warm_cache:
+        assert load_user_config_effective(config_path) == {}
+    with pytest.raises(ValueError, match="mapping at the top level"):
+        load_user_config_effective(config_path, fail_closed=True)
+
+
 def test_good_backup_is_written_only_for_the_active_home(homes, tmp_path):
     """Reading ANOTHER profile's config (doctor, TUI cwd lookup) is a read: it must not create
     ``backups/config/`` inside that profile. The active home keeps the last-good copy."""

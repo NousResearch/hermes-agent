@@ -14,6 +14,10 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
+| `cron/executions.py` | Attempt ledger and cross-process ownership recovery |
+| `cron/delivery_queue.py` | At-most-once handoff from workers to live gateway adapters |
+| `cron/incidents.py` | Deduplicated failure incidents |
+| `cron/notepad.py` | Per-job durable key/value state |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
@@ -62,6 +66,13 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "script": null
 }
 ```
+
+The four runtime stores route through the profile's configured database backend.
+SQLite uses `cron/executions.db`, `cron/deliveries.db`, and `cron/notepad.db`.
+PostgreSQL uses schema-local tables with the same field names. PostgreSQL execution
+and delivery claims carry renewable leases because a PID from one container cannot
+prove liveness in another. `jobs.json`, `.tick.lock`, scripts, and output remain
+filesystem data under the profile home.
 
 ### `last_status` literals
 

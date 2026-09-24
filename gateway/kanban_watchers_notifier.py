@@ -242,15 +242,14 @@ class _Collector:
         if not self.active_platforms:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
-        # Poll each resolved DB path once: several slugs can map to one DB when
-        # HERMES_KANBAN_DB pins the board path.
+        # Poll each backing store once. SQLite path overrides can make several
+        # slugs share one file; PostgreSQL boards have distinct schemas.
         kb = self.kb
         seen_db_paths: set[str] = set()
         for board_meta in _list_boards(kb):
             slug = board_meta.get("slug") or kb.DEFAULT_BOARD
-            db_path = board_meta.get("db_path")
             try:
-                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+                resolved_db_path = _kbc().storage_key(board=slug)
             except Exception:
                 resolved_db_path = f"slug:{slug}"
             if resolved_db_path in seen_db_paths:

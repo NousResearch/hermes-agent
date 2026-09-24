@@ -539,9 +539,9 @@ from cron.jobs import (
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
-    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
-    get_execution, mark_execution_handoff_pending, mark_execution_running,
-    recover_interrupted_executions)
+    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution,
+    execution_lease_enabled, finish_execution, get_execution, heartbeat_execution,
+    mark_execution_handoff_pending, mark_execution_running, recover_interrupted_executions)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -2619,10 +2619,12 @@ def _teardown_cron_agent(
 
 
 def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
-    """Run ``run`` while keeping this job's owned durable fire claim fresh."""
+    """Run ``run`` while keeping its durable fire and execution claims fresh."""
     claim = job.get("fire_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
-    if not owner:
+    execution_id = str(job.get("execution_id") or "")
+    refresh_execution = bool(execution_id and execution_lease_enabled())
+    if not owner and not refresh_execution:
         return run(None)
 
     job_id = str(job.get("id") or "")
@@ -2641,23 +2643,61 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                 job_id,
                 exc_info=True)
 
-    try:
-        owns_fire_claim = heartbeat_fire_claim(job_id, expected_owner=owner)
-    except Exception:
-        logger.warning("Job '%s': initial fire_claim validation failed", job_id, exc_info=True)
-        _finish_unstarted("Fire claim ownership could not be validated before execution started.")
-        return True
+    if owner:
+        try:
+            owns_fire_claim = heartbeat_fire_claim(job_id, expected_owner=owner)
+        except Exception:
+            logger.warning("Job '%s': initial fire_claim validation failed", job_id, exc_info=True)
+            _finish_unstarted("Fire claim ownership could not be validated before execution started.")
+            return True
 
-    if owns_fire_claim is False:
-        logger.warning("Job '%s': fire claim ownership was already lost before execution", job_id)
-        _finish_unstarted("Fire claim ownership lost before execution started.")
-        return True
+        if owns_fire_claim is False:
+            logger.warning("Job '%s': fire claim ownership was already lost before execution", job_id)
+            _finish_unstarted("Fire claim ownership lost before execution started.")
+            return True
+
+    if refresh_execution:
+        try:
+            owns_execution = heartbeat_execution(execution_id)
+        except Exception:
+            logger.warning("Job '%s': initial execution heartbeat failed", job_id, exc_info=True)
+            _finish_unstarted("Execution ownership could not be renewed before execution started.")
+            return True
+        if not owns_execution:
+            logger.warning("Job '%s': execution ownership was already lost before start", job_id)
+            return True
 
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
+        execution_confirmed_at = last_confirmed
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            if refresh_execution:
+                try:
+                    if not heartbeat_execution(execution_id):
+                        lost_ownership.set()
+                        logger.warning(
+                            "Job '%s': execution ownership lost; interrupting stale run",
+                            job_id,
+                        )
+                        return
+                    execution_confirmed_at = time.monotonic()
+                except Exception:
+                    logger.debug(
+                        "Job '%s': execution heartbeat failed", job_id, exc_info=True
+                    )
+                    if (
+                        time.monotonic() - execution_confirmed_at
+                        >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+                    ):
+                        lost_ownership.set()
+                        logger.warning(
+                            "Job '%s': execution ownership could not be renewed; "
+                            "interrupting before its lease expires",
+                            job_id,
+                        )
+                        return
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                if owner and not heartbeat_fire_claim(job_id, expected_owner=owner):
                     if self_removal_delivery_allowed(job_id):
                         # Record dropped by this run; nothing left to keep fresh.
                         continue
@@ -2688,11 +2728,16 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                     return
 
     heartbeat_thread = _start_heartbeat_thread(
-        _heartbeat_loop, "cron-fire-claim-heartbeat",
+        _heartbeat_loop, "cron-fire-claim-heartbeat" if owner else "cron-execution-heartbeat",
         lambda: logger.warning(
-            "Job '%s': could not start fire_claim heartbeat", job_id, exc_info=True))
+            "Job '%s': could not start claim heartbeat", job_id, exc_info=True))
     if heartbeat_thread is None:
-        _finish_unstarted("Fire claim heartbeat could not be started; execution was not run.")
+        error = (
+            "Fire claim heartbeat could not be started; execution was not run."
+            if owner
+            else "Execution heartbeat could not be started; execution was not run."
+        )
+        _finish_unstarted(error)
         return True
 
     try:
@@ -4032,6 +4077,47 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
+def _start_queued_execution_heartbeat(execution_id: str, future) -> bool:
+    """Keep a PostgreSQL claim alive until its pool worker starts.
+
+    Fire claims are deliberately taken inside the worker so queue time cannot
+    expire them. The execution audit row is created before ``submit``; this
+    short-lived heartbeat gives that earlier claim the same protection.
+    """
+    if not execution_lease_enabled() or future.running() or future.done():
+        return True
+    stop = threading.Event()
+
+    def heartbeat_while_queued() -> None:
+        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            if future.running() or future.done():
+                return
+            try:
+                if not heartbeat_execution(execution_id):
+                    future.cancel()
+                    return
+            except Exception:
+                logger.debug(
+                    "Queued cron execution %s heartbeat failed",
+                    execution_id,
+                    exc_info=True,
+                )
+
+    heartbeat_thread = _start_heartbeat_thread(
+        heartbeat_while_queued,
+        "cron-queued-execution-heartbeat",
+        lambda: logger.warning(
+            "Cron execution %s: could not start queue heartbeat",
+            execution_id,
+            exc_info=True,
+        ),
+    )
+    if heartbeat_thread is None:
+        return not future.cancel()
+    future.add_done_callback(lambda _future: stop.set())
+    return True
+
+
 def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):
     """Submit with the in-flight dedup guard; None if a prior tick's run is still in flight.
     Running-set membership is released in the worker's finally."""
@@ -4115,6 +4201,16 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
             _not_dispatched_shutdown()
         else:
             logger.error("Job '%s' not dispatched: %s", job_label, submit_err)
+        return None
+
+    if not _start_queued_execution_heartbeat(execution["id"], fut):
+        release_running_job(job_id)
+        _clear_run_claim_best_effort()
+        finish_execution(
+            execution["id"],
+            success=False,
+            error="Execution queue heartbeat could not be started; execution was not run.",
+        )
         return None
 
     with _running_lock:

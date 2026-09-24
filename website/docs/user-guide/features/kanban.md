@@ -1,14 +1,14 @@
 ---
 sidebar_position: 12
 title: "Kanban (Multi-Agent Board)"
-description: "Durable SQLite-backed task board for coordinating multiple Hermes profiles"
+description: "Durable SQLite or PostgreSQL task board for coordinating multiple Hermes profiles"
 ---
 
 # Kanban — Multi-Agent Profile Collaboration
 
 > **Want a walkthrough?** Read the [Kanban tutorial](./kanban-tutorial) — four user stories (solo dev, fleet farming, role pipeline with retry, circuit breaker) with dashboard screenshots of each. This page is the reference; the tutorial is the narrative.
 
-Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
+Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task and handoff is a database row; every worker is a full OS process with its own identity. SQLite is the default, and PostgreSQL 17 or later is available for deployments where a network filesystem cannot safely host SQLite WAL files.
 
 ### Completion checkpoints before the iteration cap
 
@@ -28,7 +28,7 @@ checkpoint; their iteration warning remains opt-in.
 
 ### Two surfaces: the model talks through tools, you talk through the CLI
 
-The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
+The board has two front doors, both backed by the same configured board store:
 
 - **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_attach`, `kanban_attach_url`, `kanban_attachments`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
@@ -75,7 +75,7 @@ or artifact upload failed; inspect its retained URL. Explicit infrastructure
 conclusions and API failures are classified separately. No extra worker is spawned.
 
 Receipt persistence and the terminal write recheck run/status/contract ownership
-under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
+under one board write transaction: a reclaimed worker cannot complete or attach acceptance to
 the new run. The final GitHub read is a completion-time snapshot, not a distributed
 transaction or a continuous post-completion monitor. This is a single-user lifecycle
 guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
@@ -94,7 +94,7 @@ They look similar; they are not the same primitive.
 | Resumability | None — failed = failed | Block → unblock → re-run; crash → reclaim |
 | Human in the loop | Not supported | Comment / unblock at any point |
 | Agents per task | One call = one subagent | N agents over task's life (retry, review, follow-up) |
-| Audit trail | Lost on context compression | Durable rows in SQLite forever |
+| Audit trail | Lost on context compression | Durable database rows |
 | Coordination | Hierarchical (caller → callee) | Peer — any profile reads/writes any task |
 
 **One-sentence distinction:** `delegate_task` is a function call; Kanban is a work queue where every handoff is a row any profile (or human) can see and edit.
@@ -111,7 +111,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 
 ## Core concepts
 
-- **Board** — a standalone queue of tasks with its own SQLite DB, workspaces
+- **Board** — a standalone queue of tasks with its own database namespace, workspaces
   directory, and dispatcher loop. A single install can have many boards
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
@@ -136,7 +136,7 @@ is opt-in.
 
 Per-board isolation is absolute:
 
-- Separate SQLite DB per board (`~/.hermes/kanban/boards/<slug>/kanban.db`).
+- Separate SQLite DB per board, or a separate PostgreSQL schema per board.
 - Separate `workspaces/` and `logs/` directories.
 - Workers spawned for a task see **only** their board's tasks — the
   dispatcher sets `HERMES_KANBAN_BOARD` in the child env and every
@@ -173,7 +173,7 @@ hermes kanban boards rename atm10-server "ATM10 (Prod)"
 # Recoverable by moving the dir back.
 hermes kanban boards rm atm10-server
 
-# Hard delete — `rm -rf` the board dir. No recovery.
+# Hard delete — removes the board dir and its PostgreSQL schema, when used. No recovery.
 hermes kanban boards rm atm10-server --delete
 ```
 
@@ -190,6 +190,48 @@ Slugs are validated: lowercase alphanumerics + hyphens + underscores, 1-64
 chars, must start with alphanumeric. Uppercase input is auto-downcased.
 Anything else (slashes, spaces, dots, `..`) is rejected at the CLI layer
 so path-traversal tricks can't name a board.
+
+### PostgreSQL storage
+
+Kanban uses the database configuration from the shared Hermes root, not from an
+assigned worker's named profile. This is required because the dispatcher and all
+profiles must see the same queue. Install the driver and configure the root:
+
+```bash
+uv pip install -e '.[postgres]'
+```
+
+```yaml title="~/.hermes/config.yaml"
+database:
+  backend: postgres
+  schema: hermes_personal
+```
+
+```dotenv title="~/.hermes/.env"
+HERMES_DATABASE_URL=postgresql://hermes:password@postgres:5432/hermes
+```
+
+Hermes derives one PostgreSQL schema per board from `database.schema` and the
+board's durable database id. The database stores tasks, links, comments, events,
+runs, attachment metadata, and notification cursors. The shared filesystem still
+stores `board.json`, the current-board pointer, workspaces, attachment bytes, and
+worker logs. Every container must mount that filesystem at paths that make stored
+workspace and attachment paths valid.
+
+To move an existing board, stop its dispatcher and workers, configure an empty
+PostgreSQL target, then run:
+
+```bash
+python scripts/migrate_kanban_sqlite_to_postgres.py /path/to/kanban.db \
+  --kanban-home /path/to/hermes-root \
+  --board default
+```
+
+The command upgrades a temporary snapshot, copies every table in one PostgreSQL
+transaction, validates row counts, and refuses a non-empty target. It never opens
+the source file writable. Board export keeps the existing portable archive format:
+PostgreSQL rows are written to the archive's SQLite snapshot, while attachment
+bytes and optional logs remain ordinary archive files.
 
 ### Managing boards from the dashboard
 
@@ -908,7 +950,7 @@ Tasks in `~/.hermes/kanban.db` are profile-agnostic on purpose (that's the coord
 
 ### Live updates
 
-`task_events` is an append-only SQLite table with a monotonic `id`. The WebSocket endpoint holds each client's last-seen event id and pushes new rows as they land. When a burst of events arrives, the frontend reloads the (very cheap) board endpoint — simpler and more correct than trying to patch local state from every event kind. WAL mode means the read loop never blocks the dispatcher's `BEGIN IMMEDIATE` claim transactions.
+`task_events` is an append-only table with a monotonic `id`. The WebSocket endpoint holds each client's last-seen event id and pushes new rows as they land. When a burst of events arrives, the frontend reloads the board endpoint instead of trying to patch local state from every event kind. SQLite uses WAL readers and `BEGIN IMMEDIATE`; PostgreSQL uses read transactions and per-board advisory write locks.
 
 ### Extending it
 
@@ -1272,7 +1314,7 @@ Subscriptions created from inside the chat (`/kanban create`, `kanban_create`) r
 | `notify+wake` | yes | yes | You also want the destination agent to take a real turn — read the board context and reply in its own voice. Chat-originated auto-subscribes use this. |
 | `wake` | no | yes | You only want the agent to act on the event, with no separate ping. |
 
-For `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in SQLite, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
+For `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in the board database, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
 
 A "wake" forges a synthetic inbound message to the destination gateway agent so it takes a normal turn (reads the comment + result, reasons, replies) instead of getting a one-line passive notification. It only fires when the notifier runs inside a live gateway process; otherwise a `notify+wake` subscription still delivers its passive message, while a `wake`-only subscription does nothing in that process.
 
@@ -1430,4 +1472,9 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 
 ## Out of scope
 
-Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+SQLite Kanban remains single-host. PostgreSQL can coordinate dispatchers and workers
+across application replicas: board writes and whole dispatch ticks use PostgreSQL
+advisory locks, claim locks include the worker host, and foreign PIDs are never used
+as liveness evidence. Expired claims still recover by TTL. This requires one shared
+filesystem for board metadata, workspaces, attachment bytes, and logs; PostgreSQL
+does not replace those files or make machine-local workspace paths portable.

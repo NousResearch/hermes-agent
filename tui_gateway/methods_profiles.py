@@ -106,8 +106,8 @@ def _latest_message_preview(db, session_id):
     """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics).
     Same query shape as ``SessionDB.latest_message_row_id``; keep them in step."""
     try:
-        with db._lock:
-            row = db._conn.execute(
+        with db._read_ctx() as conn:
+            row = conn.execute(
                 "SELECT content FROM messages"
                 " WHERE session_id = ? AND role IN ('user', 'assistant')"
                 " AND active = 1 AND content IS NOT NULL AND TRIM(content) != ''"
@@ -220,7 +220,9 @@ def _profile_session_fields(row, profile_path):
     def _read() -> dict:
         db_path = Path(profile_path) / "state.db"
         db = None
-        if _try(db_path.exists, False):
+        from hermes_state_backend import resolve_database_settings
+
+        if _try(lambda: db_path.exists() or resolve_database_settings(db_path).backend == "postgres", False):
             db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
         try:
             last, worker = _latest_profile_session_rows(db)

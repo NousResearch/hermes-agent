@@ -25,6 +25,7 @@ from gateway.status import (
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_constants import get_process_hermes_home, profile_name_for_home
+from hermes_state_backend import resolve_database_settings
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from pathlib import Path
@@ -77,7 +78,8 @@ def _count_status_active_sessions() -> int:
     from hermes_state import _default_db_path
     # The heal helper bootstraps a missing store; this garnish must not — on a fresh install
     # /api/status polls would otherwise create state.db before the user's first session.
-    if not Path(_default_db_path()).exists():
+    db_path = Path(_default_db_path())
+    if not db_path.exists() and resolve_database_settings(db_path).backend == "sqlite":
         return 0
     db = _open_session_db_for_profile(None, read_only=True)
     try:
@@ -441,7 +443,7 @@ async def _advisory_pressure(status: Dict[str, Any], home: Path) -> None:
         from hermes_state import SessionDB as _SDB
         from hermes_constants import get_hermes_home as _ghh
         _db_path = _ghh() / "state.db"
-        if _db_path.exists():
+        if _db_path.exists() or resolve_database_settings(_db_path).backend == "postgres":
             _sdb = _SDB(db_path=_db_path, read_only=True)
             try:
                 _rebuild = _sdb.fts_rebuild_status()

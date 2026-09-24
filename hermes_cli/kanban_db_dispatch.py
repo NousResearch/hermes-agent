@@ -862,6 +862,10 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
+        lock = row["claim_lock"] or ""
+        if (pid and getattr(conn, "backend", "sqlite") == "postgres"
+                and not lock.startswith(_kb._host_prefix())):
+            continue
         if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
             # Never requeue beside a live process. Retry next tick.
             _kb._log.debug(
@@ -1869,7 +1873,7 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     board to one file) yields 0. Fails open per board.
     """
     try:
-        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+        current_path = _kbc.storage_key(board=board)
     except Exception:
         current_path = None
     try:
@@ -1881,10 +1885,10 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
         try:
             path = _kb.kanban_db_path(board=slug).expanduser()
-            resolved = str(path.resolve())
+            resolved = _kbc.storage_key(board=slug)
             if current_path is not None and resolved == current_path:
                 continue
-            if not path.exists():
+            if not _kbc.uses_postgres() and not path.exists():
                 continue
             other = _kbc.connect(board=slug)
             try:
@@ -1962,7 +1966,7 @@ def dispatch_once(
         result = _locked_tick()
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
-    with _kbc._dispatch_tick_lock(db_path) as held:
+    with _kbc._dispatch_tick_lock(db_path, conn=conn) as held:
         if not held:
             result = DispatchResult(skipped_locked=True)
         else:

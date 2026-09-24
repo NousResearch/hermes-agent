@@ -9,6 +9,7 @@ possibly-completed send.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -34,6 +35,8 @@ _ACTIVE_DELIVERIES: set[str] = set()
 _TERMINAL = ("delivered", "failed", "unknown", "suppressed")
 MAX_TERMINAL_DELIVERIES = 1000
 DEFAULT_DELIVERY_WAIT_TIMEOUT_SECONDS = 300.0
+OWNER_LEASE_SECONDS = 5 * 60.0
+OWNER_HEARTBEAT_SECONDS = 60.0
 
 
 def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
@@ -53,12 +56,13 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
     excess = terminal_count - keep
     if excess > 0:
         conn.execute(
-            """INSERT OR IGNORE INTO delivery_tombstones
+            """INSERT INTO delivery_tombstones
                (execution_id, terminal_status, finished_at)
                SELECT execution_id, status, finished_at FROM deliveries
                WHERE status IN ('delivered','failed','unknown','suppressed')
                ORDER BY finished_at, created_at, execution_id
-               LIMIT ?""",
+               LIMIT ?
+               ON CONFLICT(execution_id) DO NOTHING""",
             (excess,),
         )
         conn.execute(
@@ -150,10 +154,17 @@ def _connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
+def _transaction(*, write: bool = True) -> Iterator[sqlite3.Connection]:
     # Pruning is done explicitly by the paths that create terminal
     # rows (_finish / recover_abandoned / _terminalize_wait_timeout);
     # read-only polls must not pay for a full-table UPDATE + COUNT.
+    from cron.database import postgres_transaction, uses_postgres
+
+    if uses_postgres(sqlite_override=DELIVERY_DB):
+        with postgres_transaction(store="deliveries", write=write) as conn:
+            yield conn
+        return
+
     from hermes_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
@@ -169,9 +180,12 @@ def enqueue(
 ) -> dict:
     """Persist one idempotent delivery request before the worker waits."""
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
         # Serialize the tombstone check and insert with retention in other
         # processes, which can move a terminal delivery into the tombstone table.
-        conn.execute("BEGIN IMMEDIATE")
+        if not is_postgres_connection(conn):
+            conn.execute("BEGIN IMMEDIATE")
         tombstone = conn.execute(
             "SELECT terminal_status, finished_at FROM delivery_tombstones "
             "WHERE execution_id=?",
@@ -184,9 +198,10 @@ def enqueue(
                 "finished_at": tombstone["finished_at"],
             }
         conn.execute(
-            """INSERT OR IGNORE INTO deliveries
+            """INSERT INTO deliveries
                (execution_id, job_json, content, for_failure, status, created_at)
-               VALUES (?, ?, ?, ?, 'pending', ?)""",
+               VALUES (?, ?, ?, ?, 'pending', ?)
+               ON CONFLICT(execution_id) DO NOTHING""",
             (
                 str(execution_id),
                 json.dumps(job, ensure_ascii=False, sort_keys=True),
@@ -202,7 +217,7 @@ def enqueue(
 
 
 def get_status(execution_id: str) -> Optional[dict]:
-    with _transaction() as conn:
+    with _transaction(write=False) as conn:
         row = conn.execute(
             "SELECT * FROM deliveries WHERE execution_id=?", (str(execution_id),)
         ).fetchone()
@@ -228,24 +243,33 @@ def claim_next() -> Optional[dict]:
     pid = os.getpid()
     started = _process_start_time(pid)
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        postgres = is_postgres_connection(conn)
+        lease_update = ", owner_lease_expires_at=?" if postgres else ""
         row = conn.execute(
             "SELECT execution_id FROM deliveries WHERE status='pending' "
             "ORDER BY created_at, execution_id LIMIT 1"
         ).fetchone()
         if row is None:
             return None
+        params = [_PROCESS_ID, pid, started]
+        if postgres:
+            params.append(time.time() + OWNER_LEASE_SECONDS)
+        params.append(row["execution_id"])
         cur = conn.execute(
-            """UPDATE deliveries SET status='delivering', owner_process_id=?,
-               owner_pid=?, owner_started_at=?
+            f"""UPDATE deliveries SET status='delivering', owner_process_id=?,
+               owner_pid=?, owner_started_at=?{lease_update}
                WHERE execution_id=? AND status='pending'""",
-            (_PROCESS_ID, pid, started, row["execution_id"]),
+            params,
         )
         if cur.rowcount != 1:
             return None
         claimed = conn.execute(
             "SELECT * FROM deliveries WHERE execution_id=?", (row["execution_id"],)
         ).fetchone()
-        _ACTIVE_DELIVERIES.add(row["execution_id"])
+        with _lock:
+            _ACTIVE_DELIVERIES.add(row["execution_id"])
     result = dict(claimed)
     result["job"] = json.loads(result.pop("job_json"))
     return result
@@ -259,8 +283,11 @@ def _finish(execution_id: str, *, error: Optional[str], suppressed: bool = False
         else None
     )
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        lease_update = ", owner_lease_expires_at=NULL" if is_postgres_connection(conn) else ""
         cur = conn.execute(
-            """UPDATE deliveries SET status=?, finished_at=?, error=?
+            f"""UPDATE deliveries SET status=?, finished_at=?, error=?{lease_update}
                WHERE execution_id=? AND status='delivering'
                  AND owner_process_id=? AND owner_pid=?""",
             (
@@ -276,13 +303,38 @@ def _finish(execution_id: str, *, error: Optional[str], suppressed: bool = False
     return cur.rowcount == 1
 
 
+def _heartbeat_delivery(execution_id: str) -> bool:
+    """Renew this process's PostgreSQL claim while a transport send is active."""
+    from cron.database import uses_postgres
+
+    if not uses_postgres(sqlite_override=DELIVERY_DB):
+        return True
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE deliveries SET owner_lease_expires_at=?
+               WHERE execution_id=? AND status='delivering'
+                 AND owner_process_id=? AND owner_pid=?""",
+            (
+                time.time() + OWNER_LEASE_SECONDS,
+                execution_id,
+                _PROCESS_ID,
+                os.getpid(),
+            ),
+        )
+    return cur.rowcount == 1
+
+
 def recover_abandoned() -> int:
     """Fence dead delivery owners as unknown; never replay uncertain sends."""
     changed = 0
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        postgres = is_postgres_connection(conn)
+        lease_column = ", owner_lease_expires_at" if postgres else ""
         rows = conn.execute(
-            "SELECT execution_id, owner_process_id, owner_pid, owner_started_at "
-            "FROM deliveries WHERE status='delivering'"
+            "SELECT execution_id, owner_process_id, owner_pid, owner_started_at"
+            f"{lease_column} FROM deliveries WHERE status='delivering'"
         ).fetchall()
         for row in rows:
             same_process = row["owner_process_id"] == _PROCESS_ID
@@ -290,7 +342,17 @@ def recover_abandoned() -> int:
                 with _lock:
                     if row["execution_id"] in _ACTIVE_DELIVERIES:
                         continue
-            elif _owner_is_live(int(row["owner_pid"]), row["owner_started_at"]):
+            if postgres:
+                lease_expires_at = row["owner_lease_expires_at"]
+                if (
+                    not same_process
+                    and lease_expires_at is not None
+                    and float(lease_expires_at) > time.time()
+                ):
+                    continue
+            elif not same_process and _owner_is_live(
+                int(row["owner_pid"]), row["owner_started_at"]
+            ):
                 continue
             error = (
                 "Gateway finished delivery but could not persist its outcome; "
@@ -298,14 +360,20 @@ def recover_abandoned() -> int:
                 if same_process
                 else "Gateway exited during delivery; send outcome is unknown and was not retried."
             )
+            lease_guard = ""
+            params = [
+                _hermes_now().isoformat(), error, row["execution_id"],
+                row["owner_process_id"], row["owner_pid"],
+            ]
+            if postgres:
+                lease_guard = " AND owner_lease_expires_at IS NOT DISTINCT FROM ?"
+                params.append(lease_expires_at)
             cur = conn.execute(
-                """UPDATE deliveries SET status='unknown', finished_at=?, error=?
-                   WHERE execution_id=? AND status='delivering'""",
-                (
-                    _hermes_now().isoformat(),
-                    error,
-                    row["execution_id"],
-                ),
+                f"""UPDATE deliveries SET status='unknown', finished_at=?, error=?
+                   {', owner_lease_expires_at=NULL' if postgres else ''}
+                   WHERE execution_id=? AND status='delivering'
+                     AND owner_process_id=? AND owner_pid=?{lease_guard}""",
+                params,
             )
             changed += cur.rowcount
         _prune_terminal_unlocked(conn)
@@ -324,6 +392,51 @@ def drain(
             break
         with _lock:
             _ACTIVE_DELIVERIES.add(row["execution_id"])
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = None
+        heartbeat_started = True
+        from cron.database import uses_postgres
+
+        if uses_postgres(sqlite_override=DELIVERY_DB):
+            execution_id = row["execution_id"]
+
+            def heartbeat() -> None:
+                while not heartbeat_stop.wait(OWNER_HEARTBEAT_SECONDS):
+                    try:
+                        if not _heartbeat_delivery(execution_id):
+                            return
+                    except Exception:
+                        logger.debug(
+                            "Cron delivery %s heartbeat failed",
+                            execution_id,
+                            exc_info=True,
+                        )
+
+            heartbeat_thread = threading.Thread(
+                target=contextvars.copy_context().run,
+                args=(heartbeat,),
+                name="cron-delivery-heartbeat",
+                daemon=True,
+            )
+            try:
+                heartbeat_thread.start()
+            except RuntimeError:
+                heartbeat_thread = None
+                heartbeat_started = False
+                logger.warning(
+                    "Cron delivery %s: could not start ownership heartbeat",
+                    execution_id,
+                    exc_info=True,
+                )
+        if not heartbeat_started:
+            _finish(
+                row["execution_id"],
+                error="Delivery ownership heartbeat could not be started; send was not attempted.",
+            )
+            with _lock:
+                _ACTIVE_DELIVERIES.discard(row["execution_id"])
+            processed += 1
+            continue
         try:
             try:
                 error = send(
@@ -334,6 +447,9 @@ def drain(
             _finish(row["execution_id"], error=error,
                     suppressed=bool(row["job"].get("_notification_all_targets_suppressed")))
         finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1.0)
             with _lock:
                 _ACTIVE_DELIVERIES.discard(row["execution_id"])
         processed += 1

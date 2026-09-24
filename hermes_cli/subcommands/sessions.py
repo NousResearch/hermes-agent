@@ -16,7 +16,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
         "sessions", help="Manage session history (list, rename, export, prune, delete)",
-        description="View and manage the SQLite session store")
+        description="View and manage the session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")

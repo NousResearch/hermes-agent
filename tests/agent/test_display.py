@@ -310,3 +310,8 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
+
+    def test_hides_uncurated_tool_identifier(self):
+        from agent.display import build_status_phrase
+
+        assert build_status_phrase("internal_plugin_tool", None) is None

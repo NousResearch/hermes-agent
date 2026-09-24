@@ -568,13 +568,16 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     """Lowercase "is <verb> <preview>…" phrase following the bot's display name (Slack setStatus).
 
     ``args=None`` gives a verb-only phrase (``display.live_status: verb`` keeps previews out
-    of shared channels). None for ``_thinking`` or disabled labels so callers use their
-    static default. Default ``max_len`` stays under Slack's ~50-char status truncation.
+    of shared channels). None for ``_thinking``, disabled labels, or an uncurated tool so callers
+    use their static default rather than exposing an internal identifier. Default ``max_len`` stays
+    under Slack's ~50-char status truncation.
     """
     if not tool_name or tool_name == "_thinking" or not _friendly_tool_labels:
         return None
     verb = _TOOL_VERBS.get(tool_name)
-    phrase = f"is {verb[0].lower()}{verb[1:]}" if verb else f"is using {tool_name}"
+    if not verb:
+        return None
+    phrase = f"is {verb[0].lower()}{verb[1:]}"
     with_preview = args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW
     preview = build_tool_preview(tool_name, args, max_len=None) if with_preview else None
     if preview:  # previews can contain newlines (terminal commands); keep the first line

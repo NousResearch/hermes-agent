@@ -4180,7 +4180,13 @@ class GatewayTurnMixin:
                         _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
                     _action = _a.get("current_tool") or _a.get("last_activity_desc")
                     if _action:
-                        _parts.append(str(_action))
+                        # Activity stores the internal tool identifier.  The heartbeat is user-facing,
+                        # so only append a curated display phrase; unknown tools safely leave the
+                        # ordinary Working status intact instead of exposing their raw name.
+                        from agent.display import build_status_phrase
+                        _action_phrase = build_status_phrase(str(_action), None)
+                        if _action_phrase:
+                            _parts.append(_action_phrase)
                     if _parts:
                         _status_detail = " — " + ", ".join(_parts)
             _heartbeat_text = (

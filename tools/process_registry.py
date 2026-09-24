@@ -40,7 +40,7 @@ from tools.process_registry_env_log import log_delta_command
 
 logger = logging.getLogger(__name__)
 
-# Crash-recovery checkpoint (gateway only)
+# Crash-recovery checkpoint, shared by every process on the profile (entries name their writer)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 _CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
 

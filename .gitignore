@@ -218,6 +218,7 @@ docs/superpowers/*
 /gateway_state.json
 /gateway-starts.log
 /processes.json
+/processes.json.lock
 /.update_check
 /.clean_shutdown
 /active_profile

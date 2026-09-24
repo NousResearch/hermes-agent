@@ -271,7 +271,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     so a file tool that runs before any terminal command still gets the configured backend."""
     from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
     from tools.terminal_tool import (
-        _create_configured_env, _get_env_config, _is_unusable_container_cwd,
+        _create_configured_env, _get_env_config, _is_mounted_host_cwd, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
     config = _get_env_config()
@@ -291,18 +291,20 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
     # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
     # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
-        if cwd != config["cwd"]:
+    host_cwd = _resolve_task_host_cwd(config, raw_task_id)
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
+        fallback = "/workspace" if _is_mounted_host_cwd(cwd, host_cwd) else config["cwd"]
+        if cwd != fallback:
             logger.info(
                 "Ignoring host/relative cwd override %r for %s backend "
                 "(won't exist in sandbox). Using %r instead.",
-                cwd, env_type, config["cwd"])
-        cwd = config["cwd"]
+                cwd, env_type, fallback)
+        cwd = fallback
     logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
     terminal_env = _create_configured_env(
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
-        host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+        host_cwd=host_cwd,
         local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env

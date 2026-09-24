@@ -98,6 +98,21 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
         return True
 
 
+def get_clarify_mode(clarify_id: str) -> Optional[str]:
+    """Return the public prompt mode for an unresolved clarify, or ``None`` when unavailable.
+
+    Native adapters use this instead of coupling to the registry's private lock and entries.
+    Missing state is distinct from single-select so callers can fail closed.
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.event.is_set():
+            return None
+        if not entry.choices:
+            return "open_text"
+        return "multi_select" if entry.multi_select else "single_select"
+
+
 def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = False) -> Optional[_ClarifyEntry]:
     """Oldest pending entry awaiting free text (open-ended, or after "Other");
     ``include_choice_prompts=True`` returns the oldest unresolved entry of any kind (user

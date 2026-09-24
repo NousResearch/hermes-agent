@@ -9,10 +9,11 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { resolvePetOverlayBounds } from './pet-overlay'
+import { clampRectToWorkArea, resolvePetOverlayBounds } from './pet-overlay'
 
 // A laptop panel left behind after a bigger external monitor is unplugged.
 const LAPTOP = [{ workArea: { x: 0, y: 0, width: 1366, height: 728 } }]
+
 // External monitor to the right of the laptop panel, now disconnected.
 const LAPTOP_PLUS_EXTERNAL = [
   { workArea: { x: 0, y: 0, width: 1366, height: 728 } },
@@ -56,16 +57,65 @@ test('a spot on any connected display is used as-is, even if not the anchor disp
   assert.deepEqual(resolvePetOverlayBounds(onExternal, LAPTOP_PLUS_EXTERNAL, ANCHOR_ON_LAPTOP), onExternal)
 })
 
-test('a spot with only a sliver of overlap (below MIN_VISIBLE) is treated as off-screen', () => {
-  // 300px-wide window parked so only 30px of it is inside the laptop panel —
-  // less than the 48px MIN_VISIBLE the main window's restore path trusts.
-  const sliver = { x: -270, y: 150, width: 300, height: 400 }
+// ─── partly off-screen: clamp the whole rect in (#85092) ─────────────────────
 
-  const resolved = resolvePetOverlayBounds(sliver, LAPTOP, ANCHOR_ON_LAPTOP)
+const within = (r, a) => r.x >= a.x && r.y >= a.y && r.x + r.width <= a.x + a.width && r.y + r.height <= a.y + a.height
 
-  assert.notDeepEqual(resolved, sliver)
-  assert.equal(resolved.x, Math.round((1366 - 300) / 2))
-  assert.equal(resolved.y, Math.round((728 - 400) / 2))
+test('a first pop-out that is mostly off-screen is pulled wholly onto the display', () => {
+  // The #85092 repro: 1707x1067 logical work area (2560x1600 @ 150%), overlay
+  // spawned from a pet near the bottom-right corner with only a 49px sliver
+  // visible. That passes a 48px-overlap rule, so it must be clamped, not trusted.
+  const area = { x: 0, y: 0, width: 1707, height: 1067 }
+  const resolved = resolvePetOverlayBounds({ x: 1658, y: 806, width: 292, height: 408 }, [{ workArea: area }], null)
+
+  assert.deepEqual(resolved, { x: 1707 - 292, y: 1067 - 408, width: 292, height: 408 })
+})
+
+test('a sliver of overlap on any side is clamped to the nearest edge, not re-centered', () => {
+  for (const sliver of [
+    { x: -270, y: 150, width: 300, height: 400 },
+    { x: 200, y: -390, width: 300, height: 400 },
+    { x: 1360, y: 700, width: 300, height: 400 }
+  ]) {
+    const resolved = resolvePetOverlayBounds(sliver, LAPTOP, ANCHOR_ON_LAPTOP)
+
+    assert.ok(within(resolved, LAPTOP[0].workArea), JSON.stringify(resolved))
+    assert.equal(resolved.width, 300)
+    assert.equal(resolved.height, 400)
+  }
+})
+
+test('a rect straddling two displays is clamped into the one it overlaps most', () => {
+  // 250px on the laptop, 50px on the external → stays on the laptop.
+  const straddle = { x: 1116, y: 200, width: 300, height: 400 }
+  const resolved = resolvePetOverlayBounds(straddle, LAPTOP_PLUS_EXTERNAL, ANCHOR_ON_EXTERNAL)
+
+  assert.deepEqual(resolved, { x: 1366 - 300, y: 200, width: 300, height: 400 })
+})
+
+test('clampRectToWorkArea keeps any rect wholly inside the work area', () => {
+  const area = { x: -1920, y: 25, width: 1920, height: 1055 }
+
+  for (const rect of [
+    { x: -5000, y: -5000, width: 300, height: 400 },
+    { x: 5000, y: 5000, width: 300, height: 400 },
+    { x: -1000, y: 500, width: 300, height: 400 },
+    { x: -1920, y: 25, width: 4000, height: 3000 },
+    { x: -100.6, y: 900.4, width: 299.5, height: 400.2 }
+  ]) {
+    const clamped = clampRectToWorkArea(rect, area)
+
+    assert.ok(within(clamped, area), JSON.stringify(clamped))
+    assert.ok([clamped.x, clamped.y, clamped.width, clamped.height].every(Number.isInteger))
+  }
+
+  // Already inside: unchanged.
+  assert.deepEqual(clampRectToWorkArea({ x: -1000, y: 500, width: 300, height: 400 }, area), {
+    x: -1000,
+    y: 500,
+    width: 300,
+    height: 400
+  })
 })
 
 // ─── off-screen re-home ────────────────────────────────────────────────────

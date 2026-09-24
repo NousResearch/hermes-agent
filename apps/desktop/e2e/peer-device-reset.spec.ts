@@ -8,7 +8,7 @@ import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as path from 'node:path'
 
-import { startMockServer } from '../../../tests-js/scripts/mock-server'
+import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
   buildAppEnv,
@@ -25,6 +25,7 @@ const LOCAL_LABEL = 'This device'
 const REMOTE_LABEL = 'E2E remote'
 const REMOTE_ID = 'e2e-remote'
 const REMOTE_TOKEN = 'e2e-peer-disposable-token'
+const REMOTE_PROFILE = 'ai-dev'
 
 function pythonBinary(): string {
   if (process.env.HERMES_DESKTOP_PYTHON) {
@@ -43,11 +44,14 @@ function pythonBinary(): string {
 
 // Do not inherit profile selection, provider secrets, a dev-server URL, or
 // native account state. buildAppEnv supplies the suite's desktop launch flags.
+// The temp-dir variables ARE inherited: a sandboxed runner points them at a
+// private writable directory, and Electron plus the spawned gateways fall back
+// to a possibly unwritable system /tmp without them.
 function isolatedEnv(sandbox: Sandbox): Record<string, string> {
   const defaults = buildAppEnv(sandbox)
   const env: Record<string, string> = {}
 
-  for (const key of ['PATH', 'DISPLAY', 'XAUTHORITY', 'LANG', 'LC_ALL', 'SystemRoot', 'COMSPEC', 'PATHEXT']) {
+  for (const key of ['PATH', 'DISPLAY', 'XAUTHORITY', 'LANG', 'LC_ALL', 'SystemRoot', 'COMSPEC', 'PATHEXT', 'TMPDIR', 'TEMP', 'TMP']) {
     if (defaults[key]) {
       env[key] = defaults[key]
     }
@@ -158,9 +162,12 @@ const peerTest = test.extend<{ gateways: { app: ElectronApplication; source: Pag
     let desktopLog = ''
 
     try {
-      for (const sandbox of [local, remote]) {
-        writeMockProviderConfig(sandbox.hermesHome, mock.url)
-        writeEnvFile(sandbox.hermesHome)
+      const remoteProfileHome = path.join(remote.hermesHome, 'profiles', REMOTE_PROFILE)
+      fs.mkdirSync(remoteProfileHome, { recursive: true })
+
+      for (const hermesHome of [local.hermesHome, remote.hermesHome, remoteProfileHome]) {
+        writeMockProviderConfig(hermesHome, mock.url)
+        writeEnvFile(hermesHome)
       }
 
       const port = await freePort()
@@ -243,6 +250,33 @@ const peerTest = test.extend<{ gateways: { app: ElectronApplication; source: Pag
 })
 
 peerTest.setTimeout(240_000)
+
+peerTest('Ctrl+Shift+N resumes a remote-only profile on its owning gateway', async ({ gateways: { app, source } }) => {
+  const remoteProfile = source.locator(`[data-slot="profile-rail-gateway"][data-connection-id="${REMOTE_ID}"]`)
+    .getByRole('button', { name: `${REMOTE_PROFILE} · ${REMOTE_LABEL}`, exact: true })
+
+  await expect(remoteProfile).toBeVisible({ timeout: 60_000 })
+  await remoteProfile.click()
+  await expectReady(source, REMOTE_LABEL)
+  await composer(source).fill('Remember this remote profile session for the peer-window regression.')
+  await composer(source).press('Enter')
+  await expect(source.locator('[data-slot="aui_assistant-message-content"]').getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 60_000 })
+
+  const opened = app.waitForEvent('window')
+  await source.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+N' : 'Control+Shift+N')
+  const peer = await opened
+  installErrorBannerGuard(peer)
+  await expectReady(peer, REMOTE_LABEL)
+  await expect(peer.locator('[data-slot="aui_assistant-message-content"]').getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 60_000 })
+  await expectReady(source, REMOTE_LABEL)
+  await peer.reload()
+  await expectReady(peer, REMOTE_LABEL)
+  await expect(peer.locator('[data-slot="aui_assistant-message-content"]').getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 60_000 })
+  await composer(peer).fill('Continue this session after reopening the peer window.')
+  await composer(peer).press('Enter')
+  await expect(peer.locator('[data-slot="aui_assistant-message-content"]').getByText(MOCK_REPLY, { exact: true })).toHaveCount(2, { timeout: 60_000 })
+  await expectReady(source, REMOTE_LABEL)
+})
 
 peerTest('Ctrl+Shift+N peer keeps local → remote → local choices on New session', async ({ gateways: { app, source } }) => {
   const sourceDraft = 'Keep this source-window draft'

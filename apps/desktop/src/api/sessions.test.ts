@@ -218,3 +218,26 @@ describe('listSidebarSessions remote ownership', () => {
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
   })
 })
+
+describe('listSidebarSessions storage health', () => {
+  it('passes the backend corrupt-store map through so the sidebar can say why it is empty', async () => {
+    hermesApi.mockResolvedValue({
+      cron: { sessions: [] },
+      errors: [{ error: 'database disk image is malformed', profile: 'default' }],
+      messaging: { sessions: [] },
+      recents: { sessions: [] },
+      storage: { default: 'corrupt' }
+    } as never)
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'all',
+      recentsLimit: 40,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 40,
+      messagingExclude: []
+    })
+
+    expect(result.storage).toEqual({ default: 'corrupt' })
+  })
+})

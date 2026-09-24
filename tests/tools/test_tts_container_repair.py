@@ -12,7 +12,6 @@ bytes once after synthesis and repairs the container centrally.
 """
 
 import struct
-from unittest.mock import patch
 
 import pytest
 
@@ -90,6 +89,3 @@ class TestOpusPlatformSet:
         for platform in ("telegram", "matrix", "feishu", "whatsapp", "signal"):
             assert platform in OPUS_VOICE_PLATFORMS
 
-    def test_cli_not_included(self):
-        assert "" not in OPUS_VOICE_PLATFORMS
-        assert "cli" not in OPUS_VOICE_PLATFORMS

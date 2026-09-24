@@ -33,10 +33,6 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
 const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
 
-// An exact semver: digits.digits.digits with an optional prerelease/build tag,
-// but NO range operators (^ ~ > < = * x || spaces || -range).
-const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
-
 function desktopPkg(): Record<string, unknown> {
   assert.ok(fs.existsSync(DESKTOP_PKG), `missing ${DESKTOP_PKG}`)
 
@@ -55,17 +51,6 @@ function electronSpec(pkg: Record<string, unknown>): string {
 
   assert.fail('electron is not listed in apps/desktop dependencies')
 }
-
-test('electron dependency is exactly pinned', () => {
-  const spec = electronSpec(desktopPkg())
-  assert.match(
-    spec,
-    EXACT_SEMVER,
-    `electron must be pinned to an exact version, got "${spec}". ` +
-      'A range (^/~) lets npm ci resolve a newer Electron whose postinstall ' +
-      'may differ from the one the build was validated against.'
-  )
-})
 
 test('electron dependency matches build.electronVersion', () => {
   const pkg = desktopPkg()

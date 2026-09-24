@@ -209,6 +209,40 @@ def test_fingerprint_changes_on_each_capability_axis(tmp_path):
     assert bot_mode_probe.capability_fingerprint(home) != after_soul
 
 
+def test_fingerprint_changes_on_vision_override_flip(tmp_path):
+    """Flipping ``model.supports_vision`` (or any other vision-routing input)
+    must move the epoch so an eternal Bot Chat rebuilds its prompt once;
+    unrelated model keys must not."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    base = bot_mode_probe.capability_fingerprint(home)
+
+    (home / "config.yaml").write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    after_true = bot_mode_probe.capability_fingerprint(home)
+    assert after_true != base
+
+    (home / "config.yaml").write_text("model:\n  supports_vision: false\n", encoding="utf-8")
+    after_false = bot_mode_probe.capability_fingerprint(home)
+    assert after_false != after_true
+
+    # spelling-only edits coerce to the same router verdict: no rebuild.
+    (home / "config.yaml").write_text('model:\n  supports_vision: "false"\n', encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) == after_false
+
+    # unrelated model keys (endpoint, credentials) do not route images: no rebuild.
+    (home / "config.yaml").write_text(
+        "model:\n  supports_vision: false\n  base_url: https://other.example/v1\n", encoding="utf-8"
+    )
+    assert bot_mode_probe.capability_fingerprint(home) == after_false
+
+    # the sibling routing inputs move the epoch too.
+    (home / "config.yaml").write_text(
+        "model:\n  supports_vision: false\nagent:\n  image_input_mode: text\n", encoding="utf-8"
+    )
+    assert bot_mode_probe.capability_fingerprint(home) != after_false
+
+
 def test_stored_prompt_staleness(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

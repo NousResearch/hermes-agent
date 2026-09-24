@@ -944,11 +944,23 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
     return _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
 
 
+# LM Studio / llama.cpp raise a bare status-less ``APIError`` when chat-template Jinja rendering
+# fails mid-stream (#62662). Deterministic for the request, so fall back instead of retrying.
+_STREAM_RENDER_ERROR_PATTERNS = ("error rendering", "rendering prompt", "jinja template", "jinja render")
+
+
+def _streaming_render_error(c: _Ctx) -> Optional[Verdict]:
+    """Status-less template render failure → format_error with fallback (only when no HTTP status)."""
+    if c.status_code is None and any(p in c.msg for p in _STREAM_RENDER_ERROR_PATTERNS):
+        return _v(_R.format_error, retryable=False, should_fallback=True)
+    return None
+
+
 # Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
-# HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
+# status-less stream render errors → HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _streaming_render_error, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

@@ -2112,3 +2112,19 @@ class TestAuthErrorNamesOffRouteEndpoint:
         for base_url in ("", "https://api.anthropic.com/v1"):
             result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
             assert result.message == "API keys are not supported by this endpoint.", base_url
+
+
+class TestStreamingRenderFormatError:
+    """Status-less Jinja render failures (LM Studio / llama.cpp) fail over; see #62662."""
+
+    def test_error_rendering_no_status_is_format_error(self):
+        e = MockAPIError("Error rendering prompt with jinja template: ...")
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_render_message_with_status_uses_http_path(self):
+        e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        assert result.reason != FailoverReason.format_error

@@ -1852,11 +1852,7 @@ def cmd_toggle() -> None:
         (f"{name} \u2014 {description}" if description else name) + (" [bundled]" if source == "bundled" else "")
         for name, _version, description, source, _d, _key in entries
     ]
-    # Selected when enabled AND not disabled; the legacy bare name counts on either side.
-    plugin_selected = {
-        i for i, (name, _v, _desc, _src, _d, key) in enumerate(entries)
-        if {key, name} & enabled_set and not ({key, name} & disabled_set)
-    }
+    plugin_selected = _effective_plugin_selection(entries, enabled_set, disabled_set)
     categories = _provider_categories()
 
     if not sys.stdin.isatty():
@@ -1869,28 +1865,46 @@ def cmd_toggle() -> None:
         _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console)
 
 
-def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]:
+def _effective_plugin_selection(entries, enabled: set, disabled: set) -> set:
+    """Row indices ticked when the picker opens: every plugin that is ACTIVE right now, by the same
+    rule ``gate_manifest`` applies at load (``_plugin_status``), not merely the ones listed in
+    ``plugins.enabled``. Bundled platforms, backends and model providers are on without a list
+    entry, so listing-based preselection showed them unticked and a no-change exit disabled every
+    messaging adapter on the next gateway restart."""
+    active = _category_active_names()
+    return {
+        i for i, (name, _v, _desc, source, dir_path, key) in enumerate(entries)
+        if _plugin_status(name, enabled, disabled, key, source=source, dir_path=dir_path, active=active) == "enabled"
+    }
+
+
+def _persist_plugin_selection(plugin_keys, chosen, disabled, initial) -> tuple[bool, set]:
     """Save the composite UI's checkbox state; returns ``(changed, new_enabled)``.
 
-    Unchecked plugins go to the disabled-list (so they stay off even if something auto-enables
-    them) under the canonical key ONLY, so the list can't drift from what ``cmd_enable`` clears.
-    Re-checking also drops any stale legacy bare-leaf disable.
+    Only rows the user actually flipped are written: a plugin unticked in this session goes to
+    the disabled-list (so it stays off even if something auto-enables it) under the canonical key
+    ONLY, so the list can't drift from what ``cmd_enable`` clears; a plugin ticked in this session
+    is added to ``plugins.enabled`` and any stale legacy bare-leaf disable is dropped. Rows left
+    as they were are not persisted, so "never ticked" is never mistaken for "explicitly unticked"
+    and list entries for plugins not shown in the picker survive.
     """
-    # See #40190.
     # Persist by canonical key only — never the bare manifest name — so the disabled-list stays aligned with
     # cmd_enable / PluginManager (#40190).
-    new_enabled: set = set()
-    new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
-    for i, key in enumerate(plugin_keys):
-        if i in chosen:
-            new_enabled.add(key)
-            _discard_key_and_leaf(new_disabled, key)
-        else:
-            new_disabled.add(key)
+    new_enabled: set = set(_get_enabled_set())
+    new_disabled: set = set(disabled)
+    turned_on = [plugin_keys[i] for i in sorted(chosen - initial)]
+    turned_off = [plugin_keys[i] for i in sorted(initial - chosen)]
+    for key in turned_on:
+        new_enabled.add(key)
+        _discard_key_and_leaf(new_disabled, key)
+    for key in turned_off:
+        _discard_key_and_leaf(new_enabled, key)
+        new_disabled.add(key)
 
-    changed = new_enabled != _get_enabled_set() or new_disabled != disabled
+    changed = bool(turned_on or turned_off)
     if changed:
         _save_plugin_sets(new_enabled, new_disabled)
+        logger.info("plugins picker: enabled %s; disabled %s", turned_on or "none", turned_off or "none")
     return changed, new_enabled
 
 
@@ -2004,11 +2018,11 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     curses.wrapper(_draw)
     flush_stdin()
 
-    changed, new_enabled = _persist_plugin_selection(plugin_keys, chosen, disabled)
+    changed, _new_enabled = _persist_plugin_selection(plugin_keys, chosen, disabled, plugin_selected)
     if changed:
         console.print(
-            f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
-            f"{len(plugin_keys) - len(new_enabled)} disabled.")
+            f"\n[green]\u2713[/green] General plugins: {len(chosen)} enabled, "
+            f"{len(plugin_keys) - len(chosen)} disabled.")
     elif n_plugins > 0:
         console.print("\n[dim]General plugins unchanged.[/dim]")
     if providers_changed:
@@ -2043,7 +2057,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
             except (ValueError, KeyboardInterrupt, EOFError):
                 return
             print()
-        _persist_plugin_selection(plugin_keys, chosen, disabled)
+        _persist_plugin_selection(plugin_keys, chosen, disabled, plugin_selected)
 
     if categories:
         print(color("\n  Provider Plugins", Colors.YELLOW))

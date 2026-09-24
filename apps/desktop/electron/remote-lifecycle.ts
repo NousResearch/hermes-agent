@@ -439,6 +439,18 @@ function remoteInstallRoot(home) {
   return profile ? profile[1] : value
 }
 
+// The HERMES_HOME a profile resolves to: the default/empty/"default" profile
+// uses the install root; a named profile uses <root>/profiles/<name>. Mirrors
+// the server-side derivation (gateway/pairing.py). #18594: the SSH spawner must
+// pass this explicitly, or the remote CLI falls back to the root, records the
+// wrong hermesHome in backend.lock.json, and the reconnect reuse-check fails.
+function profileHermesHome(home, profile) {
+  const name = String(profile || '').trim()
+  const root = remoteInstallRoot(home)
+
+  return name && name !== 'default' ? `${root}/profiles/${name}` : root
+}
+
 async function readLockfile(ssh, ownershipId) {
   const lpath = lockfilePath(ownershipId)
   let raw
@@ -1133,7 +1145,8 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ` +
+    `HERMES_HOME=${expandRemotePath(opts.hermesHome || '~/.hermes')} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
@@ -1479,7 +1492,7 @@ async function connect(deps) {
   assertBootstrapNotSuperseded(signal)
   const platform = deps.platform ?? (await probeRemotePlatform(ssh))
   log(`remote platform ${platform.os}/${platform.arch}`)
-  const hermesHome = await probeRemoteHermesHome(ssh)
+  const hermesHome = profileHermesHome(await probeRemoteHermesHome(ssh), profile)
   await assertRemoteInstallUpdateClear(ssh, hermesHome)
   const hermesPath = await locateHermes(ssh, remoteHermesPath)
   log(`located hermes at ${hermesPath}`)

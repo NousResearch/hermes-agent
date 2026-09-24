@@ -1161,7 +1161,9 @@ test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfil
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
     [/cat .*lock\.json/, ''], // no lockfile
-    [/HERMES_HOME/, '/home/alice/.hermes\n'],
+    // Match the probe (`echo "${HERMES_HOME:-…}"`) only — the spawn command now
+    // also contains `HERMES_HOME=` and must fall through to the setsid rule.
+    [/HERMES_HOME:-/, '/home/alice/.hermes\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''],
     [/printf '%s\\n'/, ''],
@@ -1182,6 +1184,52 @@ test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfil
   const lockWrite = writes.find(c => c.includes('schemaVersion')) || ''
   assert.match(lockWrite, new RegExp(`"protocolVersion":${PROTOCOL_VERSION}`))
   assert.match(lockWrite, /"hermesHome":"\/home\/alice\/\.hermes"/)
+})
+
+test('connect() fresh spawn injects the named-profile HERMES_HOME into the spawn env and lockfile (#18594)', async () => {
+  const writes: string[] = []
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''], // no lockfile
+    [/HERMES_HOME:-/, '/home/alice/.hermes\n'], // probe resolves the install root
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '700\n'],
+    [/kill -0 700/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=45500\n'],
+    [
+      /printf '%s' '/,
+      c => {
+        writes.push(c)
+
+        return ''
+      }
+    ]
+  ])
+
+  await connect(connectDeps(ssh, { profile: 'homelab-delegator', adoptServedToken: async () => 'fresh' }))
+
+  // #18594: a named profile's backend must be spawned with an explicit
+  // HERMES_HOME = <root>/profiles/<name>, and that same home must land in the
+  // lockfile so the next reconnect's reuse-check (lock.hermesHome === derived)
+  // matches instead of surfacing "Couldn't load this session".
+  const spawn = ssh.calls.find(c => /setsid|nohup/.test(c)) || ''
+  assert.match(spawn, /HERMES_HOME=/, 'the spawn env must export HERMES_HOME')
+  assert.match(spawn, /profiles\/homelab-delegator/, 'HERMES_HOME must resolve to the profile home')
+  assert.ok(
+    spawn.indexOf('HERMES_HOME=') < spawn.indexOf('--profile'),
+    'HERMES_HOME must be exported before the serve invocation'
+  )
+
+  const lockWrite = writes.find(c => c.includes('schemaVersion')) || ''
+  assert.match(
+    lockWrite,
+    /"hermesHome":"\/home\/alice\/\.hermes\/profiles\/homelab-delegator"/,
+    'the lockfile must record the profile home so reconnect reuse matches'
+  )
 })
 
 test('connect() respawns when the lockfile pid is dead (killed dashboard)', async () => {

@@ -375,9 +375,14 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 # yuanbao (``prefer_paragraphs=True, balance_fences=False``) and weixin (``greedy_pack_blocks``).
 
 
+def _is_fence_line(line: str) -> bool:
+    """Return whether a markdown line begins a fenced code delimiter."""
+    return line.lstrip().startswith('```')
+
+
 def text_has_unclosed_fence(text: str) -> bool:
     """Return True when *text* ends inside an unclosed ``` code fence."""
-    return sum(line.startswith('```') for line in text.split('\n')) % 2 == 1
+    return sum(_is_fence_line(line) for line in text.split('\n')) % 2 == 1
 
 
 def text_ends_with_table_row(text: str) -> bool:
@@ -387,7 +392,7 @@ def text_ends_with_table_row(text: str) -> bool:
 
 def is_fence_atom(text: str) -> bool:
     """True when an atomic block is a code block (starts with ```)."""
-    return text.lstrip().startswith('```')
+    return _is_fence_line(text)
 
 
 def _is_pipe_row(line: str) -> bool:
@@ -449,10 +454,10 @@ def split_markdown_atoms(text: str) -> "list[str]":
     for line in text.split('\n'):
         if in_fence:
             current_lines.append(line)
-            if line.startswith('```'):
+            if _is_fence_line(line):
                 in_fence = False
                 _flush_current()
-        elif line.startswith('```'):
+        elif _is_fence_line(line):
             _flush_current()
             in_fence = True
             current_lines.append(line)
@@ -512,7 +517,7 @@ def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> "tupl
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped.startswith("```"):
+        if _is_fence_line(line):
             tag = stripped[3:].split()
             in_code, lang = (False, "") if in_code else (True, tag[0] if tag else "")
     return in_code, lang

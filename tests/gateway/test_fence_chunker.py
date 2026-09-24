@@ -101,6 +101,20 @@ def test_atoms_fence_kept_whole():
     assert fence_atoms[0].rstrip().endswith("```")
 
 
+@pytest.mark.parametrize("indent", [" ", "  ", "   "])
+def test_indented_fence_kept_whole(indent):
+    """GFM fences indented up to three spaces remain indivisible atoms."""
+    code = f"{indent}```py\n{indent}{'x' * 80}\n{indent}```"
+    text = f"intro\n\n{code}\n\noutro"
+
+    atoms = split_markdown_atoms(text)
+
+    assert text_has_unclosed_fence(f"{indent}```py\n{indent}code")
+    assert atoms == ["intro", code, "outro"]
+    assert not text_has_unclosed_fence(atoms[1])
+    assert split_text_fence_aware(code, 40) == [code]
+
+
 # ── streaming merge + separators ─────────────────────────────────────────────
 
 

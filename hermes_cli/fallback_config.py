@@ -114,7 +114,7 @@ def fallback_halt_active() -> tuple[bool, str]:
 
 
 def _parse_fallback_entries(
-    raw: Any, *, warn_empty: bool,
+    raw: Any, *, warn_empty: bool, source: str = "fallback configuration",
 ) -> list[tuple[int, dict[str, Any]]]:
     """Normalize fallback entries while retaining their source indices for diagnostics.
 
@@ -150,13 +150,13 @@ def _parse_fallback_entries(
                 entries.append((index, parsed))
             else:
                 logger.warning(
-                    "Fallback entry[%d] is a malformed string — expected 'provider:model'; "
-                    "entry dropped.", index)
+                    "%s entry[%d] is a malformed string — expected 'provider:model'; "
+                    "entry dropped.", source, index)
             continue
         if not isinstance(entry, dict):
             logger.warning(
-                "Fallback entry[%d] (%s) is malformed — expected a dict or "
-                "'provider:model' string; entry dropped.", index, type(entry).__name__)
+                "%s entry[%d] (%s) is malformed — expected a dict or "
+                "'provider:model' string; entry dropped.", source, index, type(entry).__name__)
             continue
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
@@ -164,8 +164,8 @@ def _parse_fallback_entries(
             # A dict-shaped entry the user meant to configure: dropping it silently leaves a
             # chain that looks configured but is empty (#51560, #117806) — fail loud instead.
             logger.warning(
-                "Fallback entry[%d] (dict) missing '%s' — entry dropped.",
-                index, "provider" if not provider else "model")
+                "%s entry[%d] (dict) missing '%s' — entry dropped.",
+                source, index, "provider" if not provider else "model")
             continue
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))
@@ -181,7 +181,11 @@ def _parse_fallback_entries(
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     """Normalize one source and warn when that source alone has no usable entries."""
-    return [entry for _index, entry in _parse_fallback_entries(raw, warn_empty=True)]
+    return [
+        entry for _index, entry in _parse_fallback_entries(
+            raw, warn_empty=True, source="fallback configuration",
+        )
+    ]
 
 
 def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
@@ -209,7 +213,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
         configured_source = configured_source or (
             raw is not None and not (isinstance(raw, list) and not raw)
         )
-        for index, entry in _parse_fallback_entries(raw, warn_empty=False):
+        for index, entry in _parse_fallback_entries(raw, warn_empty=False, source=key):
             identity = _entry_identity(entry)
             if identity in seen:
                 logger.warning(

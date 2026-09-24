@@ -2023,6 +2023,14 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+def notify_fallback_halt(agent, message: str) -> None:
+    """Emit the halt refusal once per enabled window for guard-only fallback paths."""
+    if getattr(agent, "_fallback_halt_notified", False):
+        return
+    agent._fallback_halt_notified = True
+    agent._emit_diagnostic_status(message)
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
@@ -2034,7 +2042,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
         getattr(agent, "_fallback_chain", None) or []
     )
     if halt_active and raw_pending:
-        agent._emit_diagnostic_status(halt_message)
+        notify_fallback_halt(agent, halt_message)
         return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):

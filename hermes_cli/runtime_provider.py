@@ -1146,11 +1146,17 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             try:
                 runtime = resolve_runtime_provider(**kwargs)
             except AuthError as fb_exc:
-                logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
+                logger.debug(
+                    "A fallback entry failed credential resolution (%s).",
+                    type(fb_exc).__name__,
+                )
                 continue
             except Exception as fb_exc:
-                # Not a credential problem: a mistyped provider/base_url must be visible, not silently skipped.
-                logger.warning("Fallback entry %s/%s is misconfigured and was skipped: %s", provider, model, fb_exc)
+                # Do not log route values or exception text: malformed shorthand may contain credentials.
+                logger.warning(
+                    "A fallback entry is misconfigured and was skipped (%s).",
+                    type(fb_exc).__name__,
+                )
                 continue
             # Named custom entries resolve to the bare "custom" class; persist the configured identity (#98739).
             runtime["provider"] = effective_runtime_provider(entry, runtime)

@@ -106,3 +106,16 @@ def test_valid_legacy_entry_prevents_false_empty_chain_warning(malformed_primary
 
     assert "effective fallback chain is EMPTY" not in caplog.text
     assert secret not in caplog.text
+
+
+def test_malformed_entry_warnings_name_their_config_source(caplog):
+    config = {
+        "fallback_providers": ["missing-colon"],
+        "fallback_model": {"provider": "nous"},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+        assert get_fallback_chain(config) == []
+
+    assert "fallback_providers entry[0] is a malformed string" in caplog.text
+    assert "fallback_model entry[0] (dict) missing 'model'" in caplog.text

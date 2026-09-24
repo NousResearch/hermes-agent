@@ -128,3 +128,46 @@ class TestHaltReader:
             side_effect=RuntimeError("config loader exploded"),
         ):
             assert fallback_halt_active() == (False, "")
+
+    def test_reads_each_bound_profile_home_a_b_a(self, tmp_path):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.fallback_config import fallback_halt_active
+
+        homes = []
+        for name, active in (("a", True), ("b", False)):
+            home = tmp_path / name
+            home.mkdir()
+            home.joinpath("config.yaml").write_text(
+                f"fallback_policy:\n  halt: {str(active).lower()}\n",
+                encoding="utf-8",
+            )
+            homes.append(home)
+
+        observed = []
+        for home in (homes[0], homes[1], homes[0]):
+            token = set_hermes_home_override(home)
+            try:
+                observed.append(fallback_halt_active()[0])
+            finally:
+                reset_hermes_home_override(token)
+
+        assert observed == [True, False, True]
+
+
+def test_pending_fallback_guard_emits_halt_refusal_once(monkeypatch):
+    from run_agent import AIAgent
+
+    emitted = []
+    agent = AIAgent.__new__(AIAgent)
+    setattr(agent, "_fallback_chain", [{"provider": "openrouter", "model": "backup"}])
+    setattr(agent, "_fallback_index", 0)
+    agent._fallback_halt_notified = False
+    agent._emit_diagnostic_status = lambda message: emitted.append(message)
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.fallback_halt_active",
+        lambda: (True, "fallback halt refusal"),
+    )
+
+    assert AIAgent._has_pending_fallback(agent) is False
+    assert AIAgent._has_pending_fallback(agent) is False
+    assert emitted == ["fallback halt refusal"]

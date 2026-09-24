@@ -42,6 +42,49 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
     from gateway.run_turn_runner import TurnRunner  # noqa: F401
 
+
+def _build_interim_media_delivery_payload(
+    interim_responses: list[str],
+    final_response: str,
+    adapter,
+) -> tuple[str | None, str]:
+    """Merge current-turn interim and final MEDIA directives for one delivery.
+
+    Interim commentary is display-cleaned before it reaches the platform, so its raw
+    MEDIA directives otherwise disappear before the gateway's post-turn attachment
+    pass. A payload is built only when an interim payload contains at least one valid
+    directive. Final-response directives are folded into the same payload and
+    deduplicated by path, preventing an attachment repeated in both phases from being
+    uploaded twice. Returns ``(delivery_payload, cleaned_final_response)``; when no
+    interim media exists the final response is returned untouched so the established
+    final-only rail is unaffected.
+    """
+    interim_media: list[tuple[str, bool]] = []
+    for text in interim_responses:
+        media, _cleaned = adapter.extract_media(text)
+        interim_media.extend(media)
+    if not interim_media:
+        return None, final_response
+
+    final_media, cleaned_final = adapter.extract_media(final_response)
+    combined = [*interim_media, *final_media]
+    seen_paths: set[str] = set()
+    unique_media: list[tuple[str, bool]] = []
+    for path, is_voice in combined:
+        if path not in seen_paths:
+            seen_paths.add(path)
+            unique_media.append((path, is_voice))
+
+    source_payloads = [*interim_responses, final_response]
+    lines: list[str] = []
+    if any("[[audio_as_voice]]" in text for text in source_payloads):
+        lines.append("[[audio_as_voice]]")
+    if any("[[as_document]]" in text for text in source_payloads):
+        lines.append("[[as_document]]")
+    lines.extend(f"MEDIA:{path}" for path, _is_voice in unique_media)
+    return "\n".join(lines), cleaned_final
+
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
@@ -1934,6 +1977,24 @@ class GatewayTurnMixin:
             response = ""
 
         adapter = self._delivery_adapter_for(source)
+        # Interim commentary is display-cleaned before it reaches the platform, so
+        # preserve and deliver any explicit MEDIA: directives captured by TurnRunner.
+        # Fold final-response directives into the same current-turn payload to avoid
+        # duplicate uploads when the model repeats a path in both phases. Failed,
+        # interrupted or non-completed turns do not publish interim attachments.
+        _interim_media_payloads = agent_result.get("interim_media_responses") or []
+        if (
+            adapter
+            and _interim_media_payloads
+            and not agent_result.get("failed")
+            and not agent_result.get("interrupted")
+            and agent_result.get("completed") is not False
+        ):
+            _media_payload, response = _build_interim_media_delivery_payload(
+                _interim_media_payloads, response, adapter,
+            )
+            if _media_payload:
+                await self._deliver_media_from_response(_media_payload, event, adapter)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)

@@ -975,6 +975,12 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            if "media:" in text.lower():
+                # Commentary is display-cleaned before it reaches the platform;
+                # keep the raw payload so the post-turn rail can deliver the
+                # attachment once the turn succeeds.  Case-insensitive to match
+                # MEDIA_TAG_CLEANUP_RE (re.IGNORECASE) used by extract_media.
+                ctx.interim_media_responses.append(text)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
                 stts.on_delta(None)
@@ -1983,6 +1989,9 @@ class TurnRunner:
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
+            # Raw interim payloads that carried MEDIA: directives, for the
+            # post-turn delivery rail (empty-response path included).
+            "interim_media_responses": list(ctx.interim_media_responses),
             **usage,
         }
         if not final_response:

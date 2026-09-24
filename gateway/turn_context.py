@@ -73,6 +73,13 @@ class TurnContext:
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
     streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
+    # Raw interim assistant payloads that contained deliverable MEDIA:
+    # directives. Interim commentary is display-cleaned before it reaches the
+    # platform, so its MEDIA: tags would otherwise disappear before the
+    # post-turn attachment pass; retaining the raw payloads lets the turn's
+    # post-processing rail deliver their attachments exactly once after a
+    # successful turn (failed/interrupted turns never publish them).
+    interim_media_responses: List[str] = field(default_factory=list)
     # voice-ack wiring
     _voice_ack_fired: list = field(default_factory=lambda: [False])
     _voice_ack_guild: list = field(default_factory=lambda: [None])

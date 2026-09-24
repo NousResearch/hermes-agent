@@ -2461,6 +2461,7 @@ export interface Translations {
     pairingLockedOut: string
     waitingSince: (minutes: number) => string
     restartNeeded: string
+    startMessagingGateway: string
     restartNow: string
     restarting: string
     restartFailedManual: string

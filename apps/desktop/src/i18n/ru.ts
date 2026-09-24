@@ -3480,7 +3480,7 @@ export const ru = defineLocale({
       fastFailed: 'Не удалось обновить быстрый режим'
     },
     gatewayMenu: {
-      gateway: 'Шлюз',
+      gateway: 'Бэкенд',
       connected: 'Подключён',
       connecting: 'Подключение',
       offline: 'Недоступен',
@@ -3527,7 +3527,7 @@ export const ru = defineLocale({
       openCommandCenter: 'Открыть командный центр',
       showTerminal: 'Показать терминал',
       hideTerminal: 'Скрыть терминал',
-      gateway: 'Шлюз',
+      gateway: 'Бэкенд',
       gatewayReady: 'готов',
       gatewayNeedsSetup: 'нужна настройка',
       gatewayChecking: 'проверка',

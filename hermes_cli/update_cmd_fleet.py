@@ -753,7 +753,9 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
-def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplete: bool = False) -> None:
+def _defer_fleet_restart_after_update(
+    *, update_complete: bool, resume_incomplete: bool = False, dispatch_pause_armed: bool = False,
+) -> None:
     """Record a deliberately deferred fleet restart and return/exit on outcome.
 
     ``hermes update --no-gateway-restart`` (cron running inside the gateway's
@@ -778,6 +780,8 @@ def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplet
     print("  Code and dependencies are updated; gateways still serve pre-update code.")
     print("  Restart them separately: `hermes gateway restart` or a daily-restart cron.")
     print("  (fleet restart deferred — marker kept for catch-up)")
+    if dispatch_pause_armed:
+        print("  New work remains paused until that restart completes; then run `hermes resume`.")
     with suppress(Exception):
         from hermes_cli.update_receipt import record_skip
         record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
@@ -1965,7 +1969,10 @@ def _restarted_units_gone(scoped_units) -> bool:
     return True
 
 
-def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):
+def _verify_fleet_after_update(
+    restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete,
+    dispatch_pause_armed: bool = False,
+):
     """Post-restart verification: legacy-unit warning, dashboard cleanup, stale serve
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
@@ -2092,6 +2099,13 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
     _clear_fleet_restart_pending_marker()
+    # The pause was armed before ``git merge`` so an old gateway cannot start a cron
+    # bookkeeping cycle against the replacement tree. Release it only after the fleet
+    # matrix has proved the restart completed; an incomplete update intentionally keeps
+    # both the restart obligation and the pause for an explicit recovery.
+    if dispatch_pause_armed:
+        from hermes_cli.update_cmd import _release_update_dispatch_pause
+        _release_update_dispatch_pause(True)
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
     with _best_effort('Multiplex auto-migration after update failed: %s'):

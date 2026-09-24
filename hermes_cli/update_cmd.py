@@ -184,6 +184,39 @@ def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
     _record_update_step("pre_update_backup", False, "no snapshot captured")
 
 
+_UPDATE_DISPATCH_PAUSE_REASON = "hermes update: preventing new work during code swap"
+
+
+def _arm_update_dispatch_pause() -> bool:
+    """Fence new work before changing the checkout.
+
+    A gateway retains its imported modules while ``git merge`` replaces source files beneath
+    it.  The global pause is checked by cron before it advances a due slot, so it closes the
+    pull-to-restart window even when the updater is itself a cron child of that gateway.  Never
+    claim a pause an operator had already engaged: only a pause armed here may be released on a
+    verified fleet restart.
+    """
+    from agent.estop import engage, is_engaged
+
+    if is_engaged():
+        return False
+    engage(_UPDATE_DISPATCH_PAUSE_REASON)
+    return True
+
+
+def _release_update_dispatch_pause(armed_by_update: bool) -> None:
+    """Release only the update-owned pause after the fleet proves it runs fresh code."""
+    if not armed_by_update:
+        return
+    from agent.estop import get_state, sentinel_path
+
+    # A human may have engaged ESTOP while the update was running.  Its reason replaces
+    # ours, so do not accidentally resume work the operator deliberately paused.
+    if (get_state() or {}).get("reason") == _UPDATE_DISPATCH_PAUSE_REASON:
+        with suppress(OSError):
+            sentinel_path().unlink()
+
+
 
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
@@ -1328,7 +1361,7 @@ def _finish_already_up_to_date(
 def _apply_pulled_update(
     git_cmd, branch, pre_pull_sha, _plan, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume, args) -> None:
+    _windows_gateway_resume, args, dispatch_pause_armed: bool = False) -> None:
     """Post-pull phase, pre-swap half: verify HEAD, arm the fleet marker, sweep bytecode, then
     hand the rest of the run to an interpreter born on the pulled code (never returns)."""
     _invalidate_update_cache()
@@ -1351,7 +1384,7 @@ def _apply_pulled_update(
         args, swap="git", branch=branch, pre_pull_sha=pre_pull_sha, is_fork=is_fork, opts=opts,
         gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
         pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
-        _windows_gateway_resume=_windows_gateway_resume)
+        _windows_gateway_resume=_windows_gateway_resume, dispatch_pause_armed=dispatch_pause_armed)
 
 
 # ``store_true`` update flags the post-swap child must see exactly as the user passed them.
@@ -1374,7 +1407,7 @@ def _post_swap_argv_tail(args) -> list[str]:
 def _post_swap_payload(
     *, swap: str, branch: str, opts, gateway_mode: bool, had_desktop_app_before_update: bool,
     pre_pull_sha=None, is_fork: bool = False, pre_update_snapshot_id=None, _pre_update_plan=None,
-    _windows_gateway_resume=None) -> dict:
+    _windows_gateway_resume=None, dispatch_pause_armed: bool = False) -> dict:
     """Everything the post-swap tail needs that only the pre-swap process could observe: the
     open receipt (detached here — the child resumes it), the pre-update fleet plan, the
     pre-update version and active features, the Windows pause token. Flags cross as argv."""
@@ -1390,6 +1423,7 @@ def _post_swap_payload(
         "active_tool_dependencies": opts.active_tool_dependencies,
         "plan": _pre_update_plan.to_dict() if _pre_update_plan is not None else None,
         "windows_gateway_resume": _windows_gateway_resume,
+        "dispatch_pause_armed": bool(dispatch_pause_armed),
         # {profile: snapshot_id} from the pre-update backup; the post-migration safety nets for
         # sibling profiles read it (update_cmd_config._LAST_SIBLING_SNAPSHOTS).
         "sibling_snapshots": dict(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS),
@@ -1488,7 +1522,8 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
             is_fork=bool(payload.get("is_fork")), desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=payload.get("pre_update_snapshot_id"),
-            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume)
+            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
+            dispatch_pause_armed=bool(payload.get("dispatch_pause_armed")))
     except _shim_quarantine_error_type() as e:
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
@@ -1500,7 +1535,7 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
 def _finish_pulled_update(
     git_cmd, branch, pre_pull_sha, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume) -> None:
+    _windows_gateway_resume, dispatch_pause_armed: bool = False) -> None:
     """Post-swap tail (git path): sync Python/Node/web/Desktop, maintenance, fleet restart."""
     if is_fork and branch == "main":
         _m()._sync_with_upstream_if_needed(
@@ -1553,14 +1588,16 @@ def _finish_pulled_update(
         _resume_windows_gateways_and_merge_outcome(
             resume_outcome, _windows_gateway_resume, gateway_mode)
         _defer_fleet_restart_after_update(
-            update_complete=update_complete, resume_incomplete=resume_outcome.incomplete)
+            update_complete=update_complete, resume_incomplete=resume_outcome.incomplete,
+            dispatch_pause_armed=dispatch_pause_armed)
         return
 
     _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
     _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
     _verify_fleet_after_update(
         _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
-        node_failures=node_failures, update_complete=update_complete)
+        node_failures=node_failures, update_complete=update_complete,
+        dispatch_pause_armed=dispatch_pause_armed)
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -1688,17 +1725,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
             print("→ Updates available (commit count unknown on this shallow checkout)")
 
-        print("→ Pulling updates...")
-        pre_pull_sha = _pull_updates(
-            git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
-            gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash)
+        # This must precede the tree mutation: cron reads ESTOP before claiming a due slot,
+        # preventing its old interpreter from recording a run against newly-pulled modules.
+        dispatch_pause_armed = _arm_update_dispatch_pause()
+        try:
+            print("→ Pulling updates...")
+            pre_pull_sha = _pull_updates(
+                git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
+                gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
+                keep_stash=opts.keep_stash)
+        except BaseException:
+            _release_update_dispatch_pause(dispatch_pause_armed)
+            raise
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
             is_fork=is_fork, desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
-            _windows_gateway_resume=_windows_gateway_resume, args=args)
+            _windows_gateway_resume=_windows_gateway_resume, args=args,
+            dispatch_pause_armed=dispatch_pause_armed)
     except _shim_quarantine_error_type() as e:
         # Strict quarantine refused BEFORE any installer ran — defer via marker, exit 2, no ZIP.
         # See #87331.

@@ -844,7 +844,7 @@ platforms:
 ## 近期 Bot API 功能
 
 - **Bot API 9.4（2026 年 2 月）：** 私聊话题——机器人可以通过 `createForumTopic` 在一对一私聊中创建论坛话题。Hermes 将此用于两个不同功能：运营商策划的[私聊话题](#private-chat-topics-bot-api-94)（配置驱动，固定话题列表）和用户驱动的[多会话私聊模式](#multi-session-dm-mode-topic)（通过 `/topic` 激活，用户创建的无限话题）。
-- **隐私政策：** Telegram 现在要求机器人有隐私政策。通过 BotFather 的 `/setprivacy_policy` 设置，或 Telegram 可能自动生成占位符。如果你的机器人面向公众，这一点尤为重要。
+- **隐私政策：** Telegram 现在要求机器人有隐私政策。通过 BotFather 的 `/setprivacy` 设置，或 Telegram 可能自动生成占位符。如果你的机器人面向公众，这一点尤为重要。
 - **Bot API 9.5（2026 年 3 月）：通过 `sendMessageDraft` 实现原生流式传输。** Hermes 支持 Telegram 的原生流式草稿 API，作为私聊的可选传输方式。默认仍使用旧版 `editMessageText` 路径，因为草稿预览在某些 Telegram 客户端上可能出现明显的折叠和重新渲染。
 
 ### 流式传输（`gateway.streaming.transport`）

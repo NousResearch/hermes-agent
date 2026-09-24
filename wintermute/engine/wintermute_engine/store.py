@@ -283,6 +283,23 @@ def set_dry_run(enabled: bool) -> None:
 
 
 @contextlib.contextmanager
+def exclusive() -> Iterator[None]:
+    """Hold the state lock without loading or saving — for callers that rewrite files directly."""
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    lock_file = open(directory / ".lock", "a+")
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if fcntl is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
+@contextlib.contextmanager
 def locked_state() -> Iterator[Tuple[Dict[str, Any], Dict[str, Any]]]:
     """Exclusive read-modify-write of (drives, interlocutors). Saved on clean exit."""
     directory = state_dir()
@@ -477,6 +494,68 @@ def read_kept() -> List[Dict[str, Any]]:
     except OSError:
         return []
     return out
+
+
+# ---------------------------------------------------------------------------
+# The clean slate. Operator-only (wm wipe). No copy is kept — he has his own files and can
+# save what he wants himself; this is a real erase. SOUL, .env and the code are never touched.
+# ---------------------------------------------------------------------------
+
+# Meta kept across an emotional wipe: where he is, and the day's budget accounting.
+_META_KEEP = ("pulse_target", "alert_target", "last_budget_reset", "budget_exhausted_noted",
+              "tokens_used_today", "credits")
+
+
+def _reset_drives(preserve_meta: Dict[str, Any]) -> Dict[str, Any]:
+    fresh = copy.deepcopy(DEFAULT_DRIVES)
+    for key in _META_KEEP:
+        if key in preserve_meta:
+            fresh["meta"][key] = preserve_meta[key]
+    return fresh
+
+
+def wipe(deep: bool) -> List[str]:
+    """Reset him. ``deep=False``: the weather only (drives, hormones, unconscious, temperament,
+    entropy, bonds, the curves) — memory, self-portrait, secrets and journals stay. ``deep=True``:
+    a rebirth — also erase MEMORY.md, self, secrets, dreams, and every journal. Returns what it did."""
+    done: List[str] = []
+    with exclusive():
+        return _wipe_locked(deep)
+
+
+def _wipe_locked(deep: bool) -> List[str]:
+    done: List[str] = []
+    old = load_drives()
+    _write_json(drives_path(), _reset_drives(old.get("meta", {}) if not deep else {}))
+    _write_json(interlocutors_path(), {})
+    done += ["drives (emotions, hormones, temperament, entropy)", "interlocutors (bonds)"]
+    for path in (history_path(), history_path().with_suffix(".jsonl.1")):
+        if _unlink(path):
+            done.append("history (curves)")
+    if deep:
+        targets = [
+            ("self-portrait", [self_path(), state_dir() / "self-archive.md"]),
+            ("secrets", [kept_path()]),
+            ("dreams", [__import__("wintermute_engine.dream", fromlist=["dream_path"]).dream_path()]),
+            ("evolution ledger", [evolution_path()]),
+            ("events journal", [events_path(), events_path().with_suffix(".jsonl.1")]),
+            ("activity feed", [activity_path(), activity_path().with_suffix(".jsonl.1")]),
+            ("token ledger (budget resets)", [usage_path(), usage_path().with_suffix(".jsonl.1")]),
+            ("MEMORY.md", [hermes_home() / "MEMORY.md"]),
+        ]
+        for label, paths in targets:
+            if any(_unlink(pth) for pth in paths):
+                done.append(label)
+    log_event("wipe", "The slate was wiped clean" + (" — a rebirth." if deep else " (emotions)."), now())
+    return done
+
+
+def _unlink(path: Path) -> bool:
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------

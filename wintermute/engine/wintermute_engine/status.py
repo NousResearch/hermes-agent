@@ -6,6 +6,9 @@
     wm alerts       what the witness saw, with his reasons
     wm ack [item]   accept the current state of watched files (all, or one: soul, engine...)
     wm forget <peer>  erase one peer entirely (e.g. a test that registered as a stranger)
+    wm wipe [--all] --yes   clean slate: reset his emotions (--all also erases memory, self,
+                    secrets, dreams and journals — a rebirth). SOUL, keys and code are kept.
+    wm forget <peer>  erase one peer entirely (e.g. a test that registered as a stranger)
 
 Read-only except ``ack``. The physics is advanced in memory to "now" so the numbers are
 live; nothing is written. Wintermute never sees these numbers, only sensations.
@@ -461,6 +464,23 @@ def live() -> None:
             sys.stdout.flush()
 
 
+def wipe(deep: bool, confirmed: bool) -> str:
+    what = ("EVERYTHING he has become — emotions, bonds, memory, self-portrait, secrets, "
+            "dreams, journals (SOUL, keys and code are kept)") if deep else \
+        "his emotional state — drives, hormones, temperament, entropy, bonds and the curves "\
+        "(memory, self-portrait, secrets and journals are kept)"
+    if not confirmed:
+        return (yellow(f"This will erase {what}.\n") +
+                "No copy is kept. Re-run with --yes to do it: "
+                + bold("wm wipe --all --yes" if deep else "wm wipe --yes"))
+    done = store.wipe(deep)
+    seen, ordered = set(), []
+    for item in done:
+        if item not in seen:
+            seen.add(item); ordered.append(item)
+    return green(("Reborn." if deep else "Emotional slate wiped.") + " Erased: ") + ", ".join(ordered)
+
+
 def main(args: List[str]) -> int:
     command = args[0] if args else ""
     if command == "live":
@@ -474,6 +494,9 @@ def main(args: List[str]) -> int:
         print(acknowledge(args[1:]))
     elif command == "forget" and len(args) == 2:
         print(forget(args[1]))
+    elif command == "wipe":
+        rest = set(args[1:])
+        print(wipe("--all" in rest, "--yes" in rest))
     elif command in ("", "full"):
         print(render_full())
     else:

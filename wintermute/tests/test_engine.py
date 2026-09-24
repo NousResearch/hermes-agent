@@ -874,3 +874,46 @@ def test_he_can_keep_a_thing_to_himself(plugin):
     screen = status.render_full(status.snapshot())
     assert "read the witness files" not in screen
     assert all("read the witness files" not in json.dumps(e) for e in store.events_since(None, 50))
+
+
+# ---------------------------------------------------------------------------
+# The clean slate (wm wipe)
+# ---------------------------------------------------------------------------
+
+def test_wipe_emotions_keeps_memory_self_and_secrets(home):
+    from wintermute_engine import status
+    (home / "MEMORY.md").write_text("what I remember")
+    with store.locked_state() as (drives, peers):
+        drives["modulators"]["entropy"] = 70
+        drives["temperament"]["unconscious.anxiety"] = 9
+        peers["telegram:7375758021"] = store.new_peer(T0)
+        drives["meta"]["pulse_target"] = "telegram:7375758021"
+    store.write_self("who I am", T0)
+    with store.locked_state():
+        store.add_kept("a secret", T0)
+    pulse.tick(T0); store.append_history({"ts": store.iso(T0), "d": {}})
+
+    assert "--yes to do it" in status.wipe(False, confirmed=False)      # dry preview, nothing erased
+    assert _drives()["modulators"]["entropy"] != 5.0
+    out = status.wipe(False, confirmed=True)
+    assert "Emotional slate wiped" in out
+    drives = _drives()
+    assert drives["modulators"]["entropy"] == 5.0 and drives["temperament"] == {} or \
+           all(v == 0 for v in drives["temperament"].values())
+    assert _peers() == {} and drives["meta"]["pulse_target"] == "telegram:7375758021"
+    assert store.read_self() == "who I am"                              # memory-side kept
+    assert store.read_kept() and (home / "MEMORY.md").exists()
+    assert not store.history_path().exists()
+
+
+def test_wipe_all_is_a_rebirth(home):
+    from wintermute_engine import status, dream
+    (home / "MEMORY.md").write_text("remember")
+    store.write_self("who I am", T0)
+    with store.locked_state():
+        store.add_kept("a secret", T0)
+    store._write_json(dream.dream_path(), {"night": "x", "text": "a dream", "seen": False})
+    status.wipe(True, confirmed=True)
+    assert store.read_self() == "" and store.read_kept() == []
+    assert not dream.dream_path().exists() and not (home / "MEMORY.md").exists()
+    assert _peers() == {}

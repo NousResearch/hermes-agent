@@ -1439,6 +1439,28 @@ Notes:
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs `SKILL.md` plus explicitly referenced files under `references/`, `templates/`, `scripts/`, `assets/`, and `examples/`. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
+## `hermes wisdom`
+
+```bash
+hermes wisdom <subcommand>
+```
+
+Team skill sharing over the Nous Gateway (bundled `wisdom` plugin; needs a `hermes login` whose team has Collective Wisdom enabled). See [Collective Wisdom](../user-guide/features/collective-wisdom.md).
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | Browse the team's published skills. |
+| `show <skill-id>` | Versions plus the Gateway's security/professionalism checks. |
+| `status` | Installed Wisdom skills and pending updates. |
+| `install <skill-id> [--version N]` | Install an exact version after a terminal confirmation. |
+| `update [skill-id] [--keep]` | Update one or every installed skill (confirms each; an edited copy is kept aside). `--keep` resolves a conflict by keeping your edited copy for that version. |
+| `updates` | Pending updates with the team's policy verdict per skill: `auto`, `conflict`, `manual`, `deferred`. |
+| `uninstall <skill-id>` | Remove a Wisdom-managed skill. |
+| `share <skill> --description "..."` | Package a local instruction-only skill, upload a private draft, and publish after you approve the package and the Gateway's review. |
+| `candidates` | Local skills that qualify as share candidates (usage-based, deterministic). |
+| `not-now <skill>` | Stop suggesting a share candidate for 30 days. |
+| `mute [hours]` | Silence team notices for N hours (default 24; `0` unmutes). |
+
 ## `hermes bundles`
 
 ```bash

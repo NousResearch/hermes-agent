@@ -1182,10 +1182,13 @@ def _clone_staging_dir(profile_dir: Path) -> Path:
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         temp_root = Path(tempfile.gettempdir())
-        home = profile_dir.parent.parent
+        home = profile_dir.parent.parent.resolve()
         if (os.stat(temp_root).st_dev != os.stat(profile_dir.parent).st_dev
-                or temp_root.resolve().is_relative_to(profile_dir.parent.resolve())):
-            temp_root = home
+                or temp_root.resolve().is_relative_to(home)):
+            temp_root = home.parent
+        if (temp_root.resolve().is_relative_to(home)
+                or os.stat(temp_root).st_dev != os.stat(profile_dir.parent).st_dev):
+            raise OSError("No same-volume staging directory outside the Hermes home")
         # A watcher holding a copied skill open prevents renaming its ancestor on Windows.
         # Stage outside the watched home on the destination volume, then publish once.
         return _private_windows_staging(temp_root, profile_dir.name)

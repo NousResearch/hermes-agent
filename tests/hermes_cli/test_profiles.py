@@ -126,7 +126,7 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
     @pytest.mark.windows_only
-    @pytest.mark.parametrize("temp_location", ["default", "inside_home", "other_volume"])
+    @pytest.mark.parametrize("temp_location", ["default", "inside_home", "nested_home", "other_volume"])
     @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
     def test_watched_home_cannot_lock_staging_before_atomic_publish(
         self, profile_env, monkeypatch, temp_location, clone_kwargs
@@ -135,6 +135,10 @@ class TestCreateProfile:
         home = profile_env / ".hermes"
         if temp_location == "inside_home":
             monkeypatch.setattr(profiles.tempfile, "gettempdir", lambda: str(home))
+        elif temp_location == "nested_home":
+            nested = home / "temp"
+            nested.mkdir()
+            monkeypatch.setattr(profiles.tempfile, "gettempdir", lambda: str(nested))
         elif temp_location == "other_volume":
             other = next((Path(f"{drive}:/") for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                           if Path(f"{drive}:/").exists() and

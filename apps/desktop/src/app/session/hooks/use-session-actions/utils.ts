@@ -1972,6 +1972,7 @@ type SessionRuntimeStatePatch = Partial<
     | 'personality'
     | 'provider'
     | 'reasoningEffort'
+    | 'reasoningEffortPending'
     | 'reasoningEffortWire'
     | 'serviceTier'
     | 'yolo'
@@ -2096,6 +2097,7 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort === 'string') {
     sessionState.reasoningEffort = info.reasoning_effort
+    sessionState.reasoningEffortPending = false
   }
 
   if (typeof info.reasoning_effort_wire === 'string') {

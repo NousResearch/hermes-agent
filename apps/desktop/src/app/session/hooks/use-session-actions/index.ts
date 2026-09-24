@@ -23,6 +23,7 @@ import {
   stripPendingClarifyProjectionForCache,
   toChatMessages
 } from '@/lib/chat-messages'
+import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -2006,8 +2007,8 @@ export function useSessionActions({
         updateSessionState(
           resumed.session_id,
           state => ({
-            ...state,
-            ...(runtimeInfo ?? {}),
+            // The deferred build reports the session's own effort later (#79807).
+            ...markReasoningEffortPending({ ...state, ...(runtimeInfo ?? {}) }),
             messages: visibleMessagesForView,
             transcriptProvenance,
             busy: resumedRunning,

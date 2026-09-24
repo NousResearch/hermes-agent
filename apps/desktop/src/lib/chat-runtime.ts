@@ -49,6 +49,17 @@ export function createClientSessionState(
   }
 }
 
+/**
+ * Mark a freshly resumed slice's effort as not-yet-known. The deferred-build
+ * resume reply has no `reasoning_effort`, and falling through to the profile
+ * default would paint a level the built agent's `session.info` then replaces
+ * (#79807). A slice whose effort was already reported (a fast build can beat
+ * the resume reply) keeps it.
+ */
+export function markReasoningEffortPending(state: ClientSessionState): ClientSessionState {
+  return state.reasoningEffortPending === false ? state : { ...state, reasoningEffortPending: true }
+}
+
 export function sessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }

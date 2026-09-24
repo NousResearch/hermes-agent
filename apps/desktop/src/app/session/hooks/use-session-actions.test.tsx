@@ -5,6 +5,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
@@ -80,7 +81,9 @@ import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-r
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
 import {
   $sessionTiles,
+  dropSessionState,
   knownOwnerForSession,
+  publishSessionState,
   requestForOwnedSession,
   sessionTileOwnerRoute
 } from '@/store/session-states'
@@ -92,6 +95,7 @@ import { deferred } from '../../../test/deferred'
 import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
+import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
 import { useSessionActions } from './use-session-actions'
 import { suppressTranscriptForView, transcriptRowContentKey } from './use-session-actions/transcript-provenance'
 import type { TranscriptViewCutoff } from './use-session-actions/transcript-provenance'
@@ -1635,6 +1639,69 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it("leaves the resumed session's effort pending until the built agent reports it (#79807)", async () => {
+    const sessionStateByRuntimeIdRef = { current: new Map<string, ClientSessionState>() }
+
+    // A deferred-build resume answers with the lazy shape: no reasoning_effort.
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: { lazy: true, model: 'qwen3.8-max' },
+          messages: [],
+          resumed: params?.session_id,
+          session_id: 'runtime-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef })
+
+    const resumed = sessionStateByRuntimeIdRef.current.get('runtime-1')!
+    publishSessionState('runtime-1', resumed)
+
+    expect($activeSessionId.get()).toBe('runtime-1')
+    expect(PRIMARY_SESSION_VIEW.$reasoningEffortPending.get()).toBe(true)
+
+    publishSessionState(
+      'runtime-1',
+      applySessionInfoStatePatch(resumed, sessionInfoStatePatch({ reasoning_effort: 'max' }))
+    )
+
+    expect(PRIMARY_SESSION_VIEW.$reasoningEffortPending.get()).toBe(false)
+    expect(PRIMARY_SESSION_VIEW.$reasoningEffort.get()).toBe('max')
+    dropSessionState('runtime-1')
+  })
+
+  it('does not mark a resumed effort pending when the resume reply already carries it', async () => {
+    const sessionStateByRuntimeIdRef = { current: new Map<string, ClientSessionState>() }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: { model: 'qwen3.8-max', reasoning_effort: '' },
+          messages: [],
+          resumed: params?.session_id,
+          session_id: 'runtime-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef })
+
+    publishSessionState('runtime-1', sessionStateByRuntimeIdRef.current.get('runtime-1')!)
+
+    expect(PRIMARY_SESSION_VIEW.$reasoningEffortPending.get()).toBe(false)
+    dropSessionState('runtime-1')
   })
 
   it('resumes via the gateway default (deferred build) — not lazy, no eager opt-out', async () => {

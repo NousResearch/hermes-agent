@@ -81,7 +81,7 @@ def test_delete_pinned_skill_refused(home):
 
 def test_memory_writes_match_memory_tool_format(home):
     """A journey mutation must leave the file byte-identical to what the memory
-    tool itself writes — same §-join, no trailing-newline drift — so the two
+    tool itself writes — same §-join and final newline — so the two
     surfaces never fight over format and indices stay aligned."""
     from tools.memory_tool import ENTRY_DELIMITER, MemoryStore
 
@@ -90,4 +90,4 @@ def test_memory_writes_match_memory_tool_format(home):
     entries = MemoryStore._read_file(path)
 
     assert entries == ["alpha rewritten", "beta note"]
-    assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries)
+    assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries) + "\n"

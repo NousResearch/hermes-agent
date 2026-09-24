@@ -640,11 +640,49 @@ only needed if the app ever hides that label at narrow widths.
 ### Appearance settings
 
 `APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
-Appearance**. For colour picking, use the app's own swatch grid —
-`ColorSwatches` renders exactly what the profile rail and project dialog render,
-with your own `onChange`; pair it with `host.sessions.setColor(id, color)` for
-session colours — instead of injecting nodes into the page or driving app
-widgets through React internals.
+Appearance**, after the built-in sections. It is the seam for a plugin that
+used to inject nodes into that page or drive its widgets through React
+internals.
+
+```ts
+APPEARANCE_AREAS = { extra: 'appearance.extra' } as const
+
+ctx.register({
+  area: APPEARANCE_AREAS.extra,
+  id: 'session-colour-rules',          // unique within your plugin
+  render: () => <MyAppearanceCard />   // any React tree; SDK hooks allowed
+})
+```
+
+*Arbitration:* every registration mounts, in registry order, each inside its
+own error boundary — a contribution that throws collapses to an inline chip
+naming its `id` and the rest of the page (and other plugins' cards) keep
+rendering. The slot is not a settings section: the Appearance subpage filter
+does not gate it, and there is no "first wins" — plugins cannot suppress each
+other here.
+
+*Teardown:* the registration is owned by the plugin loader; disabling or
+reloading the plugin disposes it and the card disappears on the next render.
+Nothing persists app-side, so there is nothing to clean up in `ctx.onDispose`.
+
+For colour picking use the app's own swatch grid — `ColorSwatches` (already an
+SDK export) renders exactly what the profile rail and project dialog render,
+with your own `onChange`; feed it `PROFILE_SWATCHES` and pair it with
+`host.sessions.setColor(id, color)` for session colours.
+
+Migrations for the plugins that motivated this slot:
+
+* **better-session-appearance** — replace the fiber walk that harvests the
+  Appearance submenu's `{ onChange, swatches }` and the `clearBtn.after(...)` /
+  `host.appendChild(panel)` injection into the app dropdown with one
+  `ctx.register({ area: APPEARANCE_AREAS.extra, id: 'rules', render })` whose
+  card renders `<ColorSwatches swatches={PROFILE_SWATCHES} value onChange />`
+  plus its bold/glyph/auto-rule controls; drop the `data-better-session-appearance`
+  attribute writes and the dropdown `max-height` overrides.
+* **hermes-appearance-hub** — mount its paper-texture / font / intro-copy
+  controls as an `APPEARANCE_AREAS.extra` card instead of a status-bar menu
+  that reaches into Settings; the settings *values* still go through
+  `host.settings` (allowlisted keys) and `THEMES_AREA`.
 
 ### Transcript directives — inline components the model addresses
 
@@ -1409,7 +1447,7 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |

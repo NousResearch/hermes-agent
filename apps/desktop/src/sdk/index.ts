@@ -1723,7 +1723,7 @@ export { Codicon } from '@/components/ui/codicon'
  *  deterministic color". Feed it `PROFILE_SWATCHES` so a hand-picked color
  *  shares the generated palette's saturation and lightness; a bespoke grid of
  *  literal hex drifts off-theme the moment the palette moves. */
-export { ColorSwatches, type ColorSwatchesProps } from '@/components/ui/color-swatches'
+export { ColorSwatches } from '@/components/ui/color-swatches'
 export { ConfirmDialog } from '@/components/ui/confirm-dialog'
 export {
   ContextMenu,

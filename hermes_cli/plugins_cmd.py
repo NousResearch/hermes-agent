@@ -26,6 +26,8 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text, rmtree_readonly
 
 logger = logging.getLogger(__name__)
+_DEFAULT_CLONE_TIMEOUT_SECONDS = 300
+_MAX_CLONE_TIMEOUT_SECONDS = 3600
 
 
 @functools.lru_cache(maxsize=1)
@@ -101,6 +103,19 @@ def _config_value(*keys: str, default: Any) -> Any:
         return cfg_get(load_config(), *keys, default=default)
     except Exception:
         return default
+
+
+def _clone_timeout_seconds() -> int:
+    """Deadline for plugin clone and pinned fetch, scoped to the active profile."""
+    value = _config_value("plugins", "clone_timeout_seconds", default=_DEFAULT_CLONE_TIMEOUT_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        logger.warning("plugins.clone_timeout_seconds must be a positive integer; using %ss",
+                       _DEFAULT_CLONE_TIMEOUT_SECONDS)
+        return _DEFAULT_CLONE_TIMEOUT_SECONDS
+    if value > _MAX_CLONE_TIMEOUT_SECONDS:
+        logger.warning("plugins.clone_timeout_seconds exceeds %ss; clamping", _MAX_CLONE_TIMEOUT_SECONDS)
+        return _MAX_CLONE_TIMEOUT_SECONDS
+    return value
 
 
 def _config_name_set(*keys: str) -> set:
@@ -597,15 +612,18 @@ def _git_resolve_commit(repo: Path, git_exe: str, revision: str) -> str:
 
 def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url: str = "") -> None:
     """Fetch and detach at one immutable commit, then verify the resulting HEAD."""
+    fetch_timeout = _clone_timeout_seconds()
     for verb, args, failure_prefix in (
         ("fetch", ("fetch", "--depth", "1", "origin", revision), f"Git commit '{revision}' could not be fetched:\n"),
         ("checkout", ("checkout", "--detach", revision), f"Git checkout of commit '{revision}' failed:\n"),
     ):
         try:
             _git_or_raise(git_exe, repo, *args, failure_prefix=failure_prefix, source_url=source_url,
-                          auth_url=source_url if verb == "fetch" else "")
+                          auth_url=source_url if verb == "fetch" else "",
+                          timeout=fetch_timeout if verb == "fetch" else 60)
         except subprocess.TimeoutExpired as exc:
-            raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after 60 seconds.") from exc
+            timeout = fetch_timeout if verb == "fetch" else 60
+            raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after {timeout} seconds.") from exc
     actual = _git_head_revision(repo, git_exe)
     if actual != _git_resolve_commit(repo, git_exe, revision):
         raise PluginOperationError(
@@ -666,13 +684,15 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
     git_exe = _resolve_git_executable()
     if not git_exe:
         raise PluginOperationError("git is not installed or not in PATH.")
+    clone_timeout = _clone_timeout_seconds()
     clone_args = ["clone", "--depth", "1", *(["--no-checkout"] if revision else []), git_url, str(tmp_clone)]
     try:
-        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url)
+        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url,
+                                 timeout=clone_timeout)
     except FileNotFoundError as e:
         raise PluginOperationError("git is not installed or not in PATH.") from e
     except subprocess.TimeoutExpired as e:
-        raise PluginOperationError("Git clone timed out after 60 seconds.") from e
+        raise PluginOperationError(f"Git clone timed out after {clone_timeout} seconds.") from e
     if result.returncode != 0:
         raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)

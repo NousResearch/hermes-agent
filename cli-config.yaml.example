@@ -38,6 +38,14 @@ runtime:
   nofile_soft_limit: 4096
 
 # =============================================================================
+# Plugin Installation
+# =============================================================================
+plugins:
+  # Deadline for each Git clone or pinned-commit fetch. Default: 300 seconds.
+  # Raise this for large repositories or slow connections. Maximum: 3600.
+  clone_timeout_seconds: 300
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

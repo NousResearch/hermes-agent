@@ -2470,9 +2470,11 @@ DEFAULT_CONFIG = {
         # host. Off by default so installing TigerVNC for other reasons never yields a screen nobody asked
         # for; Hermes Desktop's Screen pane offers Start and this toggle.
         "auto_start": False,
-        # Refuse to start the screen while the host (or its container cgroup) has less than this free.
-        # Xvnc + Xfce idle at ~220 MB and a takeover's browser adds 0.5-1 GB; on a small instance the
-        # loser is Chromium mid-login or the gateway itself. 0 disables the check.
+        # Refuse to start below this much free memory (MB), measured on the host or its container cgroup,
+        # whichever is tighter. Xvnc + Xfce idle at ~220 MB and a takeover's browser adds 0.5-1 GB, so a
+        # screen with one page runs past 1 GB; the kernel OOM killer picks its victim by score, so on a
+        # small instance the loser is the dashboard or the gateway rather than the desktop. 0 disables the
+        # check.
         "min_free_memory_mb": 1536,
         # Stop a screen nobody has used (no computer_use action, browser spawn, viewer or takeover) for this
         # long; it restarts on the next use. Idle Xvnc + Xfce hold ~220 MB, an abandoned browser far more.

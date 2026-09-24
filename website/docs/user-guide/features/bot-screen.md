@@ -76,11 +76,12 @@ reverse proxy's access log may record an already-spent ticket.
   0.5–1 GB (one page: ~550 MB). Plan on **~1.1–1.5 GB per open screen with a
   browser**; the desktop alone is cheap, the browser is the cost. CPU is not a
   constraint (idle desktop ≈ 0.01 core, live streaming ≈ 0.03 core). The packages
-  take ~550 MB of disk on Debian.
+  take ~930 MB of disk on Debian 13.
 
   Before starting a screen, Hermes checks that the host — or its container
   cgroup, whichever is tighter — has `bot_desktop.min_free_memory_mb` free
-  (default 1536). Below that the pane shows why in place of **Start screen** and
+  (default 1536; `0` disables the check). Below that the pane shows why in place
+  of **Start screen** and
   `hermes computer-use screen start` refuses; a screen already running is never
   taken down by this check. A screen nobody uses is stopped after
   `bot_desktop.idle_stop_minutes` (default 30) and comes back on the next use, so
@@ -91,16 +92,27 @@ reverse proxy's access log may record an already-spent ticket.
 ### Baking the packages into a container image
 
 An image for a hosted or unprivileged deployment cannot install anything at run
-time, so build the packages in. The official `Dockerfile` has an opt-in build
-argument:
+time, so the packages have to be built in. CI publishes two variants of every
+version: the unsuffixed tags (`:latest`, `:v*`) without them, and the
+**`-desktop` tags** (`:latest-desktop`, `:v*-desktop`) with them. A hosted
+deployment (Fly Machines, Azure container instances) gets Bot Screen by pulling
+the suffixed tag; a build argument could not reach it anyway, since it never
+runs a build. Nothing in the provisioner selects `-desktop` yet, so a hosted
+instance still comes up slim; pulling the suffixed tag yourself works today.
+
+Build your own only if you want the packages in a custom image. The official
+`Dockerfile` has an opt-in build argument, off by default so a plain
+`docker build .` stays lean:
 
 ```bash
 docker build --build-arg HERMES_BOT_DESKTOP=1 -t hermes-agent:screen .
 ```
 
 It adds TigerVNC, the Xfce components and a headed `chromium` (for the dock's
-Browser icon) as one layer (~550 MB). Nothing starts at boot; an image built this
-way costs no memory until a screen is started.
+Browser icon), plus Playwright's headed Chromium build — about **1.4 GB** of
+image (measured: 4.1 GB without the argument, 5.5 GB with it on arm64), of which
+~930 MB is the apt layer. Nothing starts at boot; an image built this way costs
+no memory until a screen is started.
 
 ## Using it
 

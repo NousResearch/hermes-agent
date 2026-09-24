@@ -4,6 +4,7 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+import hashlib
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from tools.skills_tool_plugin import (  # noqa: F401
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
 from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
+from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,7 @@ def _skill_utils_delegate(attr: str):
 skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
 # Offer-time relevance gate (kanban/docker/s6), NOT hard compatibility; explicit loads bypass it.
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
+skill_matches_apps = _skill_utils_delegate("skill_matches_apps")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
 
@@ -201,7 +204,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
             try:
                 frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
+                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
                 if name in seen_names or name in disabled:
@@ -472,17 +475,57 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     return fields, extras
 
 
+def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
+    """Most specific search dir containing *skill_md*, compared lexically: a symlinked entry
+    belongs to the root that exposes it, not to the root its target lives in."""
+    owners = [Path(d) for d in all_dirs if skill_md.is_relative_to(d)]
+    return max(owners, key=lambda d: len(d.parts), default=None)
+
+
+def _rank_same_root_candidate(candidate, root: Path) -> tuple:
+    """Real SKILL.md beats a legacy flat ``<name>.md``, then the shallower path wins."""
+    _skill_dir, skill_md = candidate
+    return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
+
+
+def _provably_same_skill(candidates) -> bool:
+    """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
+    or byte-identical content (copy). Anything else is two different skills sharing a name,
+    and picking one by depth would let ``<root>/evil`` (``name: github``) shadow the real one."""
+    try:
+        if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
+            return True
+        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
+    except OSError:
+        return False
+
+
 def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, quarantine
-    gate, not-found listing. ``(error_json, skill_dir, skill_md)``; skill_md set iff no error."""
+    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
+    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
+    skill_md set iff no error."""
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
-        # ambiguity WITHIN the project tier still refuses.
+        # ambiguity WITHIN the project tier (two different skills) still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    if len(candidates) > 1:
+        # The refusal below guards against one skill silently shadowing another. Copies of ONE
+        # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
+        # shadow nothing, so rank them instead; different content, an equal-rank tie or a
+        # cross-tier spread still refuses.
+        roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
+        if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
+            root = roots.pop()
+            ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
+            if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
+                logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
+                            name, len(candidates), ranked[0][1],
+                            "; ".join(str(smd) for _sd, smd in ranked[1:]))
+                candidates = [ranked[0]]
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
@@ -512,7 +555,9 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
-    and/or when common prompt-injection patterns appear."""
+    and/or when common prompt-injection patterns appear. The check is on the RESOLVED path:
+    every candidate is built as ``<search_dir>/...`` so a lexical test can never fire, and a
+    SKILL.md symlinked to a file outside every root is exactly what this guards against."""
     trusted_dirs = [active_skills_dir.resolve()]
     with suppress(Exception):
         trusted_dirs.extend(d.resolve() for d in all_dirs)
@@ -652,13 +697,18 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
+    # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
+    # (a) skips the read-mark its read-before-write guard requires and (b) lets it patch from a
+    # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
+    # out of the parent's bucket.
+    dedup_task_id = None if is_background_review() else task_id
+    if (stub := _check_skill_view_dedup(dedup_task_id, name, args.get("file_path"))) is not None:
         return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(task_id, name, args.get("file_path"), parsed)
+            _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

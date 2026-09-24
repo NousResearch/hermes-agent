@@ -9,7 +9,7 @@ description: "Master the Hermes Agent terminal interface — commands, keybindin
 Hermes Agent's CLI is a full terminal user interface (TUI) — not a web UI. It features multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output. Built for people who live in the terminal.
 
 :::tip First-time setup
-One command — `hermes setup --portal` — and you're ready to `hermes chat`. See [Nous Portal](/integrations/nous-portal).
+One command — `hermes setup --portal` — and you're ready to `hermes chat`. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 :::tip
@@ -136,7 +136,7 @@ hermes plugins remove <plugin-name>
 
 Portable packages remain disabled until explicitly enabled. Hermes currently
 loads portable Agent Skills and stdio MCP entries. See the
-[plugin developer guide](/developer-guide/plugins#portable-agent-plugins-v1-packages)
+[plugin developer guide](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)
 for the exact supported subset and trust boundary.
 
 ## Interface Layout
@@ -159,7 +159,7 @@ A persistent status bar sits above the input area, updating in real time:
 | Model name | Current model (truncated if longer than 26 chars) |
 | Token count | Context tokens used / max context window; `~` marks an estimate |
 | Context bar | Visual fill indicator with color-coded thresholds |
-| Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
+| Cost | Estimated session cost (or `n/a` for unknown/zero-priced models). Rates come from Hermes' bundled official price table, then the provider's `/models` listing; on a direct first-party API (OpenAI, xAI, Anthropic, Google, DeepSeek, Xiaomi) a model missing from both is priced at the vendor's list price from models.dev. Proxies, relays and custom endpoints serving the same model id stay `n/a` rather than inherit that price. |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
 | ▶ N | **Active background tasks** — how many `/bg` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | Duration | Elapsed session time |
@@ -189,6 +189,8 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 
 ## Keybindings
 
+On macOS, `F6`/`F7` mean the physical function keys, not the media/system controls shown on the top row. Hold **Fn** (the **globe** key on newer keyboards) while pressing the function key, or enable **Use F1, F2, etc. keys as standard function keys** in **System Settings → Keyboard → Keyboard Shortcuts → Function Keys**. The reliable terminal fallbacks are **Ctrl+T** for `F6` and **Ctrl+R** for `F7`.
+
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
@@ -200,8 +202,8 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | `Ctrl+X Ctrl+E` | Emacs-style alternate binding for the external editor (same behavior as `Ctrl+G`). |
 | `Ctrl+S` | **Stash the prompt.** Parks the current draft and clears the composer so you can send something else first. Press `Ctrl+S` again on an empty composer to bring the draft back (cursor at the end, attached images restored). Repeated presses build a stack rather than overwriting, so an earlier draft is never silently lost — with two or more stashed, `Ctrl+S` opens a browse panel (`↑`/`↓` to navigate, `Enter` to restore, `D` to discard, `Esc` or `Ctrl+S` to close). A `📌 N` badge in the status bar shows how many drafts are parked. Multi-line drafts round-trip exactly, including blank lines. The stash lives in memory for the session only — nothing is written to disk, since drafts often contain secrets. |
 | `Ctrl+C` | Interrupt agent (double-press within 2s to force exit) |
-| `Ctrl+T` / `F6` | Open the full-screen live subagent monitor without losing the composer draft. The live dock appears automatically above the status bar; arrows select a worker, `Enter` shows its recent log, `s` steers, and `x` requests stop with confirmation. See [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents). |
-| `F7` | Toggle the live subagent dock between its multi-row preview and a single summary line without moving composer focus. |
+| `Ctrl+T` / `F6` | Open the full-screen live work monitor (subagents and background processes) without losing the composer draft. The live dock appears automatically above the status bar; arrows select a worker or process, `Enter` shows its recent log, `s` steers a worker, and `x` requests stop with confirmation. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents). |
+| `Ctrl+R` / `F7` | Toggle the live work dock between its multi-row preview and a single summary line without moving composer focus. `Ctrl+R` is the reliable fallback when macOS reserves the function-key row. Besides subagents and background processes, the dock shows a standing `/goal` (active, parked or paused, with turns used) on its top row and the prompts waiting in `/queue` on its bottom rows. |
 | `Ctrl+D` | Exit |
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
 | `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands |
@@ -221,7 +223,7 @@ Start a line with `!` to run it as a shell command instead of sending it to the 
 
 - **Zero cost.** The model is never invoked — no API call, no tokens, no latency.
 - **Nothing enters the conversation.** The command and its output are not added to history, so your context stays clean and the prompt cache is untouched.
-- **Runs where the agent's `terminal` tool runs.** Uses the session working directory, so `!pwd` matches what the agent would see.
+- **Runs on your machine, in the session working directory.** With the default local terminal backend `!pwd` matches what the agent would see. A remote or sandboxed `terminal.backend` (`ssh`, `docker`, …) is **not** used for `!` commands — they always run on the host where Hermes itself runs, so `!hostname` names your machine while the agent's `terminal` tool names the backend. Ask the agent (or open a shell on the target) to run something *inside* the backend. Path completion in the composer, by contrast, does follow the configured backend and lists the target's filesystem.
 - **Approvals still apply.** A dangerous command (`rm -rf`, writes to `~/.hermes/config.yaml`, etc.) goes through the same approval prompt the agent's `terminal` tool uses. `!` is a cost/latency shortcut, not a security bypass.
 - **Non-zero exits are shown.** A failing command prints `! exited <code>` after its output.
 - `!` on its own prints a one-line usage reminder.
@@ -279,7 +281,7 @@ quick_commands:
     target: /gateway restart
 ```
 
-Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration guide](/user-guide/configuration#quick-commands) for more examples.
+Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration guide](./configuration.md#quick-commands) for more examples.
 
 ## Preloading Skills at Launch
 
@@ -413,6 +415,8 @@ display:
 
 `"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.
 
+Whatever the mode, `/queue <prompt>` queues a follow-up turn explicitly, and `/queue list`, `/queue rm N`, `/queue edit N …` and `/queue move A B` act on the pending queue immediately, even mid-run. The live work dock lists what is waiting.
+
 You can also change it inside the CLI:
 
 ```text
@@ -454,7 +458,7 @@ The CLI shows animated feedback as the agent works:
   ┊ 📄 web_extract (2.1s)
 ```
 
-Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](/user-guide/configuration#display-settings).
+Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](./configuration.md#display-settings).
 
 ### Tool Preview Length
 

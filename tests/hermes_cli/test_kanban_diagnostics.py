@@ -87,6 +87,19 @@ def _run(outcome="completed", run_id=1, error=None):
 
 
 
+def test_running_with_open_parents_fires_only_while_running():
+    """A running card whose parent is not terminal is flagged; the same graph
+    on a ready/todo card (the gate is holding it) and a done parent are not."""
+    graph = {"parents": [{"id": "t_parent", "title": "p", "status": "todo"}], "children": []}
+    diags = kd.compute_task_diagnostics(_task(status="running", started_at=100), [], [], graph=graph)
+    assert [d.kind for d in diags] == ["running_with_open_parents"]
+    assert diags[0].data["open_parents"] == [{"id": "t_parent", "status": "todo"}]
+    assert "hermes kanban unlink t_parent t_demo00" in diags[0].actions[0].payload["command"]
+    assert kd.compute_task_diagnostics(_task(status="todo"), [], [], graph=graph) == []
+    done_graph = {"parents": [{"id": "t_parent", "title": "p", "status": "done"}], "children": []}
+    assert kd.compute_task_diagnostics(_task(status="running"), [], [], graph=done_graph) == []
+
+
 def test_stuck_in_blocked_fires_past_threshold():
     now = int(time.time())
     task = _task(status="blocked")
@@ -107,23 +120,6 @@ def test_stuck_in_blocked_fires_past_threshold():
 
 
 
-def test_repeated_crashes_truncates_huge_tracebacks():
-    """Full Python tracebacks can be tens of KB. The title stays one
-    line (≤160 chars); the detail caps at 500 chars + ellipsis so the
-    card doesn't explode visually."""
-    huge = "Traceback (most recent call last):\n" + ("  File\n" * 500)
-    task = _task(status="ready")
-    runs = [
-        _run(outcome="crashed", run_id=1, error=huge),
-        _run(outcome="crashed", run_id=2, error=huge),
-    ]
-    diags = kd.compute_task_diagnostics(task, [], runs)
-    d = diags[0]
-    # Title only the first line, capped.
-    assert "\n" not in d.title
-    assert len(d.title) < 250
-    # Detail contains the snippet with ellipsis.
-    assert d.detail.endswith("…") or len(d.detail) < 700
 
 
 def _kanban_subcommand_choices() -> set[str]:

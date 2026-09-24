@@ -22,12 +22,13 @@ from hermes_startup_watchdog import report_startup_progress
 from utils import safe_json_loads
 from hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
-    FTS_STORAGE_VERSION, FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
+    FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
 from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
+from hermes_state_errors import is_sqlite_lock_error
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -133,6 +134,9 @@ _STATE_META_UPSERT_SQL = (
     "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 )
 _CLEAR_REBUILD_MARKERS_SQL = "DELETE FROM state_meta WHERE key IN ('fts_rebuild_high_water', 'fts_rebuild_progress')"
+# FTS_STORAGE_VERSION < 3 truncated tool rows only above a moving state_meta mark; the aligned
+# projection truncates by role alone, so the retired marker is dropped with the realign.
+_DROP_RETIRED_TOOL_HIGH_WATER_SQL = "DELETE FROM state_meta WHERE key = 'fts_tool_full_content_high_water'"
 
 
 def _legacy_inline_reinsert_sql(table: str, indent: int, *, delete_first: bool = False) -> str:
@@ -277,11 +281,17 @@ class SessionSchemaMixin:
         return len(to_drop)
 
     @staticmethod
-    def _stamp_fts_tool_high_water(cursor: sqlite3.Cursor) -> None:
-        """Record MAX(messages.id) as the bounded-tool-content high-water mark: rows at or below it keep
-        their exact stored token stream; newer tool rows index only the prefix (see ``_fts_indexed_content_sql``)."""
-        high_water = cursor.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
-        cursor.execute(_STATE_META_UPSERT_SQL, (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)))
+    def _fts_index_is_misaligned_source(cursor: sqlite3.Cursor) -> bool:
+        """True when ``messages_fts`` is still external-content over the raw
+        ``messages`` table (FTS_STORAGE_VERSION < 3): its index holds a TRUNCATED
+        projection for long tool rows that the checker/'delete' commands re-read
+        as FULL content, a mismatch by construction. Such an index cannot be
+        repaired in place — it must be 'rebuild'-filled from the aligned
+        ``messages_fts_src`` view exactly once."""
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'"
+        ).fetchone()
+        return row is not None and "messages_fts_src" not in (row[0] or "")
 
     @staticmethod
     def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
@@ -330,41 +340,44 @@ class SessionSchemaMixin:
         if statement.strip():
             raise sqlite3.OperationalError("incomplete FTS DDL statement")
 
-    def _migrate_bounded_tool_fts_triggers(self, cursor: sqlite3.Cursor, *, legacy: bool) -> None:
-        """Replace FTS triggers without rebuilding historical indexes. Existing rows keep their
-        full-content token stream; the durable high-water id makes new tool rows use the bounded
-        prefix in INSERT and the matching external-content delete/update. One savepoint, so no
-        concurrent writer lands in a trigger gap. A fresh store has no historical index to migrate;
-        its FTS family is created later under rebuild admission."""
-        if not self._sqlite_table_exists(cursor, "messages_fts"):
+    def _migrate_misaligned_fts_source(self, cursor: sqlite3.Cursor, *, legacy: bool) -> None:
+        """Re-point ``messages_fts`` at the stable ``messages_fts_src`` projection view and
+        rebuild it ONCE (FTS_STORAGE_VERSION 2 -> 3). A v1/v2 base index carries token streams
+        the raw-``messages`` external-content source cannot read back (truncated long tool
+        rows, and tool rows whose full content was indexed under an old high-water mark), so
+        in-place continuity is not achievable — the ONLY valid transition is a full rebuild
+        from the view, under the shared cross-process rebuild admission. Legacy inline DBs
+        skip this entirely (their index is self-contained; they still take the DDL on the
+        optimize path)."""
+        if legacy or not self._sqlite_table_exists(cursor, "messages_fts"):
             return
-        marker = cursor.execute(
-            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,),
-        ).fetchone()
-        if marker is not None:
+        if not self._fts_index_is_misaligned_source(cursor):
             return
-        trigram_present = self._sqlite_table_exists(cursor, "messages_fts_trigram")
-        names = _FTS_BASE_TRIGGERS + (_FTS_TRIGRAM_TRIGGERS if legacy and trigram_present else ())
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
-        self._fts_tool_prefix_migration_requires_rebuild = bool(
-            has_messages and self._fts_triggers_missing(cursor, names)
-        )
-        cursor.execute("SAVEPOINT bounded_tool_fts")
-        try:
-            self._stamp_fts_tool_high_water(cursor)
-            for name in names:
+
+        def do_align() -> None:
+            for name in _FTS_BASE_TRIGGERS:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
-            if legacy:
-                self._execute_ddl_script_transactional(cursor, LEGACY_FTS_SQL)
-                if trigram_present:
-                    self._execute_ddl_script_transactional(cursor, LEGACY_FTS_TRIGRAM_SQL)
-            else:
-                self._execute_ddl_script_transactional(cursor, FTS_SQL)
-            cursor.execute("RELEASE SAVEPOINT bounded_tool_fts")
-        except BaseException:
-            cursor.execute("ROLLBACK TO SAVEPOINT bounded_tool_fts")
-            cursor.execute("RELEASE SAVEPOINT bounded_tool_fts")
-            raise
+            cursor.execute("DROP TABLE IF EXISTS messages_fts")
+            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            if has_messages:
+                cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+            cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
+            cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
+            cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
+
+        if not has_messages:
+            # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
+            cursor.execute("SAVEPOINT fts_align_empty")
+            try:
+                do_align()
+                cursor.execute("RELEASE SAVEPOINT fts_align_empty")
+            except BaseException:
+                cursor.execute("ROLLBACK TO SAVEPOINT fts_align_empty")
+                cursor.execute("RELEASE SAVEPOINT fts_align_empty")
+                raise
+            return
+        self._run_admitted_startup_rebuild(cursor, do_align)
 
     @staticmethod
     def _sqlite_table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
@@ -420,7 +433,6 @@ class SessionSchemaMixin:
         markers are cleared or the worker would re-insert covered rows (duplicates).
         ``legacy`` (pre-v23 inline layout) has no external-content 'rebuild' source, so it
         DELETEs + reinserts the concatenated content the legacy triggers produced."""
-        SessionSchemaMixin._stamp_fts_tool_high_water(cursor)
         tables = ("messages_fts", "messages_fts_trigram") if include_trigram else ("messages_fts",)
         for tbl in tables:
             if legacy:
@@ -644,7 +656,7 @@ class SessionSchemaMixin:
             rebuild_sql += "INSERT INTO messages_fts(messages_fts) VALUES('rebuild');"
             if include_trigram:
                 rebuild_sql += "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild');"
-            rebuild_sql += _CLEAR_REBUILD_MARKERS_SQL + ";"
+            rebuild_sql += _CLEAR_REBUILD_MARKERS_SQL + ";" + _DROP_RETIRED_TOOL_HIGH_WATER_SQL + ";"
         recovery_sql = (
             "BEGIN IMMEDIATE;" + drop_sql + rebuild_sql
             + f"DELETE FROM state_meta WHERE key IN ('{FTS_STALE_KEY}', '{FTS_REBUILD_DEFERRAL_KEY}');COMMIT;"
@@ -756,7 +768,7 @@ class SessionSchemaMixin:
                         # A sibling process won the ADD race; store is correct.
                         logger.debug("reconcile %s.%s: %s", table_name, col_name, exc)
                         continue
-                    if "locked" in message or "busy" in message:
+                    if is_sqlite_lock_error(exc):
                         # Swallowing lock contention left the store half-reconciled ("no such
                         # column" on every read). Re-raise so the lock-patience wrapper retries init.
                         raise
@@ -1159,7 +1171,7 @@ class SessionSchemaMixin:
             cursor, ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
         )
         if not self._fts_stale:
-            self._migrate_bounded_tool_fts_triggers(cursor, legacy=legacy_fts)
+            self._migrate_misaligned_fts_source(cursor, legacy=legacy_fts)
         if self._fts_stale:
             if self._recover_stale_fts(cursor, legacy=legacy_fts):
                 # CJK was detached alongside the base indexes; its ensure path decides when it returns.
@@ -1170,8 +1182,9 @@ class SessionSchemaMixin:
             base_sql, trigram_sql = _FTS_DDL[legacy_fts]
             # Measure before any DDL. Publishing missing base triggers before rebuild admission lets
             # another process write through an index whose bootstrap/repair has no owner (#105790).
-            base_triggers_missing = self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or getattr(
-                self, "_fts_tool_prefix_migration_requires_rebuild", False) or "messages_fts" in orphan_repaired
+            base_triggers_missing = (
+                self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or "messages_fts" in orphan_repaired
+            )
             trigram_triggers_missing = (
                 self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS) or "messages_fts_trigram" in orphan_repaired
             )

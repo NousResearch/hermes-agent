@@ -31,6 +31,9 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Set on the env dict by the CDP resolvers when the resolved browser is EXCLUSIVE to this named session
 # (per-name provider / named BU cloud / Lightpanda). Popped before the subprocess launches — never exported.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
+# Internal route provenance: this exec resolved to a browser on the Bot Desktop display and must use
+# the same human-control lease fence as the built-in browser tools. Popped before launching the CLI.
+_BOT_DESKTOP_BROWSER_SENTINEL = "_HERMES_BU_BOT_DESKTOP_BROWSER"
 
 # Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
@@ -339,13 +342,15 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
 def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dict[str, Any]]:
     """Build a multimodal tool result attaching path for vision models"""
     try:
-        from tools.vision_tools import (_EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES,
+        from tools.vision_tools import (_EMBED_MAX_DIMENSION,
                                         _resize_image_for_vision, _should_use_native_vision_fast_path)
+        from tools.vision_tools_history_budget import resolve_embed_target_bytes
         if not _should_use_native_vision_fast_path():
             return None
         # History-reuse cap: this data URL bakes into the tool result and is re-sent every later turn —
         # same policy as the vision_analyze / browser_vision native embeds.
-        data_url = _resize_image_for_vision(Path(path), mime_type="image/png", max_base64_bytes=_EMBED_TARGET_BYTES,
+        data_url = _resize_image_for_vision(Path(path), mime_type="image/png",
+                                            max_base64_bytes=resolve_embed_target_bytes(),
                                             max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
         text = json.dumps(result, ensure_ascii=False)
         attached = text + "\n\nThe screenshot from this call is attached — inspect it with your native vision."
@@ -391,6 +396,7 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
     )
     if err is None:
         env[_PRIVATE_BROWSER_SENTINEL] = "1"
+        env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     return err
 
 
@@ -416,6 +422,7 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
                 "Run `hermes tools` → Browser Automation to (re)install Chromium, or switch backends.")
     _set_cdp_env(env, cdp)
     env[_PRIVATE_BROWSER_SENTINEL] = "1"  # one Chromium per cache key: nothing to share a tab with
+    env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     return None
 
 
@@ -505,6 +512,7 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     cdp, err = _real_profile_cdp()
     if cdp and not err:
         _set_cdp_env(env, cdp)
+        env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     return err or None
 
 
@@ -604,6 +612,7 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
+    from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -627,7 +636,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
-    _attach_vault_supervisor(env, task_id)
+    bot_desktop_browser = bool(env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None))
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
@@ -646,21 +655,43 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
-    try:
-        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
-    except subprocess.TimeoutExpired:
-        return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
-                          f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
-                          "append to workspace files — anything already written to the workspace is preserved.")
-    except OSError as e:
-        return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
+    def dispatch() -> Dict[str, Any]:
+        _attach_vault_supervisor(env, task_id)
+        try:
+            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+        except subprocess.TimeoutExpired:
+            return {"error_result": tool_error(
+                f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
+                f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
+                "append to workspace files — anything already written to the workspace is preserved."
+            )}
+        except OSError as e:
+            return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+
+    if bot_desktop_browser:
+        from tools.browser_tool_session import run_fenced
+        dispatched = run_fenced({"features": {"local": True}}, dispatch)
+    else:
+        dispatched = dispatch()
+    if "proc" not in dispatched:
+        if "error_result" in dispatched:
+            return dispatched["error_result"]
+        return tool_result(dispatched)
+    proc = dispatched["proc"]
+
+    # browser_vault_fill registers injected values with this forced model-egress
+    # boundary. Preserve raw stdout only for screenshot-path detection below.
+    result = {
+        "success": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "output": redact_sensitive_text(proc.stdout, force=True),
+    }
     if workspace:
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    stderr = (proc.stderr or "").strip()
+    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:

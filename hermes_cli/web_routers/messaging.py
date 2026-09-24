@@ -22,16 +22,20 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
-    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness)
+    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
+from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import (
+    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
+    redacted_credential_preview,
+)
 from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
@@ -231,7 +235,7 @@ def _messaging_platform_payload(
     env_vars = [
         {
             "key": key, "required": key in entry["required_env"], "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None, **_messaging_env_info(key),
+            "redacted_value": redacted_credential_preview(value), **_messaging_env_info(key),
         }
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])
     ]
@@ -246,7 +250,9 @@ def _messaging_platform_payload(
     elif gateway_running and not state:
         state = "pending_restart"
     elif not gateway_running and not state:
-        state = "startup_failed" if rt.get("gateway_state") == "startup_failed" else "gateway_stopped"
+        # Same verdict /api/status gives: ``hermes gateway stop`` keeps the last failure on disk,
+        # and a profile the operator stopped must not wear a "Start failed" badge for it.
+        state = "startup_failed" if retained_gateway_state(rt) == "startup_failed" else "gateway_stopped"
 
     error_code = runtime_platform.get("error_code")
     error_message = runtime_platform.get("error_message")
@@ -869,16 +875,25 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
     def _apply():
         with _profile_scope(target_profile):
+            updates: dict[str, str] = {}
+
+            # Validate the whole request before clearing or replacing anything.
             for key in body.clear_env:
                 _check_allowed(key)
-                remove_env_value(key)
-
             for key, value in body.env.items():
                 _check_allowed(key)
                 trimmed = value.strip()
-                if trimmed:
-                    _validate_messaging_env_value(platform_id, key, trimmed)
-                    save_env_value(key, trimmed)
+                if not trimmed:
+                    continue
+                if is_redacted_credential_preview(trimmed):
+                    raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
+                _validate_messaging_env_value(platform_id, key, trimmed)
+                updates[key] = trimmed
+
+            for key in body.clear_env:
+                remove_env_value(key)
+            for key, value in updates.items():
+                save_env_value(key, value)
 
             if body.enabled is not None:
                 _write_platform_enabled(platform_id, body.enabled)

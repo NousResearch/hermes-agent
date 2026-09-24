@@ -30,9 +30,10 @@ from agent.skill_utils import (
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
-    _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
+    _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _maybe_auto_propose_org_edit,
     _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
-from tools.skill_manager_batch import _skill_manage_batch
+from tools.skill_manager_batch import (
+    _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -393,11 +394,16 @@ def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dic
     return result
 
 
-def _attach_lint_findings(result: Dict[str, Any], skill_md: Path) -> None:
-    """Attach ADVISORY authoring findings (hard rejects already ran in _validate_frontmatter)."""
+def _attach_lint_findings(result: Dict[str, Any], skill_md: Path, before: Optional[str] = None) -> None:
+    """Attach ADVISORY authoring findings (hard rejects already ran in _validate_frontmatter).
+    With ``before`` (the pre-write content) only rules the write INTRODUCED are attached, so a
+    patch reports the line it crossed rather than re-listing the skill's standing findings."""
     try:
-        from tools.skill_linter import lint_skill  # local import: optional path
+        from tools.skill_linter import lint_content, lint_skill  # local import: optional path
         findings = lint_skill(skill_md)
+        if before is not None:
+            standing = {f.rule for f in lint_content(before, skill_dir=skill_md.parent)}
+            findings = [f for f in findings if f.rule not in standing]
     except Exception:
         findings = None
     if not findings:
@@ -405,7 +411,7 @@ def _attach_lint_findings(result: Dict[str, Any], skill_md: Path) -> None:
     result["lint_warnings"] = [
         {"severity": f.severity, "rule": f.rule, "message": f.message} for f in findings]
     result["lint_hint"] = (
-        "The skill was created. These are advisory authoring-convention findings (not blockers) "
+        "The write succeeded. These are advisory authoring-convention findings (not blockers) "
         "— fix them with skill_manage(action='patch') to match Hermes skill standards.")
 
 
@@ -423,12 +429,26 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(skill_dir)
+    mkdir_under_hermes_home(skill_dir.parent)
+    try:
+        skill_dir.mkdir(exist_ok=False)
+    except FileExistsError:
+        # mkdir raised EEXIST for a file, symlink (live or dangling) or dir alike; only an EMPTY
+        # real directory (leftover of an earlier create whose SKILL.md write failed) may be used.
+        # Anything else — or anything unstat-able/unlistable — is someone else's: never adopt.
+        try:
+            usable = (not _is_path_redirect(skill_dir) and skill_dir.is_dir()
+                      and not any(skill_dir.iterdir()))
+        except OSError:  # permissions / ACL
+            usable = False
+        if not usable:
+            return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
+                        "directory, or unreadable). Choose another name, or move/remove that path and retry.")
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-    if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return _err(scan_error)
+    if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
+        with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
+            skill_dir.rmdir()
+        return guard
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir
     result = {
@@ -460,15 +480,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
                  replace_all: bool = False) -> Dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
     if not old_string:
-        # A bare "required" error is a dead end: the model retries blindly and often
-        # escapes to action='write_file', clobbering the whole file.
-        return _err(
-            "old_string is required for 'patch' and must be the EXACT text currently in the file. "
-            "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
-            "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
-            "action='write_file' — that rewrites the entire file and destroys unrelated content.")
+        return _err(_PATCH_NEEDS_OLD_STRING)
     if new_string is None:
-        return _err("new_string is required for 'patch'. Use an empty string to delete matched text.")
+        return _err(_PATCH_NEEDS_NEW_STRING)
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
     skill_dir, guard = _locate_for_write(name, "patch")
@@ -506,7 +520,12 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
-    return _attach_org_note(result, name, skill_dir)
+    result = _attach_org_note(result, name, skill_dir)
+    # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
+    # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
+    if not file_path:
+        _attach_lint_findings(result, target, before=content)
+    return result
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
@@ -697,8 +716,7 @@ def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
-        return tool_error("Pass EITHER content (full SKILL.md rewrite) OR "
-                          "old_string/new_string (targeted replacement), not both.", success=False)
+        return tool_error(_PATCH_EITHER_OR, success=False)
     if a["content"]:
         return _edit_skill(a["name"], a["content"])
     return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
@@ -713,17 +731,6 @@ _ACTION_HANDLERS = {
     "delete": lambda a: _delete_skill(a["name"], absorbed_into=a["absorbed_into"]),
     "write_file": lambda a: _write_file(a["name"], a["file_path"], a["file_content"]),
     "remove_file": lambda a: _remove_file(a["name"], a["file_path"])}
-# action -> (arg, is_missing, error) argument-shape checks run before the handler.
-_MISSING, _IS_NONE = (lambda v: not v), (lambda v: v is None)
-_REQUIRED_ARGS = {
-    "create": [("content", _MISSING,
-                "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).")],
-    "edit": [("content", _MISSING,
-              "content is required for a full rewrite. Provide the full updated SKILL.md text.")],
-    "write_file": [
-        ("file_path", _MISSING, "file_path is required for 'write_file'. Example: 'references/api-guide.md'"),
-        ("file_content", _IS_NONE, "file_content is required for 'write_file'.")],
-    "remove_file": [("file_path", _MISSING, "file_path is required for 'remove_file'.")]}
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
@@ -785,9 +792,8 @@ def skill_manage(
                 absorbed_into=absorbed_into)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
-    for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
-        if missing(args[arg]):
-            return tool_error(message, success=False)
+    if (shape_err := _op_shape_error(action, args)) is not None:
+        return tool_error(shape_err, success=False)
     # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
     # (create takes a bare name; the other actions also accept ``category/name``).
     if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
@@ -847,6 +853,27 @@ def _skill_manage_schema_overrides() -> dict:
     return {"description": _skill_manage_description(_display_create_dir())}
 
 
+_NAME = {"type": "string"}
+_OLD_STRING = {"type": "string",
+               "description": "Text to find (same matching semantics as the patch tool)."}
+_NEW_STRING = {"type": "string", "description": "Replacement; empty string deletes the match."}
+_FILE_PATH = {
+    "type": "string",
+    "description": (
+        "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' — no leading "
+        "slash, never absolute; first segment references/, templates/, scripts/, or assets/."
+    ),
+}  # stated once (write_file); patch/remove_file point at it
+
+
+def _op_schema(action: str, props: dict, required: tuple) -> dict:
+    """One self-contained per-action op shape. ``additionalProperties: false`` is what lets a
+    grammar-constrained backend refuse another action's text slot outright."""
+    return {"type": "object", "additionalProperties": False,
+            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]}, **props},
+            "required": ["name", "action", *required]}
+
+
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     # ONE advertised call shape (memory-tool pattern): the call IS an operations
@@ -858,70 +885,49 @@ SKILL_MANAGE_SCHEMA = {
         "properties": {
             "operations": {
                 "type": "array",
-                "description": "Ordered ops; each names its target skill.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": (
-                                "Skill name (lowercase, hyphens/underscores, "
-                                "max 64 chars); an existing skill's name "
-                                "unless creating."
-                            )
-                        },
-                        "action": {
-                            "type": "string",
-                            "enum": ["create", "patch", "delete", "write_file", "remove_file"]
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": (
-                                "Full SKILL.md text (YAML frontmatter + "
-                                "markdown body) for create, or a full "
-                                "rewrite on patch."
-                            )
-                        },
-                        "category": {
-                            "type": "string",
-                            "description": "Optional category subdir for create (e.g. 'devops')."
-                        },
-                        # patch args: same fuzzy-matching semantics as the
-                        # `patch` tool — teach only skill-specific facts here.
-                        "old_string": {
-                            "type": "string",
-                            "description": "Text to find (patch; same matching semantics as the patch tool)."
-                        },
-                        "new_string": {
-                            "type": "string",
-                            "description": "Replacement (patch); empty string deletes the match."
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "patch: replace all occurrences (default false)."
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": (
-                                "Path RELATIVE to the skill's own directory, "
-                                "e.g. 'references/api.md' — no leading slash, "
-                                "never absolute. write_file/remove_file: "
-                                "required; first segment references/, "
-                                "templates/, scripts/, or assets/. patch: "
-                                "optional (default SKILL.md)."
-                            )
-                        },
-                        "file_content": {
-                            "type": "string",
-                            "description": "Content for write_file."
-                        }
-                    },
-                    "required": ["name", "action"]
-                }
+                "description": (
+                    "Ordered ops; each names its target skill (lowercase, hyphens/underscores, "
+                    "max 64 chars). Each action is its own shape; another action's text slot is invalid."
+                ),
+                # Per-action branches, not one flat union: with one object holding content /
+                # new_string / file_content side by side, a 27B model that just used write_file
+                # kept emitting file_content on create and the whole batch rolled back (#112677).
+                "items": {"anyOf": [
+                    _op_schema("create", {
+                        "content": {"type": "string",
+                                    "description": "Full SKILL.md text (YAML frontmatter + markdown body)."},
+                        "category": {"type": "string",
+                                     "description": "Optional category subdir (e.g. 'devops')."},
+                    }, ("content",)),
+                    _op_schema("patch", {
+                        "old_string": _OLD_STRING, "new_string": _NEW_STRING,
+                        "replace_all": {"type": "boolean",
+                                        "description": "Replace all occurrences (default false)."},
+                        "file_path": {"type": "string",
+                                      "description": "Optional supporting file (write_file's shape); default SKILL.md."},
+                    }, ("old_string", "new_string")),
+                    _op_schema("patch", {
+                        "content": {"type": "string",
+                                    "description": "Full SKILL.md rewrite (REPLACES the whole file; last resort)."},
+                    }, ("content",)),
+                    _op_schema("write_file", {
+                        "file_path": _FILE_PATH,
+                        "file_content": {"type": "string", "description": "Full text of the supporting file."},
+                    }, ("file_path", "file_content")),
+                    _op_schema("remove_file", {
+                        "file_path": {"type": "string", "description": "Supporting file (write_file's shape)."},
+                    }, ("file_path",)),
+                    # `absorbed_into` stays in the delete shape: with additionalProperties:false a
+                    # grammar-constrained backend would otherwise strip it and the curator's
+                    # consolidation delete guard would fail-close every consolidation.
+                    _op_schema("delete", {
+                        "absorbed_into": {"type": "string",
+                                          "description": "Curator consolidation only: umbrella skill "
+                                                         "that absorbed this one (must exist)."},
+                    }, ()),
+                ]},
             },
-            # Also accepted, never advertised: the legacy flat single-op fields, and
-            # `absorbed_into` on delete ops (curator-only vocabulary; the curator's
-            # prompt documents it and the delete guard's error re-teaches it).
+            # Also accepted, never advertised: the legacy flat single-op fields.
         },
         "required": ["operations"],
     },

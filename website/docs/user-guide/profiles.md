@@ -8,13 +8,39 @@ Run multiple independent Hermes agents on the same machine — each with its own
 
 ## What are profiles?
 
-A profile is a separate Hermes home directory. Each profile gets its own directory containing its own `config.yaml`, `.env`, `SOUL.md`, memories, sessions, skills, cron jobs, and state database. Profiles let you run separate agents for different purposes — a coding assistant, a personal bot, a research agent — without mixing up Hermes state.
+A profile is a separate Hermes home directory. Each profile gets its own directory containing its own `config.yaml`, `.env`, `SOUL.md`, memories, sessions, skills, cron jobs, and state database. Hermes recognises a directory under `~/.hermes/profiles/` as a profile only when it carries one of those identity files (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json`, `state.db`); a bare directory left behind by logging or cron is ignored by `profile list`, gateways and `-p`. Profiles let you run separate agents for different purposes — a coding assistant, a personal bot, a research agent — without mixing up Hermes state.
 
 :::caution Give every agent its own profile
-Never point two agent processes at the same profile (the same Hermes home). Both write memory automatically, and each loads the other's writes into its system prompt at session start — so two writers on one home compound each other's state until it stops being anything you configured. Profiles exist exactly to prevent this; agents that need shared memory should use an [external memory provider](/user-guide/features/memory-providers) instead.
+Never point two agent processes at the same profile (the same Hermes home). Both write memory automatically, and each loads the other's writes into its system prompt at session start — so two writers on one home compound each other's state until it stops being anything you configured. Profiles exist exactly to prevent this; agents that need shared memory should use an [external memory provider](./features/memory-providers.md) instead.
 :::
 
 When you create a profile, it automatically becomes its own command. Create a profile called `coder` and you immediately have `coder chat`, `coder setup`, `coder gateway start`, etc.
+
+### Profiles, agents, and bots
+
+These terms describe different parts of Hermes:
+
+- **Profile** is the persistent home for an assistant's configuration and data.
+  It keeps the same state across conversations and restarts.
+
+- **Agent** is the running Hermes assistant that uses that configuration and
+  state. "Hermes Agent" also names the product.
+
+- **Bot Mode bot** is a profile presented as a named entry in the desktop's
+  [Bot Mode](./bot-mode.md) roster, with an avatar and a persistent Bot Chat.
+  The same profile remains accessible from the CLI. Every Bot is a profile, but
+  not every profile is a Bot: a profile becomes a Bot when Bot Mode stores its
+  roster presentation (title, avatar, section, hidden state) in the profile's
+  metadata and pins its canonical Bot Chat. A profile you only ever drive from
+  the CLI, Docker, or a gateway and never add to the roster stays a plain profile.
+
+- **Messaging bot** is an account on a platform such as Telegram, Discord, or
+  Slack, connected to Hermes through the gateway. Its
+  [bot token](#different-bot-tokens) identifies that platform account.
+
+- **Subagent** is a child assistant spawned by
+  [`delegate_task`](./features/delegation.md) for a task, with a fresh
+  conversation. A separate conversation is different from a separate profile.
 
 ## Quick start
 
@@ -29,7 +55,7 @@ That's it. `coder` is now its own Hermes profile with its own config, memory, an
 ## Creating a profile
 
 :::tip
-Quickest setup: run `hermes setup --portal` inside the new profile to wire up models + tools at once. See [Nous Portal](/integrations/nous-portal).
+Quickest setup: run `hermes setup --portal` inside the new profile to wire up models + tools at once. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ### Blank profile
@@ -54,7 +80,7 @@ You can also set or auto-generate the description later with `hermes profile des
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. Sessions, `state.db`, cron jobs and everything else start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. If `config.yaml` selects an external memory provider (`memory.provider`), that provider's own config travels too — its `<provider>/` directory or `<provider>.json` under the profile home, e.g. `hindsight/config.json` — so the clone's memory is available instead of silently off; a cloned `local_embedded` hindsight config still shares the source's embedded daemon and bank until you give the clone its own hindsight `profile`/`bank_id` ([#81815](https://github.com/NousResearch/hermes-agent/issues/81815)). Sessions, `state.db`, cron jobs and everything else start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 #### Keep a clone's imported agent setups synced (`--sync-imports`)
 
@@ -254,7 +280,7 @@ assistant gateway install     # creates hermes-gateway-assistant service
 Each profile gets its own service name. They run independently.
 
 :::note Inside the official Docker image
-Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](/user-guide/docker#per-profile-gateway-supervision) for details.
+Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](./docker.md#per-profile-gateway-supervision) for details.
 :::
 
 ## Configuring profiles
@@ -309,6 +335,7 @@ hermes profile list           # show all profiles with status
 hermes profile show coder     # detailed info for one profile
 hermes profile rename coder dev-bot   # rename (updates alias + service)
 hermes profile migrate-identity coder dev-bot   # retry a rename's identity migration
+hermes profile purge-identity dev-bot   # retry a delete's identity purge
 hermes profile export coder   # pack into coder.tar.gz (shareable; keys stripped)
 hermes profile import coder.tar.gz   # install an archive as a new profile
 ```

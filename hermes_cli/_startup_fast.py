@@ -12,11 +12,11 @@ import os
 import sys
 
 __all__ = [
-    "project_root_str", "ensure_project_root_on_path", "is_termux_env",
+    "project_root_str", "normalize_hermes_home_env", "ensure_project_root_on_path", "is_termux_env",
     "is_termux_fast_version_argv", "is_global_fast_version_argv",
     "is_container_startup_environment", "active_profile_may_override_home",
     "container_mode_may_be_active", "read_openai_version", "read_install_method",
-    "print_fast_version_info", "try_fast_version",
+    "print_fast_version_info", "try_fast_version", "is_desktop_ssh_backend_argv",
 ]
 
 
@@ -34,12 +34,45 @@ def project_root_str() -> str:
     return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 
 
+def normalize_hermes_home_env() -> None:
+    """Expand ``~``/``$VAR`` in ``HERMES_HOME`` once, at process entry, and write it back.
+
+    fish does not expand ``~`` inside ``VAR=~/...`` and every shell passes a quoted value
+    through verbatim, so a literal tilde reaches the process. ``Path("~/.hermes")`` is
+    *relative*: the many raw ``os.environ["HERMES_HOME"]`` readers (this fast path, the
+    active_profile probe, profile re-home, the dotenv loader) would each resolve it against
+    cwd and scaffold a full home under ``<cwd>/~/.hermes``. One expansion here gives every
+    reader the same absolute spelling; ``hermes_constants`` expands as well for non-CLI
+    entry points. A relative value that is not tilde/variable-shaped is left alone.
+    """
+    raw = os.environ.get("HERMES_HOME", "")
+    if not raw.strip():
+        return
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    if expanded != raw:
+        os.environ["HERMES_HOME"] = expanded
+
+
+def _realpath_or_self(path: str) -> str:
+    """``os.path.realpath`` that survives a deleted cwd.
+
+    A relative ``sys.path`` entry is resolved through ``os.getcwd()``, which raises
+    ``FileNotFoundError`` once the directory the process started in has been removed
+    (a cron delivery child spawned from a reaped scratch workspace, #102941); the CLI
+    then dies before it can parse argv.
+    """
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
 def ensure_project_root_on_path() -> None:
     """Put the project root at sys.path[0], deduping realpath-equivalents."""
     project_root = project_root_str()
-    normalized_root = os.path.normcase(os.path.realpath(project_root))
+    normalized_root = os.path.normcase(_realpath_or_self(project_root))
     sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(os.path.realpath(entry)) != normalized_root]
+                   if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
     sys.path.insert(0, project_root)
 
 
@@ -55,6 +88,17 @@ def is_termux_fast_version_argv(argv: list[str]) -> bool:
 
 
 is_global_fast_version_argv = is_termux_fast_version_argv
+
+
+def is_desktop_ssh_backend_argv(argv: list[str]) -> bool:
+    """Is ``argv`` the Desktop client's SSH backend spawn (``serve --ssh-session-token-file``)?
+
+    That child has a fixed identity: Desktop names the remote profile explicitly (or none for
+    the root home) and hands its session token through a 0600 FILE, never the
+    ``HERMES_DASHBOARD_SESSION_TOKEN`` env var the local pool spawn uses. Every reader of
+    "is this process Desktop's backend" needs both shapes; this is the argv half.
+    """
+    return "--ssh-session-token-file" in argv
 
 
 def is_container_startup_environment() -> bool:

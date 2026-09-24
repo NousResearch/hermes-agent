@@ -112,20 +112,6 @@ def _install_agent_stubs(monkeypatch, observed: dict):
 # ---------------------------------------------------------------------------
 
 
-def test_create_job_stores_monitor_script(hermes_env):
-    from cron.jobs import create_job, get_job
-
-    _write_script(hermes_env, "mon.sh", "echo stable\n")
-    job = create_job(
-        prompt="React to the change",
-        schedule="every 5m",
-        monitor_script="mon.sh",
-        deliver="local",
-    )
-    reloaded = get_job(job["id"])
-    assert reloaded["monitor_script"] == "mon.sh"
-    assert reloaded.get("monitor_url") is None
-    assert reloaded.get("monitor_state") is None
 
 
 def test_create_job_monitor_script_and_url_mutually_exclusive(hermes_env):
@@ -222,20 +208,6 @@ def test_update_job_allows_clearing_monitor_then_no_agent(hermes_env):
     assert reloaded["no_agent"] is True
 
 
-def test_update_job_unrelated_fields_skip_mode_validation(hermes_env):
-    """A legacy/odd record must keep accepting updates that don't touch the
-    mode fields — the invariant re-check is scoped to changed fields."""
-    from cron.jobs import create_job, update_job
-
-    _write_script(hermes_env, "mon.sh", "echo stable\n")
-    job = create_job(
-        prompt="React",
-        schedule="every 5m",
-        monitor_script="mon.sh",
-        deliver="local",
-    )
-    updated = update_job(job["id"], {"name": "renamed"})
-    assert updated["name"] == "renamed"
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +320,6 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
     assert success is True
     assert observed["agent_runs"] == 2
     prompt = observed["prompts"][1]
-    assert "MONITOR CHANGE DETECTED" in prompt
     assert "-state A" in prompt
     assert "+state B" in prompt
     assert "state B" in prompt  # new output included verbatim

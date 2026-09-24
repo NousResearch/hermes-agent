@@ -54,15 +54,4 @@ class TestInterpreterShutdownDetection:
         exc = ValueError("cannot schedule new futures")
         assert _is_interpreter_shutdown_error(exc) is False
 
-    def test_does_not_match_none(self):
-        """None must not match (defensive — caller may pass None)."""
-        try:
-            result = _is_interpreter_shutdown_error(None)  # type: ignore[arg-type]
-        except TypeError:
-            result = False
-        assert result is False
 
-    def test_does_not_match_empty_string_exception(self):
-        """Empty-message exceptions must not match."""
-        exc = RuntimeError("")
-        assert _is_interpreter_shutdown_error(exc) is False

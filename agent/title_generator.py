@@ -746,7 +746,7 @@ def maybe_auto_title(
         kwargs=upgrade_kwargs,
     )
     if title_upgrade_must_wait_for_turn(main_runtime):
-        logger.debug("Auto-title upgrade deferred past the turn: shares the custom endpoint with the main request")
+        logger.debug("Auto-title upgrade deferred past the turn: shares the self-hosted endpoint with the main request")
         return upgrade
     start_title_upgrade(upgrade)
     return upgrade

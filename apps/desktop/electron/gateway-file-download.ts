@@ -335,6 +335,30 @@ export function gatewayFilePath(rawPath: unknown): string {
   return String(rawPath || '').trim()
 }
 
+/**
+ * Transcode a delivered path into this client's native dialect for the gateway.
+ *
+ * A `MEDIA:` card renders to `#media:%2FC%3A%5CUsers%5Cme%5Creport.zip`, so the
+ * renderer hands the download bridge the literal `/C:/Users/me/report.zip`. The
+ * gateway's filesystem route resolves that with `Path.is_absolute()` true but no
+ * drive, producing `C:\C:\Users\...` and answering 404 "File not found" — the
+ * file is exactly where the transcript said. Map the slash-prefixed drive form
+ * onto the native one for the client's OWN platform (both ends of a local
+ * gateway run the same OS; a remote agent renders its own POSIX paths, which
+ * this leaves untouched). URL/`file:` spellings and POSIX paths pass through.
+ */
+export function nativeGatewayPath(rawPath: string, platform: NodeJS.Platform = process.platform): string {
+  const raw = String(rawPath || '').trim()
+
+  if (platform !== 'win32' || !raw || /^file:/i.test(raw)) {
+    return raw
+  }
+
+  const asPosix = raw.replace(/\\/g, '/')
+
+  return /^\/?[A-Za-z]:(\/|$)/.test(asPosix) ? asPosix.replace(/^\/+/, '').replace(/\//g, '\\') : raw
+}
+
 export interface GatewayFileSaveContext {
   fallbackName: string
   suggested: string

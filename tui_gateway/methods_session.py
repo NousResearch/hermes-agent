@@ -331,7 +331,9 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
-def _create_session(rid, params: dict) -> dict:
+def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
+    """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
+    transcript server-side and omits it from the reply."""
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
@@ -343,8 +345,6 @@ def _create_session(rid, params: dict) -> dict:
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
-    copy_parent_history = _flag(params, "copy_parent_history")
-    omit_messages = _flag(params, "omit_messages")
     if copy_parent_history:
         if not parent_session_id:
             return _err(rid, 4008, "parent_session_id is required when copying parent history")
@@ -419,7 +419,7 @@ def _create_session(rid, params: dict) -> dict:
     messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages),
-        **({"messages": messages} if not omit_messages else {"messages_omitted": True}),
+        **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _session_default_model(_sessions[sid]),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
@@ -435,16 +435,9 @@ def _(rid, params: dict) -> dict:
 
 @method("session.branch_stored")
 def _(rid, params: dict) -> dict:
-    """Create a whole-session branch from a stored parent without routing its transcript through the client.
-
-    This is a distinct method, rather than an overloaded ``session.create`` flag, so older Desktop clients can
-    safely detect the capability and older gateways cannot silently create an empty branch when they ignore an
-    unknown parameter.
-    """
-    branch_params = dict(params)
-    branch_params["copy_parent_history"] = True
-    branch_params["omit_messages"] = True
-    return _create_session(rid, branch_params)
+    """Whole-session branch of a stored parent without routing its transcript through the client
+    (a distinct method so an older gateway answers "unknown method" instead of an empty branch)."""
+    return _create_session(rid, params, copy_parent_history=True)
 
 
 def _unarchive_recoverable(db, session_id: str) -> bool:
@@ -2081,7 +2074,7 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
     return history or _visible_branch_history(in_memory_history)
 
 
-def _branch_live(rid, params: dict, session: dict) -> dict:
+def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
     # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
     with _session_db(session) as db:
         if db is None:
@@ -2109,7 +2102,7 @@ def _branch_live(rid, params: dict, session: dict) -> dict:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
     response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
                 "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
-    if _flag(params, "omit_messages"):
+    if omit_messages:
         response["messages_omitted"] = True
     else:
         response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
@@ -2123,11 +2116,8 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @_session_method("session.branch_whole", live=True)
 def _(rid, params: dict, session: dict) -> dict:
-    """Whole-session branch response seam for Desktop clients that do not need the copied transcript echoed back."""
-    branch_params = dict(params)
-    branch_params.pop("count", None)
-    branch_params["omit_messages"] = True
-    return _branch_live(rid, branch_params, session)
+    """Whole-history ``session.branch`` that doesn't echo the copied transcript back."""
+    return _branch_live(rid, params, session, omit_messages=True)
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────

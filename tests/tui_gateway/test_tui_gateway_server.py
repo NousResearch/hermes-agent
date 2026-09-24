@@ -15699,8 +15699,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         resp = server.handle_request(
             {
                 "id": "1",
-                "method": "session.branch",
-                "params": {"session_id": "parent", "name": "forked", "omit_messages": True},
+                "method": "session.branch_whole",
+                "params": {"session_id": "parent", "name": "forked"},
             }
         )
         assert "result" in resp, resp
@@ -15818,7 +15818,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     server._sessions.pop(runtime_sid, None)
 
 
-def test_session_create_copies_parent_history_without_returning_transcript(monkeypatch):
+def test_session_branch_stored_copies_parent_history_without_returning_transcript(monkeypatch):
     """Whole-session desktop branches read the parent in the gateway, not in the renderer."""
 
     class _Scope:
@@ -15857,11 +15857,9 @@ def test_session_create_copies_parent_history_without_returning_transcript(monke
     resp = server.handle_request(
         {
             "id": "1",
-            "method": "session.create",
+            "method": "session.branch_stored",
             "params": {
                 "cols": 96,
-                "copy_parent_history": True,
-                "omit_messages": True,
                 "parent_session_id": "parent",
                 "source": "desktop",
             },

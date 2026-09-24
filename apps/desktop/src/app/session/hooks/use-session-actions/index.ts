@@ -2367,8 +2367,6 @@ export function useSessionActions({
 
           const createParams = {
             cols: 96,
-            copy_parent_history: true,
-            omit_messages: true,
             source: 'desktop',
             ...(cwd && { cwd }),
             ...(profile ? { profile } : {}),
@@ -2379,7 +2377,7 @@ export function useSessionActions({
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
                   branchCount === undefined ? 'session.branch_whole' : 'session.branch',
-                  branchCount === undefined ? { ...branchParams, omit_messages: true } : branchParams
+                  branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
                     throw err

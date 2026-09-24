@@ -261,8 +261,6 @@ describe('desktop branch creation idempotency', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'session.branch_stored',
       expect.objectContaining({
-        copy_parent_history: true,
-        omit_messages: true,
         parent_session_id: 'parent',
         source: 'desktop'
       })
@@ -2129,8 +2127,6 @@ describe('branchStoredSession desktop source tagging', () => {
       'default',
       'session.branch_stored',
       expect.objectContaining({
-        copy_parent_history: true,
-        omit_messages: true,
         parent_session_id: 'stored-parent',
         source: 'desktop'
       })
@@ -2299,7 +2295,7 @@ describe('branchStoredSession desktop source tagging', () => {
     await expect(branchCurrentSession!()).resolves.toBe(true)
 
     expect(getAllSessionMessages).not.toHaveBeenCalled()
-    expect(branchParams).toEqual({ session_id: 'live-parent', omit_messages: true })
+    expect(branchParams).toEqual({ session_id: 'live-parent' })
   })
 
   it('aborts if the active runtime changes while the branch transcript is hydrating', async () => {

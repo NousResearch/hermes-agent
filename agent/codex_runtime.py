@@ -659,7 +659,10 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     return _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        # A completed agentMessage can precede a terminal failure. Return the failure to single-query callers
+        # rather than letting that partial text suppress their normal error display.
+        final_response=f"Error: {turn.error}" if turn.error else turn.final_text,
+        agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
         **usage_result,
     )
 

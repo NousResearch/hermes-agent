@@ -106,6 +106,11 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
+    # Comet (Perplexity) — macOS only verified/supported here; no Windows/Linux install
+    # locations confirmed, so win_* / linux_* are left empty rather than guessed.
+    _Browser(
+        "comet", "/Applications/Comet.app/Contents/MacOS/Comet",
+        ("Comet",), (), (), (), (), (), ""),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -163,7 +168,7 @@ _LINUX_SNAP_PROFILE_PARTS = {
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
-    ("org.chromium.chromium", "chromium"))
+    ("org.chromium.chromium", "chromium"), ("ai.perplexity.comet", "comet"))
 
 _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",

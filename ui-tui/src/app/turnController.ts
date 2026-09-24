@@ -833,9 +833,16 @@ class TurnController {
     }
 
     this.recordTodos(todos)
+    const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName ?? 'tool'
+    // A blocking prompt writes its own durable transcript row before the
+    // backend emits tool.complete. Consume that marker while still completing
+    // the active tool so only the duplicate streaming trail is suppressed.
+    const wasPersisted = this.persistedToolLabels.delete(toolTrailLabel(name))
     const lines = this.completeTool(toolId, fallbackName, summary, duration, resultText, labels)
 
-    this.pendingSegmentTools = [...this.pendingSegmentTools, ...lines]
+    if (!wasPersisted) {
+      this.pendingSegmentTools = [...this.pendingSegmentTools, ...lines]
+    }
     this.flushPendingToolsIntoLastSegment()
     this.publishToolState()
   }

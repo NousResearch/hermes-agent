@@ -555,8 +555,11 @@ def _safe_git_error(result: subprocess.CompletedProcess, source_url: str = "") -
     return redact_sensitive_text(error)
 
 
+NETWORK_GIT_TIMEOUT_SECONDS = 300
+
+
 def _git_or_raise(
-    git_exe: str, repo: Path, *args: str, failure_prefix: str, timeout: int = 60, source_url: str = "",
+    git_exe: str, repo: Path, *args: str, failure_prefix: str, timeout: int = NETWORK_GIT_TIMEOUT_SECONDS, source_url: str = "",
     auth_url: str = "",
 ) -> subprocess.CompletedProcess:
     """Run git in *repo*; on a non-zero exit raise PluginOperationError(prefix + scrubbed error)."""
@@ -605,7 +608,8 @@ def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url
             _git_or_raise(git_exe, repo, *args, failure_prefix=failure_prefix, source_url=source_url,
                           auth_url=source_url if verb == "fetch" else "")
         except subprocess.TimeoutExpired as exc:
-            raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after 60 seconds.") from exc
+            raise PluginOperationError(
+                f"Git {verb} of commit '{revision}' timed out after {NETWORK_GIT_TIMEOUT_SECONDS} seconds.") from exc
     actual = _git_head_revision(repo, git_exe)
     if actual != _git_resolve_commit(repo, git_exe, revision):
         raise PluginOperationError(
@@ -668,11 +672,12 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
         raise PluginOperationError("git is not installed or not in PATH.")
     clone_args = ["clone", "--depth", "1", *(["--no-checkout"] if revision else []), git_url, str(tmp_clone)]
     try:
-        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url)
+        result = _run_plugin_git(
+            git_exe, tmp_clone.parent, *clone_args, timeout=NETWORK_GIT_TIMEOUT_SECONDS, auth_url=git_url)
     except FileNotFoundError as e:
         raise PluginOperationError("git is not installed or not in PATH.") from e
     except subprocess.TimeoutExpired as e:
-        raise PluginOperationError("Git clone timed out after 60 seconds.") from e
+        raise PluginOperationError(f"Git clone timed out after {NETWORK_GIT_TIMEOUT_SECONDS} seconds.") from e
     if result.returncode != 0:
         raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
@@ -2224,7 +2229,7 @@ def _clear_plugin_bytecode(target: Path) -> int:
 
 
 def _run_plugin_git(
-    git_exe: str, target: Path, *args: str, timeout: int = 60, auth_url: str = "",
+    git_exe: str, target: Path, *args: str, timeout: int = NETWORK_GIT_TIMEOUT_SECONDS, auth_url: str = "",
 ) -> subprocess.CompletedProcess:
     """Run one git command inside a plugin checkout (non-interactive). *auth_url* names the remote
     a network verb talks to; it runs anonymously first and a stored user credential for that host
@@ -2308,7 +2313,9 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         if err:
             return False, err
         origin = _run_plugin_git(git_exe, target, "remote", "get-url", "origin", timeout=15)
-        result = _run_plugin_git(git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip())
+        result = _run_plugin_git(
+            git_exe, target, "pull", "--ff-only", timeout=NETWORK_GIT_TIMEOUT_SECONDS,
+            auth_url=origin.stdout.strip())
         if result.returncode != 0:
             err = _safe_git_error(result) or "git pull failed."
             if not stash_sha:
@@ -2337,7 +2344,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."
     except subprocess.TimeoutExpired:
-        return False, "Git operation timed out after 60 seconds."
+        return False, f"Git operation timed out after {NETWORK_GIT_TIMEOUT_SECONDS} seconds."
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:

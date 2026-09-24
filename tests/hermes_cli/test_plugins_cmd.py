@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -51,6 +52,24 @@ def test_portable_install_gate_accepts_present_app_and_refuses_missing(tmp_path:
     app.unlink()
     with pytest.raises(PluginOperationError, match="example-plugin.*worker.*missing_app"):
         _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
+
+
+class TestPluginGitNetworkTimeout:
+    def test_clone_uses_network_timeout_and_reports_it(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins_cmd as pc
+
+        monkeypatch.setattr(pc, "_resolve_git_executable", lambda: "git")
+        run_git = MagicMock(return_value=subprocess.CompletedProcess(["git"], 0, "", ""))
+        monkeypatch.setattr(pc, "_run_plugin_git", run_git)
+        monkeypatch.setattr(pc, "_scrub_cloned_origin", lambda *args: None)
+        monkeypatch.setattr(pc, "_git_head_revision", lambda *args: "a" * 40)
+
+        assert pc._clone_plugin_repo(tmp_path / "plugin", "https://example.test/plugin.git", None) == "a" * 40
+        assert run_git.call_args.kwargs["timeout"] == pc.NETWORK_GIT_TIMEOUT_SECONDS == 300
+
+        run_git.side_effect = subprocess.TimeoutExpired(["git", "clone"], pc.NETWORK_GIT_TIMEOUT_SECONDS)
+        with pytest.raises(pc.PluginOperationError, match="Git clone timed out after 300 seconds"):
+            pc._clone_plugin_repo(tmp_path / "timed-out", "https://example.test/plugin.git", None)
 
 
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────

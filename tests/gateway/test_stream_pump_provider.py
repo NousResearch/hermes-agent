@@ -97,7 +97,7 @@ def test_synthesize_piece_decodes_provider_file_path(monkeypatch, tmp_path):
     audio.write_bytes(b"fake-audio")
     seen = {}
 
-    def fake_tool(text, output_path):
+    def fake_tool(text, output_path, skip_rewrite=False):
         seen["text"] = text
         return '{"success": true, "file_path": "%s"}' % audio
 
@@ -265,3 +265,50 @@ def test_pump_reply_passes_pieces_to_provider_in_order():
     adapter, _mixer = _make_pump_adapter()
     asyncio.run(adapter._pump_pieces_into_mixer(12345, ["x", "y", "z"]))
     assert [c[0] for c in adapter.piece_calls] == ["x", "y", "z"]
+
+def test_pump_new_reply_cancels_inflight_reply_pump():
+    """A second reply supersedes the in-flight one: the old pump task is cancelled so it
+    stops pushing PCM, and the new pump takes over the teardown slot."""
+    adapter, _mixer = _make_pump_adapter()
+
+    async def _slow_synthesize(piece, timeout_s):
+        await asyncio.sleep(5.0)
+        return b"PCM"
+
+    adapter._synthesize_piece = _slow_synthesize
+
+    async def _scenario():
+        first = asyncio.run  # noqa: F841 - clarity only
+        ok1 = await adapter._pump_pieces_into_mixer(12345, ["a", "b"], label="reply")
+        assert ok1 is True
+        old_task = adapter._stream_tts_tasks.get(12345)
+        assert old_task is not None and not old_task.done()
+        ok2 = await adapter._pump_pieces_into_mixer(12345, ["c"], label="reply")
+        assert ok2 is True
+        new_task = adapter._stream_tts_tasks.get(12345)
+        assert new_task is not old_task
+        await asyncio.sleep(0)  # let the old task process the cancel
+        await asyncio.sleep(0)
+        assert old_task.done()
+
+    asyncio.run(_scenario())
+
+
+def test_pump_interim_never_cancels_inflight_reply():
+    """Interim speech must not supersede a playing reply - only label='reply' cancels."""
+    adapter, _mixer = _make_pump_adapter()
+
+    async def _slow_synthesize(piece, timeout_s):
+        await asyncio.sleep(5.0)
+        return b"PCM"
+
+    adapter._synthesize_piece = _slow_synthesize
+
+    async def _scenario():
+        await adapter._pump_pieces_into_mixer(12345, ["a"], label="reply")
+        old_task = adapter._stream_tts_tasks.get(12345)
+        await adapter._pump_pieces_into_mixer(12345, ["note"], label="interim")
+        assert adapter._stream_tts_tasks.get(12345) is old_task  # untouched
+        assert not old_task.done()
+
+    asyncio.run(_scenario())

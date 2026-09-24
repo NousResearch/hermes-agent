@@ -345,6 +345,14 @@ _FETCH_FAILURE_RULES = (
      " `git remote -v` points at a public repo."),
     (lambda s: "Authentication failed" in s,
      "✗ Authentication failed — check your git credentials or SSH key."),
+    # SSH auth failures never say "Authentication failed" — OpenSSH prints its own
+    # "Permission denied (publickey)"/"Host key verification failed" and git wraps
+    # it as "Could not read from remote repository", which otherwise fell through
+    # to the generic message below and left an SSH-remote user with no idea their
+    # key (or lack of one) was the cause (#82169).
+    (lambda s: "Permission denied (publickey)" in s or "Host key verification failed" in s,
+     "✗ SSH authentication failed — check your SSH key is added to GitHub, or switch"
+     " `origin` to HTTPS: `git remote set-url origin https://github.com/NousResearch/hermes-agent.git`."),
 )
 
 

@@ -7,6 +7,16 @@ to a text summary instead of waiting for a reactive 400 recovery.
 
 The fix adds ``supports_vision_tool_messages`` to ``ProviderProfile``
 and checks it in ``_tool_result_content_for_active_model``.
+
+Re-verified 2026-09-25: ``api.xiaomimimo.com`` accepts list-type tool
+content containing ``image_url`` parts — both ``mimo-v2.5`` and
+``mimo-v2.6-flash``, including image-only lists (the exact shape that
+used to 400). The #41072 error no longer reproduces, so the xiaomi
+profile veto was lifted and the two downgrade tests below became
+pass-through assertions. The reactive ``_no_list_tool_content_models``
+recovery (``_try_strip_image_parts_from_tool_messages``) still
+downgrades if an endpoint regresses, so a flipped flag degrades to a
+text summary rather than a broken turn.
 """
 
 from __future__ import annotations
@@ -69,27 +79,27 @@ def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"
 
 
 class TestToolResultContentProactiveDowngrade:
-    def test_xiaomi_downgrades_to_text_summary(self):
-        """Xiaomi: vision=True but supports_vision_tool_messages=False → text."""
-        agent = _make_agent("xiaomi", "mimo-v2.5")
+    def test_xiaomi_keeps_list_content(self):
+        """Xiaomi: profile veto lifted (re-verified 2026-09-25) → multimodal list preserved."""
+        agent = _make_agent("xiaomi", "mimo-v2.6-flash")
         result = _multimodal_result(text="screenshot captured")
 
         with patch.object(agent, "_model_supports_vision", return_value=True):
             content = agent._tool_result_content_for_active_model("browser_screenshot", result)
 
-        assert isinstance(content, str)
-        assert "screenshot captured" in content
+        assert isinstance(content, list)
+        assert any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
 
-    def test_openrouter_xiaomi_route_downgrades_to_text_summary(self):
-        """OpenRouter must not bypass Xiaomi's list-type tool-message veto."""
-        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
+    def test_openrouter_xiaomi_route_keeps_list_content(self):
+        """OpenRouter→xiaomi route: the target profile no longer vetoes list-type tool content."""
+        agent = _make_agent("openrouter", "xiaomi/mimo-v2.6-flash")
         result = _multimodal_result(text="aggregated screenshot captured")
 
         with patch.object(agent, "_model_supports_vision", return_value=True):
             content = agent._tool_result_content_for_active_model("browser_screenshot", result)
 
-        assert isinstance(content, str)
-        assert "aggregated screenshot captured" in content
+        assert isinstance(content, list)
+        assert any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
 
     def test_xiaomi_non_multimodal_passes_through(self):
         """Non-multimodal results should pass through unchanged."""

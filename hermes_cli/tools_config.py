@@ -612,7 +612,9 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
     explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
-    enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
+    enabled_toolsets |= _merge_mcp_servers(
+        config, platform, toolset_names, explicit_passthrough, include_default_mcp_servers
+    )
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even
     # empty) is authoritative, so a later disable cannot silently re-enable it.
@@ -676,12 +678,53 @@ def _recover_platform_native_toolsets(enabled_toolsets: Set[str], platform: str,
 
 
 def _merge_mcp_servers(
-    config: dict, toolset_names: List[str], explicit_passthrough: Set[str], include_default_mcp_servers: bool
+    config: dict, platform: str, toolset_names: List[str], explicit_passthrough: Set[str],
+    include_default_mcp_servers: bool,
 ) -> Set[str]:
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
-    globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
-    enabled_mcp_servers = enabled_mcp_server_names(config)
+    globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all.
+
+    A server may use ``platforms`` as an allowlist and ``exclude_platforms`` as a denylist. Unscoped servers
+    retain the historical global behavior, and an explicit platform_toolsets entry never bypasses server scope.
+    """
+    globally_enabled_mcp_servers = enabled_mcp_server_names(config)
+    configured_servers = {
+        str(name): server_cfg for name, server_cfg in ((config or {}).get("mcp_servers") or {}).items()
+    }
+
+    def normalized_scope(server_name: str, field: str, value) -> Optional[Set[str]]:
+        """Return an absent scope as ``None`` and malformed explicit scopes as empty.
+
+        An explicitly authored restriction must never fall back to unrestricted
+        exposure.  Strings are the natural single-value YAML form; sequences
+        retain the established list semantics.
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return {value}
+        if isinstance(value, (list, tuple, set)) and all(isinstance(item, str) for item in value):
+            return set(value)
+        logger.warning(
+            "Ignoring MCP server %s: %s must be a string or a sequence of strings; refusing to expose it without "
+            "a valid explicit scope.", server_name, field,
+        )
+        return set()
+
+    def allowed_on_platform(name: str) -> bool:
+        server_cfg = configured_servers.get(name)
+        if not isinstance(server_cfg, dict):
+            return True  # Portable plugin servers have no per-server config to scope.
+        allowed = normalized_scope(name, "platforms", server_cfg.get("platforms"))
+        excluded = normalized_scope(name, "exclude_platforms", server_cfg.get("exclude_platforms"))
+        if allowed is not None and platform not in allowed:
+            return False
+        return excluded is None or platform not in excluded
+
+    enabled_mcp_servers = {name for name in globally_enabled_mcp_servers if allowed_on_platform(name)}
+    scoped_out_mcp_servers = globally_enabled_mcp_servers - enabled_mcp_servers
     result = explicit_passthrough - enabled_mcp_servers
+    result -= scoped_out_mcp_servers
     if "no_mcp" in toolset_names:
         return result - {"no_mcp"}
     explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers

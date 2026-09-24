@@ -386,6 +386,95 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
     sorted(enabled)
 
 
+def test_mcp_server_platform_allowlist_scopes_default_servers():
+    """A server limited to Discord must not be registered on other platforms."""
+    config = {
+        "mcp_servers": {
+            "discord-admin": {"url": "https://example.com/mcp", "platforms": ["discord"]},
+            "shared": {"url": "https://example.com/shared"},
+        }
+    }
+
+    assert "discord-admin" in _get_platform_tools(config, "discord")
+    assert "discord-admin" not in _get_platform_tools(config, "cli")
+    assert "discord-admin" not in _get_platform_tools(config, "api_server")
+    assert {"shared"} <= _get_platform_tools(config, "cli")
+    assert {"shared"} <= _get_platform_tools(config, "discord")
+    assert {"shared"} <= _get_platform_tools(config, "api_server")
+
+
+def test_mcp_server_platform_denylist_excludes_only_listed_platforms():
+    """An exclusion list preserves access for every platform not named in it."""
+    config = {
+        "mcp_servers": {
+            "not-api": {"url": "https://example.com/mcp", "exclude_platforms": ["api_server"]},
+        }
+    }
+
+    assert "not-api" in _get_platform_tools(config, "cli")
+    assert "not-api" in _get_platform_tools(config, "discord")
+    assert "not-api" not in _get_platform_tools(config, "api_server")
+
+
+def test_mcp_server_scalar_platform_scopes_are_honored():
+    config = {
+        "mcp_servers": {
+            "discord-only": {"url": "https://example.com/mcp", "platforms": "discord"},
+            "not-api": {"url": "https://example.com/mcp", "exclude_platforms": "api_server"},
+        }
+    }
+
+    assert "discord-only" in _get_platform_tools(config, "discord")
+    assert "discord-only" not in _get_platform_tools(config, "cli")
+    assert "not-api" not in _get_platform_tools(config, "api_server")
+    assert "not-api" in _get_platform_tools(config, "cli")
+
+
+def test_malformed_mcp_server_scope_fails_closed_even_when_explicitly_selected():
+    config = {
+        "platform_toolsets": {"cli": ["restricted"]},
+        "mcp_servers": {
+            "restricted": {"url": "https://example.com/mcp", "platforms": {"discord": True}},
+        },
+    }
+
+    assert "restricted" not in _get_platform_tools(config, "cli")
+
+
+def test_mcp_server_allowlist_and_denylist_both_apply():
+    config = {
+        "mcp_servers": {
+            "restricted": {
+                "url": "https://example.com/mcp",
+                "platforms": ["cli", "discord"],
+                "exclude_platforms": ["discord"],
+            },
+        }
+    }
+
+    assert "restricted" in _get_platform_tools(config, "cli")
+    assert "restricted" not in _get_platform_tools(config, "discord")
+    assert "restricted" not in _get_platform_tools(config, "api_server")
+
+
+def test_explicit_mcp_server_selection_respects_platform_scope():
+    """Naming a server in platform_toolsets cannot bypass its server scope."""
+    config = {
+        "platform_toolsets": {
+            "cli": ["discord-admin"],
+            "discord": ["discord-admin"],
+            "api_server": ["discord-admin"],
+        },
+        "mcp_servers": {
+            "discord-admin": {"url": "https://example.com/mcp", "platforms": ["discord"]},
+        },
+    }
+
+    assert "discord-admin" not in _get_platform_tools(config, "cli")
+    assert "discord-admin" in _get_platform_tools(config, "discord")
+    assert "discord-admin" not in _get_platform_tools(config, "api_server")
+
+
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
 
 

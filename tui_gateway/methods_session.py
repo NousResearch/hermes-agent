@@ -255,7 +255,23 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
-            db.set_auto_title(new_key, title, source=title_source)
+            # A unique-title race must not cost the child its row: fan-out siblings each compute
+            # the same next lineage name (check-then-write, no lock), so the losers hit "already
+            # in use" here — the ValueError reaches the compensation guard, which deletes the
+            # row, and the lazy rebuild keeps the transcript with a NULL title forever (#121062's
+            # wall of anonymous sidebar rows). Advance to the next lineage number until the write
+            # lands, mirroring the titler's own ValueError dedupe
+            # (agent/title_generator._persist_session_title); a name the lineage cannot advance
+            # past (validation errors — get_next_title_in_lineage returns it unchanged) raises.
+            while True:
+                try:
+                    db.set_auto_title(new_key, title, source=title_source)
+                    break
+                except ValueError:
+                    next_title = db.get_next_title_in_lineage(title)
+                    if not next_title or next_title == title:
+                        raise
+                    title = next_title
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):

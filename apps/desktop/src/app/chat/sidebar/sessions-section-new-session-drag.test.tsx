@@ -12,6 +12,7 @@ import {
   type SidebarSessionGroup,
   SidebarWorkspaceGroup
 } from './projects'
+import type * as ProjectsModel from './projects/model'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
@@ -82,9 +83,8 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('./projects/model', () => ({
-  PROJECT_PREVIEW_COUNT: 3,
-  SIDEBAR_GROUP_PAGE: 5,
+vi.mock('./projects/model', async () => ({
+  ...(await vi.importActual<typeof ProjectsModel>('./projects/model')),
   latestProjectSessions: () => [],
   useWorkspaceNodeOpen: () => [workspaceOpen.value, vi.fn()]
 }))
@@ -224,6 +224,64 @@ describe('Show all sessions', () => {
     )
 
     expect(screen.getByText('day-40')).toBeTruthy()
+  })
+})
+
+// An entered project/Home must reach every session it holds (#70421, #83157,
+// #93878): the lane's first page stays short, but the way to the rest is a
+// labeled row, not a hover-only glyph, and it pages in real steps.
+describe('entered project reaches every session', () => {
+  const many = (count: number, prefix = 'session') =>
+    Array.from({ length: count }, (_, index) => ({ id: `${prefix}-${index + 1}` }) as SessionInfo)
+
+  const renderRows = (items: SessionInfo[]) => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>
+  const shownCount = () => screen.getByTestId('rows').textContent?.split(',').filter(Boolean).length ?? 0
+
+  it('labels the lane "show more" row with visible text, not just a tooltip', () => {
+    workspaceOpen.value = true
+
+    render(<SidebarWorkspaceGroup group={group({ sessions: many(12) })} renderRows={renderRows} />)
+
+    expect(shownCount()).toBe(5)
+    fireEvent.click(screen.getByText('Show 7 more in feature'))
+    expect(shownCount()).toBe(12)
+    expect(screen.queryByText(/Show .* more in feature/)).toBeNull()
+  })
+
+  it('pages a long lane in PROJECT_SESSION_PAGE steps past the first five', () => {
+    workspaceOpen.value = true
+
+    render(<SidebarWorkspaceGroup group={group({ sessions: many(60) })} renderRows={renderRows} />)
+
+    fireEvent.click(screen.getByText('Show 50 more in feature'))
+    expect(shownCount()).toBe(55)
+    fireEvent.click(screen.getByText('Show 5 more in feature'))
+    expect(shownCount()).toBe(60)
+  })
+
+  it('pages an entered Home instead of rendering every chat at once', () => {
+    const home = project({
+      id: '__no_project__',
+      isNoProject: true,
+      label: 'Home',
+      path: null,
+      repos: [
+        {
+          groups: [group({ id: '__no_project__', sessions: many(60) })],
+          id: '__no_project__',
+          label: 'Home',
+          path: null,
+          sessionCount: 60
+        }
+      ],
+      sessionCount: 60
+    })
+
+    render(<EnteredProjectContent project={home} renderRows={renderRows} />)
+
+    expect(shownCount()).toBe(50)
+    fireEvent.click(screen.getByText('Show 10 more in Home'))
+    expect(shownCount()).toBe(60)
   })
 })
 

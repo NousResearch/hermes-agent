@@ -83,7 +83,6 @@ export interface ConfigDisplayConfig {
   inline_diffs?: boolean
   /** UI language id (`en`, `pl`, `pt-br`); the TUI fetches its pack via `i18n.catalog`. */
   language?: string
-  vim_mode?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean
@@ -117,6 +116,8 @@ export interface ConfigDisplayConfig {
   /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
    *  (default) trusts the OSC-11 probe + env signals. */
   tui_theme?: string
+  /** Vim-style modal editing in the composer (display.vim_mode). */
+  vim_mode?: boolean
 }
 
 export interface ConfigVoiceConfig {

@@ -1599,6 +1599,13 @@ export function TextInput({
         }
       }
 
+      // Shortcuts deliberately excluded from the Vim reducer (paste, voice,
+      // modified keys, etc.) still cancel an unfinished operator. Otherwise a
+      // later plain `d` could complete a stale `dd` after unrelated input.
+      if (vim && vimModeRef.current === 'normal') {
+        vimPendingRef.current = ''
+      }
+
       // Configured voice shortcut wins over composer-level defaults like
       // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
       // actually get voice toggled instead of a paste (Copilot round-7
@@ -1724,7 +1731,11 @@ export function TextInput({
           clearSel()
           c = range.start
         } else {
-          c = wordMod ? wordLeft(v, c) : prevPos(v, c)
+          c = wordMod
+            ? wordLeft(v, c)
+            : vim && vimModeRef.current === 'normal'
+              ? Math.max(lineStart(v, c), prevPos(v, c))
+              : prevPos(v, c)
         }
 
         moveCursor(c, k.shift)
@@ -1735,7 +1746,11 @@ export function TextInput({
           clearSel()
           c = range.end
         } else {
-          c = wordMod ? wordRight(v, c) : nextPos(v, c)
+          c = wordMod
+            ? wordRight(v, c)
+            : vim && vimModeRef.current === 'normal'
+              ? normalCursor(v, Math.min(lineEnd(v, c), nextPos(v, c)))
+              : nextPos(v, c)
         }
 
         moveCursor(c, k.shift)

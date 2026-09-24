@@ -1,4 +1,4 @@
-"""User-facing cron failure notices: plain words, the real output path, and the exact `hermes cron`
+"""User-facing cron failure notices: plain words and the exact `hermes cron`
 command to act on. Contract tests, not snapshots (root AGENTS.md).
 
 The classifier is `agent.error_classifier.classify_api_error`; these tests pin what the copy table
@@ -76,3 +76,72 @@ def test_blocked_config_notice_says_it_did_not_run_and_will_self_heal():
         final_response="", output_file=None)
     assert blocked is True
     assert "provider credential missing: no key" in text
+
+
+def test_generic_notice_drops_the_job_name_echoed_by_the_script():
+    """Scripts conventionally prefix their own stderr with the job name, and the notice
+    header already carries it, so the body must not repeat it. The echo is not at index 0:
+    a script failure arrives as "Script exited with code 1 stderr: <name>: ..."."""
+    from cron.scheduler_failure_copy import generic_failure_notice
+
+    real_shape = generic_failure_notice(
+        "Morning brief", "ab12cd34", "Script exited with code 1 stderr: Morning brief: detector timed out")
+    assert real_shape.count("Morning brief") == 1, real_shape
+    assert "detector timed out" in real_shape
+    # Caseless: the echo need not match the job's casing.
+    assert "fetch failed" in generic_failure_notice("Nightly digest", "ab12cd34", "nightly digest: fetch failed")
+    # An error that merely contains the name elsewhere keeps its full text.
+    intact = generic_failure_notice("Morning brief", "ab12cd34", "[Errno 28] No space left on device")
+    assert "[Errno 28] No space left on device" in intact
+
+
+def test_generic_notice_never_delivers_an_empty_or_mangled_body():
+    """The echo strip must not eat the error it was meant to clean up."""
+    from cron.scheduler_failure_copy import generic_failure_notice
+
+    # Error that is nothing BUT the echo: stripping it blindly leaves no reason at all.
+    only_echo = generic_failure_notice("Morning brief", "ab12cd34", "Morning brief:")
+    assert only_echo.splitlines()[0].rstrip().endswith(("brief:", "captured")), only_echo
+    # str.lower() is not length-preserving (U+0130 folds to two code points). The old
+    # slice-by-len(job_name) ate a character of the real error; a regex match cannot,
+    # so the worst case here is that the echo survives -- never that the error is cut.
+    turkish = generic_failure_notice("\u0130ssues", "ab12cd34", "i\u0307ssues: HTTP 500 from API")
+    assert "HTTP 500 from API" in turkish, turkish
+    # A blank name must not turn every colon-leading error into a match.
+    assert "not an echo" in generic_failure_notice("   ", "ab12cd34", ": not an echo")
+
+
+def test_failure_notices_carry_the_run_log_command_and_stay_plain_text():
+    """Every failure notice must name the one command that shows the run, and must survive
+    the plain-text sinks in the delivery fan-out (ntfy and email render markdown literally)."""
+    from cron.scheduler_failure_copy import (blocked_config_notice, generic_failure_notice,
+                                             inactivity_notice, script_timeout_notice)
+
+    for notice in (
+        generic_failure_notice("Morning brief", "ab12cd34", "boom"),
+        script_timeout_notice("Morning brief", "ab12cd34"),
+        inactivity_notice("Morning brief", "ab12cd34"),
+    ):
+        assert "`hermes cron runs ab12cd34`" in notice, notice
+        # Sibling tests assert this word (test_cron_failure_deliver.py:125,
+        # test_fire_claim_lost_after_delivery.py:129); routing itself is structural
+        # via _resolve_delivery_targets(..., for_failure=True).
+        assert "failed" in notice.lower(), notice
+
+    for notice in (
+        generic_failure_notice("Morning brief", "ab12cd34", "boom"),
+        script_timeout_notice("Morning brief", "ab12cd34"),
+        inactivity_notice("Morning brief", "ab12cd34"),
+        blocked_config_notice("Morning brief", "provider credential missing"),
+    ):
+        assert "**" not in notice, notice
+
+
+def test_blocked_config_notice_keeps_an_ellipsis_and_never_empties_the_reason():
+    """rstrip('.') strips a whole run of dots, deleting the marker that says the
+    reason was truncated."""
+    from cron.scheduler_failure_copy import blocked_config_notice
+
+    assert "3 files..." in blocked_config_notice("Morning brief", "waiting for 3 files...")
+    assert "no key" in blocked_config_notice("Morning brief", "provider credential missing: no key.")
+    assert "configuration check failed" in blocked_config_notice("Morning brief", "")

@@ -1,9 +1,15 @@
-"""Plain-language copy for the one-line cron failure notice delivered to a job's chat.
+"""Plain-language copy for the cron failure notice delivered to a job's chat.
 
 The scheduler classifies the failure text through ``agent.error_classifier.classify_api_error``
 (one classifier for the whole app, no cron-local regex ladder) and looks the verdict up here.
-Every notice says WHAT happened and WHAT TO DO, and names the exact ``hermes cron`` command plus
-the real output directory — "cron output" alone sent operators hunting.
+Every notice says WHAT happened and names the one command that shows the run,
+``hermes cron runs <job_id>`` -- which is also where the saved output path lives, so the
+notice itself no longer spells the directory out.
+
+Copy in this module is delivered to EVERY platform a job can target, including
+plain-text-only sinks (ntfy, email) that render markdown literally. Keep it free of
+``**bold**``, backticks around prose and other markup: the emoji prefix and a line break
+are the only emphasis primitives that survive the whole fan-out.
 """
 
 from __future__ import annotations
@@ -11,12 +17,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from hermes_constants import display_hermes_home
-
-
-def cron_output_dir_display(job_id: str) -> str:
-    """User-facing path of a job's saved run output (profile-aware)."""
-    return f"{display_hermes_home()}/cron/output/{job_id}/"
+# One prefix for the whole failure family so a chat-side filter can match them all.
+_FAILURE_PREFIX = "⚠️ Cron"
 
 
 _HTTP_STATUS_IN_TEXT = re.compile(r"(?:\bHTTP\b|\bError code\b|\bstatus(?: code)?\b)\W{0,3}(\b[45]\d\d\b)", re.I)
@@ -105,40 +107,60 @@ def provider_failure_notice(
     )
 
 
+def _strip_job_name_echo(job_name: str, text: str) -> str:
+    """Drop a ``<job name>:`` prefix that a script echoed into its own stderr.
+
+    The notice header already names the job, so the echo would print it twice.
+
+    Two traps this has to survive. The echo is NOT at index 0: the scheduler collapses
+    ``Script exited with code 1\\nstderr:\\n<name>: ...`` into one line before the notice is
+    built, so the prefix sits mid-string behind ``stderr:``. And the match must be caseless
+    while the cut comes from the match on the ORIGINAL text -- slicing by ``len(job_name)``
+    corrupts names whose ``lower()`` changes length (U+0130 folds to two code points),
+    which silently ate a character of the error.
+    """
+    name = (job_name or "").strip()
+    if not name or not text:
+        return text
+    # Anchored at the start or just after the "stderr:"/"stdout:" label the runner adds.
+    pattern = rf"(?i)(?:(?<=^)|(?<=stderr:\s)|(?<=stdout:\s)){re.escape(name)}\s*:\s*"
+    stripped = re.sub(pattern, "", text, count=1)
+    # An error consisting of nothing but the echo would leave the notice bodyless;
+    # keep the original text in that case so the alert still says something.
+    return stripped if stripped.strip() else text
+
+
 def generic_failure_notice(job_name: str, job_id: str, cleaned_error: str) -> str:
-    """Unclassified failure: the cleaned error text plus where to look and what to do."""
+    """Unclassified failure: the cleaned error text plus the command to inspect it."""
+    err = _strip_job_name_echo(job_name, cleaned_error.strip()).strip()
     return (
-        f"⚠️ Cron '{job_name}' failed: {cleaned_error}. "
-        f"See the full run with `hermes cron runs {job_id}` (output saved under "
-        f"{cron_output_dir_display(job_id)}); run it again with `hermes cron run {job_id}`, "
-        f"edit it with `hermes cron edit {job_id}`, or pause it with `hermes cron pause {job_id}`."
+        f"{_FAILURE_PREFIX} {job_name} failed: {err or 'no error text captured'}\n"
+        f"Run log: `hermes cron runs {job_id}`"
     )
 
 
 def script_timeout_notice(job_name: str, job_id: str) -> str:
     return (
-        f"⚠️ Cron '{job_name}' failed: its script timed out. No model was invoked. "
-        f"Check the script's output under {cron_output_dir_display(job_id)} or `hermes cron runs {job_id}`, "
-        f"then run it again with `hermes cron run {job_id}`."
+        f"{_FAILURE_PREFIX} {job_name} failed: script timed out; no model was invoked\n"
+        f"Run log: `hermes cron runs {job_id}`"
     )
 
 
 def inactivity_notice(job_name: str, job_id: str) -> str:
     return (
-        f"⚠️ Cron '{job_name}' failed: the job stalled — it stopped doing anything for too long "
-        f"and was cut off. Check what it was doing in the saved output under "
-        f"{cron_output_dir_display(job_id)} (`hermes cron runs {job_id}`), then run it again with "
-        f"`hermes cron run {job_id}`."
+        f"{_FAILURE_PREFIX} {job_name} failed: stalled -- stopped responding and was cut off\n"
+        f"Run log: `hermes cron runs {job_id}`"
     )
 
 
 def blocked_config_notice(job_name: str, reason: str) -> str:
     """One-time notice when the pre-run configuration check refused to start the job."""
-    reason = reason.rstrip()
-    if reason and reason[-1] not in ".!?":
-        reason += "."
+    reason = (reason or "").rstrip()
+    # Strip ONE trailing period, never an ellipsis: "..." marks truncated text and
+    # rstrip(".") would delete the marker along with it.
+    if reason.endswith(".") and not reason.endswith("..."):
+        reason = reason[:-1]
     return (
-        f"⛔ Cron '{job_name}' did not run: {reason} Nothing was charged. Hermes will try again at "
-        "the next scheduled time and will not repeat this alert; check with "
-        "`hermes cron doctor`."
+        f"⛔ Cron '{job_name}' did not run: {reason or 'configuration check failed'}. "
+        f"Nothing was charged and this alert is sent once; check with `hermes cron doctor`."
     )

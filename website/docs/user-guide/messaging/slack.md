@@ -757,6 +757,25 @@ Scope and safety:
 - The rest of the pipeline is unchanged: mention gating, `allowed_channels`,
   and `SLACK_ALLOWED_USERS` still apply to the (now human) sender.
 
+### Processing Reactions (`reaction_ack` / `reaction_ok` / `reaction_fail`)
+
+While the bot is working on a message it reacts with `:eyes:`, then swaps it for
+`:white_check_mark:` when it finishes or `:x:` when it fails. Choose different
+emoji (standard or custom workspace emoji) by name:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      reaction_ack: hourglass_flowing_sand   # while processing (default: eyes)
+      reaction_ok: tada                      # on success (default: white_check_mark)
+      reaction_fail: warning                 # on failure (default: x)
+```
+
+Names work with or without the surrounding colons (`tada` or `:tada:`). A key
+that is missing or blank keeps its default. To turn these reactions off
+completely, set `reactions: false` (or `SLACK_REACTIONS=false`).
+
 ### Reaction Triggers (`reaction_triggers`)
 
 By default, emoji reactions are acknowledged and dropped — a 👍 on a bot

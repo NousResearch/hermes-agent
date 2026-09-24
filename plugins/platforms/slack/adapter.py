@@ -3136,6 +3136,11 @@ class SlackAdapter(BasePlatformAdapter):
         configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
         return str(configured).lower() not in {"false", "0", "no"}
 
+    def _reaction_emoji(self, key: str, default: str) -> str:
+        """Lifecycle emoji name from ``extra.<key>`` (YAML only; ``:tada:`` and ``tada`` both work)."""
+        configured = str(_extra_or_secret(self.config.extra, key, "", default)).strip().strip(":")
+        return configured or default
+
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
         if not self._reactions_enabled():
@@ -3153,7 +3158,8 @@ class SlackAdapter(BasePlatformAdapter):
         ts, team_id, _marker = target
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
-            await self._react(channel_id, ts, "eyes", team_id, remove=False)
+            await self._react(
+                channel_id, ts, self._reaction_emoji("reaction_ack", "eyes"), team_id, remove=False)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
@@ -3165,8 +3171,10 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
-        await self._react(channel_id, ts, "eyes", team_id, remove=True)
-        final = {ProcessingOutcome.SUCCESS: "white_check_mark", ProcessingOutcome.FAILURE: "x"}
+        await self._react(
+            channel_id, ts, self._reaction_emoji("reaction_ack", "eyes"), team_id, remove=True)
+        final = {ProcessingOutcome.SUCCESS: self._reaction_emoji("reaction_ok", "white_check_mark"),
+                 ProcessingOutcome.FAILURE: self._reaction_emoji("reaction_fail", "x")}
         if outcome in final:
             await self._react(channel_id, ts, final[outcome], team_id, remove=False)
 

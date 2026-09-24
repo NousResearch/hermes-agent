@@ -365,6 +365,8 @@ def _heal_forked_provider_block(
         return None
 
     def _flat(block: Dict[str, Any]) -> Dict[str, Any]:
+        if provider_id == "nous":
+            return block  # Nous persists tokens and expiry directly in providers.nous.
         tokens = block.get("tokens") if isinstance(block.get("tokens"), dict) else {}
         return {**tokens, "last_refresh": block.get("last_refresh")}
 

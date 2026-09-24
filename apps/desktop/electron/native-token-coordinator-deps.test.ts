@@ -11,7 +11,7 @@ import { expect, test } from 'vitest'
 import { httpStatusError } from './api-transport'
 import { cloudDiscoveryUnavailableError, cloudExchangeRateLimitedError } from './cloud-auth-errors'
 import { normalizeRemoteBaseUrl } from './connection-config'
-import { createNativeAccessTokenCoordinator } from './native-access-token'
+import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import { type NativeTokenSet, tokenNeedsRefresh } from './native-oauth'
 import { createNativeTokenCoordinatorDeps, type DesktopNativeTokenDeps } from './native-token-coordinator-deps'
 import { mintGatewayWsTicket } from './oauth-rest-request'
@@ -51,6 +51,7 @@ function wiring(overrides: Partial<DesktopNativeTokenDeps> & { registry?: Record
     isCloudAgentUrl: url => registry.has(url),
     // Stand-in for a fresh portal confirmation of the registry row.
     confirmedCloudAgentId: async url => registry.get(url) ?? null,
+    isCloudBindingCurrent: () => true,
     exchangeForAgent: async agentId => {
       calls.exchanged.push(agentId)
 
@@ -245,4 +246,29 @@ test('P1: a throttled confirmation (null while still routed as cloud) is transie
   await expect(w.coordinator.ensure(AGENT_URL)).rejects.toMatchObject({ cloudDiscoveryUnavailable: true })
   expect(w.calls.exchanged).toEqual([])
   expect(w.store.has(AGENT_URL)).toBe(true)
+})
+
+test('a binding re-bound while the exchange is in flight is never stored: bootstrap and re-exchange both discard it', async () => {
+  let current = 'agt_old'
+
+  const { coordinator, store } = wiring({
+    registry: { [AGENT_URL]: 'agt_old' },
+    isSavedCloudConnection: () => true,
+    confirmedCloudAgentId: async () => 'agt_old',
+    isCloudBindingCurrent: (_url, agentId) => agentId === current,
+    exchangeForAgent: async agentId => {
+      // A discovery lands mid-flight and moves the URL to another agent.
+      current = 'agt_new'
+
+      return agentSet({ accessToken: `EXCHANGED-${agentId}`, userId: agentId, expiresAt: 5_000 })
+    }
+  })
+
+  await expect(coordinator.ensure(AGENT_URL)).rejects.toBeInstanceOf(NativeAuthChangedError)
+  expect(store.get(AGENT_URL)).toBeUndefined()
+
+  current = 'agt_old'
+  store.set(AGENT_URL, agentSet({ accessToken: 'OLD', userId: 'agt_old', expiresAt: 1 }))
+  await expect(coordinator.ensure(AGENT_URL)).rejects.toBeInstanceOf(NativeAuthChangedError)
+  expect(store.get(AGENT_URL)?.accessToken).not.toBe('EXCHANGED-agt_old')
 })

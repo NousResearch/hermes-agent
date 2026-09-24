@@ -55,6 +55,12 @@ export interface DesktopNativeTokenDeps {
    * cloudDiscoveryUnavailable error when the portal cannot be reached.
    */
   confirmedCloudAgentId: (baseUrl: string) => Promise<null | string>
+  /**
+   * Whether the latest portal snapshot still binds this URL to this agent.
+   * Checked after every exchange: a discovery landing mid-flight can re-bind
+   * or drop the URL, and the bearer must then not be stored for it.
+   */
+  isCloudBindingCurrent: (baseUrl: string, agentId: string) => boolean
   /** Portal §5 exchange for one agent. */
   exchangeForAgent: (agentId: string) => Promise<NativeTokenSet>
   hasLivePortalSession: () => boolean
@@ -74,6 +80,17 @@ export function isNativeRefreshAuthRejection(error: unknown): boolean {
 export function createNativeTokenCoordinatorDeps(deps: DesktopNativeTokenDeps): NativeAccessTokenCoordinatorDeps {
   const nowSeconds = () => deps.nowSeconds?.() ?? Math.floor(Date.now() / 1_000)
 
+  async function exchangeForCurrentBinding(baseUrl: string, agentId: string): Promise<NativeTokenSet> {
+    const tokens = await deps.exchangeForAgent(agentId)
+
+    if (!deps.isCloudBindingCurrent(baseUrl, agentId)) {
+      // Re-bound or dropped mid-flight: discard; the retry uses the fresh binding.
+      throw new NativeAuthChangedError()
+    }
+
+    return tokens
+  }
+
   async function reExchange(baseUrl: string, tokens: NativeTokenSet, forced: boolean): Promise<NativeTokenSet> {
     try {
       const agentId = await deps.confirmedCloudAgentId(baseUrl)
@@ -91,7 +108,7 @@ export function createNativeTokenCoordinatorDeps(deps: DesktopNativeTokenDeps): 
         throw new NativeAuthChangedError()
       }
 
-      return await deps.exchangeForAgent(agentId)
+      return await exchangeForCurrentBinding(baseUrl, agentId)
     } catch (error) {
       // Transient (rate limited, or the binding could not be confirmed):
       // keep serving the current bearer while it is still valid (unless it
@@ -134,7 +151,7 @@ export function createNativeTokenCoordinatorDeps(deps: DesktopNativeTokenDeps): 
 
       const agentId = await deps.confirmedCloudAgentId(baseUrl)
 
-      return agentId ? deps.exchangeForAgent(agentId) : null
+      return agentId ? exchangeForCurrentBinding(baseUrl, agentId) : null
     }
   }
 }

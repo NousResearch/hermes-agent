@@ -10,7 +10,12 @@
 import { expect, test } from 'vitest'
 
 import { httpStatusError } from './api-transport'
-import { cloudDashboardUrlAllowed, createCloudAgentAuth, createCloudAgentRegistry } from './cloud-agent-auth'
+import {
+  CLOUD_AGENT_NOT_FOUND_MESSAGE,
+  cloudDashboardUrlAllowed,
+  createCloudAgentAuth,
+  createCloudAgentRegistry
+} from './cloud-agent-auth'
 import { isCloudDiscoveryUnavailable } from './cloud-auth-errors'
 import { normalizeRemoteBaseUrl } from './connection-config'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
@@ -122,6 +127,7 @@ function makeWiring(
       },
       isCloudAgentUrl: url => registry.agentIdFor(url) !== null,
       confirmedCloudAgentId: url => auth.confirmedAgentIdFor(url),
+      isCloudBindingCurrent: (url, id) => auth.isBindingCurrent(url, id),
       exchangeForAgent,
       hasLivePortalSession: () => opts.portalLive ?? true
     })
@@ -780,6 +786,7 @@ function makeCloud(opts: { disk?: ReturnType<typeof memoryIo>; rows?: any[]; sav
         },
         isCloudAgentUrl: url => registry.agentIdFor(url) !== null,
         confirmedCloudAgentId: url => auth.confirmedAgentIdFor(url),
+        isCloudBindingCurrent: (url, id) => auth.isBindingCurrent(url, id),
         exchangeForAgent,
         hasLivePortalSession: () => true,
         isSavedCloudConnection: url => saved.has(url)
@@ -963,4 +970,35 @@ test('P1(f): older registry formats migrate as unconfirmed and force one discove
     expect(hinted.portal.discoveries).toBe(1)
     expect(hinted.exchanged).toEqual(['agt_new'])
   }
+})
+
+test('an older discovery that lands after a newer one is dropped: a stale snapshot cannot re-bind a URL', () => {
+  const { auth, registry } = makeAuth()
+
+  const older = auth.beginDiscovery()
+  const newer = auth.beginDiscovery()
+
+  auth.reconcileDiscovered([{ id: 'agt_new', dashboardUrl: AGENT_URL }], newer)
+  auth.reconcileDiscovered([{ id: 'agt_old', dashboardUrl: AGENT_URL }], older)
+
+  expect(registry.bindingFor(AGENT_URL)?.agentId).toBe('agt_new')
+})
+
+test('agent sign-in never stores a bearer for a binding re-bound while its exchange was in flight', async () => {
+  let auth: ReturnType<typeof makeAuth>['auth']
+
+  const made = makeAuth({
+    exchange: async agentId => {
+      // A Settings refresh lands mid-flight and moves the URL to another agent.
+      auth.reconcileDiscovered([{ id: 'agt_new', dashboardUrl: AGENT_URL }])
+
+      return agentTokens({ userId: agentId })
+    }
+  })
+
+  auth = made.auth
+  auth.reconcileDiscovered([{ id: 'agt_old', dashboardUrl: AGENT_URL }])
+
+  await expect(auth.signIn(AGENT_URL)).rejects.toThrow(CLOUD_AGENT_NOT_FOUND_MESSAGE)
+  expect(made.stored.get(AGENT_URL)).toBeUndefined()
 })

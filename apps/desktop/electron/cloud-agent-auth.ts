@@ -251,14 +251,39 @@ export const CLOUD_BINDING_MAX_AGE_MS = 5 * 60_000
  */
 export const CLOUD_REDISCOVERY_MIN_INTERVAL_MS = 60_000
 
+export interface DiscoveryTicket {
+  seq: number
+  orgAtStart: null | string
+  startedAt: number
+}
+
 export const CLOUD_AGENT_NOT_FOUND_MESSAGE =
   'Could not find this agent in your Hermes Cloud account. Refresh the agent list in Settings → Gateway and pick it again.'
 
 export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
   const log = deps.log ?? (() => undefined)
   const nowMs = deps.nowMs ?? (() => Date.now())
+  // The rediscovery throttle runs on a monotonic clock so a wall-clock
+  // rollback cannot suppress discovery; binding ages stay on the wall clock
+  // because they are persisted across restarts.
+  const monotonicMs = deps.nowMs ? nowMs : () => performance.now()
   let discovery: null | Promise<void> = null
   let lastDiscoveryAt = Number.NEGATIVE_INFINITY
+  // Discoveries can overlap (Settings refresh vs. a background confirm), and
+  // responses can land out of order. Each discovery takes a sequence number
+  // when it STARTS; a result older than the last one reconciled is dropped,
+  // so a slow stale snapshot can never overwrite a newer one.
+  let discoverySeq = 0
+  let lastReconciledSeq = 0
+
+  /**
+   * Start a discovery: records its order, the org it runs under and its start
+   * time (rows are stamped confirmed at the START, never later than the
+   * portal actually answered for).
+   */
+  function beginDiscovery(): DiscoveryTicket {
+    return { seq: ++discoverySeq, orgAtStart: deps.registry.orgId(), startedAt: nowMs() }
+  }
 
   const keyFor = (url: string): null | string => {
     try {
@@ -282,24 +307,32 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
    * registry becomes exactly these rows (anything the portal no longer lists
    * is removed, and its agent bearer cleared), each stamped confirmed now.
    *
-   *   - `orgAtStart` is the registry org when the discovery was STARTED: if a
-   *     sign-in to another org landed meanwhile, the rows belong to the old
-   *     org and the whole result is dropped;
+   *   - `ticket` comes from beginDiscovery() when the request STARTED: if a
+   *     sign-in to another org landed meanwhile, or a discovery that started
+   *     later was already reconciled, the whole result is dropped; rows are
+   *     stamped confirmed at the start time;
    *   - a malformed / non-https row is skipped on its own;
    *   - two or more rows that normalize to the same URL fail closed: that URL
    *     is left out entirely, so no exchange can pick either agent for it.
    */
   function reconcileDiscovered(
     agents: Array<{ id: string; dashboardUrl: null | string }>,
-    orgAtStart: null | string = deps.registry.orgId()
+    ticket: DiscoveryTicket = beginDiscovery()
   ): void {
-    if (deps.registry.orgId() !== orgAtStart) {
+    if (deps.registry.orgId() !== ticket.orgAtStart) {
       log('[cloud] dropped a discovery result that started under a different org')
 
       return
     }
 
-    const confirmedAt = nowMs()
+    if (ticket.seq < lastReconciledSeq) {
+      log('[cloud] dropped a discovery result older than one already applied')
+
+      return
+    }
+
+    lastReconciledSeq = ticket.seq
+    const confirmedAt = ticket.startedAt
     const byUrl = new Map<string, string[]>()
 
     for (const agent of Array.isArray(agents) ? agents : []) {
@@ -361,17 +394,17 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     }
 
     if (!discovery) {
-      if (!explicit && nowMs() - lastDiscoveryAt < CLOUD_REDISCOVERY_MIN_INTERVAL_MS) {
+      if (!explicit && monotonicMs() - lastDiscoveryAt < CLOUD_REDISCOVERY_MIN_INTERVAL_MS) {
         return false
       }
 
-      lastDiscoveryAt = nowMs()
+      lastDiscoveryAt = monotonicMs()
       const discoverAgents = deps.discoverAgents
-      const orgAtStart = deps.registry.orgId()
+      const ticket = beginDiscovery()
 
       discovery = (async () => {
         try {
-          reconcileDiscovered(await discoverAgents(), orgAtStart)
+          reconcileDiscovered(await discoverAgents(), ticket)
         } catch (error) {
           log(`[cloud] agent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
 
@@ -385,6 +418,11 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     await discovery
 
     return true
+  }
+
+  /** Whether the latest reconciled snapshot still binds `url` to `agentId`. */
+  function isBindingCurrent(url: string, agentId: string): boolean {
+    return deps.registry.bindingFor(url)?.agentId === agentId
   }
 
   function freshAgentIdFor(url: string): null | string {
@@ -479,6 +517,13 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
 
     const tokens = await deps.exchangeForAgent(agentId)
 
+    // A discovery that landed while the exchange was in flight may have
+    // re-bound or dropped this URL: never store a bearer for a binding the
+    // latest snapshot no longer vouches for.
+    if (!isBindingCurrent(baseUrl, agentId)) {
+      throw new Error(CLOUD_AGENT_NOT_FOUND_MESSAGE)
+    }
+
     deps.storeAgentTokens(baseUrl, tokens)
 
     return { baseUrl, connected: true }
@@ -531,5 +576,14 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     deps.registry.clear()
   }
 
-  return { reconcileDiscovered, confirmedAgentIdFor, adoptSessionOrg, signIn, logout, forgetAgents }
+  return {
+    beginDiscovery,
+    reconcileDiscovered,
+    confirmedAgentIdFor,
+    isBindingCurrent,
+    adoptSessionOrg,
+    signIn,
+    logout,
+    forgetAgents
+  }
 }

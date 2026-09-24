@@ -8327,6 +8327,7 @@ const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator(
       ),
     isCloudAgentUrl: baseUrl => cloudAgentRegistry.agentIdFor(baseUrl) !== null,
     confirmedCloudAgentId: baseUrl => cloudAgentAuth.confirmedAgentIdFor(baseUrl),
+    isCloudBindingCurrent: (baseUrl, agentId) => cloudAgentAuth.isBindingCurrent(baseUrl, agentId),
     exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
     hasLivePortalSession: () => portalSession.hasLivePortalSession(),
     isSavedCloudConnection: baseUrl => isSavedCloudConnectionUrl(baseUrl)
@@ -8768,10 +8769,10 @@ const cloudAgentAuth = createCloudAgentAuth({
 // there is no usable portal session. Only portal results feed the agent
 // registry, each as an authoritative snapshot (unlisted URLs are dropped).
 async function discoverCloudAgents() {
-  const orgAtStart = cloudAgentRegistry.orgId()
+  const ticket = cloudAgentAuth.beginDiscovery()
   const result = await discoverCloudAgentsRaw()
 
-  cloudAgentAuth.reconcileDiscovered(result.agents, orgAtStart)
+  cloudAgentAuth.reconcileDiscovered(result.agents, ticket)
 
   return result
 }

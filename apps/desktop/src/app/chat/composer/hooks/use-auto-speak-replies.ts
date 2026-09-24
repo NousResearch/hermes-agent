@@ -56,6 +56,16 @@ export function useAutoSpeakReplies({
     // on (or a chat opens) — consume it so only later replies are spoken.
     latest.current.markSpoken()
 
+    // Text + timestamp of the reply this effect last started reading. One turn
+    // can reach us twice within milliseconds: the transcript updates when the
+    // stream ends and again when the live row hydrates to its durable id, and
+    // each update hands back a DIFFERENT row id — so the id-keyed spoken anchor
+    // misses and the turn looks brand new. Reading it again is the bug (heard as
+    // the reply being spoken twice). Same text inside this window is that same
+    // turn; a genuinely new turn lands later or says something else.
+    let lastStarted: { at: number; text: string } | null = null
+    const REPEAT_GUARD_MS = 60_000
+
     const speakLatest = () => {
       const { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile } = latest.current
 
@@ -69,6 +79,16 @@ export function useAutoSpeakReplies({
         return
       }
 
+      const now = Date.now()
+
+      if (lastStarted !== null && lastStarted.text === reply.text && now - lastStarted.at < REPEAT_GUARD_MS) {
+        // This turn was already read; the anchor drifted. Swallow the replay.
+        markSpoken()
+
+        return
+      }
+
+      lastStarted = { at: now, text: reply.text }
       markSpoken()
       // Only one window voices a given reply when the same chat is open in
       // several (reply.id is the shared backend message id). markSpoken already

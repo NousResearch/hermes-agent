@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+
 import { test } from 'vitest'
 
 import { finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'

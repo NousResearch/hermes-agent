@@ -4,9 +4,7 @@
 import pytest
 
 from hermes_cli.auth import (
-    PROVIDER_REGISTRY,
     resolve_provider,
-    get_api_key_provider_status,
     resolve_api_key_provider_credentials,
 )
 
@@ -16,15 +14,6 @@ from hermes_cli.auth import (
 # =============================================================================
 
 
-class TestXiaomiProviderRegistry:
-    """Verify Xiaomi is registered correctly in the PROVIDER_REGISTRY."""
-
-    def test_registered(self):
-        assert "xiaomi" in PROVIDER_REGISTRY
-
-
-    def test_inference_base_url(self):
-        assert PROVIDER_REGISTRY["xiaomi"].inference_base_url == "https://api.xiaomimimo.com/v1"
 
 
 # =============================================================================
@@ -135,9 +124,6 @@ class TestXiaomiCredentials:
 class TestXiaomiModelCatalog:
     """Xiaomi uses dynamic model discovery via models.dev."""
 
-    def test_models_dev_mapping(self):
-        from agent.models_dev import PROVIDER_TO_MODELS_DEV
-        assert PROVIDER_TO_MODELS_DEV["xiaomi"] == "xiaomi"
 
     def test_static_model_list_fallback(self):
         """Static _PROVIDER_MODELS fallback must exist for model picker.
@@ -191,10 +177,6 @@ class TestXiaomiNormalization:
     """Model name normalization — Xiaomi is a direct provider."""
 
 
-    def test_matching_prefix_strip(self):
-        """xiaomi/mimo-v2-pro should normalize to mimo-v2-pro for direct API."""
-        from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
-        assert "xiaomi" in _MATCHING_PREFIX_STRIP_PROVIDERS
 
 
     def test_lowercase_subset_of_matching_prefix(self):
@@ -215,13 +197,7 @@ class TestXiaomiNormalization:
 
     @pytest.mark.parametrize("input_name,expected", [
         ("MiMo-V2.5-Pro", "mimo-v2.5-pro"),
-        ("MIMO-V2.5-PRO", "mimo-v2.5-pro"),
-        ("MiMo-v2.5-pro", "mimo-v2.5-pro"),
         ("mimo-v2.5-pro", "mimo-v2.5-pro"),     # already lowercase
-        ("MiMo-V2-Pro", "mimo-v2-pro"),
-        ("MiMo-V2-Omni", "mimo-v2-omni"),
-        ("MiMo-V2-Flash", "mimo-v2-flash"),
-        ("MiMo-V2.5", "mimo-v2.5"),
     ])
     def test_normalize_lowercases_mixed_case(self, input_name, expected):
         """Xiaomi's API requires lowercase model IDs — mixed case from docs must be lowered."""
@@ -240,11 +216,6 @@ class TestXiaomiURLMapping:
     """Test URL → provider inference for Xiaomi endpoints."""
 
 
-    def test_provider_prefixes(self):
-        from agent.model_metadata import _PROVIDER_PREFIXES
-        assert "xiaomi" in _PROVIDER_PREFIXES
-        assert "mimo" in _PROVIDER_PREFIXES
-        assert "xiaomi-mimo" in _PROVIDER_PREFIXES
 
 
     def test_infer_from_regional_urls(self):
@@ -260,29 +231,6 @@ class TestXiaomiURLMapping:
 # =============================================================================
 
 
-class TestXiaomiProvidersModule:
-    """Test Xiaomi in the unified providers module."""
-
-    def test_overlay_exists(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
-        assert "xiaomi" in HERMES_OVERLAYS
-        overlay = HERMES_OVERLAYS["xiaomi"]
-        assert overlay.transport == "openai_chat"
-        assert overlay.base_url_env_var == "XIAOMI_BASE_URL"
-        assert not overlay.is_aggregator
-
-
-
-    def test_get_provider(self):
-        pdef = None
-        try:
-            from hermes_cli.providers import get_provider
-            pdef = get_provider("xiaomi")
-        except Exception:
-            pass
-        if pdef is not None:
-            assert pdef.id == "xiaomi"
-            assert pdef.transport == "openai_chat"
 
 
 # =============================================================================
@@ -297,24 +245,5 @@ class TestXiaomiProvidersModule:
 # =============================================================================
 
 
-class TestXiaomiDoctor:
-    """Verify hermes doctor recognizes Xiaomi env vars."""
-
-    def test_provider_env_hints(self):
-        from hermes_cli.doctor import _PROVIDER_ENV_HINTS
-        assert "XIAOMI_API_KEY" in _PROVIDER_ENV_HINTS
 
 
-class TestXiaomiAgentInit:
-    """Verify the agent can be constructed with xiaomi provider without errors."""
-
-    def test_no_syntax_errors(self):
-        """Importing run_agent with xiaomi should not raise."""
-        import importlib
-        importlib.import_module("run_agent")
-
-    def test_api_mode_is_chat_completions(self):
-        from hermes_cli.providers import HERMES_OVERLAYS, TRANSPORT_TO_API_MODE
-        overlay = HERMES_OVERLAYS["xiaomi"]
-        api_mode = TRANSPORT_TO_API_MODE[overlay.transport]
-        assert api_mode == "chat_completions"

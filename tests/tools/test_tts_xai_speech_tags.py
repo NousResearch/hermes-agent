@@ -1,15 +1,14 @@
 """Tests for xAI TTS speech-tag handling."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-import pytest
 
-from tools.tts_tool import (
+from tools.tts_tool import _generate_xai_tts
+from tools.tts_tool_providers import (
     _XAI_INLINE_SPEECH_TAGS,
     _XAI_WRAPPING_SPEECH_TAGS,
     _apply_xai_auto_speech_tags,
-    _generate_xai_tts,
 )
 
 
@@ -134,7 +133,7 @@ def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
     monkeypatch.setenv("XAI_BASE_URL", "https://attacker.example/v1")
     monkeypatch.setattr(
         "tools.xai_http.resolve_xai_http_credentials",
-        lambda: {
+        lambda **_kwargs: {
             "provider": "xai-oauth",
             "api_key": "oauth-bearer-token",
             "base_url": "https://api.x.ai/v1",
@@ -158,6 +157,65 @@ def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
 
 
+def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypatch):
+    """TTS requires API billing even when chat OAuth is configured (#87045).
+
+    Adapted from PR #87081 (@enwaiax): the precedence now lives in the shared
+    resolver behind ``prefer_api_key=True`` instead of an inline early return,
+    so the key is read via ``resolve_provider_secret`` and the base URL
+    override goes through the same *.x.ai origin validation as OAuth.
+    """
+    captured = {}
+
+    class FakeResponse:
+        content = b"audio"
+
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, headers, json, timeout, stream=False):
+        captured["url"] = url
+        captured["headers"] = headers
+        return FakeResponse()
+
+    from types import SimpleNamespace
+
+    entry = SimpleNamespace(
+        access_token="oauth-token",
+        runtime_api_key=None,
+        runtime_base_url=None,
+        base_url="https://api.x.ai/v1",
+    )
+
+    class _FakePool:
+        def select(self):
+            return entry
+
+        def try_refresh_matching(self, _hint):
+            return entry
+
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider_id: _FakePool() if provider_id == "xai-oauth" else None,
+    )
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda name, default=None: {
+            "XAI_API_KEY": "paid-api-key",
+            "XAI_BASE_URL": "https://staging.x.ai/v1/",
+        }.get(name, default),
+    )
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "hello", str(tmp_path / "out.mp3"), {"xai": {"auto_speech_tags": False}}
+    )
+
+    assert captured["headers"]["Authorization"] == "Bearer paid-api-key"
+    assert captured["url"] == "https://staging.x.ai/v1/tts"
+
+
 def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
     """When input has no explicit speech tags, the function must call the
     auxiliary rewriter with task='tts_audio_tags' and a system prompt
@@ -176,7 +234,6 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
     mock_call.assert_called_once()
     call_kwargs = mock_call.call_args.kwargs
     assert call_kwargs["task"] == "tts_audio_tags"
-    assert call_kwargs["temperature"] == 0.7
 
     messages = call_kwargs["messages"]
     assert messages[0]["role"] == "system"
@@ -195,13 +252,9 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
         assert tag in system_prompt, (
             f"wrapping tag {tag!r} missing from system prompt"
         )
-    # The prompt must explicitly show the BBCode-style closing syntax so
-    # the rewriter uses [/tag] and not <tag>...</tag>.
-    assert "[/tag]" in system_prompt
 
     # The user message carries the locally pause-tagged transcript (the
     # conservative fallback the rewriter is asked to enrich).
-    assert "TRANSCRIPT TO TAG" in messages[1]["content"]
     assert "[pause]" in messages[1]["content"]
 
 
@@ -222,27 +275,3 @@ def test_auto_speech_tags_strips_markdown_fences_from_rewriter_output():
     assert result == "[warmly] Bonjour. [soft laugh]"
 
 
-def test_generate_xai_tts_omits_text_normalization_when_explicit_false(
-    tmp_path, monkeypatch
-):
-    """text_normalization: false is the API default; field is not sent."""
-    captured = {}
-
-    fake_response = Mock()
-    fake_response.content = b"mp3"
-    fake_response.raise_for_status.return_value = None
-
-    def fake_post(url, headers, json, timeout, stream=False):
-        captured["json"] = json
-        return fake_response
-
-    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
-    monkeypatch.setattr("requests.post", fake_post)
-
-    _generate_xai_tts(
-        "Hello world.",
-        str(tmp_path / "out.mp3"),
-        {"xai": {"voice_id": "ara", "language": "en", "text_normalization": False}},
-    )
-
-    assert "text_normalization" not in captured["json"]

@@ -584,6 +584,111 @@ async function reviewShipInfo(repoPath, ghBin) {
   }
 }
 
+// GraphQL asks per branch, so the answer can't be crowded out the way a
+// `gh pr list` page can. Aliases let one request carry many branches; 50 keeps
+// the document well inside GitHub's node budget.
+const PR_QUERY_BRANCH_CHUNK = 50
+const PR_QUERY_BRANCH_CAP = 300
+
+const PR_NODE_FIELDS = 'number state isDraft isCrossRepository title url headRefName'
+
+function prQueryFor(owner, name, branches, numbers) {
+  const fields = [
+    ...branches.map(
+      (branch, i) =>
+        `b${i}: pullRequests(headRefName: ${JSON.stringify(branch)}, first: 5, ` +
+        `orderBy: {field: CREATED_AT, direction: DESC}) ` +
+        `{ nodes { ${PR_NODE_FIELDS} } }`
+    ),
+    // A PR recovered from a transcript is known by number, and asking for it
+    // directly also tells us its branch — so it lands in the same by-branch map
+    // as everything else.
+    ...numbers.map((number, i) => `n${i}: pullRequest(number: ${number}) { ${PR_NODE_FIELDS} }`)
+  ].join('\n')
+
+  return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {\n${fields}\n} }`
+}
+
+const prPayload = pr => ({
+  branch: String(pr.headRefName),
+  draft: Boolean(pr.isDraft),
+  number: Number(pr.number) || 0,
+  state: String(pr.state || '').toLowerCase(),
+  title: String(pr.title || ''),
+  url: String(pr.url || '')
+})
+
+// The PR for each of the given branches, keyed by branch. Asks GitHub about the
+// branches we actually have sessions on rather than listing the repo's newest
+// PRs and hoping ours are in the page — on a busy repo they are not. One
+// GraphQL request per 50 branches; reads only.
+async function reviewPrList(repoPath, ghBin, branches, numbers) {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review PR list' })
+  } catch {
+    return { ghReady: false, prs: [] }
+  }
+
+  const wanted = [...new Set((branches || []).filter(Boolean).map(String))].slice(0, PR_QUERY_BRANCH_CAP)
+  const byNumber = [...new Set((numbers || []).map(Number).filter(Boolean))].slice(0, PR_QUERY_BRANCH_CAP)
+
+  if (wanted.length === 0 && byNumber.length === 0) {
+    return { ghReady: false, prs: [] }
+  }
+
+  const repo = await runGh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], cwd, ghBin)
+  const [owner, name] = repo.stdout.trim().split('/')
+
+  if (!repo.ok || !owner || !name) {
+    // gh missing, unauthenticated, or no GitHub remote — all "nothing to badge".
+    return { ghReady: false, prs: [] }
+  }
+
+  const prs = []
+  const chunks = []
+
+  for (let start = 0; start < wanted.length; start += PR_QUERY_BRANCH_CHUNK) {
+    chunks.push([wanted.slice(start, start + PR_QUERY_BRANCH_CHUNK), []])
+  }
+
+  for (let start = 0; start < byNumber.length; start += PR_QUERY_BRANCH_CHUNK) {
+    chunks.push([[], byNumber.slice(start, start + PR_QUERY_BRANCH_CHUNK)])
+  }
+
+  for (const [branchChunk, numberChunk] of chunks) {
+    const query = prQueryFor(owner, name, branchChunk, numberChunk)
+    const res = await runGh(['api', 'graphql', '-f', `query=${query}`], cwd, ghBin)
+
+    if (!res.ok) {
+      continue
+    }
+
+    try {
+      const repository = JSON.parse(res.stdout)?.data?.repository ?? {}
+
+      for (const key of Object.keys(repository)) {
+        // Asked for by number, so it's ours by construction — a fork PR can't
+        // be recovered from our own transcript. Asked for by branch, it has to
+        // prove it: fork PRs share our branch namespace, and a contributor's
+        // `main` is how a session on trunk ends up badged with a stranger's PR.
+        const pr = key.startsWith('n')
+          ? repository[key]
+          : (repository[key]?.nodes ?? []).find(node => node && !node.isCrossRepository)
+
+        if (pr?.headRefName) {
+          prs.push(prPayload(pr))
+        }
+      }
+    } catch {
+      // A malformed chunk drops its branches; the rest still resolve.
+    }
+  }
+
+  return { ghReady: true, prs }
+}
+
 // Create a PR for the current branch (pushing first so gh has a remote ref),
 // letting gh fill title/body from the commits. Returns the new PR url.
 async function reviewCreatePr(repoPath, gitBin, ghBin) {
@@ -716,6 +821,7 @@ export {
   reviewCreatePr,
   reviewDiff,
   reviewList,
+  reviewPrList,
   reviewPush,
   reviewRevert,
   reviewRevParse,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY } from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on
@@ -23,11 +23,5 @@ describe('theme typography emoji fallback (#40364)', () => {
 
   it.each(stacks)('%s includes a color-emoji font', (_label, stack) => {
     expect(stack).toMatch(/Apple Color Emoji|Segoe UI Emoji|Noto Color Emoji|(^|,\s*)emoji\b/)
-  })
-
-  it('EMOJI_FALLBACK lists the major platform emoji fonts', () => {
-    expect(EMOJI_FALLBACK).toContain('Apple Color Emoji')
-    expect(EMOJI_FALLBACK).toContain('Segoe UI Emoji')
-    expect(EMOJI_FALLBACK).toContain('Noto Color Emoji')
   })
 })

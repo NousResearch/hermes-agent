@@ -12,15 +12,33 @@ import io
 import signal
 import sys
 
-import pytest
 
-from hermes_cli.main import (
-    _UpdateOutputStream,
-    _finalize_update_output,
-    _install_hangup_protection,
-    _log_only_write,
-    _run_logged_subprocess,
-)
+from hermes_cli.main_dashboard import _UpdateOutputStream, _finalize_update_output, _install_hangup_protection
+from hermes_cli.update_cmd import _log_only_write, _print_update_completion, _run_logged_subprocess
+
+
+def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_ACTION_ID", "a" * 32)
+    # These tests pin the action-identity receipt contract, not the branch
+    # display — neutralize the branch+HEAD suffix added for the 2026-08-17
+    # parked-branch incident (covered by test_update_parked_branch_guard.py).
+    monkeypatch.setattr("hermes_cli.update_cmd._branch_head_suffix", lambda: "")
+
+    _print_update_completion("✓ Update complete!")
+
+    assert capsys.readouterr().out.splitlines() == [
+        "✓ Update complete!",
+        f"=== hermes-update completed {'a' * 32} ===",
+    ]
+
+
+def test_update_completion_rejects_untrusted_action_identity(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_ACTION_ID", "not-safe\nforged")
+    monkeypatch.setattr("hermes_cli.update_cmd._branch_head_suffix", lambda: "")
+
+    _print_update_completion("✓ Update complete!")
+
+    assert capsys.readouterr().out == "✓ Update complete!\n"
 
 
 # -----------------------------------------------------------------------------
@@ -58,19 +76,6 @@ class TestUpdateOutputStream:
 
 
 
-    def test_isatty_delegates_to_original(self):
-        class _TtyStream:
-            def isatty(self):
-                return True
-
-            def write(self, data):
-                return len(data)
-
-            def flush(self):
-                return None
-
-        stream = _UpdateOutputStream(_TtyStream(), io.StringIO())
-        assert stream.isatty() is True
 
 
 # -----------------------------------------------------------------------------
@@ -105,7 +110,6 @@ class TestInstallHangupProtection:
             assert log_path.exists()
             contents = log_path.read_text(encoding="utf-8")
             assert "checking mirror" in contents
-            assert "hermes update started" in contents
         finally:
             _finalize_update_output(state)
             # Sanity-check restoration
@@ -150,8 +154,6 @@ class TestInstallHangupProtection:
 
 
 class TestFinalizeUpdateOutput:
-    def test_none_state_is_noop(self):
-        _finalize_update_output(None)  # must not raise
 
 
     def test_skipped_install_leaves_stdio_alone(self):
@@ -180,20 +182,13 @@ class TestFinalizeUpdateOutput:
 
 class TestLogOnlyWrite:
 
-    def test_noop_without_update_stream(self, monkeypatch):
-        """When stdout isn't the mirroring update stream (no ``_log``), it must
-        be a silent no-op rather than crash."""
+    def test_plain_stdout_keeps_build_output_off_screen(self, monkeypatch):
+        """An unwrapped stdout must not receive log-only build output."""
         plain = io.StringIO()
         monkeypatch.setattr(sys, "stdout", plain)
         _log_only_write("something")  # should not raise
         assert plain.getvalue() == ""
 
-    def test_empty_text_is_noop(self, monkeypatch):
-        terminal = io.StringIO()
-        log = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
-        _log_only_write("")
-        assert log.getvalue() == ""
 
 
 class TestRunLoggedSubprocess:

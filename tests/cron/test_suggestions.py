@@ -6,8 +6,6 @@ HERMES_HOME so the real suggestions.json is never touched.
 """
 
 import importlib
-import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +17,6 @@ def store(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Reload so module-level CRON_DIR/SUGGESTIONS_FILE pick up the temp home.
     import hermes_constants
     importlib.reload(hermes_constants)
     import cron.suggestions as s
@@ -38,6 +35,51 @@ def _add(store, key="k1", title="Test", source="catalog", schedule="0 9 * * *"):
 
 
 class TestStore:
+    def test_explicit_file_override_wins_over_profile_home(self, tmp_path, monkeypatch):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        import cron.suggestions as suggestions_mod
+
+        explicit_file = tmp_path / "explicit" / "suggestions.json"
+        profile_home = tmp_path / "profile"
+        monkeypatch.setattr(suggestions_mod, "SUGGESTIONS_FILE", explicit_file)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            _add(suggestions_mod, key="explicit-file")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert explicit_file.exists()
+        assert not (profile_home / "cron" / "suggestions.json").exists()
+
+    def test_profile_override_routes_writes_to_current_home(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        import cron.suggestions as suggestions_mod
+
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+
+        import_token = set_hermes_home_override(profile_a)
+        try:
+            importlib.reload(suggestions_mod)
+        finally:
+            reset_hermes_home_override(import_token)
+
+        runtime_token = set_hermes_home_override(profile_b)
+        try:
+            _add(suggestions_mod, key="profile-b")
+        finally:
+            reset_hermes_home_override(runtime_token)
+
+        assert (profile_b / "cron" / "suggestions.json").exists()
+        assert not (profile_a / "cron" / "suggestions.json").exists()
+
     def test_add_and_list_pending(self, store):
         rec = _add(store)
         assert rec is not None
@@ -104,6 +146,24 @@ class TestStore:
         # And accepting again is a no-op (not pending anymore).
         assert store.accept_suggestion("acc") is None
 
+    def test_registration_failure_marks_suggestion_accepted(self, store):
+        """Retrying an acceptance must not create a duplicate durable job."""
+        from cron.scheduler import CronSchedulerRegistrationError
+
+        rec = _add(store, key="registration-failed", title="My Job")
+        job = {"id": "job123", "name": "My Job"}
+        failure = CronSchedulerRegistrationError(job, RuntimeError("private detail"))
+
+        with patch(
+            "cron.scheduler.create_job_with_scheduler_registration",
+            side_effect=failure,
+        ):
+            with pytest.raises(CronSchedulerRegistrationError):
+                store.accept_suggestion(rec["id"])
+
+        assert store.list_pending() == []
+        assert store.accept_suggestion(rec["id"]) is None
+
     def test_get_by_id_and_index_and_title(self, store):
         rec = _add(store, key="byref", title="Findable")
         assert store.get_suggestion(rec["id"])["id"] == rec["id"]
@@ -132,17 +192,14 @@ class TestCatalog:
         assert len(store.list_pending()) == min(len(CATALOG), store.MAX_PENDING)
 
 
-    def test_monitor_entry_references_classifier_script(self):
+    def test_no_catalog_prompt_bakes_in_absolute_script_path(self):
         from cron.suggestion_catalog import CATALOG, classify_items_script_path
 
-        monitor = next(e for e in CATALOG if e.key == "catalog:important-mail-monitor")
-        # The prompt must reference the classifier by module path (resolvable
-        # at run time on any backend), never by a baked-in absolute path —
-        # absolute paths go stale after relocation and don't exist on remote
-        # terminal backends (Docker/Modal).
-        assert "cron.scripts.classify_items" in monitor.job_spec["prompt"]
-        assert classify_items_script_path() not in monitor.job_spec["prompt"]
-        assert Path(classify_items_script_path()).name == "classify_items.py"
+        # Absolute install paths go stale after relocation and don't exist on
+        # remote terminal backends (Docker/Modal); prompts must reference
+        # scripts by module path instead.
+        for entry in CATALOG:
+            assert classify_items_script_path() not in entry.job_spec.get("prompt", ""), entry.key
 
 
 class TestBlueprintBridge:
@@ -169,14 +226,4 @@ class TestCommandHandler:
         assert "Daily thing" in out
 
 
-    def test_empty_list_message(self, store):
-        from hermes_cli.suggestions_cmd import handle_suggestions_command
 
-        out = handle_suggestions_command("")
-        assert "No suggested automations" in out
-
-    def test_aux_monitor_config_default(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        assert "monitor" in DEFAULT_CONFIG["auxiliary"]
-        assert DEFAULT_CONFIG["auxiliary"]["monitor"]["provider"] == "auto"

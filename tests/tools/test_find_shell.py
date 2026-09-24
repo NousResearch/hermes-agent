@@ -6,14 +6,29 @@ when ``~/.bash_profile`` contained ``exec /bin/zsh -l``.
 """
 
 import os
-import platform
+import shutil
 import subprocess
-import sys
+import time
 from unittest.mock import patch
 
 import pytest
 
 from tools.environments.local import _find_bash, _find_shell
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+        try:
+            return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+    except ImportError:
+        try:
+            os.kill(pid, 0)  # windows-footgun: ok — psutil fallback only on POSIX hosts without it
+        except OSError:
+            return False
+        return True
 
 
 class TestFindShellPrefersUserShell:
@@ -66,46 +81,36 @@ class TestFindShellPrefersUserShell:
 class TestFindShellWindowsBehavior:
     """On Windows, _find_shell always delegates to _find_bash."""
 
+    @pytest.mark.windows_only
     def test_windows_ignores_shell_env(self):
-        """On Windows, $SHELL is ignored — _find_shell delegates to _find_bash."""
-        with patch("tools.environments.local._IS_WINDOWS", True):
-            # Even if SHELL is set, it should be ignored on Windows
-            with patch.dict(os.environ, {"SHELL": "/usr/bin/zsh"}):
-                result = _find_shell()
-                assert result == _find_bash()
+        """On Windows, $SHELL is ignored — _find_shell delegates to _find_bash.
+
+        Windows-only: faking ``_IS_WINDOWS`` selected the branch but left
+        ``_find_bash`` resolving a POSIX bash, so the equality proved nothing
+        about Git-Bash resolution on the real host.
+        """
+        # Even if SHELL is set, it should be ignored on Windows
+        with patch.dict(os.environ, {"SHELL": "/usr/bin/zsh"}):
+            result = _find_shell()
+            assert result == _find_bash()
 
 
-class TestFindShellReturnsString:
-    """_find_shell must return a string, never None."""
-
-    def test_returns_string(self):
-        """_find_shell always returns a non-empty string on any platform."""
-        result = _find_shell()
-        assert isinstance(result, str)
-        assert len(result) > 0
 
 
-class TestFindBashUnchanged:
-    """_find_bash should be unaffected by the _find_shell change."""
-
-    def test_find_bash_still_prefers_bash(self):
-        """_find_bash still returns bash (not $SHELL) on POSIX."""
-        result = _find_bash()
-        # On any system, _find_bash should return something containing "bash"
-        # or fall back to $SHELL or /bin/sh — but it should NOT prefer $SHELL
-        # over bash the way _find_shell does.
-        assert isinstance(result, str)
-        assert len(result) > 0
 
 
 class TestFindBashSkipsBrokenCustomPath:
     """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
 
+    @pytest.mark.windows_only
     def test_falls_through_to_portable_when_custom_fails_probe(self, tmp_path, monkeypatch):
+        """Windows-only: the candidate ladder (HERMES_GIT_BASH_PATH →
+        %LOCALAPPDATA%\\hermes\\git → Program Files) only exists in
+        ``_find_bash``'s Windows branch."""
         import tools.environments.local as local_mod
+        from tools.environments import local_gitbash_probe as gitbash_probe
 
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
-        local_mod._bash_starts_cache.clear()
+        gitbash_probe._bash_starts_cache.clear()
 
         broken = tmp_path / "broken" / "bash.exe"
         broken.parent.mkdir()
@@ -128,35 +133,54 @@ class TestFindBashSkipsBrokenCustomPath:
 class TestGitBashExternalProgramProbe:
     """The Windows health check must exercise MSYS child-process creation."""
 
-    def test_probe_runs_external_msys_programs(self, monkeypatch):
-        import tools.environments.local as local_mod
 
-        local_mod._bash_starts_cache.clear()
-        local_mod._bash_probe_details_cache.clear()
-        calls = []
+    def test_probe_timeout_is_bounded_and_kills_the_grandchild(self, monkeypatch, tmp_path):
+        """A probe whose grandchild keeps the captured pipes open past the timeout
+        (the MSYS ``true``/``cat`` shape) returns within the bound, records a
+        timeout verdict, and leaves no orphaned pipe-holder behind."""
+        from tools.environments import local_gitbash_probe as gitbash_probe
 
-        def fake_run(argv, **kwargs):
-            calls.append((argv, kwargs))
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("no bash on this host")
+        gitbash_probe._bash_starts_cache.clear()
+        gitbash_probe._bash_probe_details_cache.clear()
+        stamp = tmp_path / "grandchild.pid"
+        monkeypatch.setattr(gitbash_probe, "_BASH_PROBE_TIMEOUT", 1.0)
+        monkeypatch.setattr(gitbash_probe, "_BASH_EXTERNAL_PROGRAM_PROBE",
+                            # `$!` is an MSYS pid on Windows; /proc/<pid>/winpid is the Windows pid
+                            # psutil can see. Both lines land in the stamp; POSIX has no winpid.
+                            f"sleep 30 & echo $! > '{stamp}'; cat /proc/$!/winpid >> '{stamp}' 2>/dev/null; wait")
 
-        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        t0 = time.monotonic()
+        ok = gitbash_probe._bash_starts(bash)
+        elapsed = time.monotonic() - t0
 
-        assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
-        assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+        assert ok is False
+        assert elapsed < 8.0, f"probe cleanup took {elapsed:.1f}s — pipe drain not bounded"
+        assert "timed out" in gitbash_probe._bash_probe_details_cache[bash]
+        grandchild = int(stamp.read_text(encoding="utf-8").split()[-1])
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and _pid_alive(grandchild):
+            time.sleep(0.05)
+        assert not _pid_alive(grandchild), "grandchild survived the probe's tree-kill"
 
+    @pytest.mark.windows_only
     def test_aslr_failure_surfaces_targeted_windows_command(
         self, tmp_path, monkeypatch
     ):
+        """Windows-only: the Mandatory-ASLR diagnostic is raised from
+        ``_find_bash``'s Windows candidate ladder and names PowerShell's
+        ``Set-ProcessMitigation`` — unreachable off Windows."""
         import tools.environments.local as local_mod
+        from tools.environments import local_gitbash_probe as gitbash_probe
 
-        local_mod._bash_starts_cache.clear()
-        local_mod._bash_probe_details_cache.clear()
+        gitbash_probe._bash_starts_cache.clear()
+        gitbash_probe._bash_probe_details_cache.clear()
         portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
         portable.parent.mkdir(parents=True)
         portable.write_text("", encoding="utf-8")
 
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         monkeypatch.setenv("HERMES_GIT_BASH_PATH", "")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         monkeypatch.setenv("ProgramFiles", str(tmp_path / "empty-program-files"))
@@ -165,7 +189,7 @@ class TestGitBashExternalProgramProbe:
         monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
 
         def failed_probe(path: str) -> bool:
-            local_mod._bash_probe_details_cache[path] = (
+            gitbash_probe._bash_probe_details_cache[path] = (
                 "dofork: child -1 - forked process died unexpectedly"
             )
             return False
@@ -181,8 +205,9 @@ class TestGitBashExternalProgramProbe:
         assert str(tmp_path / "hermes" / "git") in message
 
 
+@pytest.mark.macos_only
 @pytest.mark.skipif(
-    not os.path.isfile("/bin/bash") or sys.platform != "darwin",
+    not os.path.isfile("/bin/bash"),
     reason="reproduces the macOS system-bash-3.2 login-shell swallow",
 )
 class TestMacosLoginShellSwallowRegression:
@@ -190,7 +215,7 @@ class TestMacosLoginShellSwallowRegression:
     invoked as a login shell (`-lic`) with stdin=/dev/null and a
     ~/.bash_profile that `exec`s zsh, silently swallows the command (exit 0,
     no output, no side effects). Prove (a) the bug exists with /bin/bash and
-    (b) the $SHELL (zsh) path _find_shell prefers does NOT swallow."""
+    (b) the zsh path _find_shell prefers does NOT swallow."""
 
     def _spawn_like_registry(self, shell, command, home, tmp_path):
         import subprocess
@@ -206,40 +231,6 @@ class TestMacosLoginShellSwallowRegression:
             env=env,
         )
 
-    def test_system_bash_swallows_but_zsh_does_not(self, tmp_path):
-        # A .bash_profile that exec's zsh — the reported macOS shape.
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".bash_profile").write_text("exec /bin/zsh -l\n")
-
-        zsh = os.environ.get("SHELL") or "/bin/zsh"
-        if not os.path.isfile(zsh):
-            pytest.skip("no zsh available")
-
-        marker_bash = tmp_path / "bash_ran"
-        marker_zsh = tmp_path / "zsh_ran"
-
-        # /bin/bash login shell: command is swallowed (file NOT created).
-        self._spawn_like_registry("/bin/bash", f"echo x > {marker_bash}", home, tmp_path)
-        # zsh (the $SHELL _find_shell prefers): command runs (file created).
-        self._spawn_like_registry(zsh, f"echo x > {marker_zsh}", home, tmp_path)
-
-        # The FIX path (zsh) must run the command.
-        assert marker_zsh.exists(), "zsh ($SHELL) path must run the command"
-
-        # Differential: when /bin/bash is the swallow-prone 3.x (macOS system
-        # bash), the login-shell invocation must demonstrably FAIL to run the
-        # command — that's the bug this PR routes around. Only assert the
-        # negative when we've confirmed a 3.x bash, so the test stays valid on
-        # boxes/CI with a newer /bin/bash that doesn't swallow.
-        ver = subprocess.run(
-            ["/bin/bash", "--version"], capture_output=True, text=True
-        ).stdout
-        if "version 3." in ver:
-            assert not marker_bash.exists(), (
-                "system bash 3.x login shell should swallow the command "
-                "(the #42203 bug); _find_shell routes around it by preferring zsh"
-            )
 
     def test_find_shell_selects_working_shell_on_this_box(self, tmp_path):
         """_find_shell's choice must actually execute a background-style

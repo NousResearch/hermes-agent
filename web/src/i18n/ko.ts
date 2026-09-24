@@ -165,6 +165,10 @@ export const ko: Translations = {
     failedToDeleteSelected: "선택한 세션 삭제에 실패했습니다",
     resumeInChat: "채팅에서 다시 시작",
     newChat: "새 채팅",
+    workspace: "작업 공간",
+    workspaceDefault: "기본값",
+    workspaceRescan: "저장소 다시 검색",
+    workspaceCustom: "다른 경로…",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
     roles: {
@@ -323,6 +327,8 @@ export const ko: Translations = {
     disableRuntime: "비활성화",
     enableAfterInstall: "설치 후 활성화",
     enableRuntime: "활성화",
+    toggleTakesEffectAfterRestart:
+      "저장됨 — 변경 사항을 적용하려면 게이트웨이를 다시 시작하세요.",
     forceReinstall: "강제 재설치 (기존 폴더를 먼저 삭제)",
     headline:
       "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
@@ -468,6 +474,8 @@ export const ko: Translations = {
     copyCliCommand: "CLI 명령 복사 (외부 / 대체용)",
     connect: "연결",
     sessionExpires: "세션이 {time} 후 만료됩니다",
+    sessionExpiredNoError:
+      "제공자에 도달하지 못한 채 로그인 시간이 만료되었습니다. 보통 열린 탭에서 로그인 페이지가 멈춘 경우입니다(서버 측 문제) — 해당 탭에서 로그인을 완료한 후 다시 시도를 클릭하세요. 계속 실패하면 API 키 또는 CLI를 사용하세요.",
     initiatingLogin: "로그인 흐름 시작 중…",
     exchangingCode: "코드를 토큰으로 교환 중…",
     connectedClosing: "연결되었습니다! 닫는 중…",
@@ -617,6 +625,12 @@ export const ko: Translations = {
       "보드를 사용하면 관련 없는 작업 흐름을 분리할 수 있습니다 — 프로젝트, 저장소, 도메인마다 하나씩. 한 보드의 워커는 다른 보드의 작업을 절대 보지 않습니다.",
     slug: "슬러그",
     slugHint: "— 소문자, 하이픈, 예: atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "표시 이름",
     displayNameHint: "(선택)",
     description: "설명",

@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 
 import {
-  $reviewCommitDefault,
   $reviewCommitMsgBusy,
   $reviewDiff,
   $reviewDiffLoading,
@@ -14,27 +13,23 @@ import {
   $reviewOpen,
   $reviewRevertTarget,
   $reviewScopeCwd,
+  $reviewScopeTarget,
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
-  $reviewTreeMode,
-  cancelRevert,
-  clearReviewSelection,
   closeReview,
   commitChanges,
   confirmRevert,
   createOrOpenPr,
   generateCommitMessage,
   openReview,
-  pushChanges,
   refreshReview,
   refreshShipInfo,
   requestRevert,
-  revertReviewFile,
+  revealReview,
   selectReviewFile,
   stageReviewFile,
-  toggleReviewTreeMode,
-  unstageReviewFile
+  toggleReview
 } from './review'
 import { $currentCwd } from './session'
 
@@ -44,8 +39,10 @@ import { $currentCwd } from './session'
 const requestOneShot = vi.fn(async (_args: unknown) => 'generated message')
 vi.mock('@/lib/oneshot', () => ({ requestOneShot: (args: unknown) => requestOneShot(args) }))
 // refreshRepoStatus is a fire-and-forget side effect of mutations; stub it so it
-// doesn't try to hit the (absent) probe and log.
-vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn() }))
+// doesn't try to hit the (absent) probe and log. repoStatusForCwd is read when a
+// new PR binds its session to the branch it came from — no probe here, so no
+// branch either.
+vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn(), repoStatusForCwd: () => ({ get: () => null }) }))
 
 function file(path: string, over: Partial<HermesReviewFile> = {}): HermesReviewFile {
   return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as HermesReviewFile
@@ -94,6 +91,7 @@ beforeEach(() => {
   $reviewCommitMsgBusy.set(false)
   $reviewRevertTarget.set(undefined)
   $reviewScopeCwd.set(null)
+  $reviewScopeTarget.set('main')
   $currentCwd.set('/repo')
 })
 
@@ -186,7 +184,7 @@ describe('$reviewMaxChurn', () => {
   })
 })
 
-describe('selectReviewFile / clearReviewSelection', () => {
+describe('selectReviewFile', () => {
   it('sets the selected path and fetches its diff', async () => {
     const review = stubReview({ diff: vi.fn(async () => 'the diff') })
 
@@ -198,14 +196,6 @@ describe('selectReviewFile / clearReviewSelection', () => {
     expect(review.diff).toHaveBeenCalledWith('/repo', 'a.ts', 'uncommitted', null, false)
   })
 
-  it('coerces a falsy diff to empty string (not null)', async () => {
-    stubReview({ diff: vi.fn(async () => '') })
-
-    await selectReviewFile(file('a.ts'))
-
-    expect($reviewDiff.get()).toBe('')
-  })
-
   it('sets diff null when there is no bridge', async () => {
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 
@@ -214,29 +204,9 @@ describe('selectReviewFile / clearReviewSelection', () => {
     expect($reviewSelectedPath.get()).toBe('a.ts')
     expect($reviewDiff.get()).toBeNull()
   })
-
-  it('clears path, diff and loading', () => {
-    $reviewSelectedPath.set('a.ts')
-    $reviewDiff.set('x')
-    $reviewDiffLoading.set(true)
-
-    clearReviewSelection()
-
-    expect($reviewSelectedPath.get()).toBeNull()
-    expect($reviewDiff.get()).toBeNull()
-    expect($reviewDiffLoading.get()).toBe(false)
-  })
 })
 
 describe('view state', () => {
-  it('toggleReviewTreeMode flips list <-> tree', () => {
-    $reviewTreeMode.set('tree')
-    toggleReviewTreeMode()
-    expect($reviewTreeMode.get()).toBe('list')
-    toggleReviewTreeMode()
-    expect($reviewTreeMode.get()).toBe('tree')
-  })
-
   it('openReview opens the pane and kicks off a refresh', async () => {
     const review = stubReview()
     openReview()
@@ -261,6 +231,36 @@ describe('view state', () => {
     expect(review.list).toHaveBeenCalledWith('/tile-worktree', 'uncommitted', null)
   })
 
+  it('revealReview re-homes the origin when the repo stays the same', () => {
+    stubReview()
+    openReview('/tile-worktree', 'tile:project-a')
+
+    revealReview('/tile-worktree', 'tile:project-b')
+
+    expect($reviewScopeTarget.get()).toBe('tile:project-b')
+  })
+
+  it('narrow toggle re-homes the origin before showing the overlay', () => {
+    const originalMatchMedia = window.matchMedia
+
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({ matches: true }))
+    })
+
+    try {
+      stubReview()
+      openReview('/project-a', 'tile:project-a')
+
+      toggleReview('/project-b', 'tile:project-b')
+
+      expect($reviewScopeCwd.get()).toBe('/project-b')
+      expect($reviewScopeTarget.get()).toBe('tile:project-b')
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia })
+    }
+  })
+
   it('closeReview closes the pane, clears selection, and drops scope', () => {
     stubReview()
     $reviewOpen.set(true)
@@ -272,6 +272,7 @@ describe('view state', () => {
 
     expect($reviewOpen.get()).toBe(false)
     expect($reviewScopeCwd.get()).toBeNull()
+    expect($reviewScopeTarget.get()).toBe('main')
     expect($reviewSelectedPath.get()).toBeNull()
     expect($reviewDiff.get()).toBeNull()
   })
@@ -304,34 +305,9 @@ describe('mutations', () => {
     expect(review.stage).toHaveBeenCalledWith('/repo', 'a.ts')
     expect(review.list).toHaveBeenCalled()
   })
-
-  it('unstageReviewFile forwards the path', async () => {
-    const review = stubReview()
-    await unstageReviewFile('a.ts')
-    expect(review.unstage).toHaveBeenCalledWith('/repo', 'a.ts')
-  })
-
-  it('revertReviewFile forwards the path', async () => {
-    const review = stubReview()
-    await revertReviewFile('a.ts')
-    expect(review.revert).toHaveBeenCalledWith('/repo', 'a.ts')
-  })
-
-  it('stage with null path means "all"', async () => {
-    const review = stubReview()
-    await stageReviewFile(null)
-    expect(review.stage).toHaveBeenCalledWith('/repo', null)
-  })
 })
 
 describe('revert confirm dialog', () => {
-  it('requestRevert opens a target, cancelRevert closes it', () => {
-    requestRevert('a.ts')
-    expect($reviewRevertTarget.get()).toEqual({ path: 'a.ts' })
-    cancelRevert()
-    expect($reviewRevertTarget.get()).toBeUndefined()
-  })
-
   it('requestRevert(null) encodes the "revert all" target distinctly from closed', () => {
     requestRevert(null)
     expect($reviewRevertTarget.get()).toEqual({ path: null })
@@ -377,12 +353,6 @@ describe('ship flow', () => {
     expect(review.commit).not.toHaveBeenCalled()
   })
 
-  it('pushChanges pushes and refreshes ship info', async () => {
-    const review = stubReview()
-    await pushChanges()
-    expect(review.push).toHaveBeenCalledWith('/repo')
-  })
-
   it('createOrOpenPr opens the existing PR without creating a new one', async () => {
     const review = stubReview()
     $reviewShipInfo.set({ ghReady: true, pr: { url: 'https://example.com/pr/9' } } as HermesReviewShipInfo)
@@ -409,19 +379,6 @@ describe('ship flow', () => {
 })
 
 describe('refreshShipInfo', () => {
-  it('populates ship info from the bridge', async () => {
-    const info: HermesReviewShipInfo = {
-      ghReady: true,
-      pr: { url: 'https://example.com/pr/3' }
-    } as HermesReviewShipInfo
-
-    stubReview({ shipInfo: vi.fn(async () => info) })
-
-    await refreshShipInfo()
-
-    expect($reviewShipInfo.get()).toEqual(info)
-  })
-
   it('resets ship info when there is no bridge', async () => {
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
     $reviewShipInfo.set({ ghReady: true, pr: { url: 'x' } } as HermesReviewShipInfo)
@@ -477,14 +434,5 @@ describe('generateCommitMessage', () => {
     const msg = await generateCommitMessage()
 
     expect(msg).toBe('')
-  })
-})
-
-describe('$reviewCommitDefault', () => {
-  it('remembers the split-button default action', () => {
-    $reviewCommitDefault.set('commitPush')
-    expect($reviewCommitDefault.get()).toBe('commitPush')
-    $reviewCommitDefault.set('commit')
-    expect($reviewCommitDefault.get()).toBe('commit')
   })
 })

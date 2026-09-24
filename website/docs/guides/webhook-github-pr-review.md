@@ -16,7 +16,7 @@ If you don't have a public URL or just want to get started quickly, check out [B
 :::
 
 :::info Reference docs
-For the full webhook platform reference (all config options, delivery types, dynamic subscriptions, security model) see [Webhooks](/user-guide/messaging/webhooks).
+For the full webhook platform reference (all config options, delivery types, dynamic subscriptions, security model) see [Webhooks](../user-guide/messaging/webhooks.md).
 :::
 
 :::warning Prompt injection risk
@@ -88,7 +88,7 @@ platforms:
 | `deliver_extra.pr_number` | Resolves to the PR number from the payload. |
 
 :::note The payload does not contain code
-The GitHub webhook payload includes PR metadata (title, description, branch names, URLs) but **not the diff**. The prompt above instructs the agent to run `gh pr diff` to fetch the actual changes. The `terminal` tool is included in the default `hermes-webhook` toolset, so no extra configuration is needed.
+The GitHub webhook payload includes PR metadata (title, description, branch names, URLs) but **not the diff**. The prompt above instructs the agent to run `gh pr diff` to fetch the actual changes. The default `hermes-webhook` toolset is deliberately constrained (web search/extract, vision, clarify — **no terminal**) because webhook payloads can carry untrusted content. To let this route run `gh`, add a per-route toolset grant: `toolsets: ["terminal", "web"]` on the route config — see [Per-route toolsets](../user-guide/messaging/webhooks.md#per-route-toolsets).
 :::
 
 ---
@@ -204,7 +204,7 @@ For high-volume repositories, you can still filter upstream with a GitHub Action
 
 ## Using a skill for consistent review style
 
-Load a [Hermes skill](/user-guide/features/skills) to give the agent a consistent review persona. Add `skills` to your route inside `platforms.webhook.extra.routes` in `config.yaml`:
+Load a [Hermes skill](../user-guide/features/skills.md) to give the agent a consistent review persona. Add `skills` to your route inside `platforms.webhook.extra.routes` in `config.yaml`:
 
 ```yaml
 platforms:
@@ -331,6 +331,6 @@ platforms:
 ## What's Next?
 
 - **[Cron-Based PR Reviews](./github-pr-review-agent.md)** — poll for PRs on a schedule, no public endpoint needed
-- **[Webhook Reference](/user-guide/messaging/webhooks)** — full config reference for the webhook platform
-- **[Build a Plugin](/developer-guide/plugins)** — package review logic into a shareable plugin
-- **[Profiles](/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config
+- **[Webhook Reference](../user-guide/messaging/webhooks.md)** — full config reference for the webhook platform
+- **[Build a Plugin](../developer-guide/plugins/index.md)** — package review logic into a shareable plugin
+- **[Profiles](../user-guide/profiles.md)** — run a dedicated reviewer profile with its own memory and config

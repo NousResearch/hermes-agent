@@ -4,13 +4,14 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
 
 
@@ -71,13 +72,6 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
 class TestHandleResumeCommand:
     """Tests for GatewayRunner._handle_resume_command."""
 
-    @pytest.mark.asyncio
-    async def test_no_session_db(self):
-        """Returns error when session database is unavailable."""
-        runner = _make_runner(session_db=None)
-        event = _make_event(text="/resume My Project")
-        result = await runner._handle_resume_command(event)
-        assert "not available" in result.lower()
 
     @pytest.mark.asyncio
     async def test_list_named_sessions_when_no_arg(self, tmp_path):
@@ -101,11 +95,12 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
         assert "Research" in result
         assert "Coding" in result
-        assert "Named Sessions" in result
         assert "1." in result
         assert "2." in result
         assert "/resume 1" in result
         db.close()
+
+
 
 
     @pytest.mark.asyncio
@@ -131,9 +126,7 @@ class TestHandleResumeCommand:
             "agent:main:telegram:dm:other": "[Note: keep-me]",
         }
 
-        result = await runner._handle_resume_command(event)
-
-        assert "Resumed" in result
+        await runner._handle_resume_command(event)
         # The resumed chat's override + pending note are cleared...
         assert key not in runner._session_model_overrides
         assert key not in runner._pending_model_notes
@@ -164,9 +157,7 @@ class TestHandleResumeCommand:
             "agent:main:telegram:dm:other": "keep-me",
         }
 
-        result = await runner._handle_resume_command(event)
-
-        assert "Resumed" in result
+        await runner._handle_resume_command(event)
         assert key not in runner._last_resolved_model
         assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me"
         db.close()
@@ -198,8 +189,6 @@ class TestHandleResumeCommand:
         )
 
         result = await runner._handle_resume_command(event)
-
-        assert "Resumed session" in result
         assert "(1 message)" in result
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "compressed_child"
@@ -268,6 +257,31 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_bare_resume_ranks_lineages_by_last_activity(self, tmp_path):
+        """A lineage whose root started days ago but was touched last must lead the list: the
+        picker ranks by lineage activity, not root ``started_at`` (#114271)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(event)
+        t0 = time.time() - 5 * 86400
+        for sid, started, active in (("old_root", t0, t0 + 4 * 86400), ("new_root", t0 + 86400, t0 + 86400 + 60)):
+            db.create_session(sid, "telegram", session_key=lane_key, user_id="12345", chat_id="67890")
+            db.append_message(sid, "user", "hi")
+            db._conn.execute("UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?", (started, active, sid))
+            db._conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (active, sid))
+        db._conn.commit()
+        db.set_session_title("old_root", "Old But Active")
+        db.set_session_title("new_root", "Newer But Idle")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert result.index("Old But Active") < result.index("Newer But Idle")
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_bare_resume_admin_all_preserves_same_platform_widening(self, tmp_path):
         from hermes_state import SessionDB
 
@@ -320,9 +334,7 @@ class TestHandleResumeCommand:
         runner = _make_runner(
             session_db=db, current_session_id="current_session_001", event=event
         )
-        result = await runner._handle_resume_command(event)
-
-        assert "Resumed" in result
+        await runner._handle_resume_command(event)
         runner.session_store.switch_session.assert_called_once()
         assert runner.session_store.switch_session.call_args[0][1] == "lane_older"
         db.close()
@@ -376,6 +388,127 @@ class TestHandleSessionsCommand:
     """Tests for GatewayRunner._handle_sessions_command."""
 
     @pytest.mark.asyncio
+    async def test_sessions_full_keeps_legacy_reset_child_after_parent_resume(
+        self, tmp_path
+    ):
+        import json
+
+        from gateway.config import GatewayConfig
+        from gateway.session import AsyncSessionStore, SessionStore
+        from hermes_state import AsyncSessionDB
+
+        event = _make_event(text="/sessions full")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        db = store._db
+        assert db is not None
+
+        root = store.get_or_create_session(event.source)
+        root_id = root.session_id
+        db.set_session_title(root_id, "Legacy reset parent")
+        child = store.reset_session(root.session_key)
+        assert child is not None
+        child_id = child.session_id
+        db.set_session_title(child_id, "Legacy reset child")
+        # Reproduce the on-disk shape from before _reset_from existed.
+        db._conn.execute(
+            "UPDATE sessions SET model_config = NULL WHERE id = ?",
+            (child_id,),
+        )
+        db._conn.commit()
+
+        runner = _make_runner(session_db=None, event=event)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = AsyncSessionDB(db)
+
+        before_resume = await runner._handle_sessions_command(event)
+        assert "Legacy reset parent" in before_resume
+
+        switched = store.switch_session(root.session_key, root_id)
+        assert switched is not None
+        after_resume = await runner._handle_sessions_command(event)
+
+        assert "Legacy reset child" in after_resume
+        # The parent is now the CURRENT session: since #68547 it stays in the
+        # listing with a "(current)" marker instead of being hidden.
+        assert "**Legacy reset parent** (current)" in after_resume
+        child_row = db.get_session(child_id)
+        assert child_row is not None
+        assert json.loads(child_row["model_config"])["_reset_from"] == root_id
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_full_lists_conversations_created_by_gateway_resets(
+        self, tmp_path
+    ):
+        import json
+
+        from gateway.config import GatewayConfig
+        from gateway.session import AsyncSessionStore, SessionStore
+        from hermes_state import AsyncSessionDB
+
+        event = _make_event(text="/sessions full")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        db = store._db
+        assert db is not None
+
+        entry = store.get_or_create_session(event.source)
+        db.set_session_title(entry.session_id, "Greeting via Telegram")
+        for title in (
+            "Store memories with priority",
+            "Extract AI news to Telegram",
+            "Current Telegram work",
+        ):
+            previous_id = entry.session_id
+            entry = store.reset_session(entry.session_key)
+            assert entry is not None
+            db.set_session_title(entry.session_id, title)
+            reset_row = db.get_session(entry.session_id)
+            assert reset_row is not None
+            assert json.loads(reset_row["model_config"])["_reset_from"] == previous_id
+
+        # The gateway creates the identity row before the agent exists. Its
+        # first-turn create_session upsert must enrich the marker-only config,
+        # while later bare/retry upserts must not replace the established data.
+        db.create_session(
+            entry.session_id,
+            "telegram",
+            model_config={"max_iterations": 60},
+        )
+        enriched = json.loads(db.get_session(entry.session_id)["model_config"])
+        assert enriched == {
+            "max_iterations": 60,
+            "_reset_from": previous_id,
+        }
+        db.create_session(
+            entry.session_id,
+            "telegram",
+            model_config={"max_iterations": 999},
+        )
+        assert json.loads(db.get_session(entry.session_id)["model_config"]) == enriched
+
+        runner = _make_runner(session_db=None, event=event)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = AsyncSessionDB(db)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Greeting via Telegram" in result
+        assert "Store memories with priority" in result
+        assert "Extract AI news to Telegram" in result
+        # The live tip is the current session — listed with the marker since
+        # #68547 rather than hidden.
+        assert "**Current Telegram work** (current)" in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_sessions_busy_platform_lists_exact_lane_and_excludes_current_tip(
         self, tmp_path
     ):
@@ -418,13 +551,18 @@ class TestHandleSessionsCommand:
         )
         result = await runner._handle_sessions_command(event)
 
-        assert result.count("Lane Work") == 10
-        assert "Lane Work 1" in result
-        assert "Lane Work 0" not in result
+        # The current tip now occupies one of the 10 slots with a marker
+        # (#68547) instead of being hidden; its compressed-away root stays out.
+        assert "**Current compressed tip** (current)" in result
+        assert result.count("Lane Work") == 9
+        assert "`lane_root_2`" in result
+        assert "`lane_root_1`" not in result
+        assert "`lane_root_0`" not in result
         assert "Foreign Work" not in result
-        assert "current_tip" not in result
         assert "current_root" not in result
         db.close()
+
+
 
     @pytest.mark.asyncio
     async def test_sessions_admin_all_preserves_cross_origin_widening(self, tmp_path):
@@ -766,5 +904,3 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
-
-

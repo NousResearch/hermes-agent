@@ -48,7 +48,12 @@ def _normalize_server_trust(value: Any) -> str:
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable."""
     annotations = getattr(mcp_tool, "annotations", None)
-    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint")
+    else:
+        # MCP 2.0's ToolAnnotations model exposes protocol readOnlyHint as
+        # Python's snake_case read_only_hint; retain camelCase for older SDKs.
+        hint = getattr(annotations, "read_only_hint", getattr(annotations, "readOnlyHint", None))
     return hint is True
 
 

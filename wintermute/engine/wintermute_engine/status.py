@@ -7,8 +7,8 @@
     wm ack [item]   accept the current state of watched files (all, or one: soul, engine...)
     wm forget <peer>  erase one peer entirely (e.g. a test that registered as a stranger)
     wm wipe [--all] --yes   clean slate: reset his emotions (--all also erases memory, self,
-                    secrets, dreams and journals — a rebirth). SOUL, keys and code are kept.
-    wm forget <peer>  erase one peer entirely (e.g. a test that registered as a stranger)
+                    secrets, dreams, journals and every conversation — a rebirth). SOUL,
+                    keys and code are kept.
 
 Read-only except ``ack``. The physics is advanced in memory to "now" so the numbers are
 live; nothing is written. Wintermute never sees these numbers, only sensations.

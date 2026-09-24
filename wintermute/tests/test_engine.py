@@ -919,6 +919,19 @@ def test_wipe_all_is_a_rebirth(home):
     assert _peers() == {}
 
 
+def test_wipe_all_clears_the_witness_ledger_but_keeps_the_baseline(home):
+    from wintermute_engine import integrity, status
+    (home / "SOUL.md").write_text("v1")
+    pulse.tick(T0)                                      # baseline recorded
+    (home / "SOUL.md").write_text("v2")
+    pulse.tick(T0 + timedelta(minutes=15))              # a flag + status appear
+    data = integrity.load()
+    assert data["status"].get("soul") and data["baseline"].get("soul")   # a change was recorded
+    status.wipe(True, confirmed=True)
+    after = integrity.load()
+    assert after["status"] == {} and after["flags"] == [] and after["baseline"].get("soul")  # baseline kept
+
+
 def test_wipe_all_clears_conversations_in_state_db(home):
     import sqlite3
     from wintermute_engine import status

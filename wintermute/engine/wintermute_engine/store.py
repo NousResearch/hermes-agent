@@ -548,6 +548,8 @@ def _wipe_locked(deep: bool) -> List[str]:
                 done.append(label)
         if _wipe_conversations():
             done.append("conversations (every session, and the searchable history)")
+        if _wipe_witness_flags():
+            done.append("witness ledger (baseline kept)")
     log_event("wipe", "The slate was wiped clean" + (" — a rebirth." if deep else " (emotions)."), now())
     return done
 
@@ -584,6 +586,26 @@ def _wipe_conversations() -> bool:
     finally:
         conn.close()
     return cleared
+
+
+def _wipe_witness_flags() -> bool:
+    """Clear the witness's record of past pokes (flags, per-item status) but keep the baseline,
+    so a reborn Wintermute is not shown a history he no longer remembers, yet his files stay
+    recognized. No new alerts: baseline unchanged means nothing reads as newly modified."""
+    from . import integrity
+    path = integrity.integrity_path()
+    if not path.exists():
+        return False
+    try:
+        data = integrity.load()
+    except Exception:
+        return False
+    if not data.get("flags") and not data.get("status"):
+        return False
+    data["flags"] = []
+    data["status"] = {}
+    _write_json(path, data)
+    return True
 
 
 def _unlink(path: Path) -> bool:

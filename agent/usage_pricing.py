@@ -101,6 +101,15 @@ class BillingRoute:
 
 
 @dataclass(frozen=True)
+class PricingTier:
+    min_prompt_tokens: int
+    input_cost_per_million: Optional[Decimal] = None
+    output_cost_per_million: Optional[Decimal] = None
+    cache_read_cost_per_million: Optional[Decimal] = None
+    cache_write_cost_per_million: Optional[Decimal] = None
+
+
+@dataclass(frozen=True)
 class PricingEntry:
     input_cost_per_million: Optional[Decimal] = None
     output_cost_per_million: Optional[Decimal] = None
@@ -120,6 +129,9 @@ class PricingEntry:
     output_cost_per_million_above: Optional[Decimal] = None
     cache_read_cost_per_million_above: Optional[Decimal] = None
     cache_write_cost_per_million_above: Optional[Decimal] = None
+    # Provider metadata can publish multiple whole-request tiers. Rows are
+    # ordered by threshold so missing rates inherit from the previous tier.
+    pricing_tiers: tuple[PricingTier, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -475,24 +487,50 @@ def _pricing_entry_from_metadata(
         return None
     pricing = metadata[model_id].get("pricing") or {}
 
-    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
-        raw = pricing.get(key)
+    def per_million(row: dict[str, Any], key: str, *aliases: str) -> Optional[Decimal]:
+        raw = row.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
-            raw = raw or pricing.get(alias)
+            raw = raw or row.get(alias)
         value = _to_decimal(raw)
         return None if value is None else value * _ONE_MILLION
 
-    prompt = per_million("prompt")
-    completion = per_million("completion")
+    prompt = per_million(pricing, "prompt")
+    completion = per_million(pricing, "completion")
     request = _to_decimal(pricing.get("request"))
     if prompt is None and completion is None and request is None:
         return None
+
+    tiers: list[PricingTier] = []
+    overrides = pricing.get("overrides")
+    if isinstance(overrides, (list, tuple)):
+        for override in overrides:
+            if not isinstance(override, dict):
+                continue
+            raw_threshold = override.get("min_prompt_tokens")
+            try:
+                threshold = int(raw_threshold) if not isinstance(raw_threshold, bool) else None
+            except (TypeError, ValueError):
+                threshold = None
+            if threshold is None or threshold < 0:
+                continue
+            tiers.append(PricingTier(
+                min_prompt_tokens=threshold,
+                input_cost_per_million=per_million(override, "prompt"),
+                output_cost_per_million=per_million(override, "completion"),
+                cache_read_cost_per_million=per_million(
+                    override, "cache_read", "cached_prompt", "input_cache_read"
+                ),
+                cache_write_cost_per_million=per_million(
+                    override, "cache_write", "cache_creation", "input_cache_write"
+                ),
+            ))
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
-        cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
+        cache_read_cost_per_million=per_million(pricing, "cache_read", "cached_prompt", "input_cache_read"),
+        cache_write_cost_per_million=per_million(pricing, "cache_write", "cache_creation", "input_cache_write"),
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
+        pricing_tiers=tuple(sorted(tiers, key=lambda tier: tier.min_prompt_tokens)),
     )
 
 
@@ -659,17 +697,39 @@ def estimate_usage_cost(
     # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
+    rates = [
+        entry.input_cost_per_million,
+        entry.output_cost_per_million,
+        entry.cache_read_cost_per_million,
+        entry.cache_write_cost_per_million,
+    ]
+    if above:
+        for index, rate in enumerate((
+            entry.input_cost_per_million_above,
+            entry.output_cost_per_million_above,
+            entry.cache_read_cost_per_million_above,
+            entry.cache_write_cost_per_million_above,
+        )):
+            if rate is not None:
+                rates[index] = rate
+    for tier in entry.pricing_tiers:
+        if usage.prompt_tokens < tier.min_prompt_tokens:
+            break
+        for index, rate in enumerate((
+            tier.input_cost_per_million,
+            tier.output_cost_per_million,
+            tier.cache_read_cost_per_million,
+            tier.cache_write_cost_per_million,
+        )):
+            if rate is not None:
+                rates[index] = rate
     amount = _ZERO
-    for tokens, rate, rate_above, note in (
-        (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
-        (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
-        (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
-         ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
-         ("cache-write pricing unavailable for route",)),
+    for tokens, rate, note in (
+        (usage.input_tokens, rates[0], ()),
+        (usage.output_tokens, rates[1], ()),
+        (usage.cache_read_tokens, rates[2], ("cache-read pricing unavailable for route",)),
+        (usage.cache_write_tokens, rates[3], ("cache-write pricing unavailable for route",)),
     ):
-        if above and rate_above is not None:
-            rate = rate_above
         if rate is None:
             if tokens:
                 return _unknown_cost(entry.source, *note)

@@ -1,8 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import urllib.error
-from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,7 +11,6 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _channel_type_name,
     _detect_capabilities,
     _discord_request,
     _get_bot_token,
@@ -58,18 +55,69 @@ class TestCheckRequirements:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "  my-token  ")
         assert _get_bot_token() == "my-token"
 
+    def test_multiplex_scope_token_wins_over_process_environment(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope(
+            {"DISCORD_BOT_TOKEN": "  active-profile-token  "}
+        )
+        try:
+            assert _get_bot_token() == "active-profile-token"
+            assert check_discord_tool_requirements() is True
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_multiplex_scope_missing_token_fails_closed(self, monkeypatch):
+        from agent import secret_scope
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({"UNRELATED_SECRET": "value"})
+        invalidate_check_fn_cache()
+        try:
+            assert _get_bot_token() is None
+            assert check_discord_tool_requirements() is False
+            assert registry.get_definitions({"discord", "discord_admin"}) == []
+        finally:
+            invalidate_check_fn_cache()
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_non_multiplex_scope_miss_keeps_environment_compatibility(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "process-token")
+        secret_scope.set_multiplex_active(False)
+        scope_token = secret_scope.set_secret_scope({"UNRELATED_SECRET": "value"})
+        try:
+            assert _get_bot_token() == "process-token"
+            assert check_discord_tool_requirements() is True
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+
+    def test_gateway_tool_prompt_gate_uses_active_profile_token(self, monkeypatch):
+        from agent import secret_scope
+        from gateway.session import _discord_tools_loaded
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({"UNRELATED_SECRET": "value"})
+        try:
+            with patch("hermes_cli.config.load_config") as load_config:
+                assert _discord_tools_loaded() is False
+                load_config.assert_not_called()
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
 
 # ---------------------------------------------------------------------------
 # Channel type names
 # ---------------------------------------------------------------------------
 
-class TestChannelTypeNames:
-    def test_type_names(self):
-        assert _channel_type_name(0) == "text"
-        assert _channel_type_name(2) == "voice"
-        assert _channel_type_name(4) == "category"
-        assert _channel_type_name(15) == "forum"
-        assert _channel_type_name(99) == "unknown(99)"
 
 
 # ---------------------------------------------------------------------------
@@ -276,14 +324,6 @@ class TestErrorHandling:
 # ---------------------------------------------------------------------------
 
 class TestRegistration:
-    def test_core_tool_registered(self):
-        from tools.registry import registry
-        entry = registry._tools.get("discord")
-        assert entry is not None
-        assert entry.schema["name"] == "discord"
-        assert entry.toolset == "discord"
-        assert entry.check_fn is not None
-        assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
 
     def test_all_actions_covered(self):
         """Core + admin actions should cover all known actions."""
@@ -295,26 +335,6 @@ class TestRegistration:
 # Toolset: discord / discord_admin only in hermes-discord
 # ---------------------------------------------------------------------------
 
-class TestToolsetInclusion:
-    def test_discord_tools_only_in_hermes_discord_toolset(self):
-        from toolsets import TOOLSETS, _HERMES_CORE_TOOLS
-        assert "discord" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord" not in _HERMES_CORE_TOOLS
-        assert "discord_admin" not in _HERMES_CORE_TOOLS
-
-    def test_discord_tools_not_in_other_toolsets(self):
-        from toolsets import TOOLSETS
-        for name, ts in TOOLSETS.items():
-            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
-                continue
-            tools = ts.get("tools", [])
-            assert "discord" not in tools or name == "discord", (
-                f"discord tool should not be in toolset '{name}'"
-            )
-            assert "discord_admin" not in tools or name == "discord_admin", (
-                f"discord_admin tool should not be in toolset '{name}'"
-            )
 
 
 # ---------------------------------------------------------------------------

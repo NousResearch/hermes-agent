@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -16,18 +17,24 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import {
+  $newProjectDropPlacement,
   $projectDialog,
   addProjectFolder,
+  clearNewProjectDropPlacement,
   closeProjectDialog,
   createProject,
+  enterProject,
   generateProjectIdea,
   pickProjectFolder,
   renameProject
 } from '@/store/projects'
+
+import { baseName } from './projects/workspace-groups'
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
 // add-folder flows driven by the $projectDialog atom. Folders are chosen via
@@ -46,6 +53,22 @@ export function ProjectDialog() {
   const [generatingIdea, setGeneratingIdea] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
+
+  // A "New project" DRAG arms where the project should start (tab-strip slot /
+  // pane edge / pane center) before the dialog opens. Snapshot it per open —
+  // the submit forwards it as `dropPlacement`, and closing clears the store's
+  // arm so a later plain-click create never inherits a stale placement.
+  let dropPlacement: NewSessionPlacement | undefined
+
+  if (open) {
+    dropPlacement = $newProjectDropPlacement.get() ?? undefined
+  }
+
+  useEffect(() => {
+    if (!open) {
+      clearNewProjectDropPlacement()
+    }
+  }, [open])
 
   useEffect(() => {
     if (open) {
@@ -69,8 +92,11 @@ export function ProjectDialog() {
   }
 
   // One submit beat for every flow: guard re-entry, run the write, close on
-  // success, surface a toast on failure. Callers pass only the write.
-  const runSubmit = async (write: () => Promise<unknown>) => {
+  // success, surface a toast on failure. Callers pass only the write, plus an
+  // optional hook that runs exactly when the write SUCCEEDS (before the close)
+  // — the New-project drop arm is consumed there, so a failed attempt keeps
+  // its placement for the retry while a successful one can't leak it forward.
+  const runSubmit = async (write: () => Promise<unknown>, onSuccess?: () => void) => {
     if (submitting) {
       return
     }
@@ -79,6 +105,7 @@ export function ProjectDialog() {
 
     try {
       await write()
+      onSuccess?.()
       closeProjectDialog()
     } catch (err) {
       notifyError(err, p.createFailed)
@@ -104,6 +131,13 @@ export function ProjectDialog() {
       }
 
       setFolders(prev => (prev.includes(dir) ? prev : [...prev, dir]))
+
+      // Picking a folder with no name typed names the project after the folder
+      // (the ⌘O "Open folder…" naming), so one pick + Create is enough. The name
+      // lands in the input, never in a hidden fallback the user cannot see.
+      if (mode === 'create') {
+        setName(prev => prev.trim() || baseName(dir) || prev)
+      }
     } catch (err) {
       notifyError(err, p.createFailed)
     }
@@ -124,7 +158,22 @@ export function ProjectDialog() {
     // A project owns sessions by folder (cwd-prefix), so creation requires at
     // least one — a folder-less project couldn't hold a session anyway.
     if (mode === 'create' && trimmed && folders.length) {
-      await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
+      // The arm is consumed exactly on SUCCESS (before the close): a failed
+      // create leaves the dialog open for a retry that still lands where it
+      // was dropped; the open-state effect discards it on cancel/teardown.
+      await runSubmit(async () => {
+        const created = await createProject({
+          dropPlacement,
+          folders,
+          idea: idea.trim() || undefined,
+          name: trimmed,
+          use: true
+        })
+
+        if (created) {
+          enterProject(created.id)
+        }
+      }, clearNewProjectDropPlacement)
     }
   }
 
@@ -162,7 +211,7 @@ export function ProjectDialog() {
             disabled={submitting}
             onChange={event => setName(event.target.value)}
             onKeyDown={event => {
-              if (event.key === 'Enter') {
+              if (isSubmitEnter(event)) {
                 event.preventDefault()
                 void submit()
               } else if (event.key === 'Escape') {

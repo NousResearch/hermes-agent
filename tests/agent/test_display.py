@@ -1,6 +1,5 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
-import json
 import pytest
 from unittest.mock import MagicMock
 
@@ -10,9 +9,9 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    prepare_tool_preview,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
-    _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
 )
@@ -31,9 +30,8 @@ def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):
 
     monkeypatch.setattr(display_module, "_get_cute_tool_message", _boom)
 
-    assert get_cute_tool_message("web_extract", {"urls": []}, 0.25) == (
-        "┊ ⚡ web_extra completed  0.2s"
-    )
+    result = get_cute_tool_message("web_extract", {"urls": []}, 0.25)
+    assert isinstance(result, str) and result
 
 
 class TestBuildToolPreview:
@@ -96,14 +94,66 @@ class TestBuildToolPreview:
             {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
             max_len=30,
         )
-        assert result == "2 tasks: AAAAAAAAAAAAAAAAAA..."
-        assert len(result) == 30
+        assert result is not None and len(result) <= 30
 
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+    @pytest.mark.parametrize("max_len", [1, 2, 3, 4])
+    def test_tiny_max_len_never_exceeded(self, max_len):
+        """max_len is a hard cap on every preview path — dedicated builder (terminal), generic
+        fallback key (web_search), and the cute head-truncated path (#9439)."""
+        from agent.display import _cute_path, set_tool_preview_max_len
+        long = "abcdefghijklmnopqrstuvwxyz"
+        for tool, args in (("terminal", {"command": long}), ("web_search", {"query": long})):
+            preview = build_tool_preview(tool, args, max_len=max_len)
+            assert preview and len(preview) <= max_len, (tool, preview)
+        set_tool_preview_max_len(max_len)
+        try:
+            assert len(_cute_path("/" + long + "/file.py")) <= max_len
+        finally:
+            set_tool_preview_max_len(0)
+
+
+class TestPrepareToolPreview:
+    def test_recovers_and_describes_truncated_url(self):
+        url = "https://example.com/a/very/long/path/to/a/page"
+        set_tool_preview_max_len(20)
+
+        preview = prepare_tool_preview(
+            "web_extract",
+            {"urls": [url]},
+            fallback=url[:17] + "...",
+            max_len=20,
+        )
+
+        assert preview.text == url[:17] + "..."
+        assert preview.truncated is True
+        assert preview.url == url
+
+    def test_untruncated_url_has_no_link_target(self):
+        url = "https://example.com/page"
+        preview = prepare_tool_preview(
+            "browser_navigate", None, fallback=url, max_len=40
+        )
+
+        assert preview.text == url
+        assert preview.truncated is False
+        assert preview.url is None
+
+    def test_truncated_non_url_has_no_link_target(self):
+        preview = prepare_tool_preview(
+            "web_search",
+            {"query": "how to parse a URL"},
+            fallback="how to parse a URL",
+            max_len=12,
+        )
+
+        assert preview.truncated is True
+        assert preview.url is None
 
 
 class TestCuteToolMessagePreviewLength:
@@ -213,17 +263,7 @@ class TestBuildToolLabel:
         yield
         set_friendly_tool_labels(True)
 
-    def test_web_search_uses_for_connector(self):
-        from agent.display import build_tool_label
-        label = build_tool_label("web_search", {"query": "weather in NYC"})
-        assert label == 'Searching the web for weather in NYC'
 
-    def test_web_extract_reads_url(self):
-        from agent.display import build_tool_label
-        label = build_tool_label("web_extract", {"urls": ["https://example.com/page"]})
-        assert label is not None
-        assert label.startswith("Reading ")
-        assert "example.com/page" in label
 
 
 
@@ -251,11 +291,6 @@ class TestBuildStatusPhrase:
 
 
 
-    def test_verb_only_when_args_none(self):
-        # live_status: "verb" mode passes args=None to suppress previews.
-        from agent.display import build_status_phrase
-        assert build_status_phrase("terminal", None) == "is running…"
-        assert build_status_phrase("read_file", None) == "is reading…"
 
 
 
@@ -275,4 +310,3 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
-

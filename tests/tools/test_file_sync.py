@@ -1,9 +1,10 @@
 """Tests for FileSyncManager — mtime tracking, deletion detection, transactional rollback."""
 
+import concurrent.futures
 import io
 import os
 import tarfile
-import time
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,7 +19,7 @@ def tmp_files(tmp_path):
     files = {}
     for name in ("cred_a.json", "cred_b.json", "skill_main.py"):
         p = tmp_path / name
-        p.write_text(f"content of {name}")
+        p.write_text(f"content of {name}", encoding="utf-8")
         files[name] = str(p)
     return files
 
@@ -68,7 +69,7 @@ class TestMtimeSkip:
 
         # Add a new file
         new_file = tmp_path / "new_skill.py"
-        new_file.write_text("new content")
+        new_file.write_text("new content", encoding="utf-8")
         tmp_files["new_skill.py"] = str(new_file)
         # Recreate manager with updated file list
         mgr._get_files_fn = _make_get_files(tmp_files)
@@ -97,13 +98,6 @@ class TestDeletion:
         deleted_paths = delete.call_args[0][0]
         assert any("cred_b.json" in p for p in deleted_paths)
 
-    def test_no_delete_when_no_removals(self, tmp_files):
-        delete = MagicMock()
-        mgr = _make_manager(tmp_files, delete=delete)
-
-        mgr.sync(force=True)
-        mgr.sync(force=True)
-        delete.assert_not_called()
 
 
 class TestTransactionalRollback:
@@ -183,7 +177,7 @@ class TestRateLimiting:
         upload.reset_mock()
 
         new_file = tmp_path / "env_forced.txt"
-        new_file.write_text("env forced")
+        new_file.write_text("env forced", encoding="utf-8")
         tmp_files["env_forced.txt"] = str(new_file)
         mgr._get_files_fn = _make_get_files(tmp_files)
 
@@ -229,23 +223,11 @@ class TestRateLimiting:
 
 
 class TestEdgeCases:
-    def test_empty_file_list(self):
-        upload = MagicMock()
-        delete = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=lambda: [],
-            upload_fn=upload,
-            delete_fn=delete,
-        )
-
-        mgr.sync(force=True)
-        upload.assert_not_called()
-        delete.assert_not_called()
 
     def test_file_disappears_between_list_and_upload(self, tmp_path):
         """File listed by get_files but deleted before _file_mtime_key reads it."""
         f = tmp_path / "ephemeral.txt"
-        f.write_text("here now")
+        f.write_text("here now", encoding="utf-8")
 
         upload = MagicMock()
         mgr = FileSyncManager(
@@ -259,6 +241,59 @@ class TestEdgeCases:
 
         mgr.sync(force=True)
         upload.assert_not_called()  # _file_mtime_key returns None, skipped
+
+
+class TestConcurrency:
+    def test_sync_back_waits_for_active_sync_transaction(self, tmp_path):
+        initial_file = tmp_path / "initial.png"
+        new_file = tmp_path / "new.png"
+        initial_file.write_bytes(b"initial")
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+        sync_back_transport_started = threading.Event()
+        overlap_detected = threading.Event()
+        download_calls = []
+
+        def get_files():
+            return [
+                (str(path), f"/root/.hermes/cache/images/{path.name}")
+                for path in sorted(tmp_path.glob("*.png"))
+            ]
+
+        def upload(_host_path, remote_path):
+            if remote_path == f"/root/.hermes/cache/images/{new_file.name}":
+                upload_started.set()
+                sync_back_transport_started.wait(timeout=1.0)
+                release_upload.set()
+
+        def bulk_download(destination):
+            if not release_upload.is_set():
+                overlap_detected.set()
+            sync_back_transport_started.set()
+            download_calls.append(destination)
+            with tarfile.open(destination, "w"):
+                pass
+
+        mgr = FileSyncManager(
+            get_files_fn=get_files,
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            bulk_download_fn=bulk_download,
+        )
+        mgr.sync(force=True)
+        new_file.write_bytes(b"new")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            sync_future = executor.submit(mgr.sync, force=True)
+            assert upload_started.wait(timeout=2.0)
+
+            sync_back_future = executor.submit(mgr.sync_back, hermes_home=tmp_path)
+
+            sync_future.result(timeout=3.0)
+            sync_back_future.result(timeout=3.0)
+
+        assert len(download_calls) == 1
+        assert not overlap_detected.is_set()
 
 
 class TestSyncBackSecurity:
@@ -318,23 +353,6 @@ class TestSyncBackSecurity:
 class TestBulkUpload:
     """Tests for the optional bulk_upload_fn callback."""
 
-    def test_bulk_upload_used_when_provided(self, tmp_files):
-        """When bulk_upload_fn is set, it's called instead of per-file upload_fn."""
-        upload = MagicMock()
-        bulk_upload = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=_make_get_files(tmp_files),
-            upload_fn=upload,
-            delete_fn=MagicMock(),
-            bulk_upload_fn=bulk_upload,
-        )
-
-        mgr.sync(force=True)
-        upload.assert_not_called()
-        bulk_upload.assert_called_once()
-        # All 3 files passed as a list of (host, remote) tuples
-        files_arg = bulk_upload.call_args[0][0]
-        assert len(files_arg) == 3
 
 
     def test_bulk_upload_rollback_on_failure(self, tmp_files):

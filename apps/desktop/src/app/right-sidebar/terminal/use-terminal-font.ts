@@ -7,7 +7,7 @@ import type { RefObject } from 'react'
 import { $terminalFontFamily, applyTerminalFontFamily, resolveTerminalFontFamily } from './terminal-font'
 
 interface TerminalFontControllerOptions {
-  fitRef: RefObject<(() => void) | null>
+  fitRef: RefObject<((visible: boolean) => void) | null>
   termRef: RefObject<Terminal | null>
   webglRef: RefObject<WebglAddon | null>
 }
@@ -38,7 +38,7 @@ export function useTerminalFontController({ fitRef, termRef, webglRef }: Termina
 
     void applyTerminalFontFamily({
       clearTextureAtlas: () => webglRef.current?.clearTextureAtlas(),
-      fit: () => fitRef.current?.(),
+      fit: () => fitRef.current?.(true),
       fontFamily,
       isCurrent: () => !cancelled && generationRef.current === generation,
       term

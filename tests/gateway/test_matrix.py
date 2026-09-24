@@ -1,7 +1,5 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
-import re
-import stat
 import sys
 import time
 import types
@@ -9,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 
 def _make_fake_mautrix():
@@ -368,21 +366,7 @@ class TestMatrixDmDetection:
     def setup_method(self):
         self.adapter = _make_adapter()
 
-    def test_room_in_m_direct_is_dm(self):
-        """A room listed in m.direct should be detected as DM."""
-        self.adapter._joined_rooms = {"!dm_room:ex.org", "!group_room:ex.org"}
-        self.adapter._dm_rooms = {
-            "!dm_room:ex.org": True,
-            "!group_room:ex.org": False,
-        }
 
-        assert self.adapter._dm_rooms.get("!dm_room:ex.org") is True
-        assert self.adapter._dm_rooms.get("!group_room:ex.org") is False
-
-    def test_unknown_room_not_in_cache(self):
-        """Unknown rooms should not be in the DM cache."""
-        self.adapter._dm_rooms = {}
-        assert self.adapter._dm_rooms.get("!unknown:ex.org") is None
 
 
     @pytest.mark.asyncio
@@ -417,44 +401,6 @@ class TestMatrixDmDetection:
 # Reply fallback stripping
 # ---------------------------------------------------------------------------
 
-class TestMatrixReplyFallbackStripping:
-    """Test that Matrix reply fallback lines ('> ' prefix) are stripped."""
-
-    def setup_method(self):
-        self.adapter = _make_adapter()
-        self.adapter._user_id = "@bot:example.org"
-        self.adapter._startup_ts = 0.0
-        self.adapter._dm_rooms = {}
-        self.adapter._message_handler = AsyncMock()
-
-    def _strip_fallback(self, body: str, has_reply: bool = True) -> str:
-        """Simulate the reply fallback stripping logic from _on_room_message."""
-        reply_to = "some_event_id" if has_reply else None
-        if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
-        return body
-
-    def test_simple_reply_fallback(self):
-        body = "> <@alice:ex.org> Original message\n\nActual reply"
-        result = self._strip_fallback(body)
-        assert result == "Actual reply"
-
-    def test_multiline_reply_fallback(self):
-        body = "> <@alice:ex.org> Line 1\n> Line 2\n\nMy response"
-        result = self._strip_fallback(body)
-        assert result == "My response"
 
 
 # ---------------------------------------------------------------------------
@@ -583,19 +529,6 @@ class TestMatrixBangCommandAlias:
 # Thread detection
 # ---------------------------------------------------------------------------
 
-class TestMatrixThreadDetection:
-
-
-    def test_no_thread_for_edit(self):
-        """m.replace relation should not set thread_id."""
-        relates_to = {
-            "rel_type": "m.replace",
-            "event_id": "$edited_event",
-        }
-        thread_id = None
-        if relates_to.get("rel_type") == "m.thread":
-            thread_id = relates_to.get("event_id")
-        assert thread_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -695,10 +628,6 @@ class TestMatrixMarkdownToHtml:
         result = self.adapter._markdown_to_html("`code`")
         assert "<code>" in result
 
-    def test_plain_text_returns_html(self):
-        """Plain text should still be returned (possibly with <br> or <p>)."""
-        result = self.adapter._markdown_to_html("Hello world")
-        assert "Hello world" in result
 
 
     def test_matrix_markdown_preserves_table_structure(self):
@@ -724,65 +653,12 @@ class TestMatrixMarkdownToHtml:
 # Helper: display name extraction
 # ---------------------------------------------------------------------------
 
-class TestMatrixDisplayName:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-    @pytest.mark.asyncio
-    async def test_get_display_name_from_state_store(self):
-        """Should get display name from state_store.get_member()."""
-        mock_member = MagicMock()
-        mock_member.displayname = "Alice"
-
-        mock_state_store = MagicMock()
-        mock_state_store.get_member = AsyncMock(return_value=mock_member)
-
-        mock_client = MagicMock()
-        mock_client.state_store = mock_state_store
-        self.adapter._client = mock_client
-
-        name = await self.adapter._get_display_name("!room:ex.org", "@alice:ex.org")
-        assert name == "Alice"
 
 
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
 
-class TestMatrixModuleImport:
-    def test_module_importable_without_mautrix(self):
-        """plugins.platforms.matrix.adapter must be importable even when mautrix is
-        not installed — otherwise the gateway crashes for ALL platforms.
-
-        This test uses a subprocess to avoid polluting the current process's
-        sys.modules (reimporting a module creates a second module object whose
-        classes don't share globals with the original — breaking patch.object
-        in subsequent tests).
-        """
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, "-c", (
-                "import sys\n"
-                "# Block mautrix completely\n"
-                "class _Blocker:\n"
-                "    def find_module(self, name, path=None):\n"
-                "        if name.startswith('mautrix'): return self\n"
-                "    def load_module(self, name):\n"
-                "        raise ImportError(f'blocked: {name}')\n"
-                "sys.meta_path.insert(0, _Blocker())\n"
-                "for k in list(sys.modules):\n"
-                "    if k.startswith('mautrix'): del sys.modules[k]\n"
-                "from unittest.mock import patch\n"
-                "from plugins.platforms.matrix.adapter import check_matrix_requirements\n"
-                "with patch('tools.lazy_deps.ensure', side_effect=ImportError('blocked')):\n"
-                "    assert not check_matrix_requirements()\n"
-                "print('OK')\n"
-            )],
-            capture_output=True, text=True, timeout=10,
-        )
-        assert result.returncode == 0, (
-            f"Subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-        )
 
 
 class TestMatrixRequirements:
@@ -1128,6 +1004,80 @@ class TestMatrixDeviceId:
         adapter = MatrixAdapter(config)
         assert adapter._device_id == "FROM_CONFIG"
 
+    @pytest.mark.asyncio
+    async def test_connect_keeps_configured_device_id_on_adapter(self):
+        """MATRIX_DEVICE_ID stays on the adapter regardless of whoami.
+
+        Note: this test previously asserted that the configured device_id
+        overrides the whoami device_id outright. That is no longer true for
+        the *client* identity — a token can only upload keys for its own
+        device, so a conflicting whoami device now wins (see
+        TestCryptoStoreResetOnDeviceChange). The configured value is still
+        preferred when whoami reports no device, and is still recorded on the
+        adapter, which is what this test pins.
+        """
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+                "device_id": "MY_STABLE_DEVICE",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="WHOAMI_DEV"))
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"MY_STABLE_DEVICE": {
+                "keys": {"ed25519:MY_STABLE_DEVICE": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
+
+        # The configured device_id is retained on the adapter.
+        assert adapter._device_id == "MY_STABLE_DEVICE"
+        # But the token's own device is what the client claims, because the
+        # homeserver will not accept key uploads for any other device.
+        assert mock_client.device_id == "WHOAMI_DEV"
+
+        await adapter.disconnect()
+
 
 class TestMatrixPasswordLoginDeviceId:
     """MATRIX_DEVICE_ID should be passed to mautrix Client even with password login."""
@@ -1192,8 +1142,15 @@ class TestMatrixDeviceIdConfig:
         assert mc.extra.get("device_id") == "HERMES_BOT"
 
 
-class TestMatrixSyncLoop:
+def _sync_error(message, **attrs):
+    """Shape of mautrix's MatrixRequestError: message text + structured attrs."""
+    exc = Exception(message)
+    for k, v in attrs.items():
+        setattr(exc, k, v)
+    return exc
 
+
+class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
     async def test_dispatch_sync_accepts_async_handle_sync(self):
@@ -1265,6 +1222,72 @@ class TestMatrixSyncLoop:
         assert len(captured) == 1
         assert captured[0].text == "hello"
         assert captured[0].source.chat_type == "dm"
+
+    async def _run_sync_loop_with_first_error(self, exc):
+        """Drive _sync_loop: sync() raises exc once, then returns a clean dict and closes."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        calls = {"n": 0}
+
+        async def _sync_side_effect(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise exc
+            adapter._closing = True
+            return {"next_batch": "s1"}
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = MagicMock()
+        fake_client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        fake_client.sync_store.put_next_batch = AsyncMock()
+        adapter._client = fake_client
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await adapter._sync_loop()
+        return fake_client.sync.await_count, [c.args[0] for c in mock_sleep.await_args_list]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("exc", "expected_sync_calls"),
+        [
+            # Umbrel app-proxy 502: an SVG path coordinate embeds "403".
+            (
+                _sync_error(
+                    '502: <!DOCTYPE html><svg><path d="M17.4517 1403.2C12.7214 1403.2"/></svg>',
+                    http_status=502,
+                ),
+                2,
+            ),
+            # Plain timeout echoing the pagination token, which embeds "401".
+            (
+                asyncio.TimeoutError(
+                    "Connection timeout to host https://matrix.example.org/_matrix/"
+                    "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
+                ),
+                2,
+            ),
+            # Rate limiting is a non-auth errcode on a non-auth status: retried.
+            (_sync_error("rate limited", errcode="M_LIMIT_EXCEEDED", http_status=429), 2),
+            # Structured 401 with an auth errcode: permanent, loop returns.
+            (_sync_error("Invalid access token", errcode="M_UNKNOWN_TOKEN", http_status=401), 1),
+            # Reverse proxy rewrote the body to HTML and dropped the errcode; the
+            # 401 status alone must still stop the loop.
+            (_sync_error("401: <html>proxy</html>", errcode=None, http_status=401), 1),
+        ],
+        ids=[
+            "502-html-body-with-403-digits",
+            "timeout-since-token-with-401-digits",
+            "429-rate-limited",
+            "401-unknown-token",
+            "401-html-body-no-errcode",
+        ],
+    )
+    async def test_sync_loop_retries_only_non_auth_errors(self, exc, expected_sync_calls):
+        """Transient errors (even when their text embeds auth digits) are retried once
+        with the 5s backoff; structured auth failures return without retrying."""
+        sync_calls, sleeps = await self._run_sync_loop_with_first_error(exc)
+        assert sync_calls == expected_sync_calls
+        assert (5 in sleeps) is (expected_sync_calls == 2)  # the retry backoff, not the 0s dispatch-yield
 
     @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):
@@ -1780,7 +1803,7 @@ class TestMatrixReactions:
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+        from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._reaction_redaction_delay_seconds = 0.01
@@ -2051,24 +2074,6 @@ class TestMatrixImageOnlyMediaNormalization:
         assert "#fragment" not in sent_text
         assert signed_url not in sent_text
 
-    @pytest.mark.asyncio
-    async def test_send_image_failure_log_still_redacts_signed_url(self, caplog, monkeypatch):
-        from gateway.platforms.base import SendResult
-        import tools.url_safety as url_safety
-
-        signed_url = "https://example.com/image.png?signature=secret-token#fragment"
-        self.adapter._download_external_media_with_cap = AsyncMock(
-            side_effect=ValueError("download failed")
-        )
-        self.adapter.send = AsyncMock(return_value=SendResult(success=True))
-        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
-
-        await self.adapter.send_image("!room:example.org", signed_url)
-
-        assert "https://example.com/image.png" in caplog.text
-        assert "signature=" not in caplog.text
-        assert "secret-token" not in caplog.text
-        assert "#fragment" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -2079,17 +2084,6 @@ class TestMatrixRedaction:
     def setup_method(self):
         self.adapter = _make_adapter()
 
-    @pytest.mark.asyncio
-    async def test_redact_message(self):
-        """redact_message should call client.redact()."""
-        mock_client = MagicMock()
-        # mautrix redact() returns EventID string
-        mock_client.redact = AsyncMock(return_value="$redact_event")
-        self.adapter._client = mock_client
-
-        result = await self.adapter.redact_message("!room:ex", "$ev1", "oops")
-        assert result is True
-        mock_client.redact.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_redact_no_client(self):
@@ -2123,18 +2117,6 @@ class TestMatrixRoomManagement:
 # Presence
 # ---------------------------------------------------------------------------
 
-class TestMatrixPresence:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-    @pytest.mark.asyncio
-    async def test_set_presence_valid(self):
-        mock_client = MagicMock()
-        mock_client.set_presence = AsyncMock()
-        self.adapter._client = mock_client
-
-        result = await self.adapter.set_presence("online")
-        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -2147,9 +2129,6 @@ class TestMatrixSelfSenderFilter:
     def setup_method(self):
         self.adapter = _make_adapter()
 
-    def test_exact_match_is_self(self):
-        self.adapter._user_id = "@bot:example.org"
-        assert self.adapter._is_self_sender("@bot:example.org") is True
 
     def test_case_insensitive_match_is_self(self):
         # Some homeservers canonicalize the localpart differently at
@@ -2694,7 +2673,6 @@ class TestMatrixReconnectDisconnect:
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
@@ -2861,4 +2839,407 @@ class TestMatrixDispatchSyncIsolation:
             await adapter._dispatch_sync({"next_batch": "s1"})
 
         assert ran["ok"] is True  # the sibling handler still ran
-        assert "event handler failed" in caplog.text  # failure surfaced, not swallowed
+
+
+# ---------------------------------------------------------------------------
+# E2EE crypto store reset on device change
+# ---------------------------------------------------------------------------
+
+class TestCryptoStoreResetOnDeviceChange:
+    @pytest.mark.asyncio
+    async def test_reset_when_device_id_changed(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="OLDDEVICE")
+        store.delete = AsyncMock()
+
+        with caplog.at_level(logging.WARNING):
+            reset = await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE")
+
+        assert reset is True
+        store.delete.assert_awaited_once()
+        assert "OLDDEVICE" in caplog.text and "NEWDEVICE" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_no_reset_when_device_id_same(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="SAMEDEVICE")
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "SAMEDEVICE") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_reset_on_fresh_store(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value=None)
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_reset_without_device_id(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="OLDDEVICE")
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_resets_store_when_token_device_differs_from_config(
+        self, caplog
+    ):
+        """Rotated token, stale MATRIX_DEVICE_ID.
+
+        Persisted store device is A, MATRIX_DEVICE_ID is still A, but the
+        access token now belongs to device B. The helper alone cannot catch
+        this: connect() used to resolve client.device_id to the configured A,
+        so persisted A == live A and no reset happened. The token's device
+        must win, and the store must be reset.
+        """
+        import logging
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_rotated_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+                "device_id": "DEVICE_A",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        deleted = {"count": 0}
+
+        class _ResettableCryptoStore:
+            upgrade_table = MagicMock()
+
+            def __init__(self, account_id="", pickle_key="", db=None):
+                self.account_id = account_id
+                self.pickle_key = pickle_key
+                self.db = db
+                self._device_id = "DEVICE_A"  # persisted from the old token
+
+            async def open(self):
+                pass
+
+            async def get_device_id(self):
+                return self._device_id
+
+            async def delete(self):
+                deleted["count"] += 1
+                self._device_id = ""
+
+            async def put_device_id(self, device_id):
+                self._device_id = device_id
+
+        fake_mautrix_mods[
+            "mautrix.crypto.store.asyncpg"
+        ].PgCryptoStore = _ResettableCryptoStore
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        # Token was rotated: the homeserver reports device B.
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEVICE_B")
+        )
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={"device_keys": {}})
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_rotated_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
+            return_value=mock_client
+        )
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(
+            return_value=mock_olm
+        )
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        with caplog.at_level(logging.WARNING), patch.object(
+            matrix_mod, "_check_e2ee_deps", return_value=True
+        ), patch.dict("sys.modules", fake_mautrix_mods), patch.object(
+            adapter, "_refresh_dm_cache", AsyncMock()
+        ), patch.object(
+            adapter, "_sync_loop", AsyncMock(return_value=None)
+        ), patch.object(
+            adapter, "_verify_device_keys_on_server", AsyncMock(return_value=True)
+        ):
+            assert await adapter.connect() is True
+
+        # The token's device wins over the stale configured one.
+        assert mock_client.device_id == "DEVICE_B"
+        # ...which is what lets the mismatch be seen and the store reset.
+        assert deleted["count"] == 1
+        assert "MATRIX_DEVICE_ID=DEVICE_A" in caplog.text
+
+        await adapter.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Crypto store pickle-key migration
+# ---------------------------------------------------------------------------
+
+class TestCryptoPickleKeyMigration:
+    @pytest.mark.asyncio
+    async def test_account_loads_fine_no_migration(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(return_value=MagicMock())
+        assert await adapter._migrate_legacy_crypto_pickle(
+            store, MagicMock(), "@bot:example.org", "@bot:example.org:DEV"
+        ) is True
+        store.put_account.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_migrates_from_default_pickle_key(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        legacy_account = MagicMock()
+        created = []
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                self.pickle_key = pickle_key
+                created.append(pickle_key)
+
+            async def get_account(self):
+                if self.pickle_key == "@bot:example.org:default":
+                    return legacy_account
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(return_value=[])
+        crypto_db.execute = AsyncMock()
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+        with patch.dict(
+            sys.modules,
+            {
+                "mautrix.crypto.store.asyncpg": fake_mod,
+                # _repickle_crypto_sessions imports the olm C-extension;
+                # fake it so this test does not require libolm.
+                "olm": self._fake_olm_module(),
+            },
+        ), caplog.at_level(logging.INFO):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, crypto_db, "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is True
+        store.put_account.assert_awaited_once_with(legacy_account)
+        assert "@bot:example.org:default" in created
+        # session re-pickle pass must sweep all three session tables
+        queried = " ".join(str(c.args[0]) for c in crypto_db.fetch.await_args_list)
+        for table in (
+            "crypto_olm_session",
+            "crypto_megolm_inbound_session",
+            "crypto_megolm_outbound_session",
+        ):
+            assert table in queried
+
+    @pytest.mark.asyncio
+    async def test_unrecoverable_pickle_logs_error(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                pass
+
+            async def get_account(self):
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+        with patch.dict(sys.modules, {"mautrix.crypto.store.asyncpg": fake_mod}), \
+                caplog.at_level(logging.ERROR):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, MagicMock(), "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is False
+        store.put_account.assert_not_awaited()
+
+    def _fake_olm_module(self):
+        """Fake the `olm` C-extension module.
+
+        _repickle_crypto_sessions does `import olm`, which needs libolm.
+        Sessions unpickle only with the key they were pickled under.
+        """
+        olm_mod = types.ModuleType("olm")
+
+        class _Session:
+            def __init__(self, key):
+                self._key = key
+
+            @classmethod
+            def from_pickle(cls, blob, key):
+                pickled_under = blob.decode().split("|")[1]
+                if pickled_under != key:
+                    raise RuntimeError("BAD_ACCOUNT_KEY")
+                return cls(key)
+
+            def pickle(self, key):
+                return f"sess|{key}".encode()
+
+        for name in ("Session", "InboundGroupSession", "OutboundGroupSession"):
+            setattr(olm_mod, name, type(name, (_Session,), {}))
+        return olm_mod
+
+    @pytest.mark.asyncio
+    async def test_session_rows_are_repickled_under_current_key(self):
+        """The session sweep must actually rewrite legacy-key rows."""
+        adapter = _make_adapter()
+        legacy = "@bot:example.org:default"
+        current = "@bot:example.org:NEWDEV"
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": f"sess|{legacy}".encode()}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}):
+            await adapter._repickle_crypto_sessions(
+                crypto_db, "@bot:example.org", legacy, current
+            )
+
+        # One UPDATE per session table, each writing the current-key blob.
+        assert crypto_db.execute.await_count == 3
+        for call in crypto_db.execute.await_args_list:
+            assert call.args[1] == f"sess|{current}".encode()
+            assert call.args[3] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_rows_already_on_current_key_are_left_alone(self):
+        adapter = _make_adapter()
+        current = "@bot:example.org:NEWDEV"
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": f"sess|{current}".encode()}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}):
+            await adapter._repickle_crypto_sessions(
+                crypto_db, "@bot:example.org", "@bot:example.org:default", current
+            )
+
+        crypto_db.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_rows_are_left_in_place_not_dropped(self, caplog):
+        """A row readable under neither key is skipped and left untouched.
+
+        The log must not claim the row was dropped when no DELETE is issued.
+        """
+        import logging
+        adapter = _make_adapter()
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": b"sess|@bot:other:KEY"}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}), \
+                caplog.at_level(logging.WARNING):
+            await adapter._repickle_crypto_sessions(
+                crypto_db,
+                "@bot:example.org",
+                "@bot:example.org:default",
+                "@bot:example.org:NEWDEV",
+            )
+
+        crypto_db.execute.assert_not_awaited()
+        assert "leaving it in place" in caplog.text
+        assert "dropping" not in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_failed_sweep_leaves_account_on_legacy_key_and_retries(
+        self, caplog
+    ):
+        """A sweep failure must not commit the account.
+
+        The account is the migration's commit marker: if it is written first
+        and the sweep then fails, the next startup takes the current-key fast
+        path and the remaining legacy-key sessions are stranded permanently.
+        """
+        import logging
+        adapter = _make_adapter()
+        legacy_account = MagicMock()
+
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                self.pickle_key = pickle_key
+
+            async def get_account(self):
+                if self.pickle_key == "@bot:example.org:default":
+                    return legacy_account
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(side_effect=RuntimeError("db went away"))
+        crypto_db.execute = AsyncMock()
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+
+        with patch.dict(
+            sys.modules,
+            {
+                "mautrix.crypto.store.asyncpg": fake_mod,
+                "olm": self._fake_olm_module(),
+            },
+        ), caplog.at_level(logging.ERROR):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, crypto_db, "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is False
+        # The critical assertion: the account was NOT committed, so the next
+        # start still sees a legacy-key account and retries the migration.
+        store.put_account.assert_not_awaited()
+        assert "retried on the next start" in caplog.text

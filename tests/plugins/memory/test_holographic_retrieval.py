@@ -95,3 +95,33 @@ def test_prefetch_recovers_prose_query(retriever_with_facts):
     assert "deployment rollback" in results[0]["content"].lower()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Loop-invariant encode hoists (perf) — search/probe/related must encode
+# constant vectors ONCE per call, not once per candidate/row.
+# encode_text/encode_atom are deterministic (SHA-256 counter blocks), so the
+# hoisted vectors are bit-identical to the per-iteration values they replace.
+# ---------------------------------------------------------------------------
+
+from plugins.memory.holographic import holographic as hrr
+
+
+def test_encode_functions_are_deterministic():
+    """Soundness premise of the hoists: same input -> identical vector."""
+    import numpy as np
+
+    assert np.array_equal(hrr.encode_text("deploy target", 1024),
+                          hrr.encode_text("deploy target", 1024))
+    assert np.array_equal(hrr.encode_atom("__hrr_role_content__", 1024),
+                          hrr.encode_atom("__hrr_role_content__", 1024))
+
+
+
+
+
+
+
+
+
+

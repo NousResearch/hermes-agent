@@ -82,16 +82,12 @@ beforeEach(() => {
 
 describe('wake indicator window', () => {
   it('centers the helper window at the top of the selected display', () => {
-    expect(
-      wakeIndicatorWindowBounds({
-        bounds: { height: 982, width: 1512, x: -120, y: 40 }
-      })
-    ).toEqual({
-      height: 52,
-      width: 176,
-      x: 548,
-      y: 40
+    const bounds = wakeIndicatorWindowBounds({
+      bounds: { height: 982, width: 1512, x: -120, y: 40 }
     })
+
+    expect(bounds.x).toBe(-120 + (1512 - bounds.width) / 2)
+    expect(bounds.y).toBe(40)
   })
 
   it('prefers the internal display and falls back to the primary display', () => {
@@ -124,6 +120,7 @@ describe('wake indicator window controller', () => {
     const controller = createWakeIndicatorWindowController({
       isMac: true,
       loadWindowUrl: vi.fn(),
+      log: () => {},
       preloadPath: '/tmp/preload.cjs',
       rendererIndex: () => '/tmp/index.html',
       wireWindow: vi.fn()

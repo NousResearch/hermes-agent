@@ -88,6 +88,22 @@ describe('one label per reference, on every surface', () => {
     }
   })
 
+  it('an agent mention inserts as plain @name text, never an @simple: chip', () => {
+    // Rows exactly as complete.path emits profile mentions (colon-less text).
+    const item = backendRow('@mr-tester', '@mr-tester', 'agent profile')
+
+    expect(hermesDirectiveFormatter.serialize(item)).toBe('@mr-tester')
+
+    const { editor, result } = typed('@mr-')
+
+    act(() => result.current.replaceTriggerWithChip(item))
+
+    const plain = composerPlainText(editor)
+
+    expect(plain).toContain('@mr-tester')
+    expect(plain).not.toContain('@simple:')
+  })
+
   it('a folder pick reads as its path, not a bare basename', () => {
     // `src` and `desktop` repeat all over a repo — the row you picked said
     // where it was, and the chip has to keep saying it.

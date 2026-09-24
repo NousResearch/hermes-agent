@@ -14,6 +14,8 @@ without any external IDP.  Exercises:
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from fastapi.testclient import TestClient
@@ -48,6 +50,32 @@ def gated_app():
 # ---------------------------------------------------------------------------
 # Allowlist (public) routes
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "next_value",
+    [
+        "<script>alert(1)</script>",
+        "javascript:alert(1)",
+        "../../etc/passwd",
+        "canary\r\nSet-Cookie: injected=1",
+    ],
+)
+def test_empty_provider_login_page_is_safe_through_real_route(
+    gated_app, next_value
+):
+    clear_providers()
+
+    response = gated_app.get("/login", params={"next": next_value})
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "no-store" in response.headers["cache-control"]
+    assert "Sign-in unavailable" in response.text
+    assert "username/password provider" in response.text
+    assert "OAuth provider" in response.text
+    assert "--insecure" not in response.text
+    assert next_value not in response.text
 
 
 def test_gated_status_is_public(gated_app):
@@ -229,6 +257,38 @@ def test_invalid_cookie_returns_401_on_api(gated_app):
     gated_app.cookies.set(SESSION_AT_COOKIE, "garbage-not-a-real-token")
     r = gated_app.get("/api/sessions")
     assert r.status_code == 401
+
+
+def test_bearer_401_audits_client_facing_reason(gated_app, tmp_path):
+    """A rejected app bearer is a 401 the operator can see in the audit log.
+
+    The reason written to disk is the same reason returned to the client.
+    The bearer value itself must not appear in the log.
+    """
+    bearer = "stale-app-bearer-do-not-log"
+    response = gated_app.post(
+        "/api/auth/ws-ticket",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    assert response.status_code == 401
+    body = response.json()
+    assert body["reason"] == "invalid_or_expired_session"
+
+    log_path = tmp_path / "hermes_test" / "logs" / "dashboard-auth.log"
+    raw = log_path.read_text(encoding="utf-8")
+    assert bearer not in raw
+    rejected = [
+        event
+        for line in raw.splitlines()
+        if line.strip()
+        for event in [json.loads(line)]
+        if event.get("event") == "session_rejected"
+    ]
+    assert rejected, raw
+    latest = rejected[-1]
+    assert latest["reason"] == body["reason"]
+    assert latest["path"] == "/api/auth/ws-ticket"
+    assert latest.get("ip")
 
 
 

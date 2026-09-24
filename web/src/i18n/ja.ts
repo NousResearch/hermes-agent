@@ -165,6 +165,10 @@ export const ja: Translations = {
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
     newChat: "新しいチャット",
+    workspace: "ワークスペース",
+    workspaceDefault: "デフォルト",
+    workspaceRescan: "リポジトリを再スキャン",
+    workspaceCustom: "別のパス…",
     previousPage: "前のページ",
     nextPage: "次のページ",
     roles: {
@@ -323,6 +327,8 @@ export const ja: Translations = {
     disableRuntime: "無効化",
     enableAfterInstall: "インストール後に有効化",
     enableRuntime: "有効化",
+    toggleTakesEffectAfterRestart:
+      "保存しました — 変更を適用するにはゲートウェイを再起動してください。",
     forceReinstall: "強制再インストール (既存のフォルダを先に削除)",
     headline:
       "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",
@@ -468,6 +474,8 @@ export const ja: Translations = {
     copyCliCommand: "CLI コマンドをコピー (外部 / フォールバック用)",
     connect: "接続",
     sessionExpires: "セッションは {time} 後に期限切れになります",
+    sessionExpiredNoError:
+      "プロバイダーに到達しないままサインインの有効期限が切れました。多くの場合、開いたタブでサインインページが止まっている（サーバー側の問題）ことが原因です。そのタブでサインインを完了してから「再試行」をクリックしてください。それでも失敗する場合は、API キーまたは CLI をご利用ください。",
     initiatingLogin: "ログインフローを開始しています…",
     exchangingCode: "コードをトークンと交換しています…",
     connectedClosing: "接続しました！閉じています…",
@@ -617,6 +625,12 @@ export const ja: Translations = {
       "ボードを使うと、関連のない作業の流れを分けられます — プロジェクト、リポジトリ、ドメインごとに 1 つずつ。あるボードのワーカーは、別のボードのタスクを見ることはありません。",
     slug: "スラッグ",
     slugHint: "— 小文字とハイフン、例: atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "表示名",
     displayNameHint: "（任意）",
     description: "説明",

@@ -324,16 +324,21 @@ class GitHubSource(SkillSource):
         silently dropped support files under non-canonical dirs (``reference/``, ``agents/``, root
         LICENSE); everything still goes through quarantine + scan, and the scanner sees MORE this way.
         Returns None (bundle rejected) on an unsafe path or a SKILL.md-linked path that exists in the
-        tree as a symlink/non-blob — that shape is an escape attempt. A linked path that is simply absent
-        is a dangling link (repo-only dev tool, prose over-match): warn and install without it. Returns
-        False when a blob fetch failed (installed with a gap the next update check must be able to fill).
-        An empty ``skill_path`` is the repo-root skill layout, so the whole repo root is its directory."""
+        tree as a symlink/non-blob — that shape is an escape attempt. A linked path that is a tree
+        directory is prose (``scripts/lib``); its children are already fetched, so it is warned and
+        skipped. A linked path that is simply absent is a dangling link (repo-only dev tool, prose
+        over-match): warn and install without it. Returns False when a blob fetch failed (installed with
+        a gap the next update check must be able to fill). An empty ``skill_path`` is the repo-root
+        skill layout, so the whole repo root is its directory."""
         prefix = f"{skill_path}/" if skill_path else ""
         symlinked: set = set()
+        directories = {item.get("path", "")[len(prefix):] for item in entries
+                       if item.get("path", "").startswith(prefix) and item.get("type") == "tree"}
         complete = True
         for rel_path, item_path, regular in _tree_members(entries, prefix):
             if not regular:
-                symlinked.add(rel_path)
+                if rel_path not in directories:
+                    symlinked.add(rel_path)
                 continue
             if rel_path == "SKILL.md" or _skip_bundle_file(rel_path):
                 continue
@@ -344,15 +349,21 @@ class GitHubSource(SkillSource):
                 return None
             complete &= self._add_support_file(repo, item_path, rel_path, files, item_path, ref=ref)
         for rel_path in sorted(referenced):
-            # A SKILL.md-linked support path that isn't in the tree is a dangling link — a repo-only dev
-            # tool, prose over-match, or a file the author forgot to push. Warn and install without it
-            # rather than aborting the whole install (#66760/#90081): the skill body still works, and the
-            # gap is visible in the log. A referenced path that IS in the tree but as a symlink (or any
-            # non-regular entry) stays a hard rejection — that shape is an escape attempt, not a forgotten
-            # file.
+            # A SKILL.md-linked support path that isn't in the tree is a dangling link: a repo-only
+            # dev tool, prose over-match, or a file the author forgot to push. Warn and install
+            # without it rather than aborting the whole install (#66760/#90081). A referenced path
+            # that IS in the tree as a symlink (mode 120000) or other non-blob stays a hard
+            # rejection: that shape is an escape attempt. A referenced tree directory is prose
+            # (``scripts/lib`` / ``scripts/lib/``); its children are already fetched, so warn and
+            # skip the directory path itself (#85172).
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
                 return None
+            if rel_path in directories:
+                logger.warning(
+                    "Referenced skill support path is a directory; continuing without it: %s%s",
+                    prefix, rel_path)
+                continue
             if rel_path not in files:
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)

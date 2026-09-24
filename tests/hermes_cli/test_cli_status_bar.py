@@ -140,11 +140,26 @@ class TestCLIStatusBar:
             "❯ ", 80, max_height=cli_mod._composer_max_lines(config),
         ) == 9
 
-    def test_composer_max_lines_rejects_invalid_or_excessive_values(self):
+    def test_composer_max_lines_rejects_invalid_or_excessive_values(self, caplog):
+        import logging
+
+        caplog.set_level(logging.WARNING, logger="cli")
         assert cli_mod._composer_max_lines({"display": {}}) == 8
+        assert not caplog.records
+
+        assert cli_mod._composer_max_lines({"display": {"composer_max_lines": 12}}) == 12
+        assert not caplog.records
+
         assert cli_mod._composer_max_lines({"display": {"composer_max_lines": 0}}) == 1
         assert cli_mod._composer_max_lines({"display": {"composer_max_lines": 99}}) == 50
+        assert [record.getMessage() for record in caplog.records] == [
+            "display.composer_max_lines=0 is outside the supported range 1-50; using 1",
+            "display.composer_max_lines=99 is outside the supported range 1-50; using 50",
+        ]
+
+        caplog.clear()
         assert cli_mod._composer_max_lines({"display": {"composer_max_lines": True}}) == 8
+        assert not caplog.records
 
 
 

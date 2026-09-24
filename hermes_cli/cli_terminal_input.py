@@ -575,7 +575,14 @@ def _composer_max_lines(config: Optional[Dict[str, Any]] = None) -> int:
     value = display.get("composer_max_lines", 8) if isinstance(display, dict) else 8
     if isinstance(value, bool):
         return 8
-    return min(max(_int_or(value, 8), 1), 50)
+    parsed = _int_or(value, 8)
+    effective = min(max(parsed, 1), 50)
+    if effective != parsed:
+        logger.warning(
+            "display.composer_max_lines=%r is outside the supported range 1-50; using %s",
+            value, effective,
+        )
+    return effective
 
 
 def _status_bar_visible_from_display_config(display_config: object) -> bool:

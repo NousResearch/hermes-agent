@@ -288,16 +288,14 @@ def _continuation_overlap_length(previous: str, continuation: str) -> int:
     return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
 
 
-def _join_truncated_parts(parts: List[str | tuple[str, bool]]) -> str:
+def _join_truncated_parts(parts: List[tuple[str, bool]]) -> str:
     """Join continuation fragments, deduping only interrupted-stream seams."""
     joined = ""
     previous_was_partial_stub = False
-    for fragment in parts:
-        part, is_partial_stub = (
-            fragment if isinstance(fragment, tuple) else (fragment, False)
-        )
+    for part, is_partial_stub in parts:
         if previous_was_partial_stub and joined and part:
-            part = part[_continuation_overlap_length(joined, part):]
+            # Overlap can't exceed len(part): scan only that tail of ``joined``.
+            part = part[_continuation_overlap_length(joined[-len(part):], part):]
         if joined and not joined[-1].isspace() and part and not part[0].isspace():
             joined += "\n"
         joined += part

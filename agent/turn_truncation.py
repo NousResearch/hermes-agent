@@ -131,7 +131,7 @@ class TruncationVerdict:
     result: Optional[Dict[str, Any]]
     messages: List[Dict[str, Any]]
     length_continue_retries: int
-    truncated_response_parts: List[Any]
+    truncated_response_parts: List[Tuple[str, bool]]
     truncated_tool_call_retries: int
     retry_count: int
     compression_attempts: int
@@ -360,7 +360,7 @@ def recover_from_truncation(
     agent: Any, response: Any, finish_reason: str, _retry: TurnRetryState, *,
     messages: List[Dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
-    truncated_response_parts: List[Any], truncated_tool_call_retries: int, retry_count: int,
+    truncated_response_parts: List[Tuple[str, bool]], truncated_tool_call_retries: int, retry_count: int,
     compression_attempts: int,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and

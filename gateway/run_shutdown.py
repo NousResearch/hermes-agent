@@ -944,10 +944,9 @@ class GatewayShutdownMixin:
                 with _log_suppressed(logging.DEBUG, "Cron interrupt notice to %s:%s raised: %s", platform.value, chat_id):
                     metadata = self._thread_metadata_for_target(platform, chat_id, thread_id, adapter=adapter)
                     async def send_notice():
-                        from gateway.run import _interim_metadata  # races live turns too (#98432)
                         if await self._send_notice_logged(
                             adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
-                            "Cron interrupt notice to %s:%s raised: %s", metadata=_interim_metadata(metadata),
+                            "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
                         ):
                             notified.add(dedup_key)
                     from gateway.warning_notifications import present_notification
@@ -994,7 +993,10 @@ class GatewayShutdownMixin:
         adapter, chat_id: str, msg: str, platform_str: str, fail_fmt: str, raise_fmt: Optional[str] = None, **kw
     ) -> bool:
         """``adapter.send`` whose failure is debug-logged as ``fmt % (platform, chat, error)`` — ``fail_fmt``
-        for success=False, ``raise_fmt`` (default ``fail_fmt``) for a raise; True only on a delivered send."""
+        for success=False, ``raise_fmt`` (default ``fail_fmt``) for a raise; True only on a delivered send.
+        Every shutdown notice races live turns, so it always carries the interim marker (#98432)."""
+        from gateway.run import _interim_metadata
+        kw["metadata"] = _interim_metadata(kw.get("metadata"))
         try:
             result = await adapter.send(chat_id, msg, **kw)
         except Exception as e:
@@ -1062,11 +1064,8 @@ class GatewayShutdownMixin:
             # requested outcome of that command and is never suppressed.
             async def _send_active(adapter=adapter, chat_id=chat_id, platform_str=platform_str,
                                    metadata=metadata, dedup_key=dedup_key):
-                # Fires while a turn may still be streaming: the interim marker keeps a
-                # stream-is-the-message adapter from sealing the in-flight answer (#98432).
-                from gateway.run import _interim_metadata
                 if await self._send_shutdown_notice(
-                    adapter, chat_id, msg, "active chat", platform_str, metadata=_interim_metadata(metadata)
+                    adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
                 ):
                     notified.add(dedup_key)
             from gateway.warning_notifications import present_notification
@@ -1107,12 +1106,9 @@ class GatewayShutdownMixin:
                     "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
                 )
                 continue
-            # The broadcast races live turns too, so it always carries the interim marker (#98432).
             async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
-                from gateway.run import _interim_metadata
                 if await self._send_shutdown_notice(
-                    adapter, str(home.chat_id), msg, "home channel", platform.value,
-                    metadata=_interim_metadata(metadata),
+                    adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
                 ):
                     notified.add(dedup_key)
             from gateway.warning_notifications import present_notification

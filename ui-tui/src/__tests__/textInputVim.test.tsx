@@ -161,4 +161,60 @@ describe('TextInput Vim integration', () => {
     view.unmount()
     view.cleanup()
   })
+
+  it('keeps a normal-mode Right Arrow on the current line', async () => {
+    const stdin = new FakeInput()
+    const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+    const stderr = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+
+    const view = renderSync(
+      <TextInput columns={80} onChange={() => {}} value={'ab\ncd'} vim />,
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    await settle()
+    stdin.send('\x1b')
+    await settle(100)
+    stdin.send('0', 'k', '$', '\x1b[C')
+    await settle()
+    expect(getInputSelection()?.start).toBe(1)
+
+    view.unmount()
+    view.cleanup()
+  })
+
+  it('cancels pending d before a modified special key falls through', async () => {
+    const stdin = new FakeInput()
+    const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+    const stderr = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+    const changes: string[] = []
+
+    function Harness() {
+      const [value, setValue] = useState('one\ntwo')
+
+      return <TextInput columns={80} onChange={next => { changes.push(next); setValue(next) }} value={value} vim />
+    }
+
+    const view = renderSync(React.createElement(Harness), {
+      patchConsole: false,
+      stderr: stderr as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as NodeJS.WriteStream
+    })
+
+    await settle()
+    stdin.send('\x1b')
+    await settle(100)
+    stdin.send('d', '\x1b[1;2D', 'd')
+    await settle()
+    expect(changes).toEqual([])
+
+    view.unmount()
+    view.cleanup()
+  })
 })

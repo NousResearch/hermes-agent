@@ -564,9 +564,13 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            # Platform + stable message id identify retries on every adapter; Telegram additionally
+            # supplies its ordered update_id for backwards-compatible redelivery detection.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
+            message_id = event.message_id if event.message_id is not None else event.source.message_id
+            if message_id is not None:
+                data["message_id"] = str(message_id)
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
             return data

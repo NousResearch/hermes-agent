@@ -153,6 +153,17 @@ The per-turn retry is **reset-aware**: when the primary's credentials report a r
 When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
 
+### Halting Side-Effecting Tools on Fallback (Optional)
+
+When fallback activates mid-turn, the tool loop continues on the fallback route — including tool calls with irreversible external effects (git pushes, service restarts, database writes, sent messages). If your work depends on *which route* executes those actions, opt in under the `fallback:` block (same place as `min_switch_reset_seconds`):
+
+```yaml
+fallback:
+  halt_on_side_effecting_tools: true
+```
+
+While an **automatic** fallback route is acting, tools that may have external side effects are refused *before* execution with an explanatory error; read-only tools (searches, file reads, web extraction) keep working, so the fallback model can still investigate, summarize, and answer. The gate never restricts a route you selected deliberately via `/model`, and it is off by default. When the primary recovers on the next turn, full write access resumes automatically.
+
 ### Examples
 
 **OpenRouter as fallback for Anthropic native:**
@@ -448,6 +459,7 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
 | Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
+| Side-effect halt on fallback | Refuses side-effecting tools while an automatic fallback route acts (read-only tools keep working); off by default | `fallback.halt_on_side_effecting_tools: true` |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |

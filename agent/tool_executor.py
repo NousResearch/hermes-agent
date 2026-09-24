@@ -690,6 +690,14 @@ def _dispatch_authorized_once(
 
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
+        from agent.fallback_route_gate import fallback_route_block_reason
+
+        block_message = fallback_route_block_reason(
+            agent, ref.name, getattr(agent, "provider", None), getattr(agent, "model", None)
+        )
+        if block_message is not None:
+            block_error_type = "fallback_route_block"
+    if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)

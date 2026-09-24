@@ -863,6 +863,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             continue
         if _fb_client is not None:
             agent._fallback_activated = True
+            agent._provider_fallback_active = True
             if str(_fb["provider"]).strip().lower() == "moa":
                 # The chokepoint handed back the preset's aggregator client, which only proves the
                 # preset resolves and its aggregator has credentials. A MoA entry means the preset

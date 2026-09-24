@@ -2386,16 +2386,26 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
     block_message: Optional[str] = None
+    fallback_route_block = False
     if not pre_tool_block_checked:
-        block_message, function_args = _pre_tool_block_message(
-            agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
+        from agent.fallback_route_gate import fallback_route_block_reason
+
+        block_message = fallback_route_block_reason(
+            agent, function_name, getattr(agent, "provider", None), getattr(agent, "model", None)
         )
+        if block_message is not None:
+            fallback_route_block = True
+        else:
+            block_message, function_args = _pre_tool_block_message(
+                agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
+            )
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
         emit_terminal_post_tool_call(
             agent, function_name=function_name, function_args=function_args, result=result,
             effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",
-            error_type="plugin_block", error_message=block_message,
+            error_type="fallback_route_block" if fallback_route_block else "plugin_block",
+            error_message=block_message,
             middleware_trace=_tool_middleware_trace,
         )
         return result

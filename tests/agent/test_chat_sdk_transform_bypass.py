@@ -18,6 +18,7 @@ import httpx
 import openai
 
 from agent.sdk_transform_bypass import ESCAPE_HATCH_ENV, bypass_chat_sdk_request_transform
+from openai.resources.chat import completions as _sdk_completions
 
 _SSE = (
     b'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m",'
@@ -101,3 +102,75 @@ def test_escape_hatch_and_non_sdk_facades_keep_the_typed_path(monkeypatch):
 
     monkeypatch.setenv(ESCAPE_HATCH_ENV, "1")
     assert bypass_chat_sdk_request_transform(kwargs, recorder.client) is kwargs
+
+
+def _capture_sdk_create(monkeypatch) -> list[dict]:
+    """Record the kwargs that reach the SDK's ``Completions.create`` (the transform boundary)."""
+    seen: list[dict] = []
+    response = types.SimpleNamespace(
+        choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="ok", tool_calls=None), finish_reason="stop")],
+        usage=None, model="m", id="1")
+    monkeypatch.setattr(_sdk_completions.Completions, "create", lambda self, **kw: seen.append(kw) or response)
+    return seen
+
+
+def test_auxiliary_completion_path_hands_the_sdk_only_the_placeholder(monkeypatch):
+    """Aux tasks (compression, summaries) reach the SDK via ``_create_with_progress_once``;
+    the bulk conversation must ride in ``extra_body`` so the SDK's typed walk sees only ``[]``."""
+    from agent import auxiliary_client
+
+    seen = _capture_sdk_create(monkeypatch)
+    client = _Recorder().client
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 4096}], "max_tokens": 8}
+
+    auxiliary_client._relay_sync_completion(client, dict(body))
+
+    assert len(seen) == 1
+    assert seen[0]["messages"] == []
+    assert seen[0]["extra_body"]["messages"] == body["messages"]
+
+
+def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
+    """The iteration-limit summary builds the full main-loop kwargs (``_build_api_kwargs``) and calls
+    ``chat.completions.create`` itself — the same multi-MB payload, so the same bypass."""
+    from agent import chat_completion_helpers
+
+    seen = _capture_sdk_create(monkeypatch)
+    client = _Recorder().client
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 4096}], "tools": _wire_body()["tools"]}
+    transport = types.SimpleNamespace(normalize_response=lambda response, **kw: types.SimpleNamespace(content="ok", tool_calls=None))
+    agent = types.SimpleNamespace(
+        provider="p", model="m", api_mode="chat_completions", _force_ascii_payload=False,
+        _build_api_kwargs=lambda messages: dict(body), _ensure_primary_openai_client=lambda reason: client,
+        _get_transport=lambda: transport)
+
+    assert chat_completion_helpers._chat_summary_attempt(agent, body["messages"], "req-1")(0) == "ok"
+    assert len(seen) == 1
+    assert seen[0]["messages"] == [] and seen[0]["tools"] == []
+    assert seen[0]["extra_body"]["messages"] == body["messages"]
+    assert seen[0]["extra_body"]["tools"] == body["tools"]
+
+
+def test_relay_stream_path_shows_relay_the_full_conversation(monkeypatch):
+    """On the Relay-managed stream path the bypass must run INSIDE the provider callback: Relay's
+    tracing/intercepts see the real ``messages`` while the SDK still gets only the placeholder."""
+    from agent import auxiliary_client, relay_llm
+
+    seen = _capture_sdk_create(monkeypatch)
+    client = _Recorder().client
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 4096}], "stream": True}
+    relay_saw: list[dict] = []
+
+    def fake_stream_current(request, provider_call, **_kw):
+        relay_saw.append(dict(request))
+        return provider_call(request)
+
+    monkeypatch.setattr(relay_llm, "stream_current", fake_stream_current)
+    monkeypatch.setattr(
+        auxiliary_client, "_relay_auxiliary_metadata", lambda **_kw: ("openrouter", "m", {}))
+
+    auxiliary_client._relay_sync_stream(client, dict(body))
+
+    assert relay_saw[0]["messages"] == body["messages"]
+    assert seen[0]["messages"] == []
+    assert seen[0]["extra_body"]["messages"] == body["messages"]

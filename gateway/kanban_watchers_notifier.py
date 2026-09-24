@@ -160,16 +160,12 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     profile = owner_profile or getattr(runner, "_kanban_notifier_profile", None)
     primary_profile = getattr(runner, "_primary_profile_name", None) or runner._active_profile_name()
     profile = profile or primary_profile
-    # Empty maps are startup placeholders for route-only profiles; a connected
-    # secondary on ANY platform establishes an independent credential boundary.
-    if (getattr(runner, "_profile_adapters", {}) or {}).get(profile):
-        _warn_unroutable_sub_once(
-            sub, platform,
-            "kanban notifier: subscription for %s on %s chat %s is pinned to profile %s, which runs "
-            "other-platform adapters but none for %s; it will not be delivered. Give that profile a %s "
-            "adapter or make it route-only, then re-subscribe with `hermes kanban notify-subscribe ... "
-            "--notifier-profile <a profile that holds a %s credential>`.",
-            profile, platform.value, platform.value, platform.value)
+    # A profile holding its OWN adapter for this platform is an independent credential boundary —
+    # ``_authorization_adapter`` already answered for it, so the primary never stands in. Adapters
+    # on OTHER platforms do not gate this one: the primary bot is the only credential serving the
+    # pinned chat, for inbound turns and for these notifications alike (#115460).
+    own_adapters = (getattr(runner, "_profile_adapters", {}) or {}).get(profile) or {}
+    if getattr(platform, "value", str(platform)).lower() in _platform_names(own_adapters):
         return None
     metadata = sub.get("delivery_metadata") or {}
     guild = metadata.get("scope_id") or metadata.get("guild_id")

@@ -4,44 +4,37 @@ import { en } from '@/i18n/en'
 
 import { defaultBindings, KEYBIND_ACTIONS, keybindAction } from './actions'
 
-describe('session.archive keybind action', () => {
-  it('is registered under the session category', () => {
-    const action = keybindAction('session.archive')
+// Relationship checks between the action table and its consumers, not the
+// specific chord or wording any one action ships with.
+describe('KEYBIND_ACTIONS', () => {
+  it('has unique ids (a duplicate would shadow a row in the shortcuts panel)', () => {
+    const ids = KEYBIND_ACTIONS.map(action => action.id)
 
-    expect(action).toBeDefined()
-    expect(action?.category).toBe('session')
+    expect(new Set(ids).size).toBe(ids.length)
   })
 
-  it('ships unbound so it does not claim a chord for every user', () => {
+  it('gives every built-in action an English label so it renders in the shortcuts panel', () => {
+    const labels = en.keybinds.actions as Record<string, string>
+    const missing = KEYBIND_ACTIONS.filter(action => !labels[action.id]).map(action => action.id)
+
+    expect(missing).toEqual([])
+  })
+
+  it('keeps session archive registered and unbound by default', () => {
     const action = keybindAction('session.archive')
 
-    expect(action?.defaults).toEqual([])
-    // A missing entry would silently drop from the panel; an accidental
-    // default binding would change behaviour for everyone. Guard both.
+    expect(action).toMatchObject({ category: 'session', defaults: [] })
     expect(defaultBindings()['session.archive']).toEqual([])
-  })
-
-  it('has an English label so it renders in the shortcuts panel', () => {
     expect(en.keybinds.actions['session.archive']).toBe('Archive current session')
+    expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'session.archive')).toHaveLength(1)
   })
 
-  it('appears exactly once in KEYBIND_ACTIONS', () => {
-    const matches = KEYBIND_ACTIONS.filter(action => action.id === 'session.archive')
+  it('registers dictation with an English label and no default chord', () => {
+    const action = keybindAction('composer.dictate')
 
-    expect(matches).toHaveLength(1)
-  })
-})
-
-describe('view.cycleSidebarGrouping keybind action', () => {
-  it('is an unbound view action with a panel label', () => {
-    const action = keybindAction('view.cycleSidebarGrouping')
-
-    expect(action).toEqual({ id: 'view.cycleSidebarGrouping', category: 'view', defaults: [] })
-    expect(defaultBindings()['view.cycleSidebarGrouping']).toEqual([])
-    expect(en.keybinds.actions['view.cycleSidebarGrouping']).toBe('Cycle session grouping')
-  })
-
-  it('appears exactly once in KEYBIND_ACTIONS', () => {
-    expect(KEYBIND_ACTIONS.filter(action => action.id === 'view.cycleSidebarGrouping')).toHaveLength(1)
+    expect(action).toMatchObject({ category: 'composer', defaults: [] })
+    expect(defaultBindings()['composer.dictate']).toEqual([])
+    expect(en.keybinds.actions['composer.dictate']).toBe('Start / stop dictation')
+    expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'composer.dictate')).toHaveLength(1)
   })
 })

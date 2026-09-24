@@ -106,6 +106,14 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
         with _quiet("Spinner update_text failed: %s"):
             spinner_ref.update_text(f"🔀 {'[' + tag + '] ' if tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining")
 
+def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bool) -> None:
+    """Detached (background) unit: durably record a child on the unit's own row the moment it finishes, so an owner
+    death before the unit's join — or anywhere before its durable completion write, the whole remaining window for a
+    one-child unit — loses only children still running, never finished work (#116000). Best-effort by construction:
+    ``record_unit_child`` never raises into the join."""
+    if not honor_parent_interrupt and batch.unit_id and isinstance(entry, dict):
+        record_unit_child(batch.unit_id, entry)
+
 def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
@@ -150,9 +158,8 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
             for future in done:
                 entry = _entry_of(future, futures[future])
                 results.append(entry)
-                if not honor_parent_interrupt and batch.unit_id:
-                    # Detached unit: a crash before the join must not lose children that already finished.
-                    record_unit_child(batch.unit_id, entry)
+                # Detached unit: a crash before the join must not lose children that already finished.
+                _record_finished_child(batch, entry, honor_parent_interrupt)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
                 if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
                         and len(results) < n_here):
@@ -179,6 +186,9 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     results: list = []
     if len(batch.children) == 1:
         results.append(batch.run_child(*batch.children[0]))
+        # A one-child unit has no join to wait on, but everything after the child returns — host-owned finalize,
+        # transcript, manifest, then the durable write — is still owner-lifetime: record before any of it (#116000).
+        _record_finished_child(batch, results[-1], honor_parent_interrupt)
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
@@ -388,6 +398,10 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
+        # Persist locators before starting workers; live_paths omits failed writers and can be compressed.
+        task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
+                          if i < len(unit.live_writers) and unit.live_writers[i] is not None
+                          and unit.live_writers[i].path is not None},
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 

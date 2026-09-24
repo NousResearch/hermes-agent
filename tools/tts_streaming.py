@@ -300,7 +300,7 @@ class GeminiStreamer(StreamingTTSProvider):
         voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
         from agent.gemini_native_adapter import normalize_gemini_base_url
         base_url = normalize_gemini_base_url(
-            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL, api_key,
+            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
         )
         payload = {
             "contents": [{"parts": [{"text": text}]}],

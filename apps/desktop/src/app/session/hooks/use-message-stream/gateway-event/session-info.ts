@@ -281,6 +281,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.
       let recoveredIncompleteTurn = false
+      // Set when THIS event ends a confirmed live turn, whether or not its
+      // terminal message arrived. Drives the sidebar refresh; the hydrate
+      // below stays gated on recoveredIncompleteTurn.
+      let endedLiveTurn = false
 
       const nextState = updateSessionState(
         sessionId,
@@ -359,7 +363,21 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           // per-session busy flag is authoritative for isTargetSessionBusy,
           // so submitPrompt and the slash dispatcher silently returned false
           // and the session accepted no further input.
-          recoveredIncompleteTurn = state.turnLive
+          //
+          // The terminal message.complete can also just be reordered behind
+          // this heartbeat (#119569). The bubble still settles here, but a
+          // stream bubble that kept streamed output is remembered so the late
+          // frame settles onto it instead of appending a duplicate. That
+          // turn's output is on screen, so it skips the stored-history
+          // hydrate too: fired now, it can race the gateway commit and drop
+          // the just-delivered reply from view until reload.
+          const messages = finalizeInterruptedMessages(state.messages, state.streamId, occurredAt)
+
+          const heartbeatSettledStreamId =
+            state.streamId && messages.some(message => message.id === state.streamId) ? state.streamId : null
+
+          endedLiveTurn = state.turnLive
+          recoveredIncompleteTurn = state.turnLive && !heartbeatSettledStreamId
 
           return {
             ...state,
@@ -374,7 +392,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             // finalizeInterruptedMessages un-pends kept text and drops
             // empty placeholders; on the normal path message.complete
             // already settled everything and this is a no-op.
-            messages: finalizeInterruptedMessages(state.messages, state.streamId, occurredAt),
+            heartbeatSettledStreamId,
+            messages,
             pendingBranchGroup: null,
             streamId: null,
             turnStartedAt: null,
@@ -384,21 +403,23 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         payload?.stored_session_id || undefined
       )
 
-      if (recoveredIncompleteTurn) {
+      if (endedLiveTurn) {
         // Stays unscoped, like the settle above: a background session's
         // sidebar row has to drop its working dot without the user opening
         // it. This fires on the recovery edge only — once turnLive is false
         // the `state.busy === busy` guard above short-circuits every later
-        // heartbeat — so it costs one coalesced refresh per broken turn,
+        // heartbeat — so it costs one coalesced refresh per ended turn,
         // not one per tick.
         scheduleSessionsRefresh()
 
-        // The transcript catch-up IS scoped. The stream died, but the turn
-        // itself may have completed and been persisted, so refetch stored
-        // history for the session actually on screen; a background session
-        // reads its history when the user opens it, and hydrating every one
-        // of them here would fan a REST call out per idle session.
-        if (isActiveEvent) {
+        // The transcript catch-up IS scoped, and skipped when a streamed
+        // bubble survived the settle (its late complete owns it, see above).
+        // The stream died, but the turn itself may have completed and been
+        // persisted, so refetch stored history for the session actually on
+        // screen; a background session reads its history when the user opens
+        // it, and hydrating every one of them here would fan a REST call out
+        // per idle session.
+        if (recoveredIncompleteTurn && isActiveEvent) {
           void hydrateFromStoredSession(3, nextState.storedSessionId, sessionId)
         }
       }

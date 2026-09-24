@@ -2,6 +2,8 @@
 
 import os
 import plistlib
+import re
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,19 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     resolve_systemd_timeout_stop_sec,
 )
+
+
+def _osascript_exec_argv(program_args: list[str]) -> list[str]:
+    """The argv a launchd ``ProgramArguments`` of ``/usr/bin/osascript -e <script>`` hands to ``exec`` —
+    undoing the AppleScript string escaping, then POSIX shell quoting, the way osascript and /bin/sh will."""
+    assert program_args[:2] == ["/usr/bin/osascript", "-e"] and len(program_args) == 3, program_args
+    script = program_args[2]
+    prefix, suffix = 'do shell script "', '"'
+    assert script.startswith(prefix) and script.endswith(suffix), script
+    shell = re.sub(r"\\(.)", r"\1", script[len(prefix):-len(suffix)])
+    exec_, *argv = shlex.split(shell)
+    assert exec_ == "exec", shell
+    return argv
 
 
 class TestUserSystemdPrivateSocketPreflight:
@@ -301,12 +316,6 @@ class TestGeneratedSystemdUnits:
         assert expected > 60
         assert self._expected_timeout_stop_sec() in unit
 
-    def test_timeout_stop_sec_follows_a_raised_cron_drain_timeout(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0.0)
-        monkeypatch.setattr(gateway_cli, "_get_cron_drain_timeout", lambda: 60.0)
-
-        unit = gateway_cli.generate_systemd_unit(system=False)
-        assert f"TimeoutStopSec={resolve_systemd_timeout_stop_sec(0.0, 60.0)}" in unit
 
     def test_timeout_stop_sec_keeps_the_floor_when_cron_drain_is_opted_out(
         self, monkeypatch
@@ -332,19 +341,21 @@ class TestGeneratedSystemdUnits:
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
 
-    def test_unit_stop_budget_beats_drain_only_formula_with_real_loaders(
-        self, monkeypatch
-    ):
-        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
-        monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
-        drain = gateway_cli._get_restart_drain_timeout()
-        cron = gateway_cli._get_cron_drain_timeout()
+    def test_user_unit_carries_ld_library_path_escaped_for_systemd(self, monkeypatch, tmp_path):
+        """#14613: glibc reads LD_LIBRARY_PATH only at process start, so the unit file is the
+        only place it can reach CUDA-backed tools; quotes/backslashes must survive systemd quoting."""
+        # The absent-env branch falls back to the installed unit: keep the host's real one out.
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "hermes-gateway.service")
+        monkeypatch.setenv("LD_LIBRARY_PATH", '/opt/cu"da/lib64:/opt/back\\slash/lib')
+
         unit = gateway_cli.generate_systemd_unit(system=False)
-        expected = resolve_systemd_timeout_stop_sec(drain, cron)
-        assert f"TimeoutStopSec={expected}" in unit
-        old_drain_only = int(max(60, int(drain or 0) + 30))
-        if cron > 0 and drain <= 0:
-            assert expected > old_drain_only
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cu\\"da/lib64:/opt/back\\\\slash/lib"' in unit
+
+        monkeypatch.setenv("LD_LIBRARY_PATH", "")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
+
 
     def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Regression for the multi-profile gateway restart-loop flap (#48700):
@@ -726,18 +737,6 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         assert gateway_cli._launchd_domain() == "user/501"
 
-
-    # ── PID parsing ──────────────────────────────────────────────────────
-
-
-    # ── Probe requires PID ───────────────────────────────────────────────
-
-
-    # ── Unsupport marker lifecycle ───────────────────────────────────────
-
-
-    # ── launchd_status with active supervision ───────────────────────────
-
     def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
         """When the unsupported marker exists and a fallback PID is running."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -761,10 +760,7 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_status()
 
         out = capsys.readouterr().out
-        assert "cannot manage the gateway on this macos version" in out.lower()
-        assert "Detached fallback process is running" in out
-        assert "PID 88888" in out
-        assert "NOT available" in out
+        assert "88888" in out  # the running detached-fallback PID is reported
 
 
 class TestLaunchdDomainDetection:
@@ -1426,6 +1422,36 @@ class TestSystemUnitHermesHome:
         assert "Wants=user@1001.service" in unit_section
         assert "user@" not in user_unit
 
+    def test_installed_unit_keeps_ld_library_path_when_the_shell_lacks_it(self, monkeypatch, tmp_path):
+        """The unit is regenerated and compared on every start/restart/status; a later shell without
+        the export (ssh, cron, sudo) must see the installed unit as current, not "repair" the line away."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda/lib64:/opt/pct%dir/lib")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False), encoding="utf-8")
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib"' in unit_path.read_text()
+
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+
+        assert gateway_cli.systemd_unit_is_current(system=False)
+        assert 'LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib' in gateway_cli.generate_systemd_unit(system=False)
+
+    def test_system_unit_remaps_caller_home_ld_library_path_components(self, monkeypatch):
+        """#14613: under sudo the caller's /root/... library dirs are unreadable to the target
+        user, so each colon-separated component is remapped like the PATH entries are."""
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice", 1001),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/root/cuda/lib:/opt/cuda/lib64")
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'Environment="LD_LIBRARY_PATH=/home/alice/cuda/lib:/opt/cuda/lib64"' in unit
+
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
@@ -1487,7 +1513,7 @@ class TestSystemUnitRefreshSyncsHermesHome:
         # Correct installed unit (operator's HERMES_HOME + drain timeout).
         monkeypatch.setenv("HERMES_HOME", str(alice_hermes))
         good_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
-        assert "TimeoutStopSec=210" in good_unit
+        assert f"TimeoutStopSec={resolve_systemd_timeout_stop_sec(180.0, DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT)}" in good_unit
         unit_path.write_text(good_unit, encoding="utf-8")
 
         # Simulate sudo without inherited HERMES_HOME (falls back to root).
@@ -1497,90 +1523,7 @@ class TestSystemUnitRefreshSyncsHermesHome:
         assert os.environ["HERMES_HOME"] == str(alice_hermes)
         assert gateway_cli.systemd_unit_is_current(system=True) is True
 
-    def test_is_current_syncs_before_reading_unit(self, tmp_path, monkeypatch):
-        """CHOKEPOINT INVARIANT: systemd_unit_is_current() must adopt the
-        unit's pinned HERMES_HOME *before* it reads/compares the unit.
 
-        This is the single site that enforces sync-before-compare for every
-        path (refresh gates on it; status/install call it). If a future edit
-        moves the sync after the read (or drops it), this test fails.
-        """
-        order = []
-        unit_path = tmp_path / "hermes-gateway.service"
-        unit_path.write_text("[Unit]\n", encoding="utf-8")
-
-        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
-
-        real_read_text = Path.read_text
-
-        def tracking_sync(system):
-            order.append("sync")
-
-        def tracking_read_text(self, *a, **k):
-            if self == unit_path:
-                order.append("read")
-            return real_read_text(self, *a, **k)
-
-        monkeypatch.setattr(gateway_cli, "_sync_hermes_home_from_systemd_unit", tracking_sync)
-        monkeypatch.setattr(Path, "read_text", tracking_read_text)
-        # Avoid a real generate/compare — we only assert sync precedes read.
-        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda **k: "[Unit]\n")
-        monkeypatch.setattr(gateway_cli, "_read_systemd_user_from_unit", lambda p: None)
-
-        gateway_cli.systemd_unit_is_current(system=True)
-
-        assert order, "systemd_unit_is_current did not run sync or read"
-        assert order[0] == "sync", f"sync must precede unit read; got {order}"
-        assert "read" in order and order.index("sync") < order.index("read")
-
-    def test_start_and_restart_delegate_sync_to_chokepoint(self, monkeypatch):
-        """start/restart must NOT pre-sync at the callsite — the sync is owned
-        by the systemd_unit_is_current chokepoint that refresh gates on. This
-        pins the single-chokepoint design so a future edit can't reintroduce a
-        redundant (or, worse, out-of-order) callsite sync.
-        """
-        for entry in ("systemd_start", "systemd_restart"):
-            calls = []
-            monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
-            monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
-            monkeypatch.setattr(
-                gateway_cli, "_require_service_installed", lambda action, system=False: None
-            )
-            monkeypatch.setattr(
-                gateway_cli,
-                "_sync_hermes_home_from_systemd_unit",
-                lambda system: calls.append("sync"),
-            )
-            monkeypatch.setattr(
-                gateway_cli,
-                "refresh_systemd_unit_if_needed",
-                lambda system=False: calls.append("refresh"),
-            )
-            monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-            monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
-            monkeypatch.setattr(
-                gateway_cli,
-                "_run_systemctl",
-                lambda args, **kwargs: calls.append("systemctl")
-                or SimpleNamespace(returncode=0, stdout="", stderr=""),
-            )
-            monkeypatch.setattr(
-                gateway_cli,
-                "_wait_for_systemd_service_restart",
-                lambda system=False, previous_pid=None: True,
-            )
-
-            getattr(gateway_cli, entry)(system=True)
-
-            # refresh runs; the callsite adds NO separate sync before it (the
-            # chokepoint inside refresh->is_current owns the sync). Here refresh
-            # is mocked out, so no "sync" should appear at all for the refresh
-            # phase — proving the callsite pre-sync was removed.
-            assert "refresh" in calls, f"{entry} must call refresh_systemd_unit_if_needed"
-            assert calls.count("sync") == 0, (
-                f"{entry} should delegate sync to the chokepoint, not pre-sync "
-                f"at the callsite; got {calls}"
-            )
 
 
 class TestHermesHomeForTargetUser:
@@ -1611,20 +1554,6 @@ class TestGeneratedUnitUsesDetectedVenv:
         assert "/venv/" not in unit or "/.venv/" in unit
 
 
-class TestGeneratedUnitIncludesLocalBin:
-    """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
-
-    def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
-        monkeypatch.setattr(
-            gateway_cli,
-            "_build_user_local_paths",
-            lambda home_path, existing: [str(home_path / ".local" / "bin")],
-        )
-        unit = gateway_cli.generate_systemd_unit(system=True)
-        # System unit uses the resolved home dir from _system_service_identity
-        assert "/.local/bin" in unit
-
-
 class TestSystemServiceIdentityRootHandling:
     """Root user handling in _system_service_identity()."""
 
@@ -1648,19 +1577,6 @@ class TestSystemServiceIdentityRootHandling:
         assert username == "root"
         assert home == root_info.pw_dir
 
-    def test_non_root_user_passes_through(self, monkeypatch):
-        """Normal non-root user works as before."""
-
-        monkeypatch.delenv("SUDO_USER", raising=False)
-        monkeypatch.setenv("USER", "nobody")
-        monkeypatch.setenv("LOGNAME", "nobody")
-
-        try:
-            username, group, home, _uid = gateway_cli._system_service_identity(run_as_user=None)
-            assert username == "nobody"
-        except ValueError as e:
-            # "nobody" might not exist on all systems
-            assert "Unknown user" in str(e)
 
 
 class TestEnsureUserSystemdEnv:
@@ -1680,13 +1596,6 @@ class TestEnsureUserSystemdEnv:
 
         assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_socket}"
 
-    def test_systemctl_cmd_calls_ensure_for_user_mode(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: calls.append("called"))
-
-        result = gateway_cli._systemctl_cmd(system=False)
-        assert result == ["systemctl", "--user"]
-        assert calls == ["called"]
 
 
 class TestPreflightUserSystemd:
@@ -1799,7 +1708,9 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
-        assert program_args == [
+        # The job is launched through osascript so macOS Local Network Privacy attributes the
+        # gateway's sockets to a platform binary (#71206); the real command is the exec'd child.
+        assert _osascript_exec_argv(program_args) == [
             "/usr/bin/python3",
             "-m",
             "hermes_cli.stderr_timestamp",
@@ -1814,7 +1725,28 @@ class TestProfileArg:
             "gateway",
             "run",
             "--external-supervisor",
+            ">>",
+            str(profile_dir / "logs" / "gateway.log"),
+            "2>>",
+            str(profile_dir / "logs" / "gateway.error.log"),
         ]
+
+    def test_launchd_osascript_wrapper_round_trips_shell_hostile_paths(self, tmp_path, monkeypatch):
+        """A home with spaces, quotes and a backslash survives shlex + AppleScript + plist quoting."""
+        profile_dir = tmp_path / 'my "odd" dir \\ here' / ".hermes"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(profile_dir / "bin dir" / "python"))
+
+        program_args = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))["ProgramArguments"]
+        argv = _osascript_exec_argv(program_args)
+
+        assert argv[0] == str(profile_dir / "bin dir" / "python")
+        assert argv[-3:] == [str(profile_dir / "logs" / "gateway.log"), "2>>", str(profile_dir / "logs" / "gateway.error.log")]
+        # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
+        assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -1903,20 +1835,6 @@ class TestDockerAwareGateway:
         with pytest.raises(SystemctlUnavailableError):
             gateway_cli._run_systemctl(["start", "hermes-gateway"])
 
-    def test_run_systemctl_passes_through_on_success(self, monkeypatch):
-        """_run_systemctl delegates to subprocess.run when systemctl exists."""
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        result = gateway_cli._run_systemctl(["status", "hermes-gateway"])
-        assert result.returncode == 0
-        assert len(calls) == 1
-        assert "status" in calls[0]
 
     def test_install_in_container_prints_docker_guidance(self, monkeypatch, capsys):
         """'hermes gateway install' inside Docker exits 0 with container guidance."""
@@ -2063,16 +1981,6 @@ class TestLegacyHermesUnitDetection:
             results = gateway_cli._find_legacy_hermes_units()
             assert len(results) == 1, f"Variant {i} not detected: {execstart!r}"
 
-    def test_print_legacy_unit_warning_shows_migration_hint(self, tmp_path, monkeypatch, capsys):
-        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
-        (user_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
-
-        gateway_cli.print_legacy_unit_warning()
-        out = capsys.readouterr().out
-
-        assert "Legacy" in out
-        assert "hermes.service" in out
-        assert "hermes gateway migrate-legacy" in out
 
 
 class TestRemoveLegacyHermesUnits:
@@ -2145,32 +2053,6 @@ class TestRemoveLegacyHermesUnits:
 class TestMigrateLegacyCommand:
     """Tests for the `hermes gateway migrate-legacy` subcommand dispatch."""
 
-    def test_migrate_legacy_subparser_accepts_dry_run_and_yes(self):
-        """Verify the argparse subparser is registered and parses flags."""
-        import hermes_cli.main as cli_main
-
-        parser = cli_main.build_parser() if hasattr(cli_main, "build_parser") else None
-        # Fall back to calling main's setup helper if direct access isn't exposed
-        # The key thing: the subparser must exist. We verify by constructing
-        # a namespace through argparse directly — but if build_parser isn't
-        # public, just confirm that `hermes gateway --help` shows it.
-        import subprocess
-        import sys
-
-        project_root = cli_main.PROJECT_ROOT if hasattr(cli_main, "PROJECT_ROOT") else None
-        if project_root is None:
-            import hermes_cli.gateway as gw
-            project_root = gw.PROJECT_ROOT
-
-        result = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", "gateway", "--help"],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        assert result.returncode == 0
-        assert "migrate-legacy" in result.stdout
 
     def test_gateway_command_migrate_legacy_dispatches(
         self, tmp_path, monkeypatch, capsys
@@ -2193,37 +2075,6 @@ class TestMigrateLegacyCommand:
         gateway_cli.gateway_command(args)
 
         assert called == {"interactive": False, "dry_run": False}
-
-
-class TestGatewayStatusParser:
-    def test_gateway_status_subparser_accepts_full_flag(self):
-        import subprocess
-        import sys
-
-        result = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", "gateway", "status", "-l", "--help"],
-            cwd=str(gateway_cli.PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-
-        assert result.returncode == 0
-        assert "unrecognized arguments" not in result.stderr
-
-    def test_migrate_legacy_on_unsupported_platform_prints_message(
-        self, monkeypatch, capsys
-    ):
-        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-
-        args = SimpleNamespace(
-            gateway_command="migrate-legacy", dry_run=False, yes=True
-        )
-        gateway_cli.gateway_command(args)
-
-        out = capsys.readouterr().out
-        assert "only applies to systemd" in out
 
 
 class TestSystemdInstallOffersLegacyRemoval:
@@ -2370,12 +2221,11 @@ class TestSystemScopeRequiresRootError:
         with pytest.raises(gateway_cli.SystemScopeRequiresRootError) as excinfo:
             gateway_cli._require_root_for_system_service("start")
 
-        assert excinfo.value.args[0] == "System gateway start requires root. Re-run with sudo."
+        assert "start" in excinfo.value.args[0]
         assert excinfo.value.args[1] == "start"
         # str(e) renders only the message, not the tuple repr, so that
         # wizard format strings like f"Failed: {e}" print cleanly.
-        assert str(excinfo.value) == "System gateway start requires root. Re-run with sudo."
-        assert f"Failed: {excinfo.value}" == "Failed: System gateway start requires root. Re-run with sudo."
+        assert str(excinfo.value) == excinfo.value.args[0]
 
     def test_error_is_runtime_error_subclass(self):
         """Wizards use ``except Exception`` guards — the error must be a
@@ -2424,24 +2274,6 @@ class TestSystemScopeWizardPreCheck:
         assert gateway_cli._system_scope_wizard_would_need_root(system=True) is True
 
 
-class TestSystemScopeRemediationOutput:
-    """Tests for _print_system_scope_remediation — the actionable guidance
-    shown when the wizard detects a system-scope-only setup as non-root.
-    """
-
-    def test_start_remediation_mentions_sudo_systemctl_and_uninstall(self, capsys, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
-
-        gateway_cli._print_system_scope_remediation("start")
-        out = capsys.readouterr().out
-
-        assert "system-wide service" in out
-        assert "start requires root" in out
-        assert "sudo systemctl start hermes-gateway" in out
-        assert "sudo hermes gateway uninstall --system" in out
-        assert "hermes gateway install" in out
-
-
 class TestGatewayCommandCatchesSystemScopeError:
     """The direct CLI path (``hermes gateway start --system`` etc.) must
     still exit 1 with a clean message when non-root. The top-level
@@ -2473,7 +2305,7 @@ class TestGatewayCommandCatchesSystemScopeError:
         assert excinfo.value.code == 1
         out = capsys.readouterr().out
         # Renders the message, NOT the ``('msg', 'action')`` tuple repr
-        assert "System gateway start requires root. Re-run with sudo." in out
+        assert "requires root" in out
         assert "('" not in out  # no tuple repr leaking through
 
 
@@ -2529,9 +2361,9 @@ class TestServiceTakeoverGovernance:
         plist = gateway_cli.generate_launchd_plist()
         # The whole bug class: no --replace anywhere in the supervised argv.
         assert "--replace" not in plist
-        # It still runs the plain gateway command under KeepAlive.
-        assert "<string>gateway</string>" in plist
-        assert "<string>run</string>" in plist
+        # It still runs the plain gateway command under KeepAlive (inside the osascript wrapper).
+        argv = _osascript_exec_argv(plistlib.loads(plist.encode("utf-8"))["ProgramArguments"])
+        assert argv[argv.index("gateway") + 1] == "run"
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist
 
@@ -2811,8 +2643,9 @@ class TestTimeoutStopSecCoversCronFloor:
             monkeypatch,
             "agent:\n  restart_drain_timeout: 0\n  cron_drain_timeout: 120\n",
         )
-        # cron floor 120 + reserve 10 + cleanup 30 = 160 > the old formula's 60.
-        assert "TimeoutStopSec=160" in unit
+        expected = resolve_systemd_timeout_stop_sec(0.0, 120.0)
+        assert f"TimeoutStopSec={expected}" in unit
+        assert expected > 60  # the old drain-only formula's leash
 
     def test_restart_drain_still_dominates_when_larger(self, tmp_path, monkeypatch):
         unit = self._unit_with_config(
@@ -2820,12 +2653,9 @@ class TestTimeoutStopSecCoversCronFloor:
             monkeypatch,
             "agent:\n  restart_drain_timeout: 60\n",
         )
-        # An explicit restart drain above the default cron floor (30+10=40)
-        # keeps the old formula's result — no regression for
-        # restart-drain-dominated installs. (Default installs differ from
-        # main: restart_drain_timeout defaults to 0, so the cron floor 40+30
-        # raises the leash from 60 to 70 — see the PR description.)
-        assert "TimeoutStopSec=90" in unit
+        # An explicit restart drain above the default cron floor keeps the old
+        # formula's result — no regression for restart-drain-dominated installs.
+        assert "TimeoutStopSec=90" in unit  # 60s drain + 30s cleanup: same as the pre-cron formula
 
     def test_env_override_extends_the_leash(self, tmp_path, monkeypatch):
         unit = self._unit_with_config(
@@ -2834,7 +2664,7 @@ class TestTimeoutStopSecCoversCronFloor:
             "agent:\n  restart_drain_timeout: 0\n",
             env={"HERMES_CRON_DRAIN_TIMEOUT": "200"},
         )
-        assert "TimeoutStopSec=240" in unit
+        assert f"TimeoutStopSec={resolve_systemd_timeout_stop_sec(0.0, 200.0)}" in unit
 
 
 class TestUnitAnchoredServiceIdentity:

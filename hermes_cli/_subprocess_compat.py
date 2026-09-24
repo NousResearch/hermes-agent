@@ -28,6 +28,7 @@ __all__ = [
     "bounded_probe_run",
     "noninteractive_git_env",
     "NO_DRIVER_DIFF_FLAGS",
+    "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
 ]
 
@@ -209,6 +210,14 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+# Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes
+# git spawn ``git fetch`` from the promisor remote, and a probe's timeout kills only its own git: the
+# startup update check's ``merge-base --is-ancestor <fresh upstream tip>`` started a ~233k-object
+# history download on every launch that ran on orphaned, piling up partial packs. With this set the
+# probe fails fast on the missing object instead (git >= 2.44; older git ignores the variable).
+NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 
 
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
@@ -583,7 +592,7 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env=noninteractive_git_env())
+    result = bounded_probe_run(argv, timeout=timeout, env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()

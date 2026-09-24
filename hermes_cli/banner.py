@@ -179,15 +179,16 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     git output is UTF-8; on Windows ``text=True`` defaults to the ANSI code page and a byte like the
     3rd of 🐛 in a commit subject crashes the stdlib reader thread (#52649), hence the explicit
     encoding. ``network=True`` (ls-remote/fetch) detaches stdin and disables git/GCM prompts so a
-    passive update check can never hang on a ``Username for 'https://github.com':`` prompt.
+    passive update check can never hang on a ``Username for 'https://github.com':`` prompt. No probe
+    here may lazy-fetch from a partial clone's promisor remote (see ``NO_LAZY_FETCH_ENV``).
     """
-    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
 
     # The banner/update probes run from GUI-hosted backends too (desktop-spawned
     # ``hermes serve``), where a bare git child flashes a console window.
-    kwargs: dict = {"creationflags": windows_hide_flags()}
+    kwargs: dict = {"creationflags": windows_hide_flags(), "env": {**os.environ, **NO_LAZY_FETCH_ENV}}
     if network:
-        kwargs.update({"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()})
+        kwargs.update({"stdin": subprocess.DEVNULL, "env": {**noninteractive_git_env(), **NO_LAZY_FETCH_ENV}})
     try:
         return subprocess.run(
             ["git", *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
@@ -516,7 +517,7 @@ def _skip_background_prefetch() -> bool:
     (``patch("subprocess.run")`` / ``patch("subprocess.Popen")``) can record
     that stray spawn in place of the call it meant to pin.  Importing
     ``tui_gateway.server`` starts this prefetch, which is what flaked
-    tests/tui_gateway/test_subprocess_encoding.py and test_bot_relay_methods.py.
+    tests/tui_gateway/test_bot_relay_methods.py.
     Nothing under pytest needs a live update check; tests that exercise the
     prefetch itself monkeypatch this predicate to False.
 

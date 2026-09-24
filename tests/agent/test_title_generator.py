@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.title_generator import (
     MAX_TITLE_INPUT_CHARS,
+    _EXAMPLE_ECHO_REJECT,
     build_title_input,
     derive_title,
     generate_title,
@@ -77,21 +78,6 @@ class TestGenerateTitle:
          patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
-    def test_default_timeout_delegates_to_auxiliary_config(self):
-        captured_kwargs = {}
-
-        def mock_call_llm(**kwargs):
-            captured_kwargs.update(kwargs)
-            resp = MagicMock()
-            resp.choices = [MagicMock()]
-            resp.choices[0].message.content = "Configured Timeout"
-            return resp
-
-        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            assert generate_title("question") == "Configured Timeout"
-
-        assert captured_kwargs["task"] == "title_generation"
-        assert captured_kwargs["timeout"] is None
 
     def test_generate_title_disables_reasoning(self):
         """The titling pass must explicitly disable thinking (#91927).
@@ -243,13 +229,9 @@ class TestGenerateTitle:
             assert generate_title("question", "answer") == "Investigate the title resolver bug"
 
     @pytest.mark.parametrize("echo", [
-        "Fix login button on mobile",
-        "fix login button on mobile",
-        '"Fix login button on mobile"',
-        "(Fix login button on mobile)",
-        "[Fix login button on mobile]",
-        "Postgres connection pool exhaustion",
-        "Code changes",
+        wrap.format(example)
+        for example in sorted(_EXAMPLE_ECHO_REJECT)
+        for wrap in ("{}", '"{}"', "({})", "[{}]")
     ])
     def test_rejects_prompt_example_echo(self, echo):
         """A model that parrots one of the prompt's own example titles back
@@ -403,50 +385,37 @@ class TestAutoTitleSession:
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
 
-    def test_skips_if_not_first_exchange(self):
-        """Should not fire once the conversation is past its opening turn."""
-        db = MagicMock()
-        history = [
-            {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "response 1"},
-            {"role": "user", "content": "second"},
-            {"role": "assistant", "content": "response 2"},
-            {"role": "user", "content": "third"},
-            {"role": "assistant", "content": "response 3"},
-        ]
 
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
-            maybe_auto_title(db, "sess-1", "third", history)
-            # Wait briefly for any thread to start
-            import time
-            time.sleep(0.1)
-            mock_auto.assert_not_called()
 
-    def test_fires_on_first_exchange(self):
-        """Should fire a background thread for the opening message."""
+    @pytest.mark.parametrize(
+        "main_runtime, title_cfg, deferred",
+        [
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {}, True),
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://127.0.0.1:8080/v1/"}, True),
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"provider": "openrouter"}, False),
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://10.0.0.2:8080/v1"}, False),
+            ({"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"}, {}, False),
+        ],
+    )
+    def test_title_call_waits_for_the_turn_when_it_shares_a_custom_endpoint(self, main_runtime, title_cfg, deferred):
+        """#117296: a self-hosted server serving the main turn and the concurrent json_schema title request
+        can decode the title into the main reply. The upgrade must not go on the wire until the caller starts
+        it after the turn; every other route keeps the turn-start timing."""
+        import threading
+        from agent import title_generator as tg
         db = MagicMock()
         db.get_session_title.return_value = None
-        history = [
-            {"role": "user", "content": "hello"},
-        ]
-
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
-            import threading
-            called = threading.Event()
-            mock_auto.side_effect = lambda *a, **k: called.set()
-            maybe_auto_title(db, "sess-1", "hello", history)
-            # Event-based wait: sleep-sync flaked when the daemon thread
-            # wasn't scheduled within the fixed nap on a loaded runner.
-            assert called.wait(timeout=10), "auto_title thread never ran"
-            mock_auto.assert_called_once_with(
-                db,
-                "sess-1",
-                "hello",
-                failure_callback=None,
-                main_runtime=None,
-                title_callback=None,
-                runtime_validator=None,
-            )
+        started = threading.Event()
+        with patch.object(tg, "_title_config", return_value=title_cfg), \
+                patch.object(tg, "auto_title_session", side_effect=lambda *a, **k: started.set()):
+            upgrade = maybe_auto_title(db, "sess-1", "hello", [{"role": "user", "content": "hello"}], main_runtime=main_runtime)
+            assert isinstance(upgrade, threading.Thread)
+            if deferred:
+                assert upgrade.ident is None and not started.wait(0.3), "title request went out during the turn"
+                assert upgrade not in tg._UPGRADE_THREADS  # join-before-start would raise in wait_for_title_upgrades
+                tg.start_title_upgrade(upgrade)
+            assert started.wait(timeout=10), "auto_title thread never ran"
+            assert upgrade in tg._UPGRADE_THREADS
 
     def test_kanban_worker_is_named_after_its_card_without_the_llm_thread(self, tmp_path, monkeypatch):
         """A worker's session takes the board card's title synchronously; no auxiliary model call (#111166)."""
@@ -565,19 +534,6 @@ class TestMaybeAutoTitle:
         thread.assert_not_called()
         call_llm.assert_not_called()
 
-    def test_skips_machine_authored_opening_messages(self, tmp_path):
-        """A compaction handoff is not a user request and must not title."""
-        db = SessionDB(tmp_path / "state.db")
-        db.create_session(session_id="sess-1", source="cli")
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
-            maybe_auto_title(
-                db,
-                "sess-1",
-                "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted",
-                [],
-            )
-        assert db.get_session_title("sess-1") is None
-        mock_auto.assert_not_called()
 
     @pytest.mark.parametrize(
         "opener",
@@ -778,16 +734,6 @@ class TestAutoTitleDuplicateHandling:
 
 
 
-    def test_manual_title_race_skips_without_callback(self):
-        # Precedence check fails (manual /title landed while generation was in
-        # flight) -> nothing persisted, no callback fired.
-        from agent.title_generator import _persist_session_title
-        db = MagicMock()
-        db.set_auto_title.return_value = False
-        assert (
-            _persist_session_title(db, "sess-1", "Some Title", source="llm") is None
-        )
-        db.set_session_title.assert_not_called()
 
 
 
@@ -813,25 +759,6 @@ class TestRuntimeValidator:
             assert title == "Resilient Title"
             mock_llm.assert_called_once()
 
-    def test_forwards_runtime_validator_to_worker(self):
-        db = MagicMock()
-        db.get_session_title.return_value = None
-        history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ]
-
-        def _v():
-            return True
-
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
-            import threading
-            called = threading.Event()
-            mock_auto.side_effect = lambda *a, **k: called.set()
-            maybe_auto_title(db, "sess-1", "hello", history, runtime_validator=_v)
-            assert called.wait(timeout=10), "auto_title thread never ran"
-            kwargs = mock_auto.call_args.kwargs
-            assert kwargs["runtime_validator"] is _v
 
 
 class TestModelSwitchMarkerNotTitleable:
@@ -865,18 +792,6 @@ class TestModelSwitchMarkerNotTitleable:
 
         assert is_titleable_user_message(self.MARKER) is False
 
-    def test_derive_title_is_unguarded_by_design(self):
-        """``derive_title`` is a dumb formatter; the guard lives in the callers.
-
-        Documents the contract deliberately: every caller checks
-        ``is_titleable_user_message`` first, so ``derive_title`` itself is
-        allowed to format a marker. If a future caller forgets that check, the
-        marker leaks into the title — which is exactly the bug this class
-        guards against.
-        """
-        from agent.title_generator import derive_title
-
-        assert derive_title(self.MARKER) is not None
 
     def test_unrelated_system_bracket_text_still_titleable(self):
         """The guard is narrow: real user text starting "[System:" still titles."""

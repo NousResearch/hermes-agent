@@ -8,6 +8,22 @@ from gateway.run import GatewayRunner
 from gateway.status import read_runtime_status
 
 
+@pytest.fixture(autouse=True)
+def _host_attach_gate_is_not_under_test(monkeypatch):
+    """These tests exercise the STARTUP path, not the host-attach gate that now runs in front of it.
+
+    Without the stub they pass only while the shared rendezvous dir happens to be empty: any record
+    there makes ``start_gateway`` attach and return before reaching the code under test. The host
+    role claimed along the way is released afterwards, so one test's owner is not the next one's.
+    """
+    monkeypatch.setattr("gateway.run._host_attach_or_none", AsyncMock(return_value=None))
+    yield
+    from gateway import host_rendezvous as hr
+
+    hr.release_host_lock(hr.ROLE_GATEWAY)
+    hr.clear_record(hr.ROLE_GATEWAY)
+
+
 @pytest.mark.parametrize(
     "code, expected",
     [

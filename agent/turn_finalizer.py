@@ -322,9 +322,14 @@ def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_r
         1 for m in messages
         if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
     )
+    # Fork turns (background review, side questions) carry ``_turn_origin``; tagging the
+    # exit line keeps a fork's ``interrupted_during_api_call`` from reading as a killed
+    # foreground stream — the fork shares the parent's session_id and often its model (#118693).
+    _turn_origin = getattr(agent, "_turn_origin", None)
     _diag_msg = (
         "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
         "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
+        + (" origin=%s" if _turn_origin else "")
     )
     _diag_args = (
         _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
@@ -332,6 +337,7 @@ def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_r
         agent.iteration_budget.max_total if agent.iteration_budget else 0,
         _turn_tool_count, _last_msg_role, len(final_response) if final_response else 0,
         agent.session_id or "none",
+        *((_turn_origin,) if _turn_origin else ()),
     )
     if _last_msg_role == "tool" and not interrupted:
         logger.warning(
@@ -413,21 +419,16 @@ def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
     messages,
 ) -> Tuple[Any, bool, Optional[Any]]:
-    """Fire ``transform_llm_output`` then ``post_llm_call`` once per turn after the tool loop.
-    Returns ``(final_response, transformed, pre_transform_response)``."""
-    transformed, pre_transform = False, None
-    # First hook to return a string wins; None/empty leaves the text unchanged.
-    for _hook_result in _invoke_hook_safely(
-        "transform_llm_output", logger,
-        response_text=final_response,
-        session_id=agent.session_id or "",
-        model=agent.model,
-        platform=platform,
-        turn_id=turn_id,  # per-turn identity for the hook callback gate
-    ):
-        if isinstance(_hook_result, str) and _hook_result:
-            pre_transform, final_response, transformed = final_response, _hook_result, True
-            break
+    """Resolve the turn's ``transform_llm_output`` outcome, then fire ``post_llm_call`` once per
+    turn after the tool loop. Returns ``(final_response, transformed, pre_transform_response)``.
+
+    The transform itself normally already ran before the assistant row was first persisted
+    (``apply_llm_output_transform`` from ``finish_text_response`` / ``_persist_step``); this
+    call returns that recorded outcome, and only fires the hook here when no earlier seam saw a
+    response (e.g. text that only appeared through ``_explain_abnormal_exit``)."""
+    final_response, transformed, pre_transform = apply_llm_output_transform(
+        agent, final_response, turn_id=turn_id, platform=platform, logger=logger,
+    )
     # Detached forks are internal work and must not publish turns under the parent's session ID.
     if not getattr(agent, "_persist_disabled", False):
         _invoke_hook_safely(
@@ -441,6 +442,48 @@ def _apply_output_hooks(
             model=agent.model,
             platform=platform,
         )
+    return final_response, transformed, pre_transform
+
+
+def apply_llm_output_transform(
+    agent, final_response, *, turn_id, platform=None, logger=None,
+) -> Tuple[Any, bool, Optional[Any]]:
+    """Fire ``transform_llm_output`` once per turn and return
+    ``(final_response, transformed, pre_transform_response)``.
+
+    Called BEFORE the final assistant row is first persisted — from ``finish_text_response``
+    ahead of its durable flush, and from ``finalize_turn._persist_step`` ahead of the
+    recovery-path tail close — so the text the user sees is the text stored in SQLite/JSON and
+    replayed next turn (#44239). SQLite treats a non-blank assistant row as settled (a re-flush
+    adopts the stored content rather than overwriting it), so transforming after that first
+    write can never reach the durable store. Idempotent per ``turn_id``: later callers in the
+    same turn get the recorded outcome instead of a second hook firing. Only the current
+    turn's not-yet-written text is touched — earlier turns and the system prompt are never
+    rewritten (prompt-cache invariant)."""
+    if logger is None:
+        from agent.conversation_loop import logger
+    recorded = getattr(agent, "_llm_output_transform", None)
+    if isinstance(recorded, tuple) and len(recorded) == 3 and recorded[0] == turn_id:
+        _, transformed, pre_transform = recorded
+        return final_response, transformed, pre_transform
+    if not final_response:
+        return final_response, False, None
+    if platform is None:
+        platform = getattr(agent, "platform", None) or ""
+    transformed, pre_transform = False, None
+    # First hook to return a string wins; None/empty leaves the text unchanged.
+    for _hook_result in _invoke_hook_safely(
+        "transform_llm_output", logger,
+        response_text=final_response,
+        session_id=agent.session_id or "",
+        model=agent.model,
+        platform=platform,
+        turn_id=turn_id,  # per-turn identity for the hook callback gate
+    ):
+        if isinstance(_hook_result, str) and _hook_result:
+            pre_transform, final_response, transformed = final_response, _hook_result, True
+            break
+    agent._llm_output_transform = (turn_id, transformed, pre_transform)
     return final_response, transformed, pre_transform
 
 
@@ -483,6 +526,10 @@ def finalize_turn(
     _rollback_interrupted_preflight_display(agent, interrupted)
 
     _cleanup_errors: List[str] = []
+    # The model has answered (or the loop gave up): a title upgrade held back because it shares a
+    # self-hosted endpoint with the main request (#117296) may go out now.
+    from agent.turn_context import start_deferred_title_upgrade
+    _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
     _guarded_cleanup(
         "save_trajectory",
@@ -504,6 +551,12 @@ def finalize_turn(
         final_response, _recovered_from_stream = _recover_final_from_stream(
             agent, final_response, interrupted, failed
         )
+        # Recovery paths (stream-recovered / prior-turn text) reach here with a response no
+        # earlier seam transformed; the normal text turn already did this before its flush and
+        # gets the recorded outcome back. Either way the tail close below writes the text the
+        # user will see, never the raw model text (#44239).
+        if final_response and not interrupted:
+            final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger)

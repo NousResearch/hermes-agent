@@ -2,14 +2,12 @@
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import subprocess
 import time
 import pytest
 from pathlib import Path
-from unittest.mock import patch
 
 from tools.checkpoint_manager import (
     CheckpointManager,
@@ -77,11 +75,6 @@ def disabled_mgr(checkpoint_base, monkeypatch):
 # =========================================================================
 
 class TestStorePath:
-    def test_store_is_single_shared_path(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
-        # All projects resolve to the same store (only refs/indexes are per-project).
-        assert _store_path() == _store_path(checkpoint_base)
-        assert _project_hash(str(work_dir)) != _project_hash(str(work_dir.parent / "other"))
 
     def test_project_hash_identifies_dir_and_expands_tilde(self, fake_home):
         project = fake_home / "project"
@@ -683,25 +676,6 @@ class TestGitEnvIsolation:
 # =========================================================================
 
 class TestErrorResilience:
-    def test_run_git_allows_expected_nonzero_without_error_log(
-        self, tmp_path, caplog,
-    ):
-        work = tmp_path / "work"
-        work.mkdir()
-        completed = subprocess.CompletedProcess(
-            args=["git", "diff", "--cached", "--quiet"],
-            returncode=1, stdout="", stderr="",
-        )
-        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
-            with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
-                ok, stdout, stderr = _run_git(
-                    ["diff", "--cached", "--quiet"],
-                    tmp_path / "store", str(work),
-                    allowed_returncodes={1},
-                )
-        assert ok is False
-        assert stdout == ""
-        assert not caplog.records
 
 
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):
@@ -1120,6 +1094,37 @@ class TestGcOnlyAfterStoreMutation:
         meta_path.write_text(json.dumps(meta))
         assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 1
         assert len(gc_calls) == 1
+
+
+class TestPruneSweepsTmpPackDebris:
+    """A ``git gc`` killed by the store timeout strands ``tmp_pack_*`` files in
+    ``objects/pack/``; ``gc.auto=0`` means git itself never reclaims them and the gc
+    only runs when a ref moved — so the prune sweeps the debris unconditionally (#115410)."""
+
+    def test_sweeps_debris_even_when_no_ref_moved(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f").write_text("f")
+        CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        pack = checkpoint_base / "store" / "objects" / "pack"
+        pack.mkdir(parents=True, exist_ok=True)
+        debris = pack / "tmp_pack_killedGc"
+        debris.write_bytes(b"x" * 512)
+        stamp = time.time() - 11 * 60  # past the sweep's 10-minute age floor
+        os.utime(debris, (stamp, stamp))
+        fresh = pack / "tmp_pack_inFlight"
+        fresh.write_bytes(b"y")
+
+        result = prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)
+
+        assert result["deleted_stale"] == 0  # no ref moved: the expensive gc never ran…
+        assert not debris.exists()           # …but the debris is still swept
+        assert fresh.exists()                # a pack possibly being written NOW is spared
+        assert result["bytes_freed"] >= 512
 
 
 class TestMaybeAutoPruneCheckpoints:

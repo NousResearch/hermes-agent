@@ -15,13 +15,13 @@ Agent payments via Stripe Link — cards, SPT, approvals.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/payments/stripe-link-cli` |
-| Path | `optional-skills/payments\stripe-link-cli` |
+| Path | `optional-skills/payments/stripe-link-cli` |
 | Version | `0.1.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Payments`, `Stripe`, `Link`, `Checkout`, `MPP` |
-| Related skills | [`mpp-agent`](./payments-mpp-agent.md), [`stripe-projects`](./payments-stripe-projects.md) |
+| Related skills | [`mpp-agent`](../../optional/payments/payments-mpp-agent.md), [`stripe-projects`](../../optional/payments/payments-stripe-projects.md) |
 
 ## Reference: full SKILL.md
 

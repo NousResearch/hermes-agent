@@ -58,11 +58,21 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     for entry in candidates():
         try:
             if entry.is_file() and (st := entry.stat()).st_mtime < cutoff:
+                if os.name == "nt":
+                    # git renames its transfer temps into place read-only; Windows refuses to
+                    # unlink a read-only file (EACCES/13), so without clearing the write bit
+                    # this sweep silently removes nothing on real debris (#116384).
+                    try:
+                        os.chmod(entry, 0o666)
+                    except OSError:
+                        pass
                 entry.unlink()
                 removed.append(str(entry))
                 log_removed(entry, st.st_size)
-        except OSError:
-            logger.debug("Could not clear %s (skipping)", entry, exc_info=True)
+        except OSError as exc:
+            # A cleaner that fails silently is worse than none: debug-level skips hid the
+            # Windows read-only unlink failure for months while debris grew to gigabytes.
+            logger.warning("Could not clear %s (skipping): %s", entry, exc)
     return removed
 
 
@@ -82,8 +92,12 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
-    """Remove aborted-fetch temp pack files under ``.git/objects/pack``; same contract as clear_stale_git_locks."""
-    pack_dir = Path(repo_root) / ".git" / "objects" / "pack"
+    """Remove aborted-transfer temp pack files; same contract as clear_stale_git_locks.
+
+    Resolves ``.git/objects/pack`` for a checkout and ``objects/pack`` for a bare repo such as
+    the checkpoint store — a ``git gc`` killed by a timeout strands the same debris there."""
+    git_dir = Path(repo_root) / ".git"
+    pack_dir = (git_dir if git_dir.is_dir() else Path(repo_root)) / "objects" / "pack"
 
     def _candidates():
         try:

@@ -249,8 +249,8 @@ class MCPServerRunMixin:
             entry = (_config._load_mcp_config() or {}).get(self.name)
             if entry is None:
                 return False
-            from tools.mcp_tool_common import _parse_boolish
-            return _parse_boolish(entry.get("enabled", True), default=True)
+            from tools.mcp_tool_common import mcp_server_enabled
+            return mcp_server_enabled(entry)
         except Exception:
             return True
 
@@ -284,12 +284,15 @@ class MCPServerRunMixin:
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
             # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
+            from tools.mcp_liveness import liveness_for
             if (config.get("transport") != "sse" and not config.get("skip_preflight")
+                    and liveness_for(self.name).kind != "server_json"
                     and not self._ready.is_set() and self._auth_type != "oauth"):
                 await self._preflight_content_type(
                     config["url"], headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
-                    client_cert=_errors._resolve_client_cert(self.name, config))
+                    client_cert=_errors._resolve_client_cert(self.name, config),
+                    strict_redirect_headers=bool(config.get("strict_redirect_headers")))
         except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:
             logger.warning("%s", exc)
             self._publish_error(exc)  # fail fast and non-retryably

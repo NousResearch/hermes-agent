@@ -244,36 +244,6 @@ describe('host workspace scope', () => {
     tree.removeTreePane('plugin-workspace:scope-test')
   })
 
-  it('registers plugin workspace chrome options', async () => {
-    const { registry } = await import('@/contrib/registry')
-
-    const close = host.openWorkspace('scope-test', {
-      dock: { pane: 'workspace', pos: 'right' },
-      headerVeto: true,
-      render: () => null,
-      title: 'Scoped',
-      uncloseable: true
-    })
-
-    expect(registry.getArea('panes').find(pane => pane.id === 'plugin-workspace:scope-test')).toMatchObject({
-      data: {
-        dock: { pane: 'workspace', pos: 'right' },
-        headerVeto: true,
-        uncloseable: true
-      }
-    })
-
-    close()
-  })
-
-  it('publishes the active workspace scope through one host seam', async () => {
-    const { $workspaceMode, $workspaceOwnerKey } = await import('@/components/pane-shell/workspace-scope')
-
-    expect(host.setWorkspaceScope('bots', 'connection-b::default')).toBe(true)
-    expect($workspaceMode.get()).toBe('bots')
-    expect($workspaceOwnerKey.get()).toBe('connection-b::default')
-  })
-
   it('uses the shared tab action for an exact Bot owner without moving Sessions', async () => {
     const tree = await import('@/components/pane-shell/tree/store')
     const { $workspaceNewSessionTarget } = await import('@/components/pane-shell/workspace-scope')

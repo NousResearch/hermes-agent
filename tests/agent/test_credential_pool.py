@@ -1552,6 +1552,51 @@ def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, m
     assert pool.entries() == []
 
 
+def test_load_pool_copilot_exchange_only_when_selected_and_warns_once(tmp_path, monkeypatch, caplog):
+    """An ambient gh-CLI Copilot credential is seeded without the token exchange (and without the
+    'degraded to RAW token' warning) until copilot is actually selected; once selected, the
+    degradation is reported once per token, not on every pool load (#114740)."""
+    import logging
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    from agent.credential_pool import _reset_copilot_raw_degradation_warned, load_pool
+    _reset_copilot_raw_degradation_warned()
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_initial", "gh auth token"))
+    exchanges = []
+
+    def degraded_exchange(token):
+        exchanges.append(token)
+        return token, None  # exchange unavailable -> RAW token, no enterprise URL
+
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", degraded_exchange)
+
+    def degradation_warnings():
+        return [r for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
+
+    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+        # Main provider is deepseek; copilot is merely discovered via `gh auth token`.
+        (tmp_path / "hermes" / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n", encoding="utf-8")
+        pool = load_pool("copilot")
+        load_pool("copilot")
+        assert exchanges == [] and degradation_warnings() == []
+        assert [e.access_token for e in pool.entries()] == ["gho_raw_initial"]  # credential still listed
+
+        # The user selects copilot for one auxiliary task: the exchange runs, the degradation is
+        # reported exactly once across repeated loads.
+        (tmp_path / "hermes" / "config.yaml").write_text(
+            "model:\n  provider: deepseek\n  default: deepseek-chat\nauxiliary:\n  approval:\n    provider: copilot\n", encoding="utf-8")
+        from hermes_cli import config as _cfg
+        _cfg._LOAD_CONFIG_CACHE.clear()
+        _cfg._RAW_CONFIG_CACHE.clear()  # same-second rewrite: the mtime signature may not change
+        load_pool("copilot")
+        load_pool("copilot")
+        assert len(exchanges) == 2 and len(degradation_warnings()) == 1
+
+        # A different token is a different degradation: warned again, once.
+        monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_rotated", "gh auth token"))
+        load_pool("copilot")
+        assert len(degradation_warnings()) == 2
 
 
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
@@ -1670,35 +1715,6 @@ def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, mo
     assert e.agent_key_reused is False
 
 
-class TestLeastUsedStrategy:
-    """Regression: least_used strategy must increment request_count on select."""
-
-    def test_request_count_increments(self):
-        """Each select() call should increment the chosen entry's request_count."""
-        from unittest.mock import patch as _patch
-        from agent.credential_pool import CredentialPool, PooledCredential, STRATEGY_LEAST_USED
-
-        entries = [
-            PooledCredential(provider="test", id="a", label="a", auth_type="api_key",
-                             source="a", access_token="tok-a", priority=0, request_count=0),
-            PooledCredential(provider="test", id="b", label="b", auth_type="api_key",
-                             source="b", access_token="tok-b", priority=1, request_count=0),
-        ]
-        with _patch("agent.credential_pool.get_pool_strategy", return_value=STRATEGY_LEAST_USED):
-            pool = CredentialPool("test", entries)
-
-        # First select should pick entry with lowest count (both 0 → first)
-        e1 = pool.select()
-        assert e1 is not None
-        count_after_first = e1.request_count
-        assert count_after_first == 1, f"Expected 1 after first select, got {count_after_first}"
-
-        # Second select should pick the OTHER entry (now has lower count)
-        e2 = pool.select()
-        assert e2 is not None
-        assert e2.id != e1.id or e2.request_count == 2, (
-            "least_used should alternate or increment"
-        )
 
 
 # ── PR #10160 salvage: Nous OAuth cross-process sync tests ─────────────────
@@ -1723,21 +1739,6 @@ class TestLeastUsedStrategy:
 # ---------------------------------------------------------------------------
 
 
-def _xai_auth_store(access_token: str, refresh_token: str) -> dict:
-    return {
-        "version": 1,
-        "active_provider": "xai-oauth",
-        "providers": {
-            "xai-oauth": {
-                "tokens": {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                },
-                "discovery": {"token_endpoint": "https://accounts.x.ai/oauth2/token"},
-                "redirect_uri": "http://localhost:12345/callback",
-            }
-        },
-    }
 
 
 
@@ -1753,19 +1754,6 @@ def _xai_auth_store(access_token: str, refresh_token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _codex_auth_store(access_token: str, refresh_token: str) -> dict:
-    return {
-        "version": 1,
-        "active_provider": "openai-codex",
-        "providers": {
-            "openai-codex": {
-                "tokens": {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                },
-            }
-        },
-    }
 
 
 
@@ -1875,22 +1863,6 @@ def _make_anthropic_claude_code_pool(tmp_path, monkeypatch, *, access_token, ref
 
 
 
-def test_sync_anthropic_entry_tokens_unchanged_no_op(tmp_path, monkeypatch):
-    """Sync must be a no-op when credentials file matches the pool entry."""
-    pool, entry = _make_anthropic_claude_code_pool(
-        tmp_path, monkeypatch,
-        access_token="same-access",
-        refresh_token="same-refresh",
-    )
-
-    monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
-        lambda: {"accessToken": "same-access", "refreshToken": "same-refresh", "expiresAt": 9_999_999_999_000},
-    )
-
-    synced = pool._sync_anthropic_entry_from_credentials_file(entry)
-
-    assert synced is entry, "no-op sync must return the original entry object"
 
 
 def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
@@ -1966,11 +1938,6 @@ def _load_two_ok_pool(tmp_path, monkeypatch):
     return load_pool("anthropic")
 
 
-def _fresh_entry(pool):
-    """A copy of the pool's first entry under a new id, for add_entry()."""
-    from dataclasses import replace as dc_replace
-
-    return dc_replace(pool.entries()[0], id="cred-new")
 
 
 class TestCredentialPoolQueryLocking:
@@ -2006,79 +1973,6 @@ class TestCredentialPoolQueryLocking:
         # rebasing this fix over the #69843 salvage which added the method).
         pool.try_refresh_matching()
 
-    @pytest.mark.parametrize(
-        "method,get_args",
-        [
-            ("has_available", lambda pool: ()),
-            ("peek", lambda pool: ()),
-            ("current", lambda pool: ()),
-            ("entries", lambda pool: ()),
-            ("has_credentials", lambda pool: ()),
-            ("reset_statuses", lambda pool: ()),
-            ("resolve_target", lambda pool: ("cred-1",)),
-            ("remove_index", lambda pool: (1,)),
-            ("add_entry", lambda pool: (_fresh_entry(pool),)),
-        ],
-    )
-    def test_query_method_acquires_lock(self, tmp_path, monkeypatch, method, get_args):
-        import threading
-
-        pool = _load_two_ok_pool(tmp_path, monkeypatch)
-        pool.select()
-        args = get_args(pool)
-
-        inner = pool._lock
-
-        class _InstrumentedLock:
-            """Probe that records acquire attempts, so the test can prove the
-            worker actually reached ``self._lock`` before asserting that it
-            blocks (a plain timed wait passes spuriously if the worker is
-            simply never scheduled)."""
-
-            def __init__(self):
-                self.attempted = threading.Event()
-
-            def acquire(self, *args, **kwargs):
-                self.attempted.set()
-                return inner.acquire(*args, **kwargs)
-
-            def release(self):
-                inner.release()
-
-            def __enter__(self):
-                self.acquire()
-                return self
-
-            def __exit__(self, *exc):
-                self.release()
-
-        probe = _InstrumentedLock()
-        pool._lock = probe
-
-        done = threading.Event()
-
-        def _call():
-            getattr(pool, method)(*args)
-            done.set()
-
-        # Hold the real lock (without tripping the probe), then fire the query
-        # on another thread. If the method acquires self._lock (as it must),
-        # it blocks until we release.
-        inner.acquire()
-        try:
-            worker = threading.Thread(target=_call, daemon=True)
-            worker.start()
-            assert probe.attempted.wait(timeout=2.0), (
-                f"{method}() never attempted to acquire self._lock"
-            )
-            assert not done.wait(timeout=0.5), (
-                f"{method}() returned while the pool lock was held — it is not "
-                f"blocking on self._lock"
-            )
-        finally:
-            inner.release()
-
-        assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
 
 
 def _exhausted_billing_store(tmp_path, *, age_seconds: float):

@@ -11,6 +11,7 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 import asyncio
 import contextlib
 import contextvars
+from dataclasses import dataclass
 import errno
 import html
 import importlib.util as _importlib_util
@@ -151,6 +152,49 @@ async def acquire_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE
         raise
 
 
+@contextlib.contextmanager
+def hold_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS):
+    """Blocking twin of :func:`acquire_refresh_fence` for synchronous writers that must not
+    interleave with a refresh generation: an owner revoking a shared pool takes it so no participant
+    can persist a rotated token after the deletion (resurrecting the revoked grant). Waits for an
+    in-flight refresh to publish, then holds the fence for the ``with`` body. Fails closed like the
+    async form: ``RefreshFenceTimeout`` if the fence cannot be taken."""
+    lock_path = _refresh_lock_path(path)
+    from hermes_constants import mkdir_under_hermes_home
+
+    try:
+        mkdir_under_hermes_home(lock_path.parent)
+        secure_parent_dir(lock_path)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise RefreshFenceTimeout(f"refresh fence unavailable ({lock_path.name}): {exc}") from exc
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
+                else:  # pragma: no cover - no advisory locking primitive
+                    raise RefreshFenceTimeout("refresh fence unsupported: no flock/msvcrt on this platform")
+                break
+            except OSError as exc:
+                if exc.errno not in _FENCE_CONTENTION_ERRNOS:
+                    raise RefreshFenceTimeout(f"refresh fence unavailable on this filesystem: {exc}") from exc
+                if time.monotonic() >= deadline:
+                    raise RefreshFenceTimeout(
+                        f"refresh fence held by a peer for {timeout:.0f}s ({lock_path.name})") from None
+                time.sleep(0.05)
+    except BaseException:
+        os.close(fd)
+        raise
+    try:
+        yield
+    finally:
+        release_refresh_fence(fd)
+
+
 def release_refresh_fence(fd: int) -> None:
     """Unlock and close a descriptor returned by ``acquire_refresh_fence``. Never raises."""
     try:
@@ -231,21 +275,58 @@ _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
 _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 
 
-def _load_mcp_server_config(home: Path, server_name: str) -> dict[str, Any] | None:
-    """One raw ``mcp_servers`` entry from *home*'s ``config.yaml``; None when absent or unreadable.
-    Uses the as-written primitive, not the profile-aware loader, which would inherit or resolve
-    values the export contract requires verbatim."""
+# config.yaml path -> ((mtime_ns, size, ino), parsed mapping). The shared-pool authority is re-checked
+# before every request, so parse only when the file changed (the steady state costs one ``stat``).
+_CONFIG_CACHE: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+_CONFIG_CACHE_LOCK = threading.Lock()
+
+
+_CONFIG_UNREADABLE = object()
+
+
+def _read_config_as_written(home: Path) -> Any:
+    """*home*'s ``config.yaml`` exactly as written: a dict, None when there is no file, or
+    ``_CONFIG_UNREADABLE``. Cached on :func:`utils.file_signature` (ctime included, so a same-size
+    rewrite with a pinned mtime is still seen); the signature is re-checked after the read so a
+    write racing the parse is never cached under the old key.
+
+    Uses the as-written primitive, not the profile-aware loaders: the export contract compares the
+    entries verbatim, and an overlay, inherited value or ``${VAR}`` expansion would change what two
+    profiles appear to agree on. This read decides credential sharing, not runtime behavior."""
     import yaml
 
     from hermes_cli.config import read_user_config_raw
+    from utils import file_signature
 
+    path = home / "config.yaml"
     try:
-        data = read_user_config_raw(home / "config.yaml")
-    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        sig = file_signature(path.stat())
+    except FileNotFoundError:
         return None
+    except OSError:
+        return _CONFIG_UNREADABLE
+    with _CONFIG_CACHE_LOCK:
+        cached = _CONFIG_CACHE.get(str(path))
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    try:
+        data = read_user_config_raw(path)
+        stable = file_signature(path.stat()) == sig
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        return _CONFIG_UNREADABLE
+    if stable:
+        with _CONFIG_CACHE_LOCK:
+            _CONFIG_CACHE[str(path)] = (sig, data)
+    return data
+
+
+def _load_mcp_server_config(home: Path, server_name: str) -> dict[str, Any] | None:
+    """One as-written ``mcp_servers`` entry from *home*'s ``config.yaml``; None when absent or
+    unreadable (callers that must tell those apart use :func:`_read_config_as_written`)."""
+    data = _read_config_as_written(home)
     servers = data.get("mcp_servers") if isinstance(data, dict) else None
     entry = servers.get(server_name) if isinstance(servers, dict) else None
-    return entry if isinstance(entry, dict) else None
+    return dict(entry) if isinstance(entry, dict) else None
 
 
 def _contains_config_reference(value: Any) -> bool:
@@ -294,8 +375,9 @@ def _shared_token_home(active_home: Path, server_name: str, *, requested: dict |
 
     *requested* is the entry actually being connected or authorized when that may differ from
     the one on disk (an edit being authorized before it is saved, a provider built from a live
-    config): its ``url`` and ``oauth`` block must match the root's too, or a grant for another
-    endpoint/client would be written into — and presented from — the shared pool.
+    config). Its WHOLE identity (``auth``, ``url``, ``transport``, ``oauth``) must match the root's
+    too, or a grant for another endpoint/client/transport would be written into — and presented
+    from — the shared pool.
     """
     from hermes_constants import named_profile_home
 
@@ -315,12 +397,116 @@ def _shared_token_home(active_home: Path, server_name: str, *, requested: dict |
             "MCP OAuth '%s': root token pool export ignored — the profile's OAuth identity differs "
             "or one side carries a dynamic ${...} reference", server_name)
         return active_home
-    if requested is not None:
-        wanted = _shared_server_identity({**profile_entry, "url": requested.get("url"),
-                                          "oauth": requested.get("oauth")})
-        if wanted != root_identity:
-            return active_home
+    if requested is not None and _shared_server_identity(_requested_identity(requested)) != root_identity:
+        return active_home
     return root_home
+
+
+def _requested_identity(requested: dict) -> dict:
+    """The identity fields of a pending entry, taken from that entry alone — never merged over the
+    saved one, where a stale saved ``transport`` would vouch for an edit that changes it."""
+    return {"auth": requested.get("auth", "oauth"), "url": requested.get("url"),
+            "transport": requested.get("transport"), "oauth": requested.get("oauth")}
+
+
+class OAuthAuthorityUnavailableError(OAuthStorageDetachedError):
+    """Authority could not be re-proved right now (a ``config.yaml`` is unreadable). The request
+    fails closed, but the provider is NOT detached: it proceeds again once the file reads."""
+
+
+def _storage_fingerprint(entry: Any) -> str | None:
+    """Everything that decides where a server's grant lives and what it is for, verbatim (dynamic
+    references included, unlike :func:`_shared_server_identity`): auth, url, transport and the
+    oauth block minus the export flag, which never changes the owner's own storage."""
+    if not isinstance(entry, dict):
+        return None
+    fields = _requested_identity(entry)
+    if isinstance(fields["oauth"], dict):
+        fields["oauth"] = {k: v for k, v in fields["oauth"].items() if k != "share_with_profiles"}
+    return json.dumps(fields, sort_keys=True, default=str)
+
+
+@dataclass(frozen=True)
+class PoolAuthority:
+    """What a provider was granted when it was built, re-proved from disk before every use.
+
+    Profiles run as separate processes, so an owner's withdrawal can only reach a live provider
+    through disk. Four durable facts are checked, none of them in-memory state:
+
+    * ``.removed`` tombstone next to the pool (the owner removed the server);
+    * the pool's ``.epoch`` — advanced by every owner revocation and by lifting a tombstone, so a
+      provider that sleeps through remove + re-add, or an A -> B -> A identity change, still sees
+      that the grant it holds is not the pool's current one;
+    * this home's own saved entry — any storage-identity change revokes, local pools included;
+    * for a shared pool, re-resolving it from both ``config.yaml`` files (export off, root
+      identity changed, root entry gone), whether the change was saved or hand-edited.
+
+    A token file that is merely absent (a sibling re-authorizing) is none of these, so it never
+    revokes."""
+    pool_path: str
+    hermes_home: str
+    server_name: str
+    requested: dict | None
+    saved_fingerprint: str | None
+    epoch: str | None
+
+    @classmethod
+    def capture(cls, pool_path: str, hermes_home: str | Path, server_name: str,
+                requested: dict | None) -> "PoolAuthority":
+        home = Path(hermes_home)
+        return cls(pool_path=pool_path, hermes_home=str(home), server_name=server_name,
+                   requested=dict(requested) if requested is not None else None,
+                   saved_fingerprint=_storage_fingerprint(_load_mcp_server_config(home, server_name)),
+                   epoch=read_pool_epoch(Path(pool_path)))
+
+    def revocation(self) -> tuple[str, bool] | None:
+        """``(reason, permanent)`` when this authority no longer holds, else None. ``permanent`` is
+        False only when authority could not be read — the caller fails closed without detaching."""
+        pool = Path(self.pool_path)
+        if _pool_sidecar(pool, ".removed").exists():
+            return "the server was removed by the pool's owner", True
+        if read_pool_epoch(pool) != self.epoch:
+            return "the pool's owner revoked the grant this provider was built with", True
+        home = Path(self.hermes_home)
+        homes = [home]
+        from hermes_constants import named_profile_home
+        if named_profile_home(home) == home:
+            homes.append(home.parent.parent)
+        if any(_read_config_as_written(h) is _CONFIG_UNREADABLE for h in homes):
+            return "a config.yaml is unreadable, so pool authority cannot be proved", False
+        current = _storage_fingerprint(_load_mcp_server_config(home, self.server_name))
+        if current != self.saved_fingerprint and current != _storage_fingerprint(self.requested):
+            return "this profile's server entry changed since the provider was built", True
+        own = (home / "mcp-tokens" / f"{_safe_filename(self.server_name)}.json").resolve(strict=False)
+        if pool != own:
+            resolved = _get_token_dir(home, server_name=self.server_name, requested=self.requested)
+            if (resolved / f"{_safe_filename(self.server_name)}.json").resolve(strict=False) != pool:
+                return "the pool's owner no longer shares it with this profile", True
+        return None
+
+
+def _pool_sidecar(pool: Path, suffix: str) -> Path:
+    return pool.with_name(pool.name[: -len(".json")] + suffix)
+
+
+def read_pool_epoch(pool: Path) -> str | None:
+    """The pool's revocation epoch, or None before its first revocation. An unreadable epoch reads
+    as a value no provider holds, so it fails closed."""
+    path = _pool_sidecar(pool, ".epoch")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return "unreadable"
+    return str(data.get("epoch")) if isinstance(data, dict) else "unreadable"
+
+
+def advance_pool_epoch(pool: Path) -> None:
+    """Invalidate every provider built against *pool* so far, in every process."""
+    import secrets
+
+    _write_json(_pool_sidecar(pool, ".epoch"), {"epoch": secrets.token_hex(16)})
 
 
 def _get_token_dir(hermes_home: str | Path | None = None, *, server_name: str | None = None,
@@ -721,22 +907,32 @@ class HermesTokenStorage:
         :meth:`unblock_rebuild`."""
         # The ``.refresh.lock`` sidecar is deliberately kept: flock is inode-bound, so unlinking it
         # while a peer holds the fence would let the next acquirer lock a fresh inode (two holders).
+        if permanent:
+            # Tombstone BEFORE deleting: live providers in other processes check it before each use,
+            # so there is no window where the grant is gone but a peer could still re-mint into it.
+            _write_json(self._removed_path(), {"removed": True})
+            advance_pool_epoch(self._tokens_path())
         for p in (self._tokens_path(), self._client_info_path(), self._cimd_rejected_path(),
                   self._client_backup_path(), *(() if keep_metadata else (self._meta_path(),))):
             p.unlink(missing_ok=True)
-        if permanent:
-            _write_json(self._removed_path(), {"removed": True})
 
     def _client_backup_path(self) -> Path:
         client_path = self._client_info_path()
         return client_path.with_name(client_path.name + ".bak")
+
+    def write_removal_tombstone(self) -> None:
+        """Mark the pool permanently removed (see :meth:`remove`), without deleting anything yet."""
+        _write_json(self._removed_path(), {"removed": True})
 
     def rebuild_blocked(self) -> bool:
         """True while a permanent-removal tombstone stands for this pool."""
         return self._removed_path().exists()
 
     def unblock_rebuild(self) -> None:
-        """Clear the tombstone: the server was re-added or explicitly re-authorized."""
+        """Clear the tombstone: the server was re-added or explicitly re-authorized. The epoch
+        advances too, so a provider that slept through remove + re-add never serves the new pool."""
+        if self._removed_path().exists():
+            advance_pool_epoch(self._tokens_path())
         self._removed_path().unlink(missing_ok=True)
 
     def snapshot(self) -> dict[str, bytes]:

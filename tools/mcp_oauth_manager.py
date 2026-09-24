@@ -38,6 +38,7 @@ class _ProviderEntry:
     server_url: str
     oauth_config: Optional[dict]
     pool_path: str = ""
+    transport: Optional[str] = None
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -212,6 +213,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             self._log_nonfatal("invalid_client detection", exc)
 
     async def async_auth_flow(self, request):  # type: ignore[override]
+        self._hermes_assert_authority()
         if self._hermes_detached:
             from tools.mcp_oauth import OAuthStorageDetachedError
             raise OAuthStorageDetachedError(
@@ -264,12 +266,17 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
+            import anyio
             if resource_lock_released:
                 # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
                 # flow mid-request; shield only this local bookkeeping.
-                import anyio
                 with anyio.CancelScope(shield=True):
                     await self.context.lock.acquire()
+            # Close the inner flow NOW when this one is abandoned mid-refresh (cancellation, timeout,
+            # transport teardown): its ``finally`` releases the cross-process refresh fence, which an
+            # owner's revocation waits on. Left to the async-generator finalizer it could stay held.
+            with anyio.CancelScope(shield=True):
+                await inner.aclose()
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()
@@ -289,7 +296,8 @@ class MCPOAuthManager:
         # Strong refs to in-flight 401 tasks so the loop's weak bookkeeping cannot GC them mid-run.
         self._inflight_tasks: set[asyncio.Task] = set()
 
-    def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict]) -> Optional[Any]:
+    def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict], *,
+                              transport: Optional[str] = None) -> Optional[Any]:
         """Cached OAuth provider for ``server_name``, built on first use; None if the MCP SDK's OAuth
         support is unavailable or the pool is tombstoned (``remove(..., block_rebuild=True)``).
 
@@ -300,8 +308,8 @@ class MCPOAuthManager:
         from tools.mcp_oauth import HermesTokenStorage
 
         key = self._key(server_name)
-        requested_storage = HermesTokenStorage(
-            server_name, hermes_home=key[0], requested={"url": server_url, "oauth": oauth_config})
+        requested = {"url": server_url, "oauth": oauth_config, "transport": transport}
+        requested_storage = HermesTokenStorage(server_name, hermes_home=key[0], requested=requested)
         requested_pool = requested_storage.pool_path
         requested_config = dict(oauth_config or {})
         with self._entries_lock:
@@ -317,13 +325,21 @@ class MCPOAuthManager:
                 if entry.pool_path == requested_pool:
                     HermesTokenStorage(server_name, hermes_home=key[0], token_dir=Path(entry.pool_path).parent).remove()
                 entry = None
+            if entry is not None and entry.transport != transport:
+                # Same endpoint, client and pool (any pool move was handled above): the grant is still
+                # valid for the new transport, so keep the pool and just rebuild the provider.
+                entry = None
             if entry is None:
                 entry = self._entries[key] = _ProviderEntry(
-                    server_url=server_url, oauth_config=requested_config, pool_path=requested_pool)
+                    server_url=server_url, oauth_config=requested_config, pool_path=requested_pool,
+                    transport=transport)
             if entry.provider is None:
                 entry.provider = self._build_provider(server_name, entry)
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
+                    from tools.mcp_oauth import PoolAuthority
+                    entry.provider._hermes_authority = PoolAuthority.capture(
+                        requested_pool, key[0], server_name, requested)
             return entry.provider
 
     @staticmethod
@@ -396,12 +412,33 @@ class MCPOAuthManager:
                        else HermesTokenStorage(server_name, hermes_home=hermes_home))
             target = storage.pool_path
             fenced = 0
-            if detach_participants or block_rebuild:
+            revoking = detach_participants or block_rebuild
+            if revoking:
                 siblings = [k for k, e in self._entries.items() if self._entry_pool(e) == target]
                 for participant in (entry, *(self._entries.pop(k) for k in siblings)):
                     if participant is not None and participant.provider is not None:
                         self._detach_provider(participant.provider)
                         fenced += 1
+        # Disk work happens outside ``_entries_lock``: a same-process refresh holding the fence must be
+        # able to finish (it may touch the manager) before we can take the fence below.
+        if revoking:
+            from tools.mcp_oauth import hold_refresh_fence
+            # An owner revocation reaches OTHER processes through disk: the tombstone and the config
+            # the caller already saved, both re-checked by every provider before each use. Delete
+            # under the refresh fence so a participant's in-flight refresh either persists first (and
+            # is deleted here) or re-checks authority under the fence afterwards and fails closed —
+            # it can never write a rotated grant back over the revocation.
+            from tools.mcp_oauth import advance_pool_epoch
+            # Revocation is durable BEFORE we wait: once the epoch (and, for a removal, the tombstone)
+            # is on disk, every provider re-checking authority fails closed — including one whose
+            # in-flight refresh we are about to wait for, which re-checks under the fence. So even a
+            # fence timeout below leaves no participant able to use or re-mint the grant.
+            advance_pool_epoch(Path(target))
+            if block_rebuild:
+                storage.write_removal_tombstone()
+            with hold_refresh_fence(Path(target)):
+                storage.remove(permanent=block_rebuild)
+        else:
             storage.remove(permanent=block_rebuild)
         logger.info("MCP OAuth '%s': removed disk state at %s (%d fenced participant provider(s))", server_name, target, fenced)
         return entry

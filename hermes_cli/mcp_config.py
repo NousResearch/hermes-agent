@@ -656,7 +656,8 @@ def _configure_http_auth(
         oauth_ok = False
         try:
             from tools.mcp_oauth_manager import get_manager
-            if get_manager().get_or_build_provider(name, url, server_config.get("oauth")):
+            if get_manager().get_or_build_provider(name, url, server_config.get("oauth"),
+                                                  transport=server_config.get("transport")):
                 server_config["auth"] = "oauth"
                 _success("OAuth configured (tokens will be acquired on first connection)")
                 oauth_ok = True

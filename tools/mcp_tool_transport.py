@@ -452,7 +452,8 @@ class MCPServerTransportMixin:
             return None
         try:
             from tools.mcp_oauth_manager import get_manager
-            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"),
+                                                       transport=config.get("transport"))
         except Exception as exc:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise

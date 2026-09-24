@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth import HermesTokenStorage, PoolAuthority
 logger = logging.getLogger(__name__)
 
 # Authorization servers that advertise ``authorization_response_iss_parameter_supported`` and then
@@ -88,6 +88,9 @@ class HermesProviderMixin:
     - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
 
     _hermes_logger: logging.Logger = logger
+    # ``(pool_path, hermes_home, server_name, requested)`` when the provider reads a pool it must keep
+    # re-proving its right to (``tools.mcp_oauth.shared_pool_revocation``); None skips the check.
+    _hermes_authority: "PoolAuthority | None" = None
 
     def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -303,6 +306,9 @@ class HermesProviderMixin:
         self._coerce_client_secret_post()
         await self._hermes_acquire_refresh_fence()
         try:
+            # Under the fence an owner's revocation cannot interleave: it either finished (and this
+            # check sees it) or waits until our rotated grant is persisted, then deletes it.
+            self._hermes_assert_authority()
             # Re-read under the fence: a peer may have rotated while we waited
             # for it, in which case the token we were about to POST is dead.
             # If disk already holds a different refresh token, the peer that held
@@ -412,7 +418,40 @@ class HermesProviderMixin:
                 self.context.oauth_metadata = meta
         enforce_refresh_token_issuer(self.context)
 
+    def _hermes_assert_authority(self) -> None:
+        """Fail closed when the pool's owner has withdrawn this provider's right to it (another process
+        may have done so: the check reads the on-disk tombstone and config, not in-memory state).
+        Drops the in-memory grant too, so nothing already loaded can still be presented."""
+        if self._hermes_authority is None:
+            return
+        from tools.mcp_oauth import OAuthAuthorityUnavailableError, OAuthStorageDetachedError
+        verdict = self._hermes_authority.revocation()
+        if verdict is None:
+            return
+        reason, permanent = verdict
+        name = self._hermes_authority.server_name
+        if not permanent:
+            # Unknown is not revoked: fail this request closed, keep the provider, retry next time.
+            raise OAuthAuthorityUnavailableError(f"MCP OAuth '{name}': {reason}")
+        self.context.clear_tokens()
+        self._hermes_detached = True
+        raise OAuthStorageDetachedError(f"MCP OAuth '{name}': {reason}; reconnect to build a fresh provider")
+
     async def _store_tokens(self, token_response) -> None:
+        if self._hermes_fence is None and self._hermes_authority is not None:
+            # A fresh authorization (not a refresh, which already holds the fence and re-proved
+            # authority under it): write only while the fence excludes an owner's revocation, and only
+            # if authority still stands — a grant minted after withdrawal must not land in the pool.
+            await self._hermes_acquire_refresh_fence()
+            try:
+                self._hermes_assert_authority()
+                await self._hermes_store_tokens(token_response)
+            finally:
+                await self._hermes_release_refresh_fence()
+            return
+        await self._hermes_store_tokens(token_response)
+
+    async def _hermes_store_tokens(self, token_response) -> None:
         self.context.current_tokens = token_response
         self.context.update_token_expiry(token_response)
         bind_issuer_from_context(self.context)

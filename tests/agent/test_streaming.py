@@ -1255,7 +1255,9 @@ class TestAnthropicStreamCallbacks:
         assert seen_tools[1][0]["eager_input_streaming"] is False
 
     def test_anthropic_partial_tool_names_do_not_survive_into_next_attempt(self):
-        """A tool name from a failed attempt cannot leak into a later native-stream retry."""
+        """A tool name from an attempt that died before any text is attempt-local: when the
+        retry streams plain text and then drops, the partial stub must not blame ``old_tool``
+        (that would also make the third attempt look mid-tool-call and thus retryable)."""
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1269,17 +1271,6 @@ class TestAnthropicStreamCallbacks:
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
 
-        recovered_stream = MagicMock()
-        recovered_stream.__enter__ = MagicMock(return_value=recovered_stream)
-        recovered_stream.__exit__ = MagicMock(return_value=False)
-        recovered_stream.__iter__ = MagicMock(return_value=iter([
-            SimpleNamespace(type="content_block_delta",
-                            delta=SimpleNamespace(type="text_delta", text="Recovered")),
-            SimpleNamespace(type="message_stop"),
-        ]))
-        recovered_stream.get_final_message.return_value = SimpleNamespace(
-            content=[SimpleNamespace(type="text", text="Recovered")], stop_reason="end_turn"
-        )
         attempts = [
             _AnthropicEventStream([SimpleNamespace(type="content_block_start",
                                      content_block=SimpleNamespace(type="tool_use", name="old_tool"))],
@@ -1287,22 +1278,21 @@ class TestAnthropicStreamCallbacks:
             _AnthropicEventStream([SimpleNamespace(type="content_block_delta",
                                      delta=SimpleNamespace(type="text_delta", text="Plain answer."))],
                     ConnectionError("connection dropped")),
-            recovered_stream,
         ]
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.side_effect = lambda **kwargs: attempts.pop(0)
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
         emitted = []
-        # Native Anthropic text is held until message_stop, so the dropped second
-        # attempt remains retryable and cannot be persisted as a partial answer.
+        # A real consumer: delivered text is recorded, so the second attempt counts as
+        # partial delivery (a bare _fire_stream_delta override records nothing).
         agent.stream_delta_callback = emitted.append
 
         response = agent._interruptible_streaming_api_call(
             {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
 
-        assert agent._anthropic_client.messages.stream.call_count == 3
-        assert response.content[0].text == "Recovered"
-        assert emitted == ["Recovered"]
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert "old_tool" not in (response.choices[0].message.content or "")
+        assert not any("old_tool" in t for t in emitted)
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(

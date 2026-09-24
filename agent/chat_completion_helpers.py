@@ -3270,7 +3270,6 @@ class _StreamingCall(StreamingWaitMonitor):
         # message_start); shims may fabricate a contentless Message. All -> EmptyStreamError.
         saw_stream_event = False
         saw_message_stop = False
-        pending_deltas = []
         self.last_chunk_time["t"] = time.time()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
@@ -3328,9 +3327,9 @@ class _StreamingCall(StreamingWaitMonitor):
                     if delta_type == "text_delta":
                         text = getattr(delta, "text", "")
                         if text and not has_tool_use:
-                            pending_deltas.append(("text", text))
+                            self._emit_text(text)
                     elif delta_type == "thinking_delta" and getattr(delta, "thinking", ""):
-                        pending_deltas.append(("reasoning", delta.thinking))
+                        self._emit_reasoning(delta.thinking)
             raw_stream = _stream_context["stream"]
             if not self.agent._interrupt_requested and raw_stream is not None:
                 if not saw_message_stop:
@@ -3359,21 +3358,11 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if self.agent._interrupt_requested:
             return None
-        def _flush_completed_deltas():
-            for kind, text in pending_deltas:
-                if kind == "text":
-                    self._emit_text(text)
-                else:
-                    self._emit_reasoning(text)
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
-                response = self._check_anthropic_message(base_final_message)
-                _flush_completed_deltas()
-                return response
-        response = self._check_anthropic_message(accumulator.response(base_final_message))
-        _flush_completed_deltas()
-        return response
+                return self._check_anthropic_message(base_final_message)
+        return self._check_anthropic_message(accumulator.response(base_final_message))
 
     # ── retry loop ──────────────────────────────────────────────────────
 

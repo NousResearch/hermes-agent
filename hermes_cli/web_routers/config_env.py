@@ -55,6 +55,11 @@ _CATEGORY_ORDER = [
 ]
 
 
+def _is_current_redacted_value(submitted: str, current: Any) -> bool:
+    """Whether a form posted the display preview of its unchanged secret."""
+    return bool(current) and submitted == redact_key(str(current))
+
+
 @contextlib.contextmanager
 def _env_write_errors(log_msg: str, *, http_passthrough: bool):
     """``ValueError`` -> 400 with its message (save/remove_env_value reject
@@ -295,9 +300,12 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     with _env_write_errors("PUT /api/env failed", http_passthrough=False):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
-        return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
-        )
+        def _save():
+            if _is_current_redacted_value(body.value, load_env().get(body.key)):
+                return {"ok": True, "key": body.key, "preserved": True}
+            return save_provider_env_credential(body.key, body.value)
+
+        return await scoped_to_thread(body.profile or profile, _save)
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -619,10 +627,13 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     # See #69449.
     env_var = custom_endpoint_key_env(endpoint_id)
     submitted_key = body.api_key.strip() if body.api_key is not None else None
+    current_key = load_env().get(env_var) or str(entry.get("api_key") or "").strip()
+    current_preview = f"${{{entry['key_env']}}}" if entry.get("key_env") else ""
     if submitted_key:
-        save_env_value(env_var, submitted_key)
-        entry["key_env"] = env_var
-        entry.pop("api_key", None)
+        if not (_is_current_redacted_value(submitted_key, current_key) or submitted_key == current_preview):
+            save_env_value(env_var, submitted_key)
+            entry["key_env"] = env_var
+            entry.pop("api_key", None)
     elif submitted_key is not None:
         # Blank field means "clear the key", not "leave it alone".
         remove_env_value(env_var)

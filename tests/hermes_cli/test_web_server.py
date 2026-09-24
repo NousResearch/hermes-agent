@@ -2142,6 +2142,54 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert endpoint["has_api_key"] is True
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
 
+    def test_masked_secret_submissions_preserve_existing_env_credentials(self):
+        """Saving a dashboard preview must not replace its live secret (#121002)."""
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_env, save_env_value
+
+        env_key = "OPENAI_API_KEY"
+        env_secret = "sk-env-secret-1234567890"
+        save_env_value(env_key, env_secret)
+        env_preview = self.client.get("/api/env").json()[env_key]["redacted_value"]
+        assert self.client.put("/api/env", json={"key": env_key, "value": env_preview}).status_code == 200
+        assert get_env_value(env_key) == env_secret
+
+        channel_key = "WECOM_SECRET"
+        channel_secret = "channel-secret-1234567890"
+        save_env_value(channel_key, channel_secret)
+        channels = self.client.get("/api/messaging/platforms").json()["platforms"]
+        wecom = next(platform for platform in channels if platform["id"] == "wecom")
+        channel_preview = next(field for field in wecom["env_vars"] if field["key"] == channel_key)["redacted_value"]
+        assert self.client.put(
+            "/api/messaging/platforms/wecom", json={"env": {channel_key: channel_preview}}
+        ).status_code == 200
+        assert get_env_value(channel_key) == channel_secret
+
+        endpoint_secret = "endpoint-secret-1234567890"
+        assert self.client.post("/api/providers/custom-endpoints", json={
+            "id": "masked-endpoint", "name": "Masked endpoint",
+            "base_url": "https://masked.example.com/v1", "model": "masked-model",
+            "api_key": endpoint_secret,
+        }).status_code == 200
+        endpoint = next(item for item in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+                        if item["id"] == "masked-endpoint")
+        assert self.client.post("/api/providers/custom-endpoints", json={
+            "id": endpoint["id"], "name": endpoint["name"], "base_url": endpoint["base_url"],
+            "model": endpoint["model"], "api_key": endpoint["api_key_preview"],
+        }).status_code == 200
+        assert load_env()[custom_endpoint_key_env("masked-endpoint")] == endpoint_secret
+
+        replacement = "endpoint-replacement-1234567890"
+        assert self.client.post("/api/providers/custom-endpoints", json={
+            "id": endpoint["id"], "name": endpoint["name"], "base_url": endpoint["base_url"],
+            "model": endpoint["model"], "api_key": replacement,
+        }).status_code == 200
+        assert load_env()[custom_endpoint_key_env("masked-endpoint")] == replacement
+        assert self.client.post("/api/providers/custom-endpoints", json={
+            "id": endpoint["id"], "name": endpoint["name"], "base_url": endpoint["base_url"],
+            "model": endpoint["model"], "api_key": "",
+        }).status_code == 200
+        assert custom_endpoint_key_env("masked-endpoint") not in load_env()
+
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
         from hermes_cli.config import load_config, save_config

@@ -26,6 +26,7 @@ from gateway.status import (
     retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
+from hermes_cli.web_routers.config_env import _is_current_redacted_value
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
@@ -880,6 +881,8 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                 _check_allowed(key)
                 trimmed = value.strip()
                 if trimmed:
+                    if _is_current_redacted_value(trimmed, load_env().get(key)):
+                        continue
                     _validate_messaging_env_value(platform_id, key, trimmed)
                     save_env_value(key, trimmed)
 

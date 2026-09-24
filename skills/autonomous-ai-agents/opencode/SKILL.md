@@ -22,6 +22,8 @@ Use [OpenCode](https://opencode.ai) as an autonomous coding worker orchestrated 
 - You need long-running coding sessions with progress checks
 - You want parallel task execution in isolated workdirs/worktrees
 
+Use `claude-code` when the user names Claude Code and `codex` when they name Codex; do not substitute one external agent for another silently.
+
 ## Prerequisites
 
 - OpenCode installed: `npm i -g opencode-ai@latest` or `brew install anomalyco/tap/opencode`

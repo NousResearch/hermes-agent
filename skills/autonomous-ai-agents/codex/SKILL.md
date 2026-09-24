@@ -15,12 +15,15 @@ metadata:
 
 Delegate coding tasks to [Codex](https://github.com/openai/codex) via the Hermes terminal. Codex is OpenAI's autonomous coding agent CLI.
 
-## When to use
+## When to Use
 
-- Building features
-- Refactoring
-- PR reviews
-- Batch issue fixing
+- The user explicitly asks for Codex or an OpenAI coding agent.
+- Building features.
+- Refactoring.
+- PR reviews.
+- Batch issue fixing.
+
+Use `claude-code` when the user names Claude Code and `opencode` when they name OpenCode; do not substitute one external agent for another silently.
 
 Requires the codex CLI and a git repository.
 

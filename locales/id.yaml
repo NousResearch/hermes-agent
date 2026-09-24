@@ -1,0 +1,478 @@
+# Katalog pesan-statis Hermes -- Bahasa Indonesia (terjemahan dari bahasa Inggris)
+#
+# Hanya pesan statis yang menghadap pengguna dari prompt persetujuan CLI dan beberapa
+# balasan perintah garis miring (slash-command) gateway yang ada di sini. Output buatan agen, baris
+# log, pelacakan balik (traceback) kesalahan, output alat, dan deskripsi perintah garis miring tetap
+# dalam bahasa Inggris dan TIDAK diterjemahkan -- lihat agent/i18n.py untuk rasionalisasi cakupannya.
+#
+# Kunci-kuncinya adalah jalur bertitik; penyarangan di bawah ini murni untuk kemudahan membaca. Nilai mungkin
+# berisi token {placeholder} untuk substitusi str.format. Saat menambahkan
+# kunci baru, tambahkan ke SETIAP file lokal (en/zh/ja/de/es/fr/tr/uk/id) pada commit yang sama --
+# tests/agent/test_i18n.py memastikan kesetaraan katalog.
+
+approval:
+  # Prompt persetujuan CLI -- ditampilkan saat perintah berbahaya membutuhkan tinjauan pengguna.
+  dangerous_header: "⚠️  PERINTAH BERBAHAYA: {description}"
+  choose_long:     "      [o]nce (sekali)  |  [s]ession (sesi)  |  [a]lways (selalu)  |  [d]eny (tolak)"
+  choose_short:    "      [o]nce (sekali)  |  [s]ession (sesi)  |  [d]eny (tolak)"
+  prompt_long:     "      Pilihan [o/s/a/D]: "
+  prompt_short:    "      Pilihan [o/s/D]: "
+  choose_smart_deny: "      [o]nce (sekali)  |  [d]eny (tolak)"
+  prompt_smart_deny: "      Pilihan [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
+  timeout:         "      ⏱ Tidak ada jawaban dalam {waited} — perintah tidak dijalankan. Minta lagi untuk mengulang, atau naikkan batasnya: hermes config set approvals.timeout {suggested}"
+  allowed_once:    "      ✓ Diizinkan sekali"
+  allowed_session: "      ✓ Diizinkan untuk sesi ini"
+  allowed_always:  "      ✓ Ditambahkan ke daftar izin permanen"
+  denied:          "      ✗ Ditolak"
+  cancelled:       "      ✗ Dibatalkan"
+  blocklist_message: "Perintah ini ada di daftar blokir mutlak dan tidak dapat disetujui."
+
+gateway:
+  # Balasan Messenger untuk perintah garis miring dan perubahan status implisit.
+  approval_expired: "⚠️ Persetujuan kedaluwarsa (agen tidak lagi menunggu). Minta agen untuk mencoba lagi."
+  draining:         "⏳ Menguras {count} agen aktif sebelum memulai ulang..."
+  goal_cleared:     "✓ Tujuan dihapus."
+  no_active_goal:   "Tidak ada tujuan aktif."
+  config_read_failed: "⚠️ Tidak dapat membaca config.yaml: {error}"
+  config_save_failed: "⚠️ Tidak dapat menyimpan konfigurasi: {error}"
+
+  # Output perintah /model -- ditampilkan setelah peralihan model atau saat mencantumkan model.
+  # Nama penyedia, ID model, string kemampuan, dan angka biaya TIDAK
+  # diterjemahkan -- ini adalah pengidentifikasi/nilai, bukan prosa. Hanya label
+  # ("Penyedia:", "Konteks:", dll.) dan baris bantuan/footer yang dilokalkan.
+  model:
+    error_prefix:           "Kesalahan: {error}"
+    switched:               "Model dialihkan ke `{model}`"
+    provider_label:         "Penyedia: {provider}"
+    context_label:          "Konteks: {tokens} token"
+    max_output_label:       "Output maks: {tokens} token"
+    cost_label:             "Biaya: {cost}"
+    capabilities_label:     "Kemampuan: {capabilities}"
+    prompt_caching_enabled: "Caching prompt: diaktifkan"
+    warning_prefix:         "Peringatan: {warning}"
+    saved_global:           "Disimpan ke config.yaml (`--global`)"
+    session_only_hint:      "_(hanya sesi — tambahkan `--global` untuk menyimpan permanen)_"
+    current_label:          "Saat ini: `{model}` di {provider}"
+    current_tag:            " (saat ini)"
+    more_models_suffix:     " (+{count} lainnya)"
+    usage_switch_model:     "`/model <nama>` — ganti model"
+    usage_switch_provider:  "`/model <nama> --provider <slug>` — ganti penyedia"
+    usage_persist:          "`/model <nama> --global` — simpan permanen"
+
+  agents:
+    header:                "🤖 **Agen & Tugas Aktif**"
+    active_agents:         "**Agen aktif:** {count}"
+    this_chat:             " · obrolan ini"
+    more:                  "... dan {count} lainnya"
+    running_processes:     "**Proses latar belakang yang berjalan:** {count}"
+    async_jobs:            "**Pekerjaan asinkron gateway:** {count}"
+    background_delegations: "**Delegasi latar belakang:** {count}"
+    none:                  "Tidak ada agen aktif atau tugas yang berjalan."
+    state_starting:        "memulai"
+    state_running:         "berjalan"
+
+  approve:
+    no_pending:            "Tidak ada perintah tertunda untuk disetujui."
+    once_singular:         "✅ Perintah disetujui. Agen sedang melanjutkan..."
+    once_plural:           "✅ Perintah disetujui ({count} perintah). Agen sedang melanjutkan..."
+    session_singular:      "✅ Perintah disetujui (pola disetujui untuk sesi ini). Agen sedang melanjutkan..."
+    session_plural:        "✅ Perintah disetujui (pola disetujui untuk sesi ini) ({count} perintah). Agen sedang melanjutkan..."
+    always_singular:       "✅ Perintah disetujui (pola disetujui secara permanen). Agen sedang melanjutkan..."
+    always_plural:         "✅ Perintah disetujui (pola disetujui secara permanen) ({count} perintah). Agen sedang melanjutkan..."
+
+  background:
+    usage:                 "Penggunaan: /bg <prompt>\nContoh: /bg Ringkas berita utama HN hari ini\n\nMenjalankan prompt dalam sesi terpisah. Anda dapat terus mengobrol — hasilnya akan muncul di sini jika sudah selesai."
+    started:               "🔄 Tugas latar belakang dimulai: \"{preview}\"\nID Tugas: {task_id}\nAnda dapat terus mengobrol — hasil akan muncul jika sudah selesai."
+
+  btw:
+    usage:                 "Penggunaan: /btw <pertanyaan>\nContoh: /btw kesalahan itu ada di file mana?\n\nMenjawab pertanyaan sampingan singkat tentang percakapan ini tanpa mengganggunya. Untuk tugas latar belakang independen, gunakan /bg <prompt>."
+    no_history:            "Belum ada percakapan — kirim pertanyaan Anda sebagai pesan normal sebagai gantinya."
+    no_provider:           "❌ Tidak dapat menjawab pertanyaan sampingan: tidak ada kredensial penyedia yang dikonfigurasi."
+    started:               "💬 Pertanyaan sampingan: \"{preview}\"\nMenjawab dari cuplikan (snapshot) percakapan ini — pekerjaan saat ini terus berlanjut."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw gagal: \"{preview}\"\n{error}"
+
+  branch:
+    db_unavailable:        "Basis data sesi tidak tersedia."
+    no_conversation:       "Tidak ada percakapan untuk dicabangkan — kirim pesan terlebih dahulu."
+    create_failed:         "Gagal membuat cabang: {error}"
+    switch_failed:         "Cabang dibuat tetapi gagal beralih ke sana."
+    branched_one:          "⑂ Bercabang ke **{title}** ({count} pesan disalin)\nAsli: `{parent}`\nCabang: `{new}`\nGunakan `/resume` untuk beralih kembali ke aslinya."
+    branched_many:         "⑂ Bercabang ke **{title}** ({count} pesan disalin)\nAsli: `{parent}`\nCabang: `{new}`\nGunakan `/resume` untuk beralih kembali ke aslinya."
+    branched_thread_one:   "⑂ Bercabang ke **{title}** di utas baru ({count} pesan disalin)\nUtas: {thread}\nAsli: `{parent}` — obrolan ini tetap di sana\nCabang: `{new}`\nGunakan `/branch --here` untuk bercabang di obrolan ini sebagai gantinya."
+    branched_thread_many:  "⑂ Bercabang ke **{title}** di utas baru ({count} pesan disalin)\nUtas: {thread}\nAsli: `{parent}` — obrolan ini tetap di sana\nCabang: `{new}`\nGunakan `/branch --here` untuk bercabang di obrolan ini sebagai gantinya."
+    thread_fallback:       "Tidak ada utas yang dapat dibuat di sini, sehingga cabang ini menggantikan sesi obrolan ini."
+
+  commands:
+    usage:                 "Penggunaan: `/commands [halaman]`"
+    skill_header:          "⚡ **Perintah Keterampilan**:"
+    default_desc:          "Perintah keterampilan"
+    none:                  "Tidak ada perintah yang tersedia."
+    header:                "📚 **Perintah** (total {total}, halaman {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← sblmnya"
+    nav_next:              "berikutnya → `/commands {page}`"
+    out_of_range:          "_(Halaman yang diminta {requested} berada di luar jangkauan, menampilkan halaman {page}.)_"
+
+  compress:
+    not_enough:            "Percakapan tidak cukup untuk dikompresi (butuh setidaknya 4 pesan)."
+    no_provider:           "Tidak ada penyedia yang dikonfigurasi -- tidak dapat mengompresi."
+    nothing_to_do:         "Belum ada yang dapat dikompresi (transkrip masih berupa konteks yang dilindungi seluruhnya)."
+    aggressive_unsupported: "--aggressive tidak didukung; gunakan '/compress here [N]' untuk menyimpan hanya pertukaran terbaru, atau /undo untuk membuang giliran."
+    focus_line:            "Fokus: \"{topic}\""
+    summary_failed:        "⚠️ Pembuatan ringkasan gagal ({error}). {count} pesan historis telah dihapus dan diganti dengan placeholder; konteks sebelumnya tidak dapat dipulihkan lagi. Pertimbangkan untuk memeriksa konfigurasi model auxiliary.compression Anda."
+    aborted:               "⚠️ Kompresi dibatalkan ({error}). Tidak ada pesan yang dibuang — percakapan tidak berubah. Jalankan /compress untuk mencoba lagi, /reset untuk sesi yang bersih, atau periksa konfigurasi model auxiliary.compression Anda."
+    aux_failed:            "ℹ️ Model kompresi yang dikonfigurasi `{model}` gagal ({error}). Dipulihkan menggunakan model utama Anda — konteks utuh — tetapi Anda mungkin perlu memeriksa `auxiliary.compression.model` di config.yaml."
+    turnhold_deferred:     "ℹ️ Kompresi konteks ditangguhkan — ringkasan masih diproses secara streaming. Melanjutkan tanpa kompresi pada giliran ini."
+    failed:                "Kompresi gagal: {error}"
+
+  debug:
+    upload_failed:         "✗ Gagal mengunggah laporan debug: {error}"
+    header:                "**Laporan debug diunggah:**"
+    auto_delete:           "⏱ Tempelan akan dihapus otomatis dalam 6 jam."
+    full_logs_hint:        "Untuk unggahan log lengkap, gunakan `hermes debug share` dari CLI."
+    share_hint:            "Bagikan tautan ini ke tim Hermes untuk mendapatkan dukungan."
+
+  deny:
+    stale:                 "❌ Perintah ditolak (persetujuan sudah usang)."
+    no_pending:            "Tidak ada perintah tertunda untuk ditolak."
+    denied_singular:       "❌ Perintah ditolak."
+    denied_plural:         "❌ Perintah ditolak ({count} perintah)."
+    denied_reason_singular: "❌ Perintah ditolak. Alasan disampaikan ke agen: \"{reason}\""
+    denied_reason_plural:  "❌ Perintah ditolak ({count} perintah). Alasan disampaikan ke agen: \"{reason}\""
+
+  fast:
+    not_supported:         "⚡ /fast hanya tersedia untuk model OpenAI yang mendukung Priority Processing (Pemrosesan Prioritas)."
+    status:                "⚡ Pemrosesan Prioritas\n\nMode saat ini: `{mode}`\n\n_Penggunaan:_ `/fast <normal|fast|auto|cold|status>`"
+    unknown_arg:           "⚠️ Argumen tidak dikenal: `{arg}`\n\n**Opsi yang valid:** normal, fast, auto, cold, status"
+    saved:                 "⚡ ✓ Pemrosesan Prioritas: **{label}** (disimpan ke konfigurasi)\n_(berlaku pada pesan berikutnya)_"
+    session_only:          "⚡ ✓ Pemrosesan Prioritas: **{label}** (hanya untuk sesi ini)"
+    label_fast:            "CEPAT (FAST)"
+    label_normal:          "NORMAL"
+    status_fast:           "fast (cepat)"
+    status_normal:         "normal"
+    picker_title:          "⚡ **Pemrosesan Prioritas**\n\nMode saat ini: `{mode}`\n\nPilih opsi:"
+    choice_fast:           "fast — Pemrosesan Prioritas aktif"
+    choice_normal:         "normal — pemrosesan standar"
+    choice_auto:           "auto — cepat untuk detik-detik pertama pada setiap giliran"
+    choice_cold:           "cold — cepat hanya untuk giliran pertama sebuah sesi"
+
+  footer:
+    status:                "📎 Footer runtime: **{state}**\nBidang: `{fields}`\nPlatform: `{platform}`"
+    usage:                 "Penggunaan: `/footer [on|off|status]`"
+    saved:                 "📎 Footer runtime: **{state}**{example}\n_(disimpan secara global — berlaku pada pesan berikutnya)_"
+    example_line:          "\nContoh: `{preview}`"
+    state_on:              "AKTIF (ON)"
+    state_off:             "NONAKTIF (OFF)"
+
+  goal:
+    unavailable:           "Tujuan (Goals) tidak tersedia di sesi ini."
+    no_goal_set:           "Tidak ada tujuan yang ditetapkan."
+    paused:                "⏸ Tujuan dijeda: {goal}"
+    no_resume:             "Tidak ada tujuan untuk dilanjutkan."
+    resumed:               "▶ Tujuan dilanjutkan: {goal}\nMelanjutkan sekarang — saya akan mengambil langkah berikutnya segera."
+    invalid:               "Tujuan tidak valid: {error}"
+    set:                   "⊙ Tujuan ditetapkan (anggaran {budget}-giliran): {goal}\nSaya akan terus bekerja sampai tujuan selesai, Anda menjeda/menghapusnya, atau anggaran habis.\nKontrol: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Perintah Hermes**\n"
+    skill_header:          "\n⚡ **Perintah Keterampilan** ({count} aktif):"
+    more_use_commands:     "\n... dan {count} lainnya. Gunakan `/commands` untuk daftar berhalaman lengkap."
+
+  insights:
+    invalid_days:          "Nilai --days tidak valid: {value}"
+    error:                 "Kesalahan saat menghasilkan wawasan: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kesalahan kanban: {error}"
+    subscribed_suffix:     "(berlangganan — Anda akan diberi tahu saat {task_id} selesai atau diblokir)"
+    truncated_suffix:      "… (terpotong; gunakan `hermes kanban …` di terminal Anda untuk output lengkap)"
+    no_output:             "(tidak ada output)"
+    wake:
+      completed:           "selesai"
+      gave_up:             "menyerah (percobaan ulang habis)"
+      crashed:             "mengalami kerusakan (pekerja keluar); dispatcher akan mencoba lagi"
+      timed_out:           "waktu habis; dispatcher akan mencoba lagi"
+      blocked:             "terblokir; membutuhkan perhatian"
+      review_requested:    "diserahkan untuk peninjauan; implementasi telah selesai"
+      changes_requested:   "peninjau meminta perubahan (BLOKIR); implementasi tidak disetujui"
+      block_loop_detected: "diarahkan ke triase setelah blokir berulang; butuh perhatian orkestrasi"
+      status_default:      "status berubah"
+      status_joiner:       ", "
+      message:             "[kanban] Tugas {task_id} {status}.\nJudul: {title}\nPenerima Tugas: @{assignee}\nPapan: {board}\n\nPeriksa hasilnya atau tentukan langkah selanjutnya."
+      handoff:             "Hasil: {summary}"
+      review_detail:       "Ulasan balasan: {reason}\nPeriksa kartu yang ada dan proses ulasannya saat ini; kembalikan pekerjaan ke tugas implementasi yang sama. Jangan anggap BLOKIR ini sebagai persetujuan dan jangan buat tugas duplikat."
+      guidance:            "Ini adalah pemberitahuan status tugas otomatis, bukan permintaan untuk mengurai tugas lagi. Periksa papan saat ini sebelum membuat tugas lanjutan; jangan buat ulang tugas atau grafik yang sudah ada."
+
+  personality:
+    none_configured:       "Tidak ada kepribadian yang dikonfigurasi dalam `{path}/config.yaml`"
+    header:                "🎭 **Kepribadian yang Tersedia**\n"
+    none_option:           "• `none` — (tidak ada overlay kepribadian)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nPenggunaan: `/personality <nama>`"
+    save_failed:           "⚠️ Gagal menyimpan perubahan kepribadian: {error}"
+    cleared:               "🎭 Kepribadian dihapus — menggunakan perilaku agen dasar.\n_(berlaku pada pesan berikutnya)_"
+    set_to:                "🎭 Kepribadian ditetapkan ke **{name}**\n_(berlaku pada pesan berikutnya)_"
+    unknown:               "Kepribadian tidak dikenal: `{name}`\n\nTersedia: {available}"
+
+  profile:
+    header:                "👤 **Profil:** `{profile}`"
+    home:                  "📂 **Beranda:** `{home}`"
+
+  reasoning:
+    level_default:             "menengah (bawaan)"
+    level_disabled:            "tidak ada (dinonaktifkan)"
+    scope_session:             "timpa sesi"
+    scope_global:              "konfigurasi global"
+    status:                    "🧠 **Pengaturan Penalaran**\n\n**Upaya:** `{level}`\n**Cakupan:** {scope}\n**Tampilan:** {display}\n\n_Penggunaan:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
+    display_on:                "aktif ✓"
+    display_off:               "nonaktif"
+    display_set_on:            "🧠 ✓ Tampilan penalaran: **AKTIF**\nPemikiran model akan ditampilkan sebelum setiap balasan di **{platform}**."
+    display_set_off:           "🧠 ✓ Tampilan penalaran: **NONAKTIF** untuk **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` tidak didukung. Gunakan `/reasoning <level> --global` untuk mengubah bawaan global."
+    reset_done:                "🧠 ✓ Timpa penalaran sesi dihapus; kembali ke konfigurasi global."
+    unknown_arg:               "⚠️ Argumen tidak dikenal: `{arg}`\n\n**Level yang valid:** none, minimal, low, medium, high, xhigh, max, ultra\n**Tampilan:** show, hide\n**Simpan permanen:** tambahkan `--global` untuk menyimpan di luar sesi ini"
+    picker_title:              "🧠 **Pengaturan Penalaran**\n\n**Upaya:** `{level}`\n**Cakupan:** {scope}\n**Tampilan:** {display}\n\nPilih opsi:"
+    choice_none:               "none — nonaktifkan penalaran"
+    choice_reset:              "reset — hapus timpa (override) sesi"
+    choice_show:               "tampilkan penalaran di balasan"
+    choice_hide:               "sembunyikan penalaran dari balasan"
+    set_global:                "🧠 ✓ Upaya penalaran ditetapkan ke `{effort}` (disimpan ke konfigurasi)\n_(berlaku pada pesan berikutnya)_"
+    set_global_save_failed:    "🧠 ✓ Upaya penalaran ditetapkan ke `{effort}` (hanya sesi — simpan konfigurasi gagal)\n_(berlaku pada pesan berikutnya)_"
+    set_session:               "🧠 ✓ Upaya penalaran ditetapkan ke `{effort}` (hanya sesi — tambahkan `--global` untuk mempermanenkan)\n_(berlaku pada pesan berikutnya)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp dibatalkan. Alat MCP tidak berubah."
+    always_followup:       "ℹ️ Panggilan `/reload-mcp` di masa depan akan berjalan tanpa konfirmasi. Aktifkan kembali via `approvals.mcp_reload_confirm: true` di config.yaml."
+    confirm_prompt:        "⚠️ **Konfirmasi /reload-mcp**\n\nMemuat ulang server MCP akan membangun ulang set alat untuk sesi ini dan **membatalkan cache prompt penyedia** — pesan berikutnya akan mengirim ulang token input lengkap. Pada model konteks-panjang atau penalaran-tinggi, ini bisa memakan biaya besar.\n\nPilih:\n• **Setujui Sekali** — muat ulang sekarang\n• **Selalu Setujui** — muat ulang sekarang dan bungkam prompt ini secara permanen\n• **Batal** — biarkan alat MCP tidak berubah\n\n_Fallback Teks: balas `/approve`, `/always`, atau `/cancel`._"
+    header:                "🔄 **Server MCP Dimuat Ulang**\n"
+    reconnected:           "♻️ Disambungkan kembali: {names}"
+    added:                 "➕ Ditambahkan: {names}"
+    removed:               "➖ Dihapus: {names}"
+    none_connected:        "Tidak ada server MCP yang terhubung."
+    tools_available:       "\n🔧 {tools} alat tersedia dari {servers} server"
+    failed:                "❌ Muat ulang MCP gagal: {error}"
+
+  reload_skills:
+    header:                "🔄 **Keterampilan Dimuat Ulang**\n"
+    no_new:                "Tidak ada keterampilan baru yang terdeteksi."
+    total:                 "\n📚 {count} keterampilan tersedia"
+    added_header:          "➕ **Keterampilan yang Ditambahkan:**"
+    removed_header:        "➖ **Keterampilan yang Dihapus:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Muat ulang keterampilan gagal: {error}"
+
+  reset:
+    header_default:        "✨ Sesi direset! Memulai dari awal."
+    header_new:            "✨ Sesi baru dimulai!"
+    header_titled:         "✨ Sesi baru dimulai: {title}"
+    title_rejected:        "\n⚠️ Judul ditolak: {error}"
+    title_error_untitled:  "\n⚠️ {error} — sesi dimulai tanpa judul."
+    title_empty_untitled:  "\n⚠️ Judul kosong setelah pembersihan — sesi dimulai tanpa judul."
+    tip:                   "\n✦ Tip: {tip}"
+
+  restart:
+    in_progress:           "⏳ Proses mulai ulang gateway sedang berlangsung..."
+    restarting:            "♻ Memulai ulang gateway. Jika Anda tidak diberi tahu dalam 60 detik, mulai ulang dari konsol dengan `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "Basis data sesi tidak tersedia."
+    parse_error:           "⚠️ Tidak dapat mengurai argumen `/resume`: {error}.\nGunakan tanda kutip di sekitar judul dengan spasi, contoh: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Tidak ada sesi bernama yang ditemukan untuk ruang Matrix ini.\nGunakan `/title Sesi Saya` untuk menamai sesi ruang saat ini, `/resume --all` untuk mendaftar semua sesi Matrix, atau `/resume --cross-room <nama sesi>` untuk secara eksplisit melintasi batas ruang."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume diblokir: sesi bernama ini tidak memiliki asal ruang yang tercatat, jadi Hermes tidak akan melanjutkannya di dalam ruang ini secara default. Gunakan `/resume --cross-room {name}` jika Anda secara sengaja ingin melintasi batas ruang."
+    matrix_blocked_other_room: "⚠️ Matrix /resume diblokir: sesi tersebut milik ruang Matrix yang berbeda ({room}). Gunakan `/resume --cross-room {name}` jika Anda secara sengaja ingin melanjutkannya di sini."
+    matrix_cross_room_success: "⚠️ Cross-room resume: melanjutkan **{title}** di dalam ruang Matrix **{room}**.\nPesan berikutnya di ruang ini akan menggunakan transkrip tersebut hingga ada `/reset` atau `/resume` lainnya.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume diblokir: '**{name}**' milik pengguna atau obrolan lain. Anda hanya dapat melanjutkan sesi dari obrolan ini."
+    no_named_sessions:     "Tidak ada sesi bernama yang ditemukan.\nGunakan `/title Sesi Saya` untuk menamai sesi Anda saat ini, lalu `/resume Sesi Saya` untuk kembali ke sesi tersebut nanti."
+    all_requires_admin: "_Catatan: `--all` (daftar lintas-obrolan) membutuhkan admin yang dikonfigurasi; hanya menampilkan sesi obrolan ini._"
+    list_header:           "📋 **Sesi Bernama**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nPenggunaan: `/resume <nama sesi>`"
+    list_footer_numbered:  "\nPenggunaan: `/resume <nama sesi>` atau `/resume <nomor>` (mis. `/resume 1` untuk yang paling baru)"
+    list_failed:           "Tidak dapat mendaftar sesi: {error}"
+    out_of_range:          "Indeks lanjutkan (resume) {index} berada di luar jangkauan.\nGunakan `/resume` tanpa argumen untuk melihat sesi yang tersedia."
+    not_found:             "Tidak ada sesi yang ditemukan dengan nama '**{name}**'.\nGunakan `/resume` tanpa argumen untuk melihat sesi yang tersedia."
+    already_on:            "📌 Sudah berada di sesi **{name}**."
+    switch_failed:         "Gagal beralih sesi."
+    resumed_one:           "↻ Melanjutkan sesi **{title}** ({count} pesan). Percakapan dipulihkan."
+    resumed_many:          "↻ Melanjutkan sesi **{title}** ({count} pesan). Percakapan dipulihkan."
+    resumed_no_count:      "↻ Melanjutkan sesi **{title}**. Percakapan dipulihkan."
+
+  retry:
+    no_previous:           "Tidak ada pesan sebelumnya untuk dicoba lagi."
+
+  rollback:
+    not_enabled:           "Pos pemeriksaan tidak diaktifkan.\nAktifkan di config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Tidak ada pos pemeriksaan (checkpoint) yang ditemukan untuk {cwd}"
+    invalid_number:        "Nomor pos pemeriksaan tidak valid. Gunakan 1-{max}."
+    restored:              "✅ Dikembalikan ke pos pemeriksaan {hash}: {reason}\nCuplikan sebelum pra-pengembalian (pre-rollback snapshot) telah disimpan secara otomatis."
+    kept_user_edits:       "↷ Mempertahankan editan manual Anda: {files}\nGunakan /rollback <N> --all untuk mengembalikan itu juga."
+    kept_oversize:         "↷ Dipertahankan (terlalu besar untuk pos pemeriksaan, tidak ada salinan tersimpan untuk dipulihkan): {files}"
+    failed_deletes:        "⚠️ Tidak dapat menghapus (dibiarkan di tempatnya): {files}"
+    restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "Pos pemeriksaan tidak diaktifkan, jadi tidak ada baseline sesi.\nAktifkan di config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nPerintah /diff biasa masih berfungsi — ini menggunakan git secara langsung."
+    no_changes:            "Tidak ada perubahan."
+    failed:                "{error}"
+
+  set_home:
+    save_failed:           "Gagal menyimpan saluran utama: {error}"
+    success:               "✅ Saluran utama ditetapkan ke **{name}** (ID: {chat_id}).\nPekerjaan cron dan pesan lintas-platform akan dikirim ke sini."
+
+  context:
+    header:                "🧠 **Jendela Konteks**"
+    model:                 "Model: `{model}`"
+    window:                "Jendela: {total} token"
+    in_use:                "Digunakan: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Ruang tersisa ke batas: {headroom} token"
+    threshold:             "Otomatis dikompres pada: {threshold} ({threshold_pct}%) — tersisa {to_go}"
+    over_threshold:        "⚠️ **Melebihi ambang batas kompresi otomatis ({threshold}, {threshold_pct}%)**"
+    compressions:          "Kompresi pada sesi ini: {count}"
+    last_savings:          "Kompresi terakhir membebaskan: {savings}% konteks"
+    totals_header:         "Total sesi (kumulatif di {calls} panggilan API)"
+    totals_line:           "Input {input} · Output {output} · Penalaran {reasoning}"
+    total_billed:          "Total yang ditagih: {total}"
+    throughput_note:       "_Throughput, bukan ukuran konteks — setiap panggilan mengirim ulang jendela di atas._"
+    estimated:             "Konteks perkiraan: ~{count} token di {messages} pesan"
+    detail_after_first:    "_(Statistik kompresi dan throughput penuh tersedia setelah balasan agen pertama)_"
+    no_data:               "Belum ada data konteks yang tersedia. Kirimkan pesan untuk memulai sesi."
+
+  status:
+    header:                "📊 **Status Gateway Hermes**"
+    matrix_scope_header:   "**Cakupan Matrix:**"
+    matrix_scope_room:     "  ruang: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
+    session_id:            "**ID Sesi:** `{session_id}`"
+    title:                 "**Judul:** {title}"
+    created:               "**Dibuat:** {timestamp}"
+    last_activity:         "**Aktivitas Terakhir:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · tingkat gratis (free tier) · nous/welcome · /login untuk masuk"
+    context:               "**Konteks:** {used} / {total} ({pct}%)"
+    context_used:          "**Konteks:** ~{used} token"
+    tokens:                "**Token seumur hidup yang ditagih:** {tokens} _(bukan ukuran konteks Anda saat ini; gunakan `/context`)_"
+    agent_running:         "**Agen Berjalan:** {state}"
+    state_yes:             "Ya ⚡"
+    state_no:              "Tidak"
+    queued:                "**Tindak lanjut dalam antrean:** {count}"
+    platforms:             "**Platform Terhubung:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Berhenti. Agen belum dimulai — Anda dapat melanjutkan sesi ini."
+    stopped:               "⚡ Berhenti. Anda dapat melanjutkan sesi ini."
+    no_active:             "Tidak ada tugas aktif untuk dihentikan."
+
+  title:
+    db_unavailable:        "Basis data sesi tidak tersedia."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Judul kosong setelah pembersihan. Harap gunakan karakter yang dapat dicetak."
+    set_to:                "✏️ Judul sesi ditetapkan: **{title}**"
+    not_found:             "Sesi tidak ditemukan di basis data."
+    current_with_title:    "📌 Sesi: `{session_id}`\nJudul: **{title}**"
+    current_no_title:      "📌 Sesi: `{session_id}`\nTidak ada judul yang ditetapkan. Penggunaan: `/title Nama Sesi Saya`"
+
+  topic:
+    not_telegram_dm:         "Perintah /topic hanya tersedia di obrolan pribadi Telegram."
+    no_session_db:           "Basis data sesi tidak tersedia."
+    unauthorized:            "Anda tidak berwenang untuk menggunakan /topic di bot ini."
+    restore_needs_topic:     "Untuk memulihkan sesi, pertama-tama buat atau buka topik Telegram, lalu kirim /topic <id-sesi> di dalam topik tersebut. Untuk membuat topik baru, buka Semua Pesan dan kirim pesan apa pun di sana."
+    topics_disabled:         "Topik Telegram belum diaktifkan untuk bot ini.\n\nCara mengaktifkannya:\n1. Buka @BotFather.\n2. Pilih bot Anda.\n3. Buka Pengaturan Bot (Bot Settings) → Pengaturan Utas (Threads Settings).\n4. Aktifkan Mode Berutas (Threaded Mode) dan pastikan pengguna diizinkan untuk membuat utas baru.\n\nKemudian kirim /topic lagi."
+    topics_user_disallowed:  "Topik Telegram diaktifkan, tetapi pengguna tidak diizinkan membuat topik.\n\nBuka @BotFather → pilih bot Anda → Pengaturan Bot (Bot Settings) → Pengaturan Utas (Threads Settings), lalu matikan 'Disallow users to create new threads' (Larang pengguna membuat utas baru).\n\nKemudian kirim /topic lagi."
+    enable_failed:           "Gagal mengaktifkan mode topik Telegram: {error}"
+    bound_status:            "Topik ini ditautkan ke:\nSesi: {label}\nID: {session_id}\n\nGunakan /new untuk menggantikan topik ini dengan sesi baru.\nUntuk pekerjaan paralel, buka Semua Pesan dan kirim pesan di sana untuk membuat topik lain."
+    thread_ready:            "Topik multi-sesi Telegram diaktifkan.\n\nTopik ini akan digunakan sebagai sesi Hermes independen. Gunakan /new untuk menggantikan sesi topik ini saat ini. Untuk pekerjaan paralel, buka Semua Pesan dan kirim pesan di sana untuk membuat topik lain."
+    untitled_session:        "Sesi tanpa judul"
+
+  undo:
+    nothing:               "Tidak ada yang dapat dibatalkan."
+    removed:               "↩️ Membatalkan {turns} giliran ({count} pesan).\nDicadangkan ke: \"{preview}\"\nSalin/edit teks di atas dan kirimkan untuk memberi prompt ulang dari sini."
+    invalid_count:         "Jumlah \"{arg}\" tidak valid — gunakan /undo atau /undo N."
+
+  update:
+    platform_not_messaging:  "✗ /update hanya tersedia dari platform perpesanan. Jalankan `hermes update` dari terminal."
+    not_git_repo:            "✗ Bukan repositori git — tidak dapat memperbarui."
+    hermes_cmd_not_found:    "✗ Tidak dapat menemukan perintah `hermes`. Hermes sedang berjalan, tetapi perintah pembaruan tidak dapat menemukan program yang dapat dieksekusi di PATH atau melalui interpreter Python saat ini. Coba jalankan `hermes update` secara manual di terminal Anda."
+    start_failed:            "✗ Gagal memulai pembaruan: {error}"
+    starting:                "☤ Memulai pembaruan Hermes… Saya akan menyiarkan kemajuan di sini."
+
+  usage:
+    rate_limits:              "⏱️ **Batas Nilai (Rate Limits):** {state}"
+    header_session:           "📊 **Penggunaan Token Sesi**"
+    label_model:              "Model: `{model}`"
+    label_input_tokens:       "Token input: {count}"
+    label_cache_read:         "Token baca cache: {count}"
+    label_cache_write:        "Token tulis cache: {count}"
+    label_output_tokens:      "Token output: {count}"
+    label_total:              "Total: {count}"
+    label_api_calls:          "Panggilan API: {count}"
+    label_cost:               "Biaya: {prefix}${amount}"
+    label_cost_included:      "Biaya: sudah termasuk"
+    label_context:            "Konteks: {used} / {total} ({pct}%)"
+    label_compressions:       "Kompresi: {count}"
+    breakdown_header:         "🧩 **Rincian konteks** _(perkiraan)_"
+    breakdown_line:           "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt:        "Prompt sistem"
+    breakdown_cat_tool_definitions:     "Definisi alat"
+    breakdown_cat_rules:                "Aturan"
+    breakdown_cat_skills:               "Keterampilan"
+    breakdown_cat_mcp:                  "MCP"
+    breakdown_cat_subagent_definitions: "Definisi subagen"
+    breakdown_cat_memory:               "Memori"
+    breakdown_cat_conversation:         "Percakapan"
+    header_session_info:      "📊 **Info Sesi**"
+    label_messages:           "Pesan: {count}"
+    label_estimated_context:  "Konteks perkiraan: ~{count} token"
+    detailed_after_first:     "_(Penggunaan terperinci tersedia setelah balasan agen pertama)_"
+    no_data:                  "Tidak ada data penggunaan yang tersedia untuk sesi ini."
+    unknown_subcommand:       "Subperintah /usage tidak dikenal: `{args}`. Coba `/usage` atau `/usage reset [--force]`."
+    reset_wrong_provider:     "Reset penggunaan yang disimpan hanya tersedia pada penyedia openai-codex. Beralihlah dengan `/model` terlebih dahulu."
+
+  credits:
+    not_logged_in:            "Tidak masuk ke Portal Nous. Masuk untuk melihat saldo kredit Anda dan melakukan top up."
+
+  verbose:
+    not_enabled:           "Perintah `/verbose` tidak diaktifkan untuk platform perpesanan.\n\nAktifkan di `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Kemajuan alat: **NONAKTIF** — tidak ada aktivitas alat yang ditampilkan."
+    mode_new:              "⚙️ Kemajuan alat: **BARU** — ditampilkan saat alat berubah (panjang pratinjau: `display.tool_preview_length`, bawaan 40)."
+    mode_all:              "⚙️ Kemajuan alat: **SEMUA** — setiap panggilan alat ditampilkan (panjang pratinjau: `display.tool_preview_length`, bawaan 40)."
+    mode_verbose:          "⚙️ Kemajuan alat: **VERBOSE** — setiap panggilan alat beserta argumen lengkapnya."
+    mode_log:              "⚙️ Kemajuan alat: **LOG** — diam di obrolan; panggilan alat ditulis ke ~/.hermes/logs/tool_calls.log."
+    saved_suffix:          "_(disimpan untuk **{platform}** — berlaku pada pesan berikutnya)_"
+    save_failed:           "_(tidak dapat menyimpan ke config: {error})_"
+
+  voice:
+    enabled_voice_only:    "Mode suara diaktifkan.\nSaya akan membalas dengan suara saat Anda mengirim pesan suara.\nGunakan /voice tts untuk mendapatkan balasan suara untuk semua pesan."
+    disabled_text:         "Mode suara dinonaktifkan. Balasan teks saja."
+    tts_enabled:           "Auto-TTS diaktifkan.\nSemua balasan akan menyertakan pesan suara."
+    status_mode:           "Mode suara: {label}"
+    status_channel:        "Saluran suara: #{channel}"
+    status_participants:   "Peserta: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (berbicara)"
+    enabled_short:         "Mode suara diaktifkan."
+    disabled_short:        "Mode suara dinonaktifkan."
+    label_off:             "Nonaktif (teks saja)"
+    label_voice_only:      "Aktif (balasan suara untuk pesan suara)"
+    label_all:             "TTS (balasan suara untuk semua pesan)"
+    help:                  "{toggle}\n\n**Cara kerja /voice**\n• `/voice on` — balasan suara saat Anda mengirim pesan suara\n• `/voice tts` — balasan suara untuk *setiap* pesan\n• `/voice off` — kembali ke balasan teks saja\n• `/voice status` — tampilkan mode saat ini\n• `/voice` (tanpa argumen) — beralih cepat antara aktif dan nonaktif{channels}"
+    help_channels:         "\n\n**Saluran suara langsung (Discord)**\n• Bergabunglah ke saluran suara terlebih dahulu, lalu `/voice channel` — saya akan bergabung, mendengarkan, dan menyuarakan balasan saya\n• `/voice leave` — putuskan sambungan dari saluran suara"
+
+  yolo:
+    disabled:                   "⚠️ Mode YOLO **NONAKTIF** untuk sesi ini — perintah berbahaya akan membutuhkan persetujuan."
+    enabled:                    "⚡ Mode YOLO **AKTIF** untuk sesi ini — semua perintah disetujui otomatis. Gunakan dengan hati-hati."
+
+  shared:
+    session_db_unavailable:      "Basis data sesi tidak tersedia."
+    session_db_unavailable_prefix: "Basis data sesi tidak tersedia"
+    session_not_found:           "Sesi tidak ditemukan di basis data."
+    warn_passthrough:            "⚠️ {error}"

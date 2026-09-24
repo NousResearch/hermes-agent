@@ -40,7 +40,7 @@ class FinalResponseVerdict:
     length_continue_retries: Any
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
-    api_call_count: Any
+    api_call_count: int
     result: Optional[Dict[str, Any]] = None
 
 

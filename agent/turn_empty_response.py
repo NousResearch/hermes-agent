@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
+from agent.turn_context_compaction import _refund_api_call
 from agent.turn_failure_copy import site_copy
 from agent.turn_recovery import interruptible_backoff_sleep
 
@@ -283,7 +284,6 @@ def recover_empty_response(
             _preflight_compression_blocked = False
             # The fallback hop is a provider switch, not a model turn: refund the empty
             # call so a mid-turn fallback doesn't eat the iteration budget (#77305).
-            from agent.turn_context_compaction import _refund_api_call
             api_call_count = _refund_api_call(agent, api_call_count)
             return _verdict("continue")
 

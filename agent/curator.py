@@ -114,12 +114,25 @@ def get_min_idle_hours() -> float:
     return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
 
 
+def _bounded_days(key: str, default: int) -> int:
+    """*key* (a ``curator.<key>`` day count), floored at 1 like ``curator prune --days`` already
+    refuses (hermes_cli/curator.py::_cmd_prune). A value < 1 collapses stale_cutoff/archive_cutoff
+    onto or past "now" in apply_automatic_transitions(), mass-transitioning every skill with any
+    past activity on the next automatic pass — unlike the manual prune path this runs unconfirmed,
+    so it falls back to the default instead of acting on the bad value."""
+    value = _config_number(key, default, int)
+    if value < 1:
+        logger.warning("curator.%s must be >= 1 (got %d); using the default of %d", key, value, default)
+        return default
+    return value
+
+
 def get_stale_after_days() -> int:
-    return _config_number("stale_after_days", DEFAULT_STALE_AFTER_DAYS, int)
+    return _bounded_days("stale_after_days", DEFAULT_STALE_AFTER_DAYS)
 
 
 def get_archive_after_days() -> int:
-    return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
+    return _bounded_days("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS)
 
 
 def get_consolidate() -> bool:

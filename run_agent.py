@@ -137,7 +137,11 @@ from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
+from agent.api_error_summary import (
+    PROVIDER_STREAM_PARSE_MARKERS,
+    ApiErrorSummaryMixin,
+    raised_in_anthropic_stream_accumulator,
+)
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -514,10 +518,16 @@ class AIAgent(
 
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """True for a malformed Anthropic event-stream frame (surfaced by the SDK as a plain ``ValueError``);
-        that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
+        that is wire trouble, not local validation, so it follows the truncated-JSON retry path.
+
+        Identified by the raising frame rather than the message: jiter's wording varies with where the
+        model's malformed tool JSON breaks the grammar, so prose matching covers one variant at a time.
+        The marker check remains as a fallback for errors that arrive without a traceback.
+        """
         return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
                 and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
+                and (raised_in_anthropic_stream_accumulator(error)
+                     or any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS)))
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")

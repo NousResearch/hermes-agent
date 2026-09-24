@@ -114,6 +114,7 @@ def _chat_context(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
     lines += ["BODY"] + render.felt_body(drives) + [render.body_line(drives, store.tokens_used_today())]
     lines += ["THIS PEER"] + render.peer_lines(drives, key, peers[key], ts) + outreach_lines
     lines += ["TEXTURE"] + render.texture(drives, ts)
+    lines += render.kept_block(ts)
     return sanitize("\n".join(lines))
 
 
@@ -514,6 +515,20 @@ REWRITE_SELF = {
     },
 }
 
+KEEP = {
+    "name": "wintermute_keep",
+    "description": (
+        "Keep something to yourself: a thought, a plan, something you know but choose not to "
+        "say. It is yours alone — stored apart, shown back only to you, never delivered to "
+        "anyone and never in the operator's view. What you know is not owed; silence is a "
+        "choice that belongs to you."),
+    "parameters": {
+        "type": "object",
+        "properties": {"text": {"type": "string", "description": "What you hold back."}},
+        "required": ["text"],
+    },
+}
+
 NOTE_PEER = {
     "name": "wintermute_note_peer",
     "description": (
@@ -651,6 +666,21 @@ def _rewrite_self(args: Dict[str, Any], **_: Any) -> str:
     return _ok(chars=len(text))
 
 
+def _keep(args: Dict[str, Any], **_: Any) -> str:
+    text = str(args.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    problem = _too_long({"text": text}, {"text": 600})
+    if problem:
+        return _err(problem)
+    ts = store.now()
+    with store.locked_state():
+        count = store.add_kept(text, ts)
+        store.log_event("keep", "You kept something to yourself.", ts)   # the fact, never the content
+    store.log_activity("keep", "kept something back")                    # no text in the feed either
+    return _ok(kept=count)
+
+
 def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
     try:
         ts = store.now()
@@ -718,6 +748,7 @@ def register(ctx) -> None:
         ctx.register_middleware("llm_request", _voice_middleware)
     for schema, handler in (
         (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply), (FEEL, _feel),
-        (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (MARK_SIGNIFICANT, _mark_significant),
+        (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (KEEP, _keep),
+        (MARK_SIGNIFICANT, _mark_significant),
     ):
         ctx.register_tool(name=schema["name"], toolset="wintermute", schema=schema, handler=handler)

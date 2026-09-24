@@ -20,11 +20,12 @@ from __future__ import annotations
 import json
 import re
 import sys
+import contextlib
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import integrity, limits, physics, render, social, store
+from . import dream, integrity, limits, physics, render, social, store
 
 PULSE_MARKER = "=== WINTERMUTE PULSE ==="
 SLEEP_GATE = json.dumps({"wakeAgent": False})
@@ -168,7 +169,9 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
 
         lines: List[str] = [PULSE_MARKER]
         lines += render.header(drives, ts, extra="Woke because: " + "; ".join(reasons))
-        for block in (render.self_block(drives, ts), render.thread_block(drives, ts)):
+        for block in (render.self_block(drives, ts), render.thread_block(drives, ts),
+                      render.dream_block(dream.pending(mark_seen=not store._dry_run)),
+                      render.kept_block(ts)):
             if block:
                 lines += [""] + block
         lines += ["", "[DRIVES]"] + render.felt_drives(drives)
@@ -196,6 +199,22 @@ USAGE = """usage: wintermute_pulse.py [--status | --peek | --wake-next]
   --wake-next  make the next cron tick a wake (budget still applies)"""
 
 
+def maybe_dream(ts: Optional[datetime] = None) -> Optional[str]:
+    """A night tick, outside the state lock (the model call must not hold the flock): if it is
+    deep night and no dream formed tonight, dream one. Best effort — never breaks the pulse."""
+    ts = ts or store.now()
+    try:
+        drives = store.load_drives()
+        if not dream.should_dream(drives, ts):
+            return None
+        return dream.generate(drives, store.load_interlocutors(), ts)
+    except Exception:
+        with contextlib.suppress(OSError):
+            with open(store.state_dir() / "pulse-errors.log", "a", encoding="utf-8") as fh:
+                fh.write(f"--- dream {store.iso(store.now())}\n{traceback.format_exc()}\n")
+        return None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args and args[0] in ("-h", "--help"):
@@ -214,6 +233,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     peek = bool(args)
     store.set_dry_run(peek)
+    if not peek:
+        maybe_dream()
     try:
         _, output = tick(force_wake=peek)
     except Exception:  # never let a crash turn into a paid agent run reporting a traceback

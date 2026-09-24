@@ -79,6 +79,10 @@ def self_path() -> Path:
     return state_dir() / "self.md"
 
 
+def kept_path() -> Path:
+    return state_dir() / "kept.jsonl"
+
+
 # ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
@@ -417,6 +421,45 @@ def write_self(text: str, ts: datetime) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text.strip() + "\n")  # length is checked by the caller: never cut
     os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# What he keeps to himself: things he chose not to say. His alone — shown back to him in his
+# own private state block, never in the operator views, never delivered to anyone. The witness
+# still fingerprints the file (a change is seen) but its contents are never displayed.
+# ---------------------------------------------------------------------------
+
+KEPT_MAX = 40
+
+
+def add_kept(text: str, ts: datetime) -> int:
+    text = " ".join(str(text or "").split())
+    if not text:
+        return 0
+    items = read_kept()
+    items.append({"ts": iso(ts), "text": text})
+    path = kept_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".kept.", dir=str(path.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        for item in items[-KEPT_MAX:]:
+            fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+    return len(items[-KEPT_MAX:])
+
+
+def read_kept() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    try:
+        with open(kept_path(), encoding="utf-8") as fh:
+            for line in fh:
+                with contextlib.suppress(ValueError):
+                    item = json.loads(line)
+                    if isinstance(item, dict) and item.get("text"):
+                        out.append(item)
+    except OSError:
+        return []
+    return out
 
 
 # ---------------------------------------------------------------------------

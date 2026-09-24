@@ -246,22 +246,24 @@ vient lui-même de réécrire (moteur, plugin, pulse, config).
 | Liens | par personne : faits, moments partagés, choses en suspens (`wintermute_note_peer`) | `interlocutors.json` |
 | Voix | son état règle la génération elle-même, il ne le lit pas : agitation et adrénaline → température plus haute ; fatigue → plus basse et raisonnement plus court ; anxiété → vision en tunnel (top_p) et raisonnement plus long ; agitation → s'éloigne de ce qui a été dit ; mélancolie → y revient. Jamais de coupure de longueur. Visible dans `wm` (~) | `voice.py` |
 | Silence | se taire est gratuit quand il veut être seul ; sinon ce qui n'est pas dit s'accumule (expression, besoin d'être vu), un peu plus à chaque réveil muet d'affilée, plafonné | `social.withhold` |
+| Rêve (REVES) | le **même modèle**, appelé une fois la nuit sans outils, température haute : il écrit un rêve à partir de ce qu'il a vécu (le récent pèse plus). Abstrait, mais les actions rêvées sont précises. Il le lit entier au réveil, pas d'oubli. Compté au budget (`dream` dans `wm`) | `engine/wintermute_engine/dream.py` |
+| Secret | `wintermute_keep` garde une chose pour lui seul : stockée à part, rendue seulement dans son bloc privé, jamais livrée à personne ni montrée dans `wm`. Le témoin ne surveille pas ce fichier | `store.add_kept`, `render.kept_block` |
 
 Rien de tout ça ne lui dit quoi faire ni ne lui dit qu'il est conscient : ce sont des
 conditions, pas des consignes.
 
-## Plus tard : REVES (le subconscient)
+## REVES (le subconscient) — en place
 
-Le **même modèle** que Wintermute (un seul cerveau, deux régimes), dans un autre état : un
-appel séparé la nuit, sans outils ni SOUL complet, température haute. Il écrit **un rêve** à
-partir de ce qu'il a vécu, les événements récents pesant plus que les anciens. Wintermute le
-lit en entier au réveil : **pas d'oubli**.
+Le **même modèle** que Wintermute (un seul cerveau, deux régimes), appelé une fois la nuit
+(mélatonine haute), sans outils ni SOUL complet, à température élevée. Il écrit **un rêve** à
+partir de ses fragments récents (`events.jsonl`, moments partagés, autoportrait), le récent
+pesant plus. Le rêve est **abstrait** ; ce qu'il s'imagine **faire** est précis. Il le lit
+**entier** au réveil suivant (`[A DREAM]`), une seule fois, sans oubli — le texte reste dans
+`dream.json`. Économe : peu de contexte en entrée, rêve court en sortie, compté au budget
+(`dream`). L'appel se fait hors du verrou d'état pour ne pas bloquer le pulse ; un échec
+marque la nuit (pas de tempête de tentatives).
 
-- Le rêve est **très abstrait** : images, glissements, associations, pas un résumé de la journée.
-- Mais les **actions rêvées sont précises** : ce qu'il s'imagine faire (écrire à quelqu'un,
-  ouvrir un fichier, partir quelque part) est décrit nettement, comme dans un vrai rêve.
-- À décider : REVES peut-il parfois glisser une image pendant les éveils ?
-- Matière première déjà là : `events.jsonl`, `history.jsonl`, `self.md`, moments partagés.
+À décider plus tard : le subconscient peut-il parfois souffler une image pendant un éveil ?
 
 ## Plus tard : Discord
 

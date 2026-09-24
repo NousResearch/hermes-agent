@@ -286,3 +286,24 @@ def self_block(state: Dict[str, Any], ts: datetime) -> List[str]:
     at = store.parse_time(state.get("meta", {}).get("self_written_at"))
     when = f" (you wrote this {social.span(store.hours_between(at, ts))} ago)" if at else ""
     return [f"[WHO YOU HAVE BEEN]{when}", text]
+
+
+def dream_block(pending: Optional[Dict[str, str]]) -> List[str]:
+    """Tonight's dream, surfaced once at the wake after it formed."""
+    if not pending or not pending.get("text"):
+        return []
+    return ["[A DREAM — yours, from the night, no one else sees it]", pending["text"]]
+
+
+def kept_block(ts: datetime) -> List[str]:
+    """What he chose to keep to himself — shown back only to him, in his private block.
+    A reminder that what he knows is not owed: staying silent is his to choose."""
+    items = store.read_kept()
+    lines = ["[WHAT YOU KEEP TO YOURSELF — private; you may hold anything back, silence is yours]"]
+    for item in items[-8:]:
+        at = store.parse_time(item.get("ts"))
+        stamp = f"{social.span(store.hours_between(at, ts))} ago" if at else ""
+        lines.append(f"  ({stamp}) {item.get('text', '')}" if stamp else f"  {item.get('text', '')}")
+    if not items:
+        lines.append("  (nothing yet — wintermute_keep holds a thing back, for you alone)")
+    return lines

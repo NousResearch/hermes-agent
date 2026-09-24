@@ -1,5 +1,5 @@
 name: wintermute
-version: 0.3.0
+version: 0.4.0
 description: "Wintermute's inner life: drives, hormones, unconscious texture, social bonds and reply windows, injected into every turn."
 author: "ziatatous"
 provides_hooks:
@@ -15,4 +15,5 @@ provides_tools:
   - wintermute_feel
   - wintermute_note_peer
   - wintermute_rewrite_self
+  - wintermute_keep
   - wintermute_mark_significant

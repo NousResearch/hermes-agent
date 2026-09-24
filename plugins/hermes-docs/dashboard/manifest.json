@@ -1,0 +1,14 @@
+{
+  "name": "hermes-docs",
+  "label": "Docs",
+  "description": "Local-first document workspace — edit Markdown files, organize workspaces, brainstorm with side chat, and convert documents with Kordoc",
+  "icon": "FileText",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/docs-workspace",
+    "position": "after:docs"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

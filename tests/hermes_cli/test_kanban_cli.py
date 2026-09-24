@@ -100,6 +100,37 @@ def test_kanban_edit_updates_documented_task_fields(kanban_home):
     assert any(event.kind == "reprioritized" for event in events)
 
 
+@pytest.mark.parametrize("contract", [
+    "local-only",
+    "acme/widgets",
+    "https://github.com/acme/widgets/pull/42",
+])
+def test_kanban_edit_updates_completion_contract(kanban_home, contract):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="contract task", completion_contract="acme/old")
+
+    output = kc.run_slash(f"edit {task_id} --completion-contract {contract}")
+
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert output == f"Edited {task_id}"
+    assert task.completion_contract == contract
+    assert any(
+        event.kind == "edited" and event.payload.get("fields") == ["completion_contract"]
+        for event in events
+    )
+
+
+def test_kanban_edit_rejects_invalid_completion_contract(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="contract task")
+
+    output = kc.run_slash(f"edit {task_id} --completion-contract acme/widgets/issues/42")
+
+    assert "completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL" in output
+
+
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
     with kbc.connect_closing() as conn:
         worker = kb.create_task(conn, title="worker")
@@ -239,5 +270,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
 

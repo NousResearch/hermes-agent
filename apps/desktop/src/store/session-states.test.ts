@@ -425,6 +425,26 @@ describe('SessionTile workspace scope', () => {
     setSessions([])
   })
 
+  it('uses a hidden Bot Chat registry lineage to front its existing tip tab', () => {
+    // Bot Chats never enter $sessions, so the normal projected-list lineage
+    // index cannot connect the registry root with the compression tip.
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha' }
+
+    const focusWithKnownLineage = focusOpenSession as (
+      storedId: string,
+      scope: { workspaceMode: 'bots'; workspaceOwnerKey: string },
+      lineageIds: readonly string[]
+    ) => 'main' | 'tile' | null
+
+    openSessionTile('tip-9', 'center', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', tilePane('tip-9')], { active: 'workspace', id: 'main' }))
+
+    expect(focusWithKnownLineage('root-1', scope, ['root-1', 'tip-9'])).toBe('tile')
+
+    openSessionTile('root-1', 'center', undefined, undefined, scope, ['root-1', 'tip-9'])
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['tip-9'])
+  })
+
   it('reports the workspace scope of the focused Bot session tab', () => {
     const scope = {
       ownerRoute: { connectionId: 'connection-a', profile: 'default' },

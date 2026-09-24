@@ -386,6 +386,8 @@ export interface PluginOpenSessionOptions {
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
+  /** Compression aliases for a hidden session that is absent from $sessions. */
+  lineageIds?: readonly string[]
   profile?: null | string
   route?: PluginProfileRoute
   workspaceMode?: WorkspaceMode
@@ -1081,6 +1083,7 @@ export const host = {
               ownerRoute: ownerRoute ?? undefined,
               workspaceMode: 'bots',
               workspaceOwnerKey: options.workspaceOwnerKey,
+              lineageIds: options.lineageIds,
               ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
             })
           } else {

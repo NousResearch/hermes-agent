@@ -34,6 +34,8 @@ export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
 export interface OpenSessionWorkspaceScope {
+  /** Registry lineage aliases for a hidden session absent from $sessions. */
+  lineageIds?: readonly string[]
   ownerRoute?: SessionProfileRoute
   workspaceMode: WorkspaceMode
   workspaceOwnerKey?: string
@@ -159,7 +161,7 @@ export function openSession(
     // Already on screen? Front it. openSessionTile would no-op on main without
     // focusing, or try to relocate an existing tile — neither is right for a
     // soft "open beside" link.
-    const focused = focusOpenSession(storedSessionId, workspaceScope)
+    const focused = focusOpenSession(storedSessionId, workspaceScope, workspaceScope.lineageIds)
 
     if (focused) {
       if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
@@ -182,12 +184,12 @@ export function openSession(
     }
 
     if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
+      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope, workspaceScope.lineageIds)
     } else {
       openSessionTile(storedSessionId, 'center')
     }
 
-    focusOpenSession(storedSessionId, workspaceScope)
+    focusOpenSession(storedSessionId, workspaceScope, workspaceScope.lineageIds)
 
     return
   }
@@ -196,7 +198,7 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope, workspaceScope.lineageIds), $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

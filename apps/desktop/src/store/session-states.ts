@@ -1707,7 +1707,8 @@ export function openSessionTile(
   dir: TileDock = 'right',
   anchor?: string,
   before?: null | string,
-  explicitScope?: SessionTileWorkspaceScope
+  explicitScope?: SessionTileWorkspaceScope,
+  knownLineageIds: readonly string[] = []
 ) {
   const tiles = $sessionTiles.get()
   const existing = tiles.find(t => t.storedSessionId === storedSessionId)
@@ -1735,7 +1736,10 @@ export function openSessionTile(
   markSessionRead(storedSessionId)
   ackStoredSessionId(storedSessionId)
 
-  const aliases = lineageAliases(storedSessionId, $sessions.get())
+  // Hidden Bot Chats are deliberately absent from $sessions. Their registry
+  // lookup still knows the durable root and current compression tip, so fold
+  // those aliases into the normal visible-session lineage result.
+  const aliases = [...new Set([...lineageAliases(storedSessionId, $sessions.get()), ...knownLineageIds])]
 
   if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     return
@@ -1842,14 +1846,15 @@ export function nextSessionTileForWorkspace(): null | string {
  *  showing the chat, whereas a tile renders in its own pane regardless. */
 export function focusOpenSession(
   storedSessionId: string,
-  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' },
+  knownLineageIds: readonly string[] = []
 ): 'main' | 'tile' | null {
   // Compression rotates a conversation's tip id while tiles stay keyed by
   // whichever segment id they were opened with. An exact-id test right after
   // a rotation said "not open" for a conversation that IS on screen, and
   // callers opened the same chat in a second tab. Match any id of the
   // lineage instead, and front the tile under ITS key.
-  const aliases = lineageAliases(storedSessionId, $sessions.get())
+  const aliases = [...new Set([...lineageAliases(storedSessionId, $sessions.get()), ...knownLineageIds])]
   const tile = $sessionTiles.get().find(t => aliases.includes(t.storedSessionId))
 
   if (tile) {

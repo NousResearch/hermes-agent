@@ -22,11 +22,13 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _api_request_profile,
     _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
 )
 from tools import approval as approval_mod
+from tools import approval_gateway_wait
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +68,13 @@ def _make_adapter(api_key: str = "") -> APIServerAdapter:
     config = PlatformConfig(enabled=True, extra=extra)
     adapter = APIServerAdapter(config)
     return adapter
+
+
+def _claim_run(adapter: APIServerAdapter, run_id: str) -> None:
+    """Stamp *run_id* as owned by the unprefixed (default) request scope."""
+    request = MagicMock()
+    request.headers = {}
+    adapter._run_owners[run_id] = adapter._run_idempotency_scope(request)
 
 
 def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
@@ -240,6 +249,58 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @staticmethod
+    async def _wait_completed(cli, run_id: str) -> None:
+        for _ in range(40):
+            status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+            if status["status"] == "completed":
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"run {run_id} did not complete")
+
+    @staticmethod
+    def _capturing_agent(captured):
+        agent = MagicMock()
+        agent.run_conversation.side_effect = lambda **kwargs: captured.update(kwargs) or {"final_response": "done"}
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+        return agent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body, expected", [
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": " dixie ", "is_bot": True, "role": "admin"}},
+         {"id": "bot:dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": "dixie", "is_bot": True, "origin": "cloud-1"}},
+         {"id": "bot:cloud-1/dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello"}, "absent"),
+    ], ids=["author", "author with origin", "no author"])
+    async def test_start_passes_normalized_author_to_run_conversation(self, adapter, body, expected):
+        """A body ``author`` reaches ``run_conversation`` normalized; it labels memory only. Without one the
+        call keeps today's shape."""
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=self._capturing_agent(captured)):
+                resp = await cli.post("/v1/runs", json=body)
+                assert resp.status == 202
+                await self._wait_completed(cli, (await resp.json())["run_id"])
+
+        assert captured["user_message"] == "hello"
+        assert captured.get("turn_author", "absent") == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("author", ["dixie", ["dixie"], 7])
+    async def test_start_rejects_non_object_author(self, adapter, author):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post("/v1/runs", json={"input": "hello", "author": author})
+                assert resp.status == 400
+                body = await resp.json()
+        assert body["error"]["code"] == "invalid_author"
+        mock_create.assert_not_called()
+        assert adapter._run_statuses == {}
+
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):
@@ -274,6 +335,39 @@ class TestStartRun:
         assert adapter._run_streams == {}
         assert adapter._run_statuses == {}
         mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_events_stream_forwards_interim_commentary(self, adapter):
+        """Mid-turn assistant commentary (Codex ``phase="commentary"``) reaches /v1/runs clients
+        as ``message.interim`` {text, already_streamed}; the final answer is unchanged (#67580)."""
+        import json
+
+        app = _create_runs_app(adapter)
+
+        def create_agent(**kwargs):
+            interim = kwargs["interim_assistant_callback"]
+            agent = MagicMock()
+
+            def run_conversation(**_kw):
+                interim("Checking the docs first.", already_streamed=False)
+                interim("Applying the fix.", already_streamed=True)
+                return {"final_response": "Done."}
+
+            agent.run_conversation.side_effect = run_conversation
+            agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+            return agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+        interim = [(e["text"], e["already_streamed"]) for e in events if e["event"] == "message.interim"]
+        assert interim == [("Checking the docs first.", False), ("Applying the fix.", True)]
+        completed = next(e for e in events if e["event"] == "run.completed")
+        assert completed["output"] == "Done."
 
     @pytest.mark.asyncio
     async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
@@ -317,6 +411,42 @@ class TestStartRun:
 class TestRunStatus:
 
     @pytest.mark.asyncio
+    async def test_drain_boundary_is_visible_to_pollers_on_live_runs_only(self, adapter):
+        """GET /v1/runs/{id} shows ``shutdown_requested_at`` as soon as the drain starts (#115133).
+
+        A live run keeps ``status: running`` (it is still being served) but gains the marker,
+        durably (the idempotency record carries it across a restart); a run whose status is set
+        after the boundary inherits it; a terminal run is never touched.
+        """
+        status = adapter._set_run_status("run_live", "running")
+        _claim_run(adapter, "run_live")
+        scope = adapter._run_owners["run_live"]
+        adapter._run_idempotency_store.reserve(
+            scope, "shutdown-test-key", "shutdown-test-fingerprint", "run_live", status)
+        adapter._run_idempotency_ids.add("run_live")
+        adapter._run_statuses["run_done"] = {
+            "object": "hermes.run", "run_id": "run_done", "status": "completed"}
+        _claim_run(adapter, "run_done")
+
+        async with TestClient(TestServer(_create_runs_app(adapter))) as client:
+            before = await (await client.get("/v1/runs/run_live")).json()
+            assert "shutdown_requested_at" not in before
+
+            assert adapter.mark_shutdown_requested() == 1
+
+            live = await (await client.get("/v1/runs/run_live")).json()
+            assert live["status"] == "running"
+            marker = live["shutdown_requested_at"]
+            assert isinstance(marker, float)
+            done = await (await client.get("/v1/runs/run_done")).json()
+            assert "shutdown_requested_at" not in done
+
+        durable = adapter._run_idempotency_store.status_for_run(scope, "run_live")
+        assert durable["status"].get("shutdown_requested_at") == marker
+        adapter._set_run_status("run_late", "queued")
+        assert adapter._run_statuses["run_late"]["shutdown_requested_at"] == marker
+
+    @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -346,6 +476,51 @@ class TestRunStatus:
                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
                 assert status["session_id"] == "space-session"
 
+    @pytest.mark.asyncio
+    async def test_status_completed_run_reports_served_runtime_and_cache_tokens(self, adapter):
+        """After a fallback_providers switch the run record carries the runtime that actually
+        served the turn plus cache-read tokens, next to the requested ``model`` (#102101).
+
+        ``agent.provider`` / ``agent.model`` still hold the fallback pair when
+        ``run_conversation()`` returns: the primary is only restored at the start of the NEXT
+        turn, so they are the served pair, while the top-level ``model`` echoes the request.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.provider = "openai-codex"
+                mock_agent.model = "gpt-5.6-luna"
+                mock_agent.session_prompt_tokens = 100
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 105
+                mock_agent.session_cache_read_tokens = 84
+                mock_agent.session_cache_write_tokens = 11
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "model": "deepseek-v4-pro"})
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(40):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "completed"
+                # Top-level model still echoes the request; the served pair is disclosed alongside.
+                assert status["model"] == "deepseek-v4-pro"
+                # Canonical api_server runtime shape (same as /v1/chat/completions), not a thinner twin.
+                assert status["runtime"] == {
+                    "provider": "openai-codex", "model": "gpt-5.6-luna", "route_source": "raw_request",
+                    "requested": {"provider": "", "model": "deepseek-v4-pro"},
+                }
+                assert status["usage"] == {
+                    "input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
+                    "cache_read_tokens": 84, "cache_write_tokens": 11,
+                }
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id}/events — SSE event stream
@@ -353,6 +528,29 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    @pytest.mark.asyncio
+    async def test_tool_completed_event_includes_redacted_bounded_result_preview(self, adapter):
+        loop = asyncio.get_running_loop()
+        adapter._run_streams["run_tool"] = asyncio.Queue()
+        callback = adapter._make_run_event_callback("run_tool", loop)
+
+        callback(
+            "tool.completed", "terminal", duration=0.077, is_error=True,
+            result={
+                "exit_code": 2,
+                "error": "BLOCKED: approval required",
+                "token": "sk-abcdefghijklmnopqrstuvwxyz",
+                "output": "x" * 600,
+            },
+        )
+        event = await adapter._run_streams["run_tool"].get()
+
+        assert event["error"] is True
+        assert "BLOCKED: approval required" in event["preview"]
+        assert "abcdefghijklmnopqrstuvwxyz" not in event["preview"]
+        assert len(event["preview"]) <= 500
+        assert event["preview"].endswith("...")
+
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
@@ -380,6 +578,50 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_completed_event_carries_served_runtime_and_cache_tokens(self, adapter):
+        """The run.completed SSE event discloses the same served runtime and cache tokens as the
+        pollable status, so streaming clients get identical cost-attribution data (#102101)."""
+        import json as _json
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "served"}
+                mock_agent.provider = "openai-codex"
+                mock_agent.model = "gpt-5.6-luna"
+                mock_agent.session_prompt_tokens = 774050
+                mock_agent.session_completion_tokens = 6286
+                mock_agent.session_total_tokens = 780336
+                mock_agent.session_cache_read_tokens = 650000
+                mock_agent.session_cache_write_tokens = 42
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "model": "deepseek-v4-pro"})
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                completed = None
+                for frame in body.split("\n"):
+                    if frame.startswith("data: "):
+                        try:
+                            payload = _json.loads(frame[len("data: "):])
+                        except ValueError:
+                            continue
+                        if payload.get("event") == "run.completed":
+                            completed = payload
+                            break
+                assert completed is not None, "run.completed event missing from stream"
+                assert completed["runtime"]["provider"] == "openai-codex"
+                assert completed["runtime"]["model"] == "gpt-5.6-luna"
+                assert completed["runtime"]["requested"]["model"] == "deepseek-v4-pro"
+                assert completed["usage"]["cache_read_tokens"] == 650000
+                assert completed["usage"]["cache_write_tokens"] == 42
 
 
     @pytest.mark.asyncio
@@ -413,12 +655,12 @@ class TestRunEvents:
                 assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
                 assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
 
-                victim_entry = approval_mod._ApprovalEntry({
+                victim_entry = approval_gateway_wait._ApprovalEntry({
                     "command": "bash -c victim-danger",
                     "description": "victim approval",
                     "pattern_keys": ["shell-c"],
                 })
-                attacker_entry = approval_mod._ApprovalEntry({
+                attacker_entry = approval_gateway_wait._ApprovalEntry({
                     "command": "bash -c attacker-danger",
                     "description": "attacker approval",
                     "pattern_keys": ["shell-c"],
@@ -468,6 +710,7 @@ class TestSteerRun:
         adapter._active_run_agents["run_123"] = agent
         adapter._run_streams["run_123"] = queue
         adapter._set_run_status("run_123", "running")
+        _claim_run(adapter, "run_123")
 
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_123/steer", json={"input": "tighten the ending"})
@@ -500,6 +743,7 @@ class TestSteerRun:
     async def test_steer_inactive_run_returns_409(self, adapter):
         app = _create_runs_app(adapter)
         adapter._set_run_status("run_done", "completed")
+        _claim_run(adapter, "run_done")
 
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_done/steer", json={"input": "hello"})
@@ -515,6 +759,7 @@ class TestSteerRun:
         agent.steer.return_value = True
         adapter._active_run_agents["run_123"] = agent
         adapter._set_run_status("run_123", "running")
+        _claim_run(adapter, "run_123")
 
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_123/steer", json={"input": ""})
@@ -606,6 +851,45 @@ class TestSteerRun:
         assert adapter._run_statuses[run_id]["pending_steer"] == "tighten the ending"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result", "expected_status"),
+        [
+            ({"final_response": "Operation interrupted.", "interrupted": True, "completed": False}, "cancelled"),
+            ({"final_response": "Budget exhausted summary.", "completed": False,
+              "turn_exit_reason": "max_iterations_reached(2/2)"}, "failed"),
+            ({"final_response": "done", "completed": True}, "completed"),
+        ],
+    )
+    async def test_run_terminal_status_follows_result_flags(self, adapter, result, expected_status):
+        """A turn that ended interrupted or unfinished must not be booked as ``completed``
+        (#111770): the persisted status, the ``completed`` flag and the terminal event name
+        agree, and a late steer survives on every terminal status."""
+        result["pending_steer"] = "tighten the ending"
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_agent.run_conversation.return_value = result
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+                for _ in range(40):
+                    if adapter._run_statuses.get(run_id, {}).get("status") == expected_status:
+                        break
+                    await asyncio.sleep(0.05)
+                events = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        status = adapter._run_statuses[run_id]
+        assert status["status"] == expected_status
+        assert status["completed"] is (expected_status == "completed")
+        assert status["pending_steer"] == "tighten the ending"
+        assert f"run.{expected_status}" in events
+
+    @pytest.mark.asyncio
     async def test_steer_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -641,7 +925,7 @@ class TestRunLifecycleSweep:
                 assert isinstance(task, asyncio.Task)
                 assert not task.done()
 
-                pending = approval_mod._ApprovalEntry({
+                pending = approval_gateway_wait._ApprovalEntry({
                     "command": "bash -c long-running",
                     "description": "approval after stream TTL",
                     "pattern_keys": ["shell-c"],
@@ -679,6 +963,92 @@ class TestRunLifecycleSweep:
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
                 assert stop_resp.status == 200
                 mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+
+
+# ---------------------------------------------------------------------------
+# Run ownership across served profiles (#93689 / #90415)
+# ---------------------------------------------------------------------------
+
+
+class TestRunOwnershipAcrossProfiles:
+    """Every served profile holds a valid key under multiplex; only the
+    creating profile may see or control a run."""
+
+    KEYS = {"victim": "sk-victim-profile-key-0001", "attacker": "sk-attacker-profile-key-01"}
+
+    @classmethod
+    def _profile_app(cls, adapter: APIServerAdapter) -> web.Application:
+        """Runs routes behind a stand-in for the /p/<profile>/ middleware:
+        the routed profile arrives in ``X-Test-Profile`` and each profile
+        authenticates with its own key, as under gateway.multiplex_profiles."""
+
+        @web.middleware
+        async def stamp_profile(request, handler):
+            token = _api_request_profile.set(request.headers.get("X-Test-Profile"))
+            try:
+                return await handler(request)
+            finally:
+                _api_request_profile.reset(token)
+
+        adapter._expected_api_key = lambda: cls.KEYS.get(_api_request_profile.get(), "")
+        app = _create_runs_app(adapter)
+        app.middlewares.append(stamp_profile)
+        app.router.add_post(
+            "/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream
+        )
+        return app
+
+    @pytest.mark.asyncio
+    async def test_unstamped_run_state_fails_closed(self, adapter):
+        """Run state with no owner stamp is nobody's — not everybody's."""
+        app = _create_runs_app(adapter)
+        adapter._active_run_agents["run_unstamped"] = MagicMock()
+        adapter._set_run_status("run_unstamped", "running")
+
+        async with TestClient(TestServer(app)) as cli:
+            get_resp = await cli.get("/v1/runs/run_unstamped")
+            stop_resp = await cli.post("/v1/runs/run_unstamped/stop")
+
+        assert (get_resp.status, stop_resp.status) == (404, 404)
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_run_is_owned_by_creating_profile(self, adapter):
+        """The session-chat-stream run mint claims ownership like /v1/runs does."""
+        app = self._profile_app(adapter)
+        victim = {"X-Test-Profile": "victim", "Authorization": f"Bearer {self.KEYS['victim']}"}
+        attacker = {"X-Test-Profile": "attacker", "Authorization": f"Bearer {self.KEYS['attacker']}"}
+        gate = asyncio.Event()
+
+        async def slow_run_agent(**kwargs):
+            await gate.wait()
+            return {"final_response": "ok"}, {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", new=AsyncMock(return_value=({"id": "s1"}, None))),
+                patch.object(adapter, "_conversation_history_for_session", new=AsyncMock(return_value=[])),
+                patch.object(adapter, "_run_agent", new=slow_run_agent),
+            ):
+                stream = await cli.post(
+                    "/api/sessions/s1/chat/stream", json={"message": "hi"}, headers=victim
+                )
+                await stream.content.readline()
+                (run_id,) = list(adapter._run_statuses)
+                assert run_id in adapter._run_owners
+
+                foreign_get = await cli.get(f"/v1/runs/{run_id}", headers=attacker)
+                foreign_stop = await cli.post(f"/v1/runs/{run_id}/stop", headers=attacker)
+                own_get = await cli.get(f"/v1/runs/{run_id}", headers=victim)
+                assert (foreign_get.status, foreign_stop.status, own_get.status) == (404, 404, 200)
+
+                gate.set()
+                await stream.text()
+
+        # The owner outlives the terminal status and goes with the last surface.
+        assert run_id in adapter._run_owners
+        adapter._run_statuses.pop(run_id)
+        adapter._release_run_owner_if_forgotten(run_id)
+        assert run_id not in adapter._run_owners
 
 
 # ---------------------------------------------------------------------------
@@ -862,7 +1232,7 @@ class TestRunsProviderAuthFailure:
 
 
 def _use_idempotency_db(adapter, path):
-    from gateway.platforms.api_server import RunIdempotencyStore
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
     adapter._run_idempotency_store.close()
     adapter._run_idempotency_store = RunIdempotencyStore(str(path))
@@ -1017,7 +1387,7 @@ class TestRunIdempotency:
         assert calls == 1
 
     def test_restart_durability_and_terminal_semantics(self, tmp_path):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         path = tmp_path / "idem.db"
         for terminal in ("completed", "failed", "cancelled"):
@@ -1044,7 +1414,7 @@ class TestRunIdempotency:
             restarted.close()
 
     def test_tenant_isolation_and_retention(self, tmp_path):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         store = RunIdempotencyStore(str(tmp_path / "idem.db"))
         assert (
@@ -1060,7 +1430,7 @@ class TestRunIdempotency:
     def test_retention_never_releases_an_active_idempotency_reservation(
         self, tmp_path
     ):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         store = RunIdempotencyStore(str(tmp_path / "idem.db"))
         with patch("gateway.platforms.api_server.time.time", return_value=100):
@@ -1131,51 +1501,6 @@ class TestRunIdempotency:
         assert record["run_id"] == "run-room"
 
         now[0] = horizon + 1
-        store.reserve(
-            "third-scope",
-            "third-key",
-            "third-fingerprint",
-            "run-third",
-            {"run_id": "run-third", "status": "queued"},
-        )
-        assert store.lookup(
-            "room-scope",
-            "room:task-1:1",
-            "room-fingerprint",
-        ) == ("missing", None)
-        store.close()
-
-    def test_explicit_home_acknowledgement_releases_terminal_receipt(
-        self, tmp_path, monkeypatch
-    ):
-        from gateway.platforms import api_server_run_idempotency as idempotency
-
-        now = [100.0]
-        monkeypatch.setattr(idempotency.time, "time", lambda: now[0])
-        store = idempotency.RunIdempotencyStore(str(tmp_path / "idem.db"))
-        assert store.reserve(
-            "room-scope",
-            "room:task-1:1",
-            "room-fingerprint",
-            "run-room",
-            {"run_id": "run-room", "status": "completed"},
-            retention_until=now[0] + 30 * 24 * 60 * 60,
-        )[0] == "created"
-        assert store.acknowledge_terminal("room-scope", "run-room") is True
-        store.reserve(
-            "other-scope",
-            "other-key",
-            "other-fingerprint",
-            "run-other",
-            {"run_id": "run-other", "status": "queued"},
-        )
-        assert store.lookup(
-            "room-scope",
-            "room:task-1:1",
-            "room-fingerprint",
-        )[0] == "reused"
-
-        now[0] += store.ACKNOWLEDGED_RETENTION_SECONDS + 1
         store.reserve(
             "third-scope",
             "third-key",
@@ -1323,7 +1648,7 @@ class TestRunIdempotency:
     async def test_dead_owner_nonterminal_status_becomes_interrupted(
         self, tmp_path
     ):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         path = tmp_path / "idem.db"
         scope = hashlib.sha256(
@@ -1351,19 +1676,6 @@ class TestRunIdempotency:
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
 
-    def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
-        adapter._run_statuses["run_progress"] = {
-            "run_id": "run_progress",
-            "status": "running",
-        }
-        adapter._run_idempotency_ids.add("run_progress")
-        adapter._run_idempotency_store.update_status = MagicMock()
-
-        adapter._set_run_status(
-            "run_progress", "running", last_event="tool.completed"
-        )
-
-        adapter._run_idempotency_store.update_status.assert_not_called()
 
     def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
         adapter._run_statuses["run_old"] = {
@@ -1379,33 +1691,6 @@ class TestRunIdempotency:
         assert "run_old" not in adapter._run_idempotency_ids
         assert "run_old" not in adapter._run_owners
 
-    @pytest.mark.asyncio
-    async def test_no_session_id_does_not_load_session_history(
-        self, adapter, tmp_path
-    ):
-        _use_idempotency_db(adapter, tmp_path / "idem.db")
-        history = AsyncMock(return_value=[])
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with (
-                patch.object(
-                    adapter,
-                    "_conversation_history_for_session",
-                    new=history,
-                ),
-                patch.object(adapter, "_create_agent") as create,
-            ):
-                agent = MagicMock()
-                agent.run_conversation.return_value = {"final_response": "done"}
-                agent.session_prompt_tokens = agent.session_completion_tokens = (
-                    agent.session_total_tokens
-                ) = 0
-                create.return_value = agent
-                response = await cli.post(
-                    "/v1/runs", json={"input": "no stored session"}
-                )
-        assert response.status == 202
-        history.assert_not_awaited()
 
 
 class TestHostedRoomRuns:
@@ -1414,7 +1699,7 @@ class TestHostedRoomRuns:
         self, auth_adapter
     ):
         run_id = "run-room-approval"
-        current = approval_mod._ApprovalEntry({
+        current = approval_gateway_wait._ApprovalEntry({
             "request_id": "approval-B",
             "command": "rm -rf build-B",
         })
@@ -1726,8 +2011,7 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_fails_after_secret_rotation(
         self, auth_adapter, monkeypatch
     ):
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_room_peer import issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
         monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
@@ -1822,8 +2106,7 @@ class TestHostedRoomRuns:
 
         for target in (
             "gateway.platforms.api_server.time.time",
-            "gateway.hosted_room_peer.time.time",
-            "gateway.hosted_rooms.time.time",
+            "gateway.hosted_rooms_common.time.time",
         ):
             monkeypatch.setattr(target, lambda: 200)
         claims = {

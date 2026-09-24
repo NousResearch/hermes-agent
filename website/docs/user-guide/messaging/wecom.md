@@ -100,8 +100,10 @@ The WeCom adapter streams responses natively over WeCom's `msgtype: "stream"`
 protocol: the client shows a thinking/typing bubble as soon as a turn starts,
 and the reply renders token-by-token in a single bubble as the model
 generates it. Tool-call progress is folded into the same bubble. Native
-streaming is enabled by default (`display.platforms.wecom.streaming: true` in
-`config.yaml`); set it to `false` to restore single-shot delivery.
+streaming follows the global streaming switch, which is off by default: turn it
+on with `streaming.enabled: true` in `config.yaml`. WeCom's per-platform
+`display.platforms.wecom.streaming` (default `true`) only applies while the
+global switch is on; set it to `false` to keep single-shot delivery on WeCom.
 :::
 
 ## Configuration Options

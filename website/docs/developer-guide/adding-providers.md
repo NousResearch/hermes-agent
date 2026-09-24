@@ -126,7 +126,7 @@ When you add a plugin and it calls `register_provider()`, the following wire up 
 
 User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
 
-See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](/developer-guide/model-provider-plugin) for field reference, hook idioms, and end-to-end examples.
+See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](./model-provider-plugin.md) for field reference, hook idioms, and end-to-end examples.
 
 ## Full path: OAuth and complex providers
 
@@ -151,8 +151,8 @@ Examples from the repo:
 That same id should appear in:
 
 - `PROVIDER_REGISTRY` in `hermes_cli/auth.py`
-- `_PROVIDER_LABELS` in `hermes_cli/models.py`
-- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models.py`
+- `_PROVIDER_LABELS` in `hermes_cli/models_catalog_static.py` (re-exported by `hermes_cli/models.py`)
+- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models_catalog_static.py`
 - CLI `--provider` choices in `hermes_cli/main.py`
 - setup / model selection branches
 - auxiliary-model defaults
@@ -327,12 +327,12 @@ At minimum, touch the tests that guard provider wiring.
 Common places:
 
 - `tests/hermes_cli/test_runtime_provider_resolution.py`
-- `tests/cli/test_cli_provider_resolution.py`
+- `tests/hermes_cli/test_cli_provider_resolution.py`
 - `tests/hermes_cli/test_model_switch_custom_providers.py` (and adjacent `tests/hermes_cli/test_model_switch_*.py`)
 - `tests/hermes_cli/test_setup_model_provider.py`
-- `tests/run_agent/test_provider_parity.py`
-- `tests/run_agent/test_run_agent.py`
-- `tests/test_<provider>_adapter.py` for a native provider
+- `tests/agent/test_provider_parity.py`
+- `tests/agent/test_run_agent.py`
+- `tests/agent/test_<provider>_adapter.py` for a native provider
 
 For docs-only examples, the exact file set may differ. The point is to cover:
 
@@ -347,7 +347,7 @@ Run the targeted tests (or use `scripts/run_tests.sh`, which runs each file in i
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -q
+python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/hermes_cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/agent/test_provider_parity.py -q
 ```
 
 For deeper changes, run the full suite before pushing:

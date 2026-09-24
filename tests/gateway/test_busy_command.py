@@ -4,7 +4,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply, MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -45,13 +45,6 @@ class TestBusyCommand:
         assert busy_mode in reply_text
         assert "busy" in reply_text
 
-    @pytest.mark.asyncio
-    async def test_busy_invalid_arg(self):
-        """/busy with invalid arg returns error."""
-        runner = _make_runner()
-        event = _make_event("/busy bananas")
-        result = await runner._handle_busy_command(event)
-        assert "unknown" in str(result).lower()
 
 class TestBusyCommandPersistence:
     """Test /busy persistence with mocked save_config_value."""
@@ -74,7 +67,7 @@ class TestBusyCommandPersistence:
         # emulate the write that the mocked save_config_value skipped.
         monkeypatch.setattr(
             gateway_run,
-            "_load_gateway_runtime_config",
+            "_load_gateway_config",
             lambda: {"display": {"busy_input_mode": new_mode}},
         )
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)

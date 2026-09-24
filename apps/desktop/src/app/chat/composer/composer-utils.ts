@@ -1,9 +1,11 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
+import type { ConnectionState } from '@hermes/shared'
 
 import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
+import { composerPlainText } from './rich-editor'
 import type { TriggerState } from './text-utils'
 
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
@@ -51,6 +53,18 @@ export const COMPOSER_FADE_BACKGROUND =
 // Quiet period after the last keystroke before persisting the draft;
 // unmount/pagehide flushes bypass it.
 export const DRAFT_PERSIST_DEBOUNCE_MS = 400
+
+/**
+ * Keep a reconnecting draft editable so transient gateway dials cannot blur
+ * the editor and discard the user's caret. Submission still reads the
+ * independent `disabled` prop, so non-open states cannot send.
+ *
+ * An `open` state paired with `disabled=true` is a transient disagreement
+ * between the connection atoms; fail closed until they converge.
+ */
+export function shouldDisableComposerInput(disabled: boolean, gatewayState: ConnectionState): boolean {
+  return disabled && gatewayState === 'open'
+}
 
 export const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
@@ -104,14 +118,18 @@ export function implicitSlashAcceptIndex(
   activeIndex: number,
   activeExplicit: boolean
 ): number | null {
+  // A deliberately arrowed highlight ALWAYS wins — "Enter means I want this
+  // one", even on a bare `/` query where no command name has been typed yet.
+  // This must be checked before the `!typed` early-return so an explicit pick
+  // is never suppressed on a bare `/` (#98535).
+  if (activeExplicit && itemTexts[activeIndex] != null) {
+    return activeIndex
+  }
+
   const typed = slashCompletionToken(query)
 
   if (!typed) {
     return null
-  }
-
-  if (activeExplicit && itemTexts[activeIndex] != null) {
-    return activeIndex
   }
 
   const exact = itemTexts.findIndex(text => slashCompletionToken(text) === typed)
@@ -203,4 +221,16 @@ export function isPendingDraftPersistCurrent(
   expected: PendingDraftPersist | null
 ): boolean {
   return pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
+}
+
+/**
+ * The composer text a keystroke should decide from.
+ *
+ * `mirror` (the composer's draftRef) is refreshed by a coalesced per-frame
+ * flush, so within a frame of a keystroke or paste it still holds the previous
+ * text. A decision that can act on the draft — the sent-message recall guard
+ * replaces the composer — has to read the live editor instead.
+ */
+export function liveComposerDraft(editor: HTMLElement | null | undefined, mirror: string): string {
+  return editor ? composerPlainText(editor) : mirror
 }

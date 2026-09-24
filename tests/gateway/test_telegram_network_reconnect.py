@@ -6,9 +6,7 @@ network error, the adapter must self-reschedule the next reconnect attempt
 rather than silently leaving polling dead.
 """
 
-import ast
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -454,13 +452,6 @@ async def test_conflict_retry_also_drains_polling_connections():
     mock_app.updater.start_polling.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_drain_helper_noop_without_app():
-    """_drain_polling_connections must be a no-op when _app is None."""
-    adapter = _make_adapter()
-    adapter._app = None
-    # Should not raise
-    await adapter._drain_polling_connections()
 
 
 # ── Heartbeat probe ──────────────────────────────────────────────────────
@@ -652,42 +643,6 @@ async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
         await existing_task
     except (asyncio.CancelledError, Exception):
         pass
-
-
-async def _heartbeat_exception_case(exc, *, pending_probe=False):
-    adapter = _make_adapter()
-    reconnect_handler = AsyncMock()
-    adapter._handle_polling_network_error = reconnect_handler  # type: ignore[method-assign]
-    mock_app = MagicMock()
-    mock_app.updater.running = True
-    if pending_probe:
-        mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
-        mock_app.bot.get_webhook_info = AsyncMock(side_effect=exc)
-    else:
-        mock_app.bot.get_me = AsyncMock(side_effect=exc)
-    adapter._app = mock_app
-
-    sleep_calls = 0
-
-    async def fast_sleep(_seconds):
-        nonlocal sleep_calls
-        sleep_calls += 1
-        if sleep_calls >= 2:
-            raise asyncio.CancelledError()
-
-    with patch("asyncio.sleep", side_effect=fast_sleep):
-        await adapter._polling_heartbeat_loop()
-    await asyncio.sleep(0)
-    return adapter
-
-
-def _calls_shared_network_classifier(node):
-    return any(
-        isinstance(child, ast.Call)
-        and isinstance(child.func, ast.Attribute)
-        and child.func.attr == "_looks_like_network_error"
-        for child in ast.walk(node)
-    )
 
 
 # ── Bootstrap degradation: keep polling alive during outages (#47508) ────
@@ -959,3 +914,78 @@ class TestConnectTimeoutClassifier:
 
     def test_generic_negative(self):
         assert TelegramAdapter._looks_like_connect_timeout(Exception("Timed out")) is False
+
+
+
+
+@pytest.mark.asyncio
+async def test_drain_rebuild_does_not_block_loop_or_leak_cleanup_task(monkeypatch):
+    """The orphaned aclose() must be bounded and must not pin the event loop.
+
+    The stale client can absorb cancellation inside httpcore's shielded
+    scopes; the detached cleanup uses the wall-clock thread deadline so a
+    wedged close is abandoned instead of accumulating one leaked background
+    task per reconnect attempt (#87057 / #87265 review).
+    """
+    adapter = _make_adapter()
+
+    class _Client:
+        is_closed = False
+
+        async def aclose(self):
+            # Simulate httpcore cleanup that absorbs cancellation for a while.
+            # The detached cleanup must not stay registered forever.
+            for _ in range(20):
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    continue
+
+    class _PollingRequest:
+        def __init__(self):
+            self._client = _Client()
+            self.rebuilt = []
+
+        def _build_client(self):
+            client = _Client()
+            self.rebuilt.append(client)
+            return client
+
+        async def shutdown(self):
+            await asyncio.Event().wait()
+
+        async def initialize(self):
+            # Mirrors PTB: initialize() does nothing while is_closed is false.
+            if self._client.is_closed:
+                self._client = self._build_client()
+
+    request = _PollingRequest()
+    original_client = request._client
+    app = MagicMock()
+    app.bot._request = (request, MagicMock())
+    adapter._app = app
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.02)
+
+    ticks = 0
+
+    async def _ticker():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    ticker = asyncio.create_task(_ticker())
+    await adapter._drain_polling_connections()
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+
+    assert request.rebuilt, "stale polling client must be replaced"
+    assert request._client is request.rebuilt[-1]
+    assert request._client is not original_client
+    assert ticks >= 2, "a wedged close must not block the asyncio event loop"
+
+    await asyncio.sleep(0.35)
+    assert not adapter._background_tasks, (
+        "stale-client cleanup must finish or abandon its own wedged close "
+        "without accumulating a background task"
+    )

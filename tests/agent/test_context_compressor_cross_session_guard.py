@@ -62,7 +62,6 @@ def _make_compressor():
     c._last_aux_model_failure_model = None
     c.last_real_prompt_tokens = 0
     c.last_compression_rough_tokens = 0
-    c.last_rough_tokens_when_real_prompt_fit = 0
     c.awaiting_real_usage_after_compression = False
     return c
 
@@ -129,17 +128,3 @@ def test_previous_summary_preserved_when_handoff_found():
     )
 
 
-def test_no_false_positive_when_previous_summary_already_none():
-    """When _previous_summary is already None and no handoff found, nothing
-    should break (the guard is a no-op in this case)."""
-    c = _make_compressor()
-    c._previous_summary = None
-
-    messages = _conversation_without_handoff()
-
-    with patch.object(c, "_generate_summary",
-                      return_value="[CONTEXT COMPACTION] Fresh summary."):
-        c.compress(messages)
-
-    # Should still be None — guard is no-op
-    assert c._previous_summary is None

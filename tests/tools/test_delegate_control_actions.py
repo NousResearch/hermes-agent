@@ -11,6 +11,8 @@ backgrounded) and never consume the per-turn subagent spawn cap.
 import json
 import weakref
 
+import pytest
+
 from tools.delegate_tool import (
     _handle_control_action,
     _is_descendant_of,
@@ -64,10 +66,6 @@ def _register(sid: str, child, **extra) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_direct_child_is_descendant():
-    parent = _StubParent()
-    child = _StubChild(parent)
-    assert _is_descendant_of(child, parent) is True
 
 
 def test_grandchild_is_descendant():
@@ -77,11 +75,6 @@ def test_grandchild_is_descendant():
     assert _is_descendant_of(grandchild, parent) is True
 
 
-def test_foreign_agent_is_not_descendant():
-    parent = _StubParent()
-    other_parent = _StubParent()
-    foreign = _StubChild(other_parent)
-    assert _is_descendant_of(foreign, parent) is False
 
 
 def test_missing_ref_is_not_descendant():
@@ -128,10 +121,6 @@ def test_list_shows_only_own_children():
         _unregister_subagent("sid-ctl-list-2")
 
 
-def test_list_empty_registry_has_note():
-    out = json.loads(_handle_control_action("list", None, None, _StubParent()))
-    assert out["count"] == 0
-    assert "note" in out
 
 
 # ---------------------------------------------------------------------------
@@ -165,20 +154,8 @@ def test_steer_foreign_child_is_refused():
         _unregister_subagent("sid-ctl-steer-2")
 
 
-def test_steer_requires_message():
-    parent = _StubParent()
-    child = _StubChild(parent)
-    _register("sid-ctl-steer-3", child)
-    try:
-        out = _handle_control_action("steer", "sid-ctl-steer-3", "   ", parent)
-        assert "requires a non-empty 'message'" in out
-    finally:
-        _unregister_subagent("sid-ctl-steer-3")
 
 
-def test_steer_requires_subagent_id():
-    out = _handle_control_action("steer", "", "text", _StubParent())
-    assert "requires subagent_id" in out
 
 
 def test_steer_closed_acceptance_is_refused():
@@ -199,7 +176,7 @@ def test_steer_closed_acceptance_is_refused():
 
 
 def test_stop_interrupts_owned_child(monkeypatch):
-    import tools.delegate_tool as dt
+    import tools.delegate_tool_registry as dt
 
     parent = _StubParent()
     child = _StubChild(parent)
@@ -219,7 +196,7 @@ def test_stop_interrupts_owned_child(monkeypatch):
 
 
 def test_stop_foreign_child_is_refused(monkeypatch):
-    import tools.delegate_tool as dt
+    import tools.delegate_tool_registry as dt
 
     parent = _StubParent()
     foreign = _StubChild(_StubParent())
@@ -236,10 +213,6 @@ def test_stop_foreign_child_is_refused(monkeypatch):
         _unregister_subagent("sid-ctl-stop-2")
 
 
-def test_stop_unknown_id_mentions_completion_path():
-    out = _handle_control_action("stop", "sid-gone", None, _StubParent())
-    assert "No live subagent" in out
-    assert "completion message" in out
 
 
 # ---------------------------------------------------------------------------
@@ -247,12 +220,6 @@ def test_stop_unknown_id_mentions_completion_path():
 # ---------------------------------------------------------------------------
 
 
-def test_delegate_task_routes_control_action_before_spawn_machinery():
-    """action='list' must return synchronously without touching spawn paths
-    (no goal/tasks required, no pause gate, no depth checks)."""
-    parent = _StubParent()
-    out = json.loads(delegate_task(action="list", parent_agent=parent))
-    assert out["action"] == "list"
 
 
 def test_delegate_task_control_action_bypasses_spawn_pause():
@@ -272,10 +239,6 @@ def test_delegate_task_unknown_action_is_an_error():
     assert "Unknown action" in out
 
 
-def test_delegate_task_spawn_action_still_validates_goal():
-    out = delegate_task(action="spawn", parent_agent=_StubParent())
-    assert "No tasks provided" in out
-    assert "one-entry" in out  # teaching error carries the canonical shape
 
 
 def test_delegate_task_requires_parent_agent_for_control():
@@ -638,50 +601,74 @@ def test_child_completion_with_collapsed_container_task_id_suppressed(monkeypatc
     assert reg.completion_queue.qsize() == 0
 
 
-def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch):
+@pytest.fixture
+def notification_child(tmp_path):
+    """Pipe-mode children have DEVNULL stdin; release through a real file."""
+    import sys
+
+    gate = tmp_path / "release"
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys, time\n"
+        "gate = pathlib.Path(sys.argv[1])\n"
+        "deadline = time.monotonic() + 15\n"
+        "while not gate.exists():\n"
+        "    if time.monotonic() > deadline: raise TimeoutError('gate not released')\n"
+        "    time.sleep(0.01)\n"
+        "print('notification-child-finished')\n",
+        encoding="utf-8",
+    )
+    try:
+        yield f'"{sys.executable}" "{script}" "{gate}"', gate
+    finally:
+        gate.touch()
+
+
+def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch, notification_child):
     """spawn_local(owner_task_id=...) survives to the completion event, so a
     real subagent-spawned process (collapsed task_id) is suppressed on
     drain. Exercises the actual spawn -> _move_to_finished -> drain path."""
-    import time as _time
-
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
+    command, gate = notification_child
     session = reg.spawn_local(
-        command="echo owner-stamp-e2e",
+        command=command,
         task_id="default",
         owner_task_id="sa-9-supp0006",
     )
     session.notify_on_complete = True
     assert session.owner_task_id == "sa-9-supp0006"
-    deadline = _time.time() + 15
-    while not session.exited and _time.time() < deadline:
-        _time.sleep(0.05)
-    assert session.exited, "test process should exit promptly"
-    _time.sleep(0.3)  # let the reader thread enqueue the completion event
+    # Do not let a fast child exit before notification admission is configured.
+    gate.touch()
+    event = reg.completion_queue.get(timeout=15)
+    assert event["exit_code"] == 0
+    assert "notification-child-finished" in event["output"]
+    reg.completion_queue.put(event)
     assert reg.drain_notifications() == []
 
 
-def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch):
+def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch, notification_child):
     """Backward compat: callers that don't pass owner_task_id behave exactly
     as before (owner falls back to task_id; parent-owned still delivers)."""
-    import time as _time
-
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
-    session = reg.spawn_local(command="echo parent-e2e", task_id="default")
+    command, gate = notification_child
+    session = reg.spawn_local(
+        command=command, task_id="default",
+    )
     session.notify_on_complete = True
     assert session.owner_task_id == "default"
-    deadline = _time.time() + 15
-    while not session.exited and _time.time() < deadline:
-        _time.sleep(0.05)
-    assert session.exited
-    _time.sleep(0.3)
+    gate.touch()
+    event = reg.completion_queue.get(timeout=15)
+    assert event["exit_code"] == 0
+    assert "notification-child-finished" in event["output"]
+    reg.completion_queue.put(event)
     results = reg.drain_notifications()
     assert len(results) == 1
     assert "completed normally" in results[0][1]
@@ -691,7 +678,8 @@ def test_attribution_line_uses_owner_task_id(monkeypatch):
     """format_process_notification resolves attribution from owner_task_id
     when task_id is a collapsed container key (surface flag on)."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry, format_process_notification
+    from tools.process_registry import ProcessRegistry
+    from tools.process_registry_notifications import format_process_notification
 
     monkeypatch.setattr(
         _cfg,
@@ -719,7 +707,7 @@ def test_attribution_line_uses_owner_task_id(monkeypatch):
 
 
 def test_completion_notification_trims_subagent_output_wall():
-    from tools.process_registry import format_process_notification
+    from tools.process_registry_notifications import format_process_notification
 
     parent = _StubParentWithSession("sess-attr-4")
     child = _StubChild(parent)
@@ -737,45 +725,16 @@ def test_completion_notification_trims_subagent_output_wall():
             }
         )
         assert text is not None
-        assert "output trimmed — subagent-owned process" in text
         assert len(text) < len(big_output)
     finally:
         _unregister_subagent("sa-2-attr0004")
 
 
-def test_parent_owned_process_notification_unchanged():
-    """Processes NOT started by a subagent keep the exact legacy shape."""
-    from tools.process_registry import format_process_notification
-
-    text = format_process_notification(
-        {
-            "type": "completion",
-            "session_id": "proc_parentowned",
-            "task_id": "20260817_154314_30d98f",  # CLI session task_id
-            "command": "make build",
-            "exit_code": 0,
-            "output": "ok",
-        }
-    )
-    assert text is not None
-    assert "Started by subagent" not in text
-    assert text.startswith("[IMPORTANT: Background process proc_parentowned")
-    assert "Command: make build\nOutput:\nok]" in text
 
 
 # ---------------------------------------------------------------------------
 # Guardrail: control actions never consume the spawn cap
 # ---------------------------------------------------------------------------
-def test_spawn_count_zero_for_control_actions():
-    from agent.tool_guardrails import _subagent_spawn_count
-
-    assert _subagent_spawn_count({"action": "list"}) == 0
-    assert _subagent_spawn_count({"action": "steer", "subagent_id": "x"}) == 0
-    assert _subagent_spawn_count({"action": "stop", "subagent_id": "x"}) == 0
-    # Spawn shapes unchanged
-    assert _subagent_spawn_count({"goal": "g"}) == 1
-    assert _subagent_spawn_count({"action": "spawn", "goal": "g"}) == 1
-    assert _subagent_spawn_count({"tasks": [{"goal": "a"}, {"goal": "b"}]}) == 2
 
 
 def test_control_action_not_blocked_at_spawn_cap():

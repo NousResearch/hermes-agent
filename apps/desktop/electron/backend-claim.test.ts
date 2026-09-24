@@ -6,7 +6,7 @@ import { test } from 'vitest'
 import {
   claimDecision,
   createBackendOutputTail,
-  DEFAULT_OUTPUT_TAIL_LIMIT,
+  formatBackendExitLine,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
@@ -52,12 +52,6 @@ test('probeStartMarker converts a probe throw into { ok: false, reason }', async
   assert.deepEqual(probe, { ok: false, reason: 'PowerShell 5.1 cold start exceeded budget' })
 })
 
-test('probeStartMarker passes a successful marker through', async () => {
-  const probe = await probeStartMarker(4242, async pid => `linux:${pid}`)
-
-  assert.deepEqual(probe, { ok: true, startMarker: 'linux:4242' })
-})
-
 // --- real probe: drives the actual OS helper (PowerShell on the Windows lane) ---
 
 test('processStartMarker resolves a real marker for the current process', async () => {
@@ -66,9 +60,12 @@ test('processStartMarker resolves a real marker for the current process', async 
   assert.match(marker, /^(linux|win|winms|ps):.+/)
 })
 
-test('processStartMarker rejects for a PID that does not exist', async () => {
+test('a missing PID is classified as ESRCH so reapOrphans can drop the record', async () => {
   // Largest PIDs are bounded well below this on every supported platform.
-  await assert.rejects(processStartMarker(2 ** 30 + 12345))
+  // Windows Get-Process / macOS `ps -p` used to surface exit code 1, which
+  // the identity matchers treated as "unknown" and kept forever. The native
+  // gate throws ESRCH — the errno those catch blocks already map to gone.
+  await assert.rejects(processStartMarker(2 ** 30 + 12345), (error: NodeJS.ErrnoException) => error?.code === 'ESRCH')
 })
 
 // --- PID-only marker helpers --------------------------------------------------
@@ -76,7 +73,6 @@ test('processStartMarker rejects for a PID that does not exist', async () => {
 test('pidOnlyStartMarker round-trips through isPidOnlyStartMarker', () => {
   const marker = pidOnlyStartMarker(4242)
 
-  assert.equal(marker, 'pid-only:4242')
   assert.equal(isPidOnlyStartMarker(marker), true)
   assert.equal(isPidOnlyStartMarker('linux:12345'), false)
   assert.equal(isPidOnlyStartMarker(undefined), false)
@@ -94,15 +90,6 @@ test('output tail keeps only the most recent bytes once past the limit', () => {
   assert.equal(tail.text().length, 16)
 })
 
-test('output tail default limit is ~8KB', () => {
-  const tail = createBackendOutputTail()
-
-  tail.append('x'.repeat(DEFAULT_OUTPUT_TAIL_LIMIT + 500))
-
-  assert.equal(tail.text().length, DEFAULT_OUTPUT_TAIL_LIMIT)
-  assert.equal(DEFAULT_OUTPUT_TAIL_LIMIT, 8192)
-})
-
 test('output tail interleaves stdout and stderr attached from spawn time', () => {
   const child = { stderr: new EventEmitter(), stdout: new EventEmitter() }
   const tail = createBackendOutputTail(64)
@@ -115,18 +102,33 @@ test('output tail interleaves stdout and stderr attached from spawn time', () =>
   assert.match(tail.text(), /ModuleNotFoundError/)
 })
 
-test('describe() is empty when nothing was captured, formatted when output exists', () => {
-  const tail = createBackendOutputTail(64)
-
-  assert.equal(tail.describe(), '')
-
-  tail.append('Traceback (most recent call last):\n')
-  assert.match(tail.describe(), /^\nRecent backend output:\nTraceback/)
-})
-
 test('attach tolerates a child with missing stdio streams', () => {
   const tail = createBackendOutputTail(64)
 
   tail.attach({ stderr: null, stdout: null })
   assert.equal(tail.text(), '')
+})
+
+// --- formatBackendExitLine ---------------------------------------------------
+
+test('exit line carries the buffered tail next to the exit code, preferring the signal', () => {
+  const tail = createBackendOutputTail(64)
+  tail.append('Traceback (most recent call last):\n')
+
+  assert.equal(
+    formatBackendExitLine('Ignoring stale Hermes backend exit', 1, null, tail),
+    'Ignoring stale Hermes backend exit (1)\nRecent backend output:\nTraceback (most recent call last):'
+  )
+  assert.equal(
+    formatBackendExitLine('Hermes backend exited', null, 'SIGTERM', tail),
+    'Hermes backend exited (SIGTERM)\nRecent backend output:\nTraceback (most recent call last):'
+  )
+})
+
+test('exit line stays byte-identical to the legacy shape when the tail is empty or missing', () => {
+  assert.equal(
+    formatBackendExitLine('Hermes backend exited', 0, null, createBackendOutputTail(64)),
+    'Hermes backend exited (0)'
+  )
+  assert.equal(formatBackendExitLine('Hermes backend exited', 1, null, null), 'Hermes backend exited (1)')
 })

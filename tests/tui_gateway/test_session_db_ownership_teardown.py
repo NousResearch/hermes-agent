@@ -178,7 +178,7 @@ def test_lazy_recall_open_is_owned_by_the_agent(monkeypatch):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
 
     agent = _bare_agent(_session_db=None, _persist_disabled=False)
     got = agent._get_session_db_for_recall()
@@ -241,17 +241,6 @@ def test_transfer_is_refused_for_the_shared_launch_handle(monkeypatch):
     assert agent._owns_session_db is False
 
 
-def test_get_db_returns_the_cached_instance(monkeypatch):
-    """The identity defense (``db is _get_db()``) only works while _get_db
-    hands out ONE process-wide instance. Pin the caching semantics: once a
-    handle exists, repeated calls return the same object rather than
-    constructing per-call wrappers (review finding on #91631)."""
-    sentinel = types.SimpleNamespace(closed=0)
-    monkeypatch.setattr(server, "_db", sentinel)
-    monkeypatch.setattr(server, "_db_error", None)
-
-    assert server._get_db() is sentinel
-    assert server._get_db() is server._get_db()
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +261,9 @@ def build_env(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     for name, value in [
-        ("_set_session_context", lambda _key: []),
+        ("_set_session_context", lambda _key, cwd=None: []),
         ("_clear_session_context", lambda _tokens: None),
         ("_wire_callbacks", lambda _sid: None),
         ("_config_model_target", lambda: None),

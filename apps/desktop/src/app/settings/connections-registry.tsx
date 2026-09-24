@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -35,9 +35,10 @@ import {
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
+import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
+import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -56,6 +57,7 @@ interface EditorState {
   token: string
   host: string
   keyPath: string
+  remoteHermesPath: string
   // ssh remote profile, hydrated on edit so the duplicate key matches the
   // main-process one (user@host:port + profile); the editor doesn't expose it.
   remoteProfile: string
@@ -65,6 +67,17 @@ interface EditorState {
   // it. `stored` marks rows hydrated from headerNames so the placeholder can
   // say "saved" instead of demanding a value.
   headers: { name: string; stored: boolean; value: string }[]
+}
+
+/**
+ * The auth mode the editor saves. A Hermes Cloud gateway signs in through its
+ * OAuth session and never keeps a pasted token (the main process drops one),
+ * so cloud is always oauth whatever the shared editor state last held for a
+ * remote; token auth left a hand-registered cloud entry with no credential
+ * (#89529).
+ */
+function editorAuthMode(editor: Pick<EditorState, 'authMode' | 'kind'>): EditorState['authMode'] {
+  return editor.kind === 'cloud' ? 'oauth' : editor.authMode
 }
 
 function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
@@ -82,6 +95,7 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     // would silently resurrect the old values.
     host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
     keyPath: conn.keyPath || '',
+    remoteHermesPath: conn.remoteHermesPath || '',
     remoteProfile: conn.remoteProfile || '',
     headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
   }
@@ -97,6 +111,7 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     token: '',
     host: '',
     keyPath: '',
+    remoteHermesPath: '',
     remoteProfile: '',
     headers: []
   }
@@ -235,6 +250,7 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
  * switchover UX is the connection-mode controls above this section.
  */
 export function ConnectionsRegistrySection() {
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const { t } = useI18n()
   const s = t.settings.connections
   const activeConnectionId = useStore($activeConnectionId)
@@ -272,8 +288,9 @@ export function ConnectionsRegistrySection() {
     setConnectionsRegistry(next)
   }, [])
 
-  const editorUrl = editor?.kind === 'remote' ? coerceRemoteUrlScheme(editor.url) : ''
-  const editorWantsOauth = editor?.kind === 'remote' && editor.authMode === 'oauth'
+  const editorIsGateway = editor?.kind === 'remote' || editor?.kind === 'cloud'
+  const editorUrl = editor && editorIsGateway ? coerceRemoteUrlScheme(editor.url) : ''
+  const editorWantsOauth = Boolean(editor && editorIsGateway && editorAuthMode(editor) === 'oauth')
   const authProviderShape = deriveRemoteAuthProviderShape(authProbe?.providers, t.boot.failure.identityProvider)
 
   // Probe only while the sign-in row is on screen, and debounce it so typing a
@@ -423,7 +440,7 @@ export function ConnectionsRegistrySection() {
 
         if (editor.kind === 'remote' || editor.kind === 'cloud') {
           payload.url = editor.url
-          payload.authMode = editor.authMode
+          payload.authMode = editorAuthMode(editor)
 
           if (editor.token.trim()) {
             payload.token = editor.token.trim()
@@ -450,6 +467,7 @@ export function ConnectionsRegistrySection() {
           // of truth — never send separate user/port (see editorFromConnection).
           payload.host = editor.host
           payload.keyPath = editor.keyPath || undefined
+          payload.remoteHermesPath = editor.remoteHermesPath.trim()
         }
 
         const result = await bridge.save(payload)
@@ -552,6 +570,9 @@ export function ConnectionsRegistrySection() {
 
         if (reachable) {
           notify({ title: conn.label, message: s.testOk })
+          // A successful Test may have warmed a cold OAuth session that the
+          // roster missed; explicit recovery should bypass its cache window.
+          void refreshFleetRoster({ force: true })
         } else {
           notifyError(new Error(result.error || conn.label), s.testFailed)
         }
@@ -644,8 +665,8 @@ export function ConnectionsRegistrySection() {
   }
 
   return (
-    <div className="mt-8 border-t border-border/60 pt-6">
-      <SectionHeading icon={Globe} title={s.title} />
+    <div className={hasBreadcrumb ? undefined : 'mt-8 border-t border-border/60 pt-6'}>
+      <SectionHeading icon={Globe} page title={s.title} />
       <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
       {/* Source selection lives in Sessions. Primary is the registry fallback,
           not an immediate workspace switch. */}
@@ -841,35 +862,36 @@ export function ConnectionsRegistrySection() {
                   title={t.settings.gateway.tokenTitle}
                 />
               )}
-              {editor.authMode === 'oauth' && (
-                <ListRow
-                  action={
-                    oauthConnected ? (
-                      <Pill tone="primary">
-                        <Check className="size-3" /> {t.settings.gateway.signedIn}
-                      </Pill>
-                    ) : (
-                      <Button disabled={signingIn || !editorUrl} onClick={() => void signInOauth()} size="sm">
-                        {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                        {authProviderShape.isPassword
-                          ? t.settings.gateway.signIn
-                          : t.settings.gateway.signInWith(authProviderShape.providerLabel)}
-                      </Button>
-                    )
-                  }
-                  description={
-                    oauthConnected
-                      ? authProviderShape.isPassword
-                        ? t.settings.gateway.authSignedInPassword
-                        : t.settings.gateway.authSignedInOauth
-                      : authProviderShape.isPassword
-                        ? t.settings.gateway.authNeedsPassword
-                        : t.settings.gateway.authNeedsOauth(authProviderShape.providerLabel)
-                  }
-                  title={t.settings.gateway.authTitle}
-                />
-              )}
             </>
+          )}
+
+          {editorWantsOauth && (
+            <ListRow
+              action={
+                oauthConnected ? (
+                  <Pill tone="primary">
+                    <Check className="size-3" /> {t.settings.gateway.signedIn}
+                  </Pill>
+                ) : (
+                  <Button disabled={signingIn || !editorUrl} onClick={() => void signInOauth()} size="sm">
+                    {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                    {authProviderShape.isPassword
+                      ? t.settings.gateway.signIn
+                      : t.settings.gateway.signInWith(authProviderShape.providerLabel)}
+                  </Button>
+                )
+              }
+              description={
+                oauthConnected
+                  ? authProviderShape.isPassword
+                    ? t.settings.gateway.authSignedInPassword
+                    : t.settings.gateway.authSignedInOauth
+                  : authProviderShape.isPassword
+                    ? t.settings.gateway.authNeedsPassword
+                    : t.settings.gateway.authNeedsOauth(authProviderShape.providerLabel)
+              }
+              title={t.settings.gateway.authTitle}
+            />
           )}
 
           {(editor.kind === 'remote' || editor.kind === 'cloud') && (
@@ -927,19 +949,32 @@ export function ConnectionsRegistrySection() {
           )}
 
           {editor.kind === 'ssh' && (
-            <ListRow
-              action={
-                <Input
-                  onChange={e => {
-                    setDupeError(null)
-                    setEditor({ ...editor, host: e.target.value })
-                  }}
-                  placeholder="user@host:22"
-                  value={editor.host}
-                />
-              }
-              title={s.sshHostTitle}
-            />
+            <>
+              <ListRow
+                action={
+                  <Input
+                    onChange={e => {
+                      setDupeError(null)
+                      setEditor({ ...editor, host: e.target.value })
+                    }}
+                    placeholder="user@host:22"
+                    value={editor.host}
+                  />
+                }
+                title={s.sshHostTitle}
+              />
+              <ListRow
+                action={
+                  <Input
+                    onChange={e => setEditor({ ...editor, remoteHermesPath: e.target.value })}
+                    placeholder={t.settings.gateway.sshHermesPathPlaceholder}
+                    value={editor.remoteHermesPath}
+                  />
+                }
+                description={t.settings.gateway.sshHermesPathDesc}
+                title={t.settings.gateway.sshHermesPathTitle}
+              />
+            </>
           )}
 
           {dupeError ? <p className="text-xs text-destructive">{dupeError}</p> : null}

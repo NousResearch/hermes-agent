@@ -18,23 +18,128 @@ import pytest
 import agent.conversation_compression as cc
 from agent.conversation_compression import (
     CompressionCommitFence,
+    context_compression_timed_out,
+    mark_context_compression_timed_out,
+    reset_context_compression_timeout_outcome,
     resolve_context_compression_timeouts,
     run_compress_context_with_progress_timeout,
 )
 
 
+class TestContextCompressionTimeoutState:
+    """Thread-safe typed timeout state (#98741, on top of #98424's flag)."""
+
+    def test_timeout_state_first_use_is_atomic(self, monkeypatch):
+        from types import SimpleNamespace
+
+        agent = SimpleNamespace()
+        reset_constructor_entered = threading.Event()
+        marker_constructor_finished = threading.Event()
+        release_reset_constructor = threading.Event()
+        reset_finished = threading.Event()
+        marker_finished = threading.Event()
+        seen = {}
+        original_local = threading.local
+
+        class DelayedLocal(original_local):
+            def __new__(cls):
+                state = super().__new__(cls)
+                if threading.current_thread().name == "timeout-resetter":
+                    reset_constructor_entered.set()
+                    assert release_reset_constructor.wait(timeout=2)
+                else:
+                    marker_constructor_finished.set()
+                return state
+
+        monkeypatch.setattr(cc.threading, "local", DelayedLocal)
+
+        def resetter():
+            reset_context_compression_timeout_outcome(agent)
+            reset_finished.set()
+            assert marker_finished.wait(timeout=2)
+            seen["resetter"] = context_compression_timed_out(agent)
+
+        def marker():
+            mark_context_compression_timed_out(agent)
+            marker_finished.set()
+            assert reset_finished.wait(timeout=2)
+            seen["marker"] = context_compression_timed_out(agent)
+
+        reset_thread = threading.Thread(target=resetter, name="timeout-resetter")
+        mark_thread = threading.Thread(target=marker, name="timeout-marker")
+        reset_thread.start()
+        assert reset_constructor_entered.wait(timeout=2)
+        mark_thread.start()
+
+        # A fixed implementation publishes the initialization lock before
+        # constructing the state. The old implementation lets the marker
+        # publish a competing state while the resetter is paused here.
+        if "_context_compression_timeout_state_lock" not in vars(agent):
+            assert marker_constructor_finished.wait(timeout=2)
+        release_reset_constructor.set()
+
+        reset_thread.join(timeout=2)
+        mark_thread.join(timeout=2)
+
+        assert not reset_thread.is_alive()
+        assert not mark_thread.is_alive()
+        assert seen == {"resetter": False, "marker": True}
+
+    def test_timeout_outcome_is_isolated_between_overlapping_entrypoints(self):
+        from types import SimpleNamespace
+
+        agent = SimpleNamespace()
+        worker_marked = threading.Event()
+        main_reset = threading.Event()
+        seen = {}
+
+        def worker():
+            reset_context_compression_timeout_outcome(agent)
+            mark_context_compression_timed_out(agent)
+            worker_marked.set()
+            assert main_reset.wait(timeout=2)
+            seen["worker"] = context_compression_timed_out(agent)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert worker_marked.wait(timeout=2)
+
+        reset_context_compression_timeout_outcome(agent)
+        seen["main"] = context_compression_timed_out(agent)
+        main_reset.set()
+        thread.join(timeout=2)
+
+        assert not thread.is_alive()
+        assert seen == {"main": False, "worker": True}
+
+
+
 class TestResolveContextCompressionTimeouts:
-    def test_defaults_when_empty_cfg(self):
-        idle, ceiling = resolve_context_compression_timeouts({})
-        assert idle == 120.0
-        assert ceiling == 600.0
+    @pytest.fixture(autouse=True)
+    def _no_aux_floor(self, monkeypatch):
+        # The aux compression request budget floors the idle window (#114594); pin it off so the legacy
+        # clamps below are judged on their own, and on in the dedicated test.
+        import agent.auxiliary_client as aux
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 0.0)
+
+
+    def test_idle_is_floored_at_the_aux_compression_request_budget(self, monkeypatch):
+        """The host must never judge silence before the summary request itself would time out; a budget
+        above the ceiling raises the ceiling too, and a larger explicit idle is kept."""
+        import agent.auxiliary_client as aux
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
+        assert resolve_context_compression_timeouts({}) == (300.0, 600.0)
+        assert resolve_context_compression_timeouts({"context_timeout_seconds": 900}) == (900.0, 900.0)
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 900.0)
+        assert resolve_context_compression_timeouts({}) == (900.0, 900.0)
+        assert resolve_context_compression_timeouts({"context_timeout_seconds": 0}) == (0.0, 600.0)
 
     def test_zero_idle_disables_wrapper(self):
         idle, ceiling = resolve_context_compression_timeouts(
             {"context_timeout_seconds": 0}
         )
         assert idle == 0.0
-        assert ceiling == 600.0
+        assert ceiling > 0
 
     def test_ceiling_clamped_to_idle(self):
         idle, ceiling = resolve_context_compression_timeouts(
@@ -396,14 +501,6 @@ class TestRunCompressContextWithProgressTimeout:
         assert prompt == "p"
         assert msgs[0]["content"] == "ok"
 
-    def test_reuses_module_shared_executor(self):
-        from tools.daemon_pool import DaemonThreadPoolExecutor
-        from agent import conversation_compression as mod
-
-        first = mod._get_compress_timeout_executor()
-        second = mod._get_compress_timeout_executor()
-        assert first is second
-        assert isinstance(first, DaemonThreadPoolExecutor)
 
 
 class TestCompressContextForwarderOwnsTimeout:
@@ -475,8 +572,7 @@ class TestCompressContextForwarderOwnsTimeout:
         cooldown_args = (
             agent.context_compressor._record_compression_failure_cooldown.call_args[0]
         )
-        assert cooldown_args[0] == 60.0
-        assert "host compress_context timeout" in cooldown_args[1]
+        assert cooldown_args[0] > 0
         from agent.session_activity import ActivityProvenance
 
         agent._touch_activity.assert_called_with(

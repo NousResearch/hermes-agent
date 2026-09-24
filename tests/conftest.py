@@ -77,8 +77,14 @@ def _hermes_home_points_at_production(value: str) -> bool:
     if not value:
         return True
     try:
+        # The platform-default root, not a hardcoded ``~/.hermes``: Windows installs live under
+        # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
+        # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
+        # install so the state.db guard tripped on every store-touching test (#112692).
+        from hermes_state_guard import _real_platform_state_root
+
         resolved = Path(value).expanduser().resolve()
-        real_root = (Path.home() / ".hermes").resolve()
+        real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
     except Exception:
         return True
     if resolved == real_root:
@@ -99,12 +105,19 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
 # the child at the same moment the child lost the HERMES_HOME redirect.
 # HERMES_TEST_ISOLATION is OUR marker: exported here (before any test module
 # imports), inherited by every child by default, and honored by
-# hermes_state._running_under_pytest() as a test-context signal. A child
+# hermes_state_guard._running_under_pytest() as a test-context signal. A child
 # that carries it and still resolves the production state.db fails hard.
 # Tests that legitimately need a child to look like a non-test process AND
 # open a real DB must export HERMES_STATE_DB_GUARD_BYPASS=1 in that child's
 # env instead of stripping markers.
 os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
+
+# Lazy-install kill-switch, set before any test module is imported. The per-test
+# fixture below sets it too, but collection runs first: agent/bedrock_adapter.py
+# calls lazy_deps.ensure() at import time, so collecting a file that imports it
+# ran a real `uv pip install boto3` into the shared venv while other files raced
+# on whether botocore was importable yet.
+os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
 
 #: HERMES_HOME as it stood when conftest was imported - i.e. before any test
 #: module could import code that configures logging. Recorded so the guard in
@@ -113,6 +126,38 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 #: `_isolate_env` fixture has sandboxed it by then, so the check would pass
 #: even with this block removed.
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
+
+# ── Host-rendezvous isolation ───────────────────────────────────────────────
+# ``gateway/host_rendezvous.py`` publishes ONE record per role per OS USER, in
+# ``$HERMES_GATEWAY_LOCK_DIR`` else ``$XDG_STATE_HOME/hermes/gateway-locks`` —
+# deliberately outside HERMES_HOME, because the host singleton spans profiles.
+# Under the per-file parallel runner that directory is shared by ~40 pytest
+# subprocesses: one test that boots a real gateway publishes a record, and every
+# other file's lifecycle code then correctly attaches to a gateway that has
+# nothing to do with it. Give each pytest PROCESS its own rendezvous dir.
+#
+# A caller-supplied value always wins (both here and in the per-test fixture
+# below) — otherwise the documented override is a silent no-op.
+HOST_LOCK_DIR_AT_CONFTEST_IMPORT = os.environ.get("HERMES_GATEWAY_LOCK_DIR", "")
+if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
+    # Deterministic per-PID name, not mkdtemp: the parallel runner SIGKILLs a worker on timeout,
+    # which never runs atexit, so a random dir per run leaked one directory per killed worker.
+    # A fixed name is reused by the next process with that PID, and dead siblings are swept here.
+    _LOCK_DIR_PREFIX = "hermes-test-gateway-locks-"
+    _LOCK_DIR_ROOT = Path(tempfile.gettempdir())
+    for _stale in _LOCK_DIR_ROOT.glob(f"{_LOCK_DIR_PREFIX}*"):
+        try:
+            _stale_pid = int(_stale.name[len(_LOCK_DIR_PREFIX):])
+        except ValueError:
+            continue
+        try:
+            os.kill(_stale_pid, 0)
+        except OSError:
+            shutil.rmtree(_stale, ignore_errors=True)
+    _SESSION_LOCK_DIR = str(_LOCK_DIR_ROOT / f"{_LOCK_DIR_PREFIX}{os.getpid()}")
+    shutil.rmtree(_SESSION_LOCK_DIR, ignore_errors=True)
+    os.environ["HERMES_GATEWAY_LOCK_DIR"] = _SESSION_LOCK_DIR
+    atexit.register(shutil.rmtree, _SESSION_LOCK_DIR, True)
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────
@@ -186,7 +231,8 @@ _CREDENTIAL_NAMES = frozenset({
     "FIRECRAWL_API_KEY",
     "PARALLEL_API_KEY",
     "EXA_API_KEY",
-    "TAVILY_API_KEY",  # removed backend; still blanked for hermeticity
+    "TAVILY_API_KEY",
+    "PERPLEXITY_API_KEY",
     "WANDB_API_KEY",
     "ELEVENLABS_API_KEY",
     "HONCHO_API_KEY",
@@ -492,6 +538,23 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # A test that pins the process home (hermes_constants.pin_process_hermes_home) must not
+    # leak that module-global into the next test's routed-profile decisions.
+    try:
+        import hermes_constants as _hc
+        monkeypatch.setattr(_hc, "_PINNED_PROCESS_HERMES_HOME", None, raising=False)
+    except Exception:
+        pass
+    # Per-TEST host-rendezvous dir (see the session-level block at the top): the
+    # host gateway/serve record is shared per OS user by design, so without this
+    # one test's published owner makes the next test's lifecycle code attach to it.
+    # HOME is deliberately NOT redirected above, so an unpinned run would read and
+    # write the developer's live ~/.local/state/hermes/gateway-locks.
+    # Skipped when the caller supplied the variable, so an explicit override still
+    # works (tests of the resolution rule itself rely on that).
+    if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test
@@ -509,6 +572,22 @@ def _hermetic_environment(tmp_path, monkeypatch):
     #     reading real sessions into assertions and writing test rows into the
     #     real profile. Re-pin the constant to this test's home. (Several test
     #     files already do this locally; this makes it an invariant.)
+    # 3c. Multi-profile hosting is a process-global latch (``set_multiplex_active`` and the
+    #     launch-env snapshot flip once and stay). A test that routes one RPC/request to a named
+    #     profile would otherwise leave every later test in the file fail-closed (unscoped
+    #     ``get_env_value`` in a test body raises). Reset the latch per test.
+    secret_scope_mod = sys.modules.get("agent.secret_scope")
+    if secret_scope_mod is not None and hasattr(secret_scope_mod, "_MULTIPLEX_ACTIVE"):
+        monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
+    if secret_scope_mod is not None and hasattr(secret_scope_mod, "_AUTO_PINNED_HOME"):
+        monkeypatch.setattr(secret_scope_mod, "_AUTO_PINNED_HOME", None)
+    launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
+    if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
+        monkeypatch.setattr(launch_policy_mod, "_snapshot", None)
+    tui_server_mod = sys.modules.get("tui_gateway.server")
+    if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
+        monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
+
     hermes_state_mod = sys.modules.get("hermes_state")
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
         monkeypatch.setattr(
@@ -574,6 +653,14 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture(autouse=True)
+def _reset_foreground_exit_fence():
+    """A test that drives a hard-exit path raises the one-way foreground-spawn fence; lower it after."""
+    yield
+    if (base := sys.modules.get("tools.environments.base")) is not None:
+        base._exit_fenced = False
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_kanban_memory_guard(request, monkeypatch):
     """Pin the kanban dispatcher's memory guard to "no data" for every test.
 
@@ -589,10 +676,90 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
     if request.node.get_closest_marker("real_memory_guard"):
         return
     try:
-        from hermes_cli import kanban_db as _kb_mod
+        from hermes_cli import kanban_db_dispatch as _kbd_mod
     except Exception:
         return
-    monkeypatch.setattr(_kb_mod, "_system_memory_sample", lambda: {}, raising=False)
+    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", lambda: {}, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_git_safe_directory_read(request, monkeypatch):
+    """Skip the ``git config --get-all safe.directory`` pre-read in ``noninteractive_git_env()``.
+
+    Many tests fake ``subprocess.run``/``Popen`` with a fixed sequence of expected git calls;
+    the pre-read is an extra spawn that would trip them. Tests of the carve-out itself opt in
+    with ``@pytest.mark.real_safe_directory``.
+    """
+    if request.node.get_closest_marker("real_safe_directory"):
+        return
+    try:
+        from hermes_cli import _subprocess_compat
+    except Exception:
+        return
+    monkeypatch.setattr(_subprocess_compat, "_user_safe_directories", lambda base_env: [], raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_session_dbs():
+    """Close every SessionDB a test constructed but forgot to close.
+
+    Root cause of OOM incident 20260816: ~40 files under tests/hermes_cli/
+    build ``SessionDB(...)`` directly and never call ``close()``. Each open
+    instance holds the writer connection (state.db + -wal fds), up to
+    ``_READ_POOL_MAX`` pooled read connections, per-connection SQLite page
+    caches, and — once token accounting has run — an ``atexit`` registration
+    that pins the instance alive until interpreter exit. Under the sanctioned
+    per-file-process runner this is invisible, but a raw single-process
+    ``pytest tests/hermes_cli/`` accumulated 16-25 GB RSS and had to be
+    OOM-killed three times in one day.
+
+    Rather than editing every test file, ``SessionDB.__init__`` registers each
+    instance in ``hermes_state_guard._test_instance_registry`` (a WeakSet,
+    populated only when the ``HERMES_TEST_ISOLATION`` marker is set — i.e.
+    only under this suite). This teardown closes whatever the test left open.
+    ``close()`` is idempotent (``self._conn`` is None afterwards) and also
+    unregisters the pinning atexit hook, so instances become collectable.
+
+    Snapshotting the registry BEFORE the test and closing only NEW instances
+    is deliberately avoided: closing pre-existing instances is harmless (they
+    were leaked by an earlier test in the same process) and the simpler
+    close-everything sweep is what actually bounds the process.
+
+    Instances opened through ``hermes_state_registry.acquire()`` are skipped:
+    on those ``close()`` releases a refcount rather than closing, so a sweep
+    would silently retire a shared generation that a wider-scoped fixture
+    still holds. The registry owns that lifecycle (``close_all()``).
+
+    Before the sweep, the auto-title upgrade threads a turn spawned are joined
+    (bounded): they hold the turn's SessionDB and write to it (and print to
+    ``sys.stdout``) after the turn returns, so left running they race this
+    close (``_reopen_after_close_locked`` on a daemon thread), the next test's
+    capture, and interpreter finalization — the ``Fatal Python error`` /
+    SIGSEGV shape of #113186, seen from ``tests/gateway/test_timestamp_sidecar_replay.py``.
+    """
+    yield
+    # sys.modules lookup, not import: a file that never touched title_generator spawned
+    # nothing. Tests that swap in a stub module (tui_gateway golden transcript) have no
+    # real threads either, so a stub without the helper is the same "nothing to join" case.
+    wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+    if wait is not None:
+        wait()
+    try:
+        from hermes_state_guard import _test_instance_registry as registry
+    except Exception:
+        return
+    if not registry:
+        return
+    for db in list(registry):
+        if getattr(db, "_shared_registry_owned", False):
+            continue
+        try:
+            db.close()
+        except Exception:
+            # Teardown must never fail a passing test; a close that raises
+            # (cross-thread ProgrammingError, already-closed) leaves at most
+            # the one connection for the next sweep / process exit.
+            pass
 
 
 @pytest.fixture(autouse=True)
@@ -631,28 +798,31 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
         return None
 
-    # Patch the implementation owner (agent.anthropic_credentials) AND the
-    # adapter re-export: after the adapter godfile split, the real call
-    # executes inside agent.anthropic_credentials, so patching only the
-    # adapter alias silently stopped intercepting Keychain reads.
-    for _module_name in ("agent.anthropic_credentials", "agent.anthropic_adapter"):
-        try:
-            _mod = importlib.import_module(_module_name)
-        except Exception:
-            continue
-        monkeypatch.setattr(
-            _mod,
-            "_read_claude_code_credentials_from_keychain",
-            lambda *_args, **_kwargs: None,
-            raising=False,
-        )
+    try:
+        _mod = importlib.import_module("agent.anthropic_credentials")
+    except Exception:
+        return None
+    monkeypatch.setattr(
+        _mod,
+        "_read_claude_code_credentials_from_keychain",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    # The #98334 refresh write also mirrors into the Keychain; keep that out of
+    # the real store in any test that hasn't explicitly opted in.
+    monkeypatch.setattr(
+        _mod,
+        "_mirror_claude_code_credentials_to_keychain",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
     return None
 
 
 # ── Kanban write guard (#69283) ─────────────────────────────────────────────
 # When hermetic isolation is bypassed (stale checkout, wrong rootdir, direct
 # invocation), kanban writes silently pollute the real ~/.hermes. This autouse
-# fixture patches ``kanban_db.connect`` to refuse writes whose resolved DB
+# fixture patches ``kanban_db_connect.connect`` to refuse writes whose resolved DB
 # path lands under the REAL kanban root (captured at import time, before any
 # fixture rewires the environment). A deny-list is used instead of an
 # allow-list because test-level fixtures legitimately move HERMES_HOME to
@@ -699,15 +869,16 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     ``~/.hermes`` captured at import time. Hermetic tests that legitimately
     move HERMES_HOME to sibling tempdirs are unaffected.
 
-    Only patches when ``hermes_cli.kanban_db`` is *already imported* — a
-    ``sys.modules`` probe, not an import — so the guard never drags the
+    Only patches when ``hermes_cli.kanban_db_connect`` is *already imported*
+    — a ``sys.modules`` probe, not an import — so the guard never drags the
     kanban module into unrelated test processes.
 
     Uses ``monkeypatch.setattr`` so pytest restores ``connect`` automatically
     after each test (no stacked wrappers or state leakage across tests).
     """
     _kdb = sys.modules.get("hermes_cli.kanban_db")
-    if _kdb is None:
+    _kdbc = sys.modules.get("hermes_cli.kanban_db_connect")
+    if _kdb is None or _kdbc is None:
         return
 
     # The sys.modules probe can observe the module MID-IMPORT: a fixture
@@ -716,8 +887,8 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     # doesn't exist yet (AttributeError flake, caught in a full-suite run).
     # A half-imported module has no callers yet either — nothing to guard
     # this round; the next test's fixture will patch the completed module.
-    _orig_connect = getattr(_kdb, "connect", None)
-    if _orig_connect is None:
+    _orig_connect = getattr(_kdbc, "connect", None)
+    if _orig_connect is None or getattr(_kdb, "kanban_db_path", None) is None:
         return
 
     def _guarded_connect(db_path=None, *args, **kwargs):
@@ -741,7 +912,7 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
             f"to the real ~/.hermes. See #69283."
         )
 
-    monkeypatch.setattr(_kdb, "connect", _guarded_connect)
+    monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
 
 
 # ── Live state.db write guard ───────────────────────────────────────────────
@@ -806,7 +977,7 @@ def _state_db_write_guard(request, monkeypatch):
 # ``_methods`` dict at import time and keeps per-session state in module
 # globals (sessions, child-run registry, config cache, DB handle). The
 # canonical per-file process isolation above hides any leakage, but a direct
-# multi-file invocation (``pytest tests/tui_gateway/ tests/test_tui_gateway_server.py``,
+# multi-file invocation (``pytest tests/tui_gateway/ tests/tui_gateway/test_tui_gateway_server.py``,
 # or plain ``pytest tests/``) shares one interpreter: a test that stubs
 # ``_methods["slash.exec"]`` or leaves an active-session lease behind breaks
 # unrelated tests in later files. This fixture snapshots the cheap-to-copy
@@ -842,7 +1013,7 @@ def _reset_tui_gateway_server_state():
     if mod is not None:
         snapshot = {
             "methods": dict(mod._methods),
-            "cfg": (mod._cfg_cache, mod._cfg_mtime, mod._cfg_path),
+            "cfg": (mod._cfg_cache, mod._cfg_sig, mod._cfg_path),
             "db": (mod._db, mod._db_error),
             "real_stdout": mod._real_stdout,
         }
@@ -873,7 +1044,7 @@ def _reset_tui_gateway_server_state():
     if snapshot is not None:
         mod._methods.clear()
         mod._methods.update(snapshot["methods"])
-        mod._cfg_cache, mod._cfg_mtime, mod._cfg_path = snapshot["cfg"]
+        mod._cfg_cache, mod._cfg_sig, mod._cfg_path = snapshot["cfg"]
         mod._db, mod._db_error = snapshot["db"]
         mod._real_stdout = snapshot["real_stdout"]
     else:
@@ -881,7 +1052,7 @@ def _reset_tui_gateway_server_state():
         # for the globals we could not snapshot (``_methods`` is left to
         # the importing file's fixture, see block comment above).
         mod._cfg_cache = None
-        mod._cfg_mtime = None
+        mod._cfg_sig = None
         mod._cfg_path = None
         mod._db = None
         mod._db_error = None
@@ -1004,6 +1175,7 @@ def _ensure_current_event_loop(request):
 # delivery is harmless.
 
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
+_GATEWAY_LOOKALIKE_MARK = "spawns_gateway_lookalike"
 _REQUIRES_WAL_MARK = "requires_wal"
 
 
@@ -1049,7 +1221,7 @@ def _wal_is_usable() -> bool:
 # Same class of incident as the live-system guard above, different primitive:
 # a test run spoke the string "partial answer complete" out of the developer's
 # speakers. That string is a test fixture
-# (``tests/test_tui_gateway_server.py``'s fake ``final_response``), and the
+# (``tests/tui_gateway/test_tui_gateway_server.py``'s fake ``final_response``), and the
 # route it took is fully in-process — no leaked shell variable required:
 #
 #   1. ``test_voice_toggle_tts_branch_also_carries_record_key`` drives the
@@ -1148,13 +1320,122 @@ _OS_MARKS = {
 }
 
 
+def _relocate_basetemp_outside_operator_home(config) -> None:
+    """Move pytest's basetemp out of the operator's platform-native Hermes home.
+
+    Every per-test sandbox is ``<basetemp>/.../hermes_test``. ``get_default_hermes_root()``
+    prefers the platform-native home whenever ``HERMES_HOME`` sits *under* it, so a basetemp
+    inside ``~/.hermes`` (or ``%LOCALAPPDATA%\\hermes``, where ``TEMP`` commonly lives on
+    Windows) turns the sandbox back into the live install and ``get_profile_dir("default")``
+    writes fixtures over the operator's config.yaml / .env / MEMORY.md (#111101).
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    native = _get_platform_default_hermes_home().resolve()
+    factory = config._tmp_path_factory
+    given = factory._given_basetemp
+    candidate = given if given is not None else Path(
+        os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir()
+    )
+    if not candidate.resolve().is_relative_to(native):
+        return
+    # The system temp dir may itself be inside the home (Windows TEMP under the
+    # Hermes home). The repo is no escape either: the default install checks it
+    # out *inside* the home (~/.hermes/hermes-agent). The relocated basetemp goes
+    # into ONE prunable root outside the home, never loose into the operator's
+    # $HOME (123 ``hermes-pytest-basetemp-*`` dirs piled up there in a day, one per
+    # test file the per-file runner spawned). It is removed when this pytest exits
+    # and, for runs that were killed before that, swept once it is 24h idle.
+    safe = Path(tempfile.mkdtemp(prefix="b-", dir=_pytest_disk_temp_root(native)))
+    assert not safe.resolve().is_relative_to(native), (
+        f"pytest basetemp {safe} still resolves inside the operator's Hermes home {native}; "
+        "refusing to run the suite against the live install (pass --basetemp outside it)"
+    )
+    factory._given_basetemp = safe
+    config.option.basetemp = str(safe)
+    config._hermes_relocated_basetemp = safe
+
+
+def _pytest_disk_temp_root(native: Path) -> Path:
+    """The root for relocated basetemps: the disk-backed runner root when the host has
+    one (``scripts/run_tests_parallel.py::_runner_scratch_root``), else a plain (not
+    dot-prefixed — hidden-dir search tests would see every fixture as hidden) sibling of
+    the native home. Entries idle for a day are swept on the way in."""
+    from hermes_constants_scratch import prune_idle_entries
+
+    if os.name != "nt" and os.path.isdir("/var/tmp"):  # no-tmp: ok — disk-backed FHS root
+        root = Path("/var/tmp/hermes-pytest")  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
+    else:
+        root = native.parent / "hermes-pytest"
+    root.mkdir(parents=True, exist_ok=True)
+    prune_idle_entries(root, 24, frozenset())
+    return root
+
+
+def _remove_relocated_basetemp(config) -> None:
+    safe = getattr(config, "_hermes_relocated_basetemp", None)
+    if safe is not None:
+        shutil.rmtree(safe, ignore_errors=True)
+
+
+def _pinned_mcp_sdk_version() -> str:
+    """The ``mcp==X`` pin carried by the ``[mcp]`` extra in pyproject.toml."""
+    import tomllib
+
+    with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    for req in extras["mcp"]:
+        if req.startswith("mcp=="):
+            return req.split("==", 1)[1].strip()
+    raise RuntimeError("pyproject.toml [mcp] extra no longer pins mcp==X")
+
+
+@pytest.fixture
+def require_mcp_2_sdk():
+    """Skip tests that pin mcp 2.0-only behaviour when an older SDK is installed.
+
+    The runtime deliberately supports both SDK generations (the dual streamable-client probe in
+    mcp_tool), so a stale ``mcp`` distribution imports fine and presence-only guards let these
+    tests through — where they fail later with opaque SDK errors. Compare the installed
+    distribution against the pin so the outcome is an explicit skip with an actionable reason.
+    """
+    from importlib.metadata import PackageNotFoundError, version as dist_version
+
+    from packaging.version import Version
+
+    pinned = _pinned_mcp_sdk_version()
+    try:
+        found = dist_version("mcp")
+    except PackageNotFoundError:
+        pytest.skip(f"requires mcp=={pinned} (not installed); install the [mcp] extra")
+    if Version(found) < Version(pinned):
+        pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
+
+
+def pytest_unconfigure(config):  # noqa: D401 — pytest hook
+    _remove_relocated_basetemp(config)
+
+
+@pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
+    _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{_GATEWAY_LOOKALIKE_MARK}: the test spawns and reaps its own stub "
+        "child whose argv matches the gateway runtime matcher; only the "
+        "real-gateway spawn check is lifted, os.kill stays guarded.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_safe_directory: run the real `git config --get-all safe.directory` pre-read in "
+        "noninteractive_git_env() (autouse fixture otherwise stubs it to no entries).",
     )
     config.addinivalue_line(
         "markers",
@@ -1220,6 +1501,23 @@ def _check_symlink_support() -> bool:
     except OSError:
         _symlink_supported_cache = False
         return False
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtest_call(item):
+    """Join the turn's auto-title threads INSIDE capture, before pytest snaps it.
+
+    A title thread that prints its failure warning while capture's
+    ``readouterr`` swaps the fd crashed the interpreter (SIGSEGV in
+    ``_pytest/capture.py::snap``). The teardown join in
+    ``_close_leaked_session_dbs`` runs after that snap, too late for this race.
+    """
+    try:
+        return (yield)
+    finally:
+        wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+        if wait is not None:
+            wait()
 
 
 def pytest_runtest_setup(item):
@@ -1322,6 +1620,7 @@ def _live_system_guard(request, monkeypatch):
     import subprocess as _subprocess
 
     test_pid = _os.getpid()
+    lookalike_ok = request.node.get_closest_marker(_GATEWAY_LOOKALIKE_MARK) is not None
     # Capture the test process's existing children at fixture start —
     # any *new* children spawned by the test are also allowlisted via
     # the live psutil walk below. Static set keeps the fast path cheap.
@@ -1423,6 +1722,14 @@ def _live_system_guard(request, monkeypatch):
         "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    _CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
+
+    def _first_token_basename(cmd_str: str) -> str:
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        return tokens[0].rsplit("/", 1)[-1].lower() if tokens else ""
     # Shell/launcher executables whose arguments are themselves commands —
     # argv[0]-only scanning must not exempt what they wrap.
     _WRAPPER_COMMANDS = (
@@ -1547,6 +1854,35 @@ def _live_system_guard(request, monkeypatch):
                 "@pytest.mark.live_system_guard_bypass if genuinely "
                 "needed (e.g. an integration test testing the update "
                 "flow against a dedicated throwaway repo)."
+            )
+        # Block spawning a REAL gateway runtime (``python -m hermes_cli.main
+        # gateway run|start|restart``). ``_spawn_hermes_action`` launches it
+        # with start_new_session=True, so it outlives the pytest worker; the
+        # child inherits the pytest-tmp HERMES_HOME, resolves the DEVELOPER's
+        # ``hermes-gateway`` systemd unit (a tmp home hashes to no profile
+        # suffix), restarts the live gateway, and the survivors squat the
+        # webhook port. 2026-09-03: 39 such orphans lived 6 days after a
+        # sibling refactor moved the spawn seam and left tests patching the
+        # facade. The canonical matcher, never an argv substring.
+        from gateway.status import _gateway_command_subcommand
+        # A gateway launched INSIDE a container (`docker exec … hermes gateway start`) cannot
+        # reach the host's systemd unit or webhook port; tests/docker/ exists to exercise it.
+        in_container = _first_token_basename(cmd_str) in _CONTAINER_RUNTIMES
+        if (
+            not lookalike_ok
+            and not in_container
+            and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart")
+        ):
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"subprocess.{name}({cmd!r}) — this would spawn a REAL "
+                "hermes gateway runtime that outlives the test (it is "
+                "detached), restarts the developer's live gateway, and "
+                "holds the webhook port. Patch the spawn seam where "
+                "production reads it (hermes_cli.web_server_gateway."
+                "_spawn_hermes_action), or mark with "
+                "@pytest.mark.spawns_gateway_lookalike a test that spawns "
+                "and reaps its own stub child."
             )
 
     def _wrap_subprocess(name, real):
@@ -1702,25 +2038,15 @@ def _audio_playback_guard(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_computer_use_approval_state():
-    """Reset computer-use approval globals after every test.
+    """Reset the computer-use explicit approval callback after every test.
 
-    ``tools.computer_use.tool`` keeps three module-globals for the CLI
-    approval flow: ``_approval_callback`` (set by the CLI console on init)
-    plus the per-session unlock stores ``_always_allow`` /
-    ``_session_auto_approve``. A test that installs a callback — or drives
-    CLI init far enough that the real one is registered — and does not reset
-    it poisons every later computer-use test in the same process:
-
-    * a leaked callback that raises (dead UI/queue infra, or a stale
-      two-argument signature — the real contract is ``(action, args,
-      summary)``) turns into ``verdict = "deny"`` in ``_request_approval``,
-      so dispatch tests fail with an empty backend call list;
-    * a leaked callback that blocks (the real CLI one waits on an answer
-      queue) hangs the whole single-process run forever — pytest-timeout is
-      the only thing that can cut it.
-
-    Both symptoms are order-dependent: the affected files pass in isolation
-    and only fail in full-suite runs. Teardown-only, so tests that install
+    ``tools.computer_use.tool._approval_callback`` is a module-global handed to
+    the shared approval gate as its explicit callback, where it takes precedence
+    over the per-thread terminal one. A test that installs it and does not
+    reset it poisons every later computer-use test in the same process: a
+    leaked callback that raises becomes a deny, a leaked one that blocks (the
+    real CLI one waits on an answer queue) hangs the whole single-process run.
+    Both symptoms are order-dependent. Teardown-only, so tests that install
     their own callback keep it for their own duration.
     """
     yield
@@ -1728,9 +2054,6 @@ def _isolate_computer_use_approval_state():
         from tools.computer_use import tool as _cu_tool
 
         _cu_tool.set_approval_callback(None)
-        with _cu_tool._approval_lock:
-            _cu_tool._always_allow.clear()
-            _cu_tool._session_auto_approve.clear()
     except Exception:
         pass
 

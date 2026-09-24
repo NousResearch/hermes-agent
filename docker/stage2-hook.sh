@@ -395,6 +395,31 @@ as_hermes mkdir -p \
     "$HERMES_HOME/platforms/pairing" \
     "$HERMES_HOME/lazy-packages"
 
+# --- XDG_RUNTIME_DIR ---
+# 0700 as dbus requires. It lives in world-writable /tmp under a predictable name
+# and holds the display-allocation lock, so it is a security boundary: refuse a
+# symlink or a directory someone else owns (chowning that one would hand hermes a
+# directory whose creator keeps an fd into it), and chown rather than assume —
+# `usermod -u` above does not chown outside the home dir, so a HERMES_UID remap
+# would leave it owned by the old uid and every Xfce/dbus/lock open would EACCES.
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    xdg_owner=""
+    if [ -e "$XDG_RUNTIME_DIR" ]; then xdg_owner=$(stat -c %u "$XDG_RUNTIME_DIR" 2>/dev/null || echo unknown); fi
+    if refuse_symlinked_path "create" "$XDG_RUNTIME_DIR"; then
+        :
+    elif [ -n "$xdg_owner" ] && [ "$xdg_owner" != "0" ] && [ "$xdg_owner" != "$actual_hermes_uid" ]; then
+        echo "[stage2] Warning: $XDG_RUNTIME_DIR is owned by uid $xdg_owner (not root or hermes) — refusing to adopt it"
+    else
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || \
+            echo "[stage2] Warning: could not create XDG_RUNTIME_DIR $XDG_RUNTIME_DIR (continuing)"
+        if [ -d "$XDG_RUNTIME_DIR" ]; then
+            chown hermes:hermes "$XDG_RUNTIME_DIR" 2>/dev/null || \
+                echo "[stage2] Warning: could not chown XDG_RUNTIME_DIR $XDG_RUNTIME_DIR (rootless?)"
+            chmod 0700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # --- Install-method stamp ---
 # The 'docker' stamp is baked into the immutable install tree at
 # /opt/hermes/.install_method (see Dockerfile), NOT written here into
@@ -513,6 +538,77 @@ elif ! grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
         fi
     fi
 fi
+
+# --- Sync deploy-injected Nous routing overrides into every profile .env ---
+# Under multiplex, hermes_cli.auth_nous reads HERMES_PORTAL_BASE_URL (or its
+# NOUS_PORTAL_BASE_URL alias) and NOUS_INFERENCE_BASE_URL through the profile
+# secret scope (agent.secret_scope.get_secret, #108319 / #111809), built from
+# <profile>/.env with no os.environ fallback — a value that lives only in the
+# container env is invisible on every routed turn, the Portal URL heals to
+# production and a non-production login is quarantined. The deploy therefore
+# carries the value into $HERMES_HOME/.env and every profiles/*/.env: the
+# container wins over a stale line, an already-correct line is left alone, and
+# lines written here carry a marker so a boot WITHOUT the variable removes them
+# again (a hand-set line is never touched). Known gap: a profile created while the container
+# runs is synced on the next boot. Interim until the managed scope
+# (/etc/hermes/.env) composition reverted by #111600 is restored.
+_ROUTING_MARK='# stage2-managed'
+# rewrite_env_var FILE NAME DROP_PATTERN [LINE]: drop the lines matching DROP_PATTERN (a BRE),
+# append LINE when given. Rewritten through the existing inode (owner and mode kept — sed -i would
+# re-create the file). `grep -v` exits 1 when nothing remains (fine) and 2 when the file could not
+# be read (then a rewrite would wipe every other secret — refuse). A read-only volume degrades to a
+# warning, never a boot abort.
+rewrite_env_var() {
+    _rc=0
+    _rest=$(grep -v -- "$3" "$1" 2>/dev/null) || _rc=$?
+    if [ "$_rc" -gt 1 ]; then
+        echo "[stage2] Warning: could not read $1 — leaving $2 untouched"
+        return 1
+    fi
+    if [ $# -ge 4 ]; then
+        _rest="${_rest:+$_rest
+}$4"
+    fi
+    if printf '%s' "${_rest:+$_rest
+}" 2>/dev/null > "$1"; then
+        return 0
+    fi
+    echo "[stage2] Warning: could not write $2 to $1 (read-only volume?) — routed turns will fall back to the production Portal"
+    return 1
+}
+sync_routing_overrides() {
+    _file="$1"
+    if refuse_symlinked_path "sync" "$_file"; then
+        return 0
+    fi
+    for _name in HERMES_PORTAL_BASE_URL NOUS_PORTAL_BASE_URL NOUS_INFERENCE_BASE_URL; do
+        eval "_value=\${$_name:-}"
+        _managed="^$_name=.* $_ROUTING_MARK\$"
+        if [ -z "$_value" ]; then
+            if grep -q -- "$_managed" "$_file" 2>/dev/null && rewrite_env_var "$_file" "$_name" "$_managed"; then
+                echo "[stage2] Removed $_name from $_file (no longer set in the container environment)"
+            fi
+            continue
+        fi
+        _line="$_name=$_value $_ROUTING_MARK"
+        if grep -qxF -- "$_line" "$_file" 2>/dev/null; then
+            continue
+        fi
+        if [ ! -f "$_file" ] && ! (umask 077 && as_hermes touch "$_file") 2>/dev/null; then
+            echo "[stage2] Warning: could not create $_file — the Nous routing overrides will not reach this profile's secret scope"
+            return 0
+        fi
+        if rewrite_env_var "$_file" "$_name" "^$_name=" "$_line"; then
+            echo "[stage2] Synced $_name from the container environment into $_file"
+        fi
+    done
+}
+sync_routing_overrides "$HERMES_HOME/.env"
+for _profile_dir in "$HERMES_HOME"/profiles/*/; do
+    [ -d "$_profile_dir" ] || continue
+    sync_routing_overrides "${_profile_dir}.env"
+done
+unset _profile_dir _file _name _value _managed _line _rest _rc
 
 # .env holds API keys and secrets — restrict to owner-only access. Applied
 # unconditionally (not only on first-seed) so a host-mounted .env that was
@@ -647,10 +743,10 @@ if [ -d "$INSTALL_DIR/skills" ]; then
 fi
 
 # --- Discover agent-browser's Chromium binary ---
-# The image's Dockerfile runs `npx playwright install chromium`, which
-# populates ``$PLAYWRIGHT_BROWSERS_PATH`` (=/opt/hermes/.playwright) with
-# a ``chromium_headless_shell-<build>/chrome-headless-shell-linux64/``
-# directory. agent-browser (the runtime CLI Hermes spawns for the
+# The image populates ``$PLAYWRIGHT_BROWSERS_PATH`` (=/opt/hermes/.playwright)
+# with ``chromium_headless_shell-<build>/chrome-headless-shell-linux64/``, plus
+# ``chromium-<build>/chrome-linux64/`` on a HERMES_BOT_DESKTOP build.
+# agent-browser (the runtime CLI Hermes spawns for the
 # browser tool) doesn't recognise this layout in its own cache scan and
 # fails with "Auto-launch failed: Chrome not found" — even though the
 # binary is right there (#15697).
@@ -675,11 +771,19 @@ fi
 if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
         [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && \
         [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
+    # Two ordered finds, not one with alternated -name predicates: that returns
+    # them in directory order, i.e. whichever Playwright unpacked first. Shell
+    # first, because this is what agent-browser launches for ordinary headless
+    # browsing everywhere and it is the lighter build; browser.py::env_for_agent
+    # swaps in the headed one for the agent while a screen is up.
     browser_bin=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -executable \
-        \( -name 'chrome' -o -name 'chromium' \
-           -o -name 'chrome-headless-shell' -o -name 'headless_shell' \
-           -o -name 'chromium-browser' \) \
+        \( -name 'chrome-headless-shell' -o -name 'headless_shell' \) \
         2>/dev/null | head -n 1)
+    if [ -z "$browser_bin" ]; then
+        browser_bin=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -executable \
+            \( -name 'chrome' -o -name 'chromium' -o -name 'chromium-browser' \) \
+            2>/dev/null | head -n 1)
+    fi
     if [ -n "$browser_bin" ]; then
         echo "[stage2] Found agent-browser Chromium binary: $browser_bin"
         # Write to s6's container_environment so with-contenv picks it

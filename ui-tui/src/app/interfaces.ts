@@ -1,4 +1,5 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
+import type { Usage } from '@hermes/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
@@ -29,7 +30,7 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  Usage
+  VaultUnlockReq
 } from '../types.js'
 
 export interface StateSetter<T> {
@@ -280,6 +281,10 @@ export interface SubscriptionOverlayState {
   stepUpRetry?: null | SubscriptionStepUpRetry
 }
 
+export interface ConnectionOverlayState {
+  opId: string
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
@@ -287,6 +292,7 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  connection: ConnectionOverlayState | null
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */
@@ -297,6 +303,7 @@ export interface OverlayState {
   petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
+  vaultUnlock: null | VaultUnlockReq
   sessions: boolean
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
@@ -346,6 +353,10 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // Durable session id (state.db row) of the live session — what session.resume
+  // and the exit epilogue take. Kept apart from `info`, which producers replace
+  // wholesale with payloads that may omit `stored_session_id`.
+  storedSid: null | string
   // display.status_bar.fields — visibility filter for status-rule segments,
   // shared with the classic CLI bar. null = user has not customized (show
   // the default set).
@@ -481,12 +492,10 @@ export interface GatewayEventHandlerContext {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string) => void
-    // Set by useMainApp's exit handler to the session that was live when the
-    // gateway died unexpectedly; consumed once by the next `gateway.ready` so a
-    // respawn resumes that session instead of forging a fresh one.
+    // Session carried across a transport loss or child exit, cleared after resume.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => void
+    resumeById: (id: string) => Promise<void>
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {
@@ -498,6 +507,7 @@ export interface GatewayEventHandlerContext {
   }
   system: {
     bellOnComplete: boolean
+    bellOnPrompt?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }
@@ -566,6 +576,7 @@ export interface AppLayoutActions {
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  answerVaultUnlock: (password: string) => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -640,6 +651,7 @@ export interface AppOverlaysProps {
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
+  onVaultUnlockSubmit: (password: string) => void
   pagerPageSize: number
 }
 

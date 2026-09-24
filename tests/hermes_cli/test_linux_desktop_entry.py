@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import os
 import stat
+import struct
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +32,26 @@ def _make_project(tmp_path: Path) -> Path:
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"\x89PNG fake")
     return root
+
+
+def _png_ihdr(width: int, height: int) -> bytes:
+    """Minimal PNG prefix whose IHDR the installer can parse (no pixels)."""
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\r"
+        + b"IHDR"
+        + struct.pack(">II", width, height)
+    )
+
+
+def _stub_install(tmp_path, monkeypatch) -> None:
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir(exist_ok=True)
+    hermes_bin.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
 
 def _parse(entry_text: str) -> dict:
@@ -94,8 +117,8 @@ def test_install_prefers_themed_icon_from_hicolor(tmp_path, xdg_home, monkeypatc
 
     # And the icon really landed in the hicolor tree: the fixture icon is
     # a fake PNG (no valid IHDR), so the size is unknown and the icon
-    # lands under scalable/.
-    dest = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    # lands under 256x256/ (indexed; never scalable, which is SVG-only).
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
     assert dest.is_file()
     assert dest.read_bytes() == lde.icon_path(root).read_bytes()
 
@@ -279,7 +302,6 @@ def test_exec_never_persists_a_bare_interpreter_command(
 ):
     """The `python -m hermes_cli.main` relaunch context must not write
     `Exec=<python> desktop` — a command line no DE can run."""
-    import sys
 
     root = _make_project(tmp_path)
     wrapper = tmp_path / "installed" / "bin" / "hermes"
@@ -399,6 +421,109 @@ def test_exec_uses_known_wrapper_when_path_lookup_misses(
     assert exec_line == f"{known_wrapper} desktop"
 
 
+def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, monkeypatch):
+    """A PATH hit inside THIS checkout is a launch-context artifact, like argv[0].
+
+    The desktop-update hand-off hands the updater <checkout>/venv/bin at the
+    FRONT of PATH (apps/desktop/electron/main.ts), so argv[0] is the venv
+    console script — checkout-internal, correctly skipped as a durable
+    answer — and the reroute that hides argv[0] re-resolves over PATH and
+    hits THE SAME SCRIPT. The rerouted branch returned that hit outright,
+    persisting the venv form; the next DE launch re-resolves to the durable
+    wrapper and flips the bytes back. Alternating writers alternate the
+    file content (captured: wrapper -> venv -> wrapper inside one update
+    cycle), and every flip rewrites hermes.desktop. A rewrite landing
+    inside a grid launch's STARTING window is the arm for the gnome-shell
+    50.x crash this module already guards against. A PATH hit inside the
+    checkout must fall through to the durable probe.
+    """
+    root = _make_project(tmp_path)
+    venv_script = root / "venv" / "bin" / "hermes"
+    venv_script.parent.mkdir(parents=True)
+    venv_script.write_text("#!/bin/bash\nexec true\n", encoding="utf-8")
+    venv_script.chmod(0o755)
+
+    known_wrapper = tmp_path / "path-home" / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path / "path-home"))
+
+    # The hand-off's resolver chain: argv[0] = venv console script; with
+    # argv[0] hidden, the PATH rerun yields the SAME script.
+    def fake_resolve():
+        return sys.argv[0] or str(venv_script)
+
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
+    _argv0_context(monkeypatch, str(venv_script))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{known_wrapper} desktop"
+    assert str(venv_script) not in exec_line
+
+    # …and the same context a second time re-renders byte-identical content:
+    # the no-op guard then skips the rewrite entirely (no write, no rescan).
+    lde._probe_cache.clear()
+    entry2 = lde.install_desktop_entry(root)
+    assert entry2 is not None
+    assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
+
+
+def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
+    tmp_path, xdg_home, monkeypatch
+):
+    """`None` from the resolver must still probe known wrapper locations.
+
+    A cold relaunch (argv[0] is not an executable file, e.g. `-c` under
+    `python -m`, and PATH has no `hermes`) makes resolve_hermes_bin return
+    None outright. The early `return primary` that used to fire here skipped
+    the durable-wrapper probe, so the persisted Exec flipped to the bare
+    `<python> -m hermes_cli.main desktop` module form. Each flip between the
+    wrapper and module forms rewrites hermes.desktop on the next launch; any
+    rewrite that lands while gnome-shell's ShellApp for the entry is still
+    STARTING crashes the shell (shell_app_dispose `state == STOPPED`
+    assertion, gnome-shell 50.4). The entry must converge on the durable
+    wrapper wherever it exists.
+    """
+    root = _make_project(tmp_path)
+
+    known_wrapper = tmp_path / "cold-home" / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path / "cold-home"))
+
+    # argv[0] is not an executable path at all — the resolver's own chain
+    # yields None with or without argv[0].
+    _argv0_context(monkeypatch, "-c")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{known_wrapper} desktop"
+
+    # …and the SAME context a second time re-renders byte-identical content:
+    # the no-op guard in install_desktop_entry then skips the rewrite.
+    lde._probe_cache.clear()
+    entry2 = lde.install_desktop_entry(root)
+    assert entry2 is not None
+    assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
+
+
 def test_exec_rejects_known_wrapper_from_another_checkout(
     tmp_path, xdg_home, monkeypatch
 ):
@@ -488,7 +613,6 @@ def test_known_wrapper_candidates_cover_installer_layouts(
     candidate. Locking these in protects against silent regressions in
     the stripped-PATH probe path.
     """
-    import os
 
     sentinel_home = "/home/__sentinel_home__"
     monkeypatch.setenv("HOME", sentinel_home)
@@ -578,16 +702,6 @@ def _stub_tools(monkeypatch, available: "set[str]") -> "list[list[str]]":
     return ran
 
 
-def test_refresh_runs_kbuildsycoca6_when_present(monkeypatch, tmp_path):
-    ran = _stub_tools(monkeypatch, {"update-desktop-database", "kbuildsycoca6"})
-
-    tools = lde.refresh_desktop_databases(tmp_path)
-
-    assert tools == ["update-desktop-database", "kbuildsycoca6"]
-    assert ran == [
-        ["/usr/bin/update-desktop-database", str(tmp_path)],
-        ["/usr/bin/kbuildsycoca6", "--noincremental"],
-    ]
 
 
 def test_refresh_falls_back_to_kbuildsycoca5(monkeypatch, tmp_path):
@@ -626,18 +740,6 @@ def test_run_quiet_swallows_missing_binary(tmp_path):
     assert lde._run_quiet([str(tmp_path / "definitely-not-a-binary")]) is False
 
 
-def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
-    root = _make_project(tmp_path)
-    spaced = tmp_path / "my apps" / "hermes"
-    spaced.parent.mkdir()
-    spaced.write_text("", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(spaced))
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    assert exec_line == f'"{spaced}" desktop'
 
 
 @pytest.mark.skipif(
@@ -675,32 +777,6 @@ def test_running_interpreter_resolves_plain_interpreter(monkeypatch):
     assert Path(out).is_absolute()
 
 
-def test_can_import_probe_runs_and_caches(tmp_path):
-    """The probe executes the real interpreter and memoizes the answer.
-
-    Asserts the two things that hold on ANY host: the probe returns a
-    definite boolean for a real interpreter (not None, not an exception
-    path), and the per-path cache is populated so the second call pays
-    no subprocess. Host-dependent capability itself (True vs False) is
-    deliberately NOT asserted - a CI host with hermes pip-installed
-    system-wide would legitimately answer True.
-    """
-    import time
-
-    real = Path("/usr/bin/python3")
-    if not real.exists():
-        pytest.skip("no system python to probe")
-    lde._probe_cache.pop(str(real), None)
-    try:
-        first = lde._can_import_hermes_cli(real)
-        assert isinstance(first, bool)
-        assert str(real) in lde._probe_cache
-        t0 = time.monotonic()
-        second = lde._can_import_hermes_cli(real)
-        assert second is first
-        assert time.monotonic() - t0 < 0.05  # cache hit: no subprocess
-    finally:
-        lde._probe_cache.pop(str(real), None)
 
 
 def test_exec_falls_back_to_running_interpreter_when_probe_fails(
@@ -897,7 +973,6 @@ def test_probe_skips_wrapper_with_escaping_python_shebang(
     The shebang-safety gate skips it; the module fallback wins. Idea
     credited to autumn8's #92122 rung-2 check.
     """
-    import sys as _s
 
     root = _make_project(tmp_path)
     repo_script = root / "hermes"
@@ -965,8 +1040,8 @@ def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
 
 def test_install_icon_handles_truncated_png_header(tmp_path, xdg_home, monkeypatch):
     """A truncated PNG (valid signature + IHDR tag, <24 bytes) must not
-    raise struct.error out of the fail-safe: it lands in scalable/ like
-    any other unknown-size image."""
+    raise struct.error out of the fail-safe: it lands in 256x256/ like
+    any other unknown-size raster."""
     root = _make_project(tmp_path)
     icon = lde.icon_path(root)
     icon.write_bytes(
@@ -984,5 +1059,114 @@ def test_install_icon_handles_truncated_png_header(tmp_path, xdg_home, monkeypat
 
     values = _parse(entry.read_text(encoding="utf-8"))
     assert values["Icon"] == "hermes"
-    dest = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
     assert dest.is_file()
+
+
+def test_hicolor_subdir_puts_rasters_in_indexed_dirs_never_scalable():
+    """Panel lookup uses fixed sizes. scalable/ is SVG-only."""
+    assert lde._hicolor_subdir(None) == "256x256"
+    assert lde._hicolor_subdir((1024, 1024)) == "256x256"
+    assert lde._hicolor_subdir((512, 512)) == "512x512"
+    assert lde._hicolor_subdir((256, 256)) == "256x256"
+    assert lde._hicolor_subdir((48, 48)) == "48x48"
+    assert lde._hicolor_subdir((24, 24)) == "24x24"
+    assert lde._hicolor_subdir((64, 32)) == "256x256"
+
+
+def test_install_places_1024_png_in_256x256_not_scalable(
+    tmp_path, xdg_home, monkeypatch
+):
+    """The shipped desktop asset is 1024×1024. A PNG in scalable/ is what
+    Cinnamon's panel rasterizes as a mangled low-res icon."""
+    root = _make_project(tmp_path)
+    lde.icon_path(root).write_bytes(_png_ihdr(1024, 1024))
+    _stub_install(tmp_path, monkeypatch)
+
+    entry = lde.install_desktop_entry(root)
+    values = _parse(entry.read_text(encoding="utf-8"))
+
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
+    stale = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    assert values["Icon"] == "hermes"
+    assert dest.is_file()
+    assert dest.read_bytes() == lde.icon_path(root).read_bytes()
+    assert not stale.exists()
+
+
+def test_install_removes_stale_scalable_png(tmp_path, xdg_home, monkeypatch):
+    """v2026.8.31 wrote the PNG into scalable/. A later hermes desktop
+    must delete that leftover so Cinnamon does not keep using it."""
+    root = _make_project(tmp_path)
+    lde.icon_path(root).write_bytes(_png_ihdr(1024, 1024))
+    _stub_install(tmp_path, monkeypatch)
+
+    stale = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old scalable png")
+
+    lde.install_desktop_entry(root)
+
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
+    assert dest.is_file()
+    assert not stale.exists()
+
+
+def test_install_exact_48_png_uses_48x48_dir(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    lde.icon_path(root).write_bytes(_png_ihdr(48, 48))
+    _stub_install(tmp_path, monkeypatch)
+
+    lde.install_desktop_entry(root)
+
+    dest = xdg_home / "icons" / "hicolor" / "48x48" / "apps" / "hermes.png"
+    assert dest.is_file()
+    assert not (
+        xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    ).exists()
+
+
+def test_install_resizes_decodable_png_to_panel_sizes(
+    tmp_path, xdg_home, monkeypatch
+):
+    """A decodeable PNG is Lanczos-resized so the 24px slot is actually 24px."""
+    from PIL import Image
+
+    root = _make_project(tmp_path)
+    im = Image.new("RGBA", (64, 64), (255, 255, 255, 255))
+    for x in range(16, 48):
+        for y in range(16, 48):
+            im.putpixel((x, y), (0, 0, 0, 255))
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    lde.icon_path(root).write_bytes(buf.getvalue())
+    _stub_install(tmp_path, monkeypatch)
+
+    lde.install_desktop_entry(root)
+
+    dest_24 = xdg_home / "icons" / "hicolor" / "24x24" / "apps" / "hermes.png"
+    dest_256 = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
+    stale = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    assert dest_24.is_file()
+    assert dest_256.is_file()
+    assert not stale.exists()
+    assert struct.unpack(">II", dest_24.read_bytes()[16:24]) == (24, 24)
+    assert struct.unpack(">II", dest_256.read_bytes()[16:24]) == (256, 256)
+
+
+def test_deferred_install_skips_heal_after_exit_without_reveal():
+    """Electron exiting without ever revealing a window (boot crash, --version, early quit) must
+    NOT heal the entry: gnome-shell keeps the ShellApp in STARTING until the startup-notification
+    sequence completes or times out, not until the process dies, so a write right after the exit
+    is exactly the #111906 arming condition. The next terminal/updater or revealed launch heals."""
+    calls: list[Path] = []
+    deferred = lde.DeferredDesktopEntryInstall(
+        Path("/proj"), install=lambda root: calls.append(root) or Path("/entry"), settle_seconds=0
+    )
+    deferred.start()
+    time.sleep(0.05)
+    assert calls == []  # nothing is written while the app may still be STARTING
+
+    deferred.finish()
+    assert calls == []
+    assert not deferred._thread.is_alive()

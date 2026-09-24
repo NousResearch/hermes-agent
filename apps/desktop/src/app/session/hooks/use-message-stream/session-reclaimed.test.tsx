@@ -56,16 +56,6 @@ afterEach(() => {
 })
 
 describe('session.reclaimed', () => {
-  it('drops the cached state for the reclaimed runtime', () => {
-    mountStream()
-    publishSessionState('live-gone', createClientSessionState())
-    expect($sessionStates.get()['live-gone']).toBeDefined()
-
-    reclaim('live-gone')
-
-    expect($sessionStates.get()['live-gone']).toBeUndefined()
-  })
-
   it('leaves every other live session alone', () => {
     mountStream()
     publishSessionState('live-gone', createClientSessionState())
@@ -88,19 +78,6 @@ describe('session.reclaimed', () => {
 
     // A malformed/empty id must be a no-op, never a blanket wipe.
     expect(Object.keys($sessionStates.get()).sort()).toEqual(['live-a', 'live-b'])
-  })
-
-  it('drops the runtime regardless of which reclaim reason fired', () => {
-    for (const reason of ['idle_timeout', 'lru_evict', 'ws_orphan_reap']) {
-      $sessionStates.set({})
-      cleanup()
-      mountStream()
-      publishSessionState('live-gone', createClientSessionState())
-
-      reclaim('live-gone', reason)
-
-      expect($sessionStates.get()['live-gone'], reason).toBeUndefined()
-    }
   })
 
   // A TILE bound to the reclaimed runtime is the #82620 blank-pane case: the

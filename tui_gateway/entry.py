@@ -100,6 +100,16 @@ def _append_crash_log(header: str, dump=None) -> None:
                 dump(f)
 
 
+def _hard_exit() -> None:
+    """The grace timer's ``os._exit``. The flush runs first and the graceful foreground kill
+    (TERM, wait, KILL) after it, so a SIGTERM-ignoring command is usually still alive here:
+    SIGKILL its tree now or it outlives us, reparented to init."""
+    with suppress(Exception):
+        from tools.environments.base import kill_live_foreground_processes
+        kill_live_foreground_processes(now=True)
+    os._exit(0)
+
+
 def _log_signal(signum: int, frame) -> None:
     """Capture WHICH thread and WHERE a termination signal hit us, then exit. ``sys.exit(0)``
     alone raced the worker pool (a thread holding ``_stdout_lock`` mid-flush blocks interpreter
@@ -121,7 +131,7 @@ def _log_signal(signum: int, frame) -> None:
     _append_crash_log(f"{name} received · {time.strftime('%Y-%m-%d %H:%M:%S')}", _dump)
     print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
     # ``os._exit`` skips atexit but breaks the mid-flush deadlock; the crash log is the trail.
-    timer = threading.Timer(_shutdown_grace_seconds(), lambda: os._exit(0))
+    timer = threading.Timer(_shutdown_grace_seconds(), _hard_exit)
     timer.daemon = True
     timer.start()
     # atexit (_shutdown_sessions) can be blocked past the grace window by a worker holding
@@ -258,6 +268,12 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 
 
 def main():
+    # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
+    server._stdio_is_rpc_channel = True
+    try:
+        server.install_tui_message_injector()
+    except Exception:
+        logger.warning("TUI message injector did not install", exc_info=True)
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
 

@@ -1,0 +1,86 @@
+import { act, cleanup } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ClientSessionState } from '@/app/types'
+import { chatMessageText } from '@/lib/chat-messages'
+import { clearSessionTodos } from '@/store/todos'
+
+import { type MessageStreamHarness, renderMessageStream } from './test-harness'
+
+const SID = 'session-1'
+
+let stream: MessageStreamHarness
+
+function mountStream() {
+  stream = renderMessageStream(SID)
+}
+
+const start = () => act(() => stream.handleEvent({ payload: {}, session_id: SID, type: 'message.start' }))
+
+const delta = (text: string) =>
+  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))
+
+const interim = (text: string) =>
+  act(() => stream.handleEvent({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
+
+const complete = (text: string) =>
+  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.complete' }))
+
+const completeTransformed = (text: string) =>
+  act(() =>
+    stream.handleEvent({ payload: { text, response_transformed: true }, session_id: SID, type: 'message.complete' })
+  )
+
+function getState(): ClientSessionState {
+  return stream.state()
+}
+
+function assistantTexts(): string[] {
+  const state = getState()
+  return state.messages
+    .filter(m => m.role === 'assistant' && !m.hidden)
+    .map(m => chatMessageText(m))
+    .filter(Boolean)
+}
+
+describe('useMessageStream response_transformed settlement', () => {
+  beforeEach(() => {
+    clearSessionTodos(SID)
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearSessionTodos(SID)
+    vi.restoreAllMocks()
+  })
+
+  it('replaces the streamed bubble with transformed final text that shares no prefix', async () => {
+    mountStream()
+    await start()
+
+    // A transform_llm_output plugin hook (e.g. pseudonym restore) rewrites the
+    // final text after streaming finishes. The rewritten text shares NO prefix
+    // relationship with what was streamed: the prefix-continuity heuristic must
+    // not reject it — it is this turn's authoritative reply.
+    await delta('TOKEN_1')
+    await interim('TOKEN_1')
+    await completeTransformed('example-service.internal')
+
+    const texts = assistantTexts()
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toBe('example-service.internal')
+    expect(texts).not.toContain('TOKEN_1')
+  })
+
+  it('never lets a transformed completion overwrite an already-settled reply', async () => {
+    mountStream()
+    await start()
+    await interim('old')
+    await complete('old')
+
+    // The interim boundary is spent: a late transformed final is a distinct reply.
+    await completeTransformed('new')
+
+    expect(assistantTexts()).toEqual(['old', 'new'])
+  })
+})

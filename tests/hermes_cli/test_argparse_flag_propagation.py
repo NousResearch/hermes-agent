@@ -12,48 +12,9 @@ so the subparser only sets the attribute when the user explicitly provides it.
 """
 
 import argparse
-import os
 import sys
 
 import pytest
-
-
-def _build_parser():
-    """Build the hermes argument parser from the real code.
-
-    We import the real main() and extract the parser it builds.
-    Since main() is a large function that does much more than parse args,
-    we replicate just the parser structure here to avoid side effects.
-    """
-    parser = argparse.ArgumentParser(prog="hermes")
-    parser.add_argument("--resume", "-r", metavar="SESSION", default=None)
-    parser.add_argument(
-        "--continue", "-c", dest="continue_last", nargs="?",
-        const=True, default=None, metavar="SESSION_NAME",
-    )
-    parser.add_argument("--worktree", "-w", action="store_true", default=False)
-    parser.add_argument("--skills", "-s", action="append", default=None)
-    parser.add_argument("--yolo", action="store_true", default=False)
-    parser.add_argument("--pass-session-id", action="store_true", default=False)
-
-    subparsers = parser.add_subparsers(dest="command")
-    chat = subparsers.add_parser("chat")
-    # These MUST use argparse.SUPPRESS to avoid overwriting parent values
-    chat.add_argument("--yolo", action="store_true",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--worktree", "-w", action="store_true",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--skills", "-s", action="append",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--pass-session-id", action="store_true",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--resume", "-r", metavar="SESSION_ID",
-                      default=argparse.SUPPRESS)
-    chat.add_argument(
-        "--continue", "-c", dest="continue_last", nargs="?",
-        const=True, default=argparse.SUPPRESS, metavar="SESSION_NAME",
-    )
-    return parser
 
 
 class TestChatVerboseArg:
@@ -100,30 +61,6 @@ class TestChatVerboseArg:
 
         assert captured["quiet"] is False
         assert "verbose" not in captured
-
-
-class TestYoloEnvVar:
-    """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.
-
-    This tests the actual cmd_chat logic pattern (getattr → os.environ).
-    """
-
-    @pytest.fixture(autouse=True)
-    def _clean_env(self):
-        os.environ.pop("HERMES_YOLO_MODE", None)
-        yield
-        os.environ.pop("HERMES_YOLO_MODE", None)
-
-    def _simulate_cmd_chat_yolo_check(self, args):
-        """Replicate the exact check from cmd_chat in main.py."""
-        if getattr(args, "yolo", False):
-            os.environ["HERMES_YOLO_MODE"] = "1"
-
-    def test_yolo_before_chat_sets_env(self):
-        parser = _build_parser()
-        args = parser.parse_args(["--yolo", "chat"])
-        self._simulate_cmd_chat_yolo_check(args)
-        assert os.environ.get("HERMES_YOLO_MODE") == "1"
 
 
 class TestAcceptHooksOnAgentSubparsers:
@@ -221,8 +158,6 @@ class TestChatSubparserInheritedValueFlags:
         from hermes_cli._parser import build_top_level_parser
         parser, _subparsers, _chat = build_top_level_parser()
         return parser
-
-
 
 
     def test_all_three_flags_before_chat(self, real_parser):

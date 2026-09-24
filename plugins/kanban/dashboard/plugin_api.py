@@ -266,6 +266,18 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
     return {"parents": _ids("parent_id", "child_id"), "children": _ids("child_id", "parent_id")}
 
 
+def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[dict]:
+    """One {id, title, status} row per linked task, so UIs can render titles
+    instead of raw ids. Dropped/foreign rows are simply absent — callers fall
+    back to the id."""
+    rows = []
+    for task_id in dict.fromkeys([*links["parents"], *links["children"]]):
+        task = kanban_db.get_task(conn, task_id)
+        if task:
+            rows.append({"id": task.id, "title": task.title, "status": task.status})
+    return rows
+
+
 # --- GET /board -------------------------------------------------------------
 
 def get_board(
@@ -372,6 +384,7 @@ def get_task(
             "events": [asdict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
             "links": links,
+            "link_tasks": _link_tasks(conn, links),
             "child_results": [
                 {"id": c.id, "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id), "result": c.result}
                 for c in children],

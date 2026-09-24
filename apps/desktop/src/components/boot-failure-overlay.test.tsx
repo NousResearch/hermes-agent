@@ -203,7 +203,8 @@ describe('BootFailureOverlay', () => {
       fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
 
       await waitFor(() => expect(cloudAgentSignIn).toHaveBeenCalledWith(gatewayUrl))
-      expect(logout).toHaveBeenCalledWith(gatewayUrl)
+      // The ladder owns the logout: exactly one drop of this gateway's cookies.
+      expect(logout).toHaveBeenCalledExactlyOnceWith(gatewayUrl)
       expect(cloudStatus).toHaveBeenCalledTimes(1)
       expect(cloudLogin).toHaveBeenCalledTimes(1)
       expect(nativeLogin).not.toHaveBeenCalled()

@@ -23,11 +23,15 @@ no timing, no threads.
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.conversation_compression import (
+    _COMPRESSOR_ATTEMPT_GENERATION,
     _claim_compressor_attempt,
     _clear_compression_cancelled_check_if_owner,
     _compressor_attempt_is_current,
     _install_compression_cancelled_check,
+    _raise_if_stale_attempt,
     _restore_compressor_attempt_state,
     _snapshot_compressor_attempt_state,
 )
@@ -43,6 +47,26 @@ def _compressor(**overrides):
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+class TestCallerAttemptOwnership:
+    """The caller generation only fences a compressor that has been claimed."""
+
+    def test_newer_entry_generation_without_marker_remains_stale(self):
+        """Control for the unclaimed-compressor carve-out: a CLAIMED compressor whose newer claim
+        never published a working marker still cancels the older caller."""
+        from agent.auxiliary_client import AuxiliaryExplicitCancellation
+
+        compressor = _compressor()
+        caller_gen = _claim_compressor_attempt(compressor)
+        _claim_compressor_attempt(compressor)
+
+        token = _COMPRESSOR_ATTEMPT_GENERATION.set(caller_gen)
+        try:
+            with pytest.raises(AuxiliaryExplicitCancellation):
+                _raise_if_stale_attempt(compressor)
+        finally:
+            _COMPRESSOR_ATTEMPT_GENERATION.reset(token)
 
 
 class TestLatePrimaryRestoreAfterFallbackCommit:
@@ -279,6 +303,35 @@ class TestStaleAttemptEndToEnd:
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = content
         return resp
+
+    def test_outer_attempt_can_use_never_claimed_inner_compressor(self):
+        from unittest.mock import patch
+
+        from agent.conversation_compression import _run_summary_dispatch
+
+        inner = self._compressor()
+
+        class DelegatingEngine:
+            def compress(self, messages, **kwargs):
+                return inner.compress(messages, **kwargs)
+
+        engine = DelegatingEngine()
+        agent = SimpleNamespace(context_compressor=engine, session_id="s1")
+        messages = self._messages()
+        generation = _claim_compressor_attempt(engine)
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._llm_response("## Goal\ndelegated summary"),
+        ):
+            compressed = _run_summary_dispatch(
+                agent, messages, engine.compress,
+                {"current_tokens": 999999, "force": True},
+                commit_fence=None, attempt_generation=generation, hard_cancel_event=None,
+            )
+
+        assert compressed != messages
+        assert inner._previous_summary and "delegated summary" in inner._previous_summary
 
     def test_detached_primary_late_success_cannot_write_after_fallback(self):
         import threading

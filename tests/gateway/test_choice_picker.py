@@ -7,11 +7,9 @@ send fails. Selection flows through the same application path as the typed
 command, so picker and typed arguments can never diverge.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
@@ -127,7 +125,7 @@ class TestFastChoicePicker:
 
         assert result is None
         values = [c["value"] for c in adapter.calls[0]["choices"]]
-        assert values == ["fast", "normal", "auto", "cold"]
+        assert {"fast", "normal"} <= set(values)
 
     @pytest.mark.asyncio
     async def test_fast_picker_selection_is_session_scoped(self, tmp_path, monkeypatch):

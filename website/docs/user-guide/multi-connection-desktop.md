@@ -251,9 +251,12 @@ that live on one gateway.
   are all scoped to the active `(gateway, profile)`. Switching from a Telegram
   gateway to a Signal gateway cannot leave the previous gateway's channel groups
   or sessions in the sidebar.
-- Merely displaying the switcher reads Electron's local connection registry.
-  Remote gateways are opened only when selected; there is no periodic fleet
-  polling.
+- Desktop loads the local connection registry at startup, even with the status
+  bar hidden, and keeps it current when gateways are saved or removed. Opening
+  Settings is not required. In Simple mode, the profile rail stays available
+  when more than one gateway is registered, even with only a default profile.
+  Loading the registry does not connect every gateway; there is no periodic
+  fleet polling.
 - Hovering an agent pre-warms its backend so the switch doesn't pay a cold
   boot. SSH agents are the exception: hovering never dials the tunnel or
   starts a remote backend — only opening one does.

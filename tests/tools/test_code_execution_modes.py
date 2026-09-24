@@ -556,3 +556,34 @@ class TestPythonPathComposition(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_real_sibling_venv_stays_external(tmp_path):
+    import venv
+
+    sibling = tmp_path / "project-env"
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(sibling)
+    python = sibling / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    assert not _uses_hermes_python_environment(str(python))
+    assert _python_environment_prefix(str(python)) == os.path.realpath(sibling)
+    from tools import code_execution_env as env
+    child_env = env._build_child_env(rpc_endpoint="test", rpc_token="test", tmpdir=str(tmp_path),
+                                     child_python=str(python))
+    hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(env.__file__)))
+    assert hermes_root not in child_env["PYTHONPATH"].split(os.pathsep)
+    assert str(tmp_path) in child_env["PYTHONPATH"].split(os.pathsep)
+
+
+def test_real_alias_of_hermes_venv_needs_no_probe(tmp_path):
+    from pathlib import Path
+    from tools import code_execution_env as env
+
+    alias = tmp_path / "hermes-alias"
+    try:
+        alias.symlink_to(Path(sys.prefix), target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Directory symlinks are unavailable: {exc}")
+    python = alias / Path(sys.executable).relative_to(sys.prefix)
+    assert python.is_file()
+    with patch.object(env, "_python_environment_prefix", side_effect=AssertionError("unexpected probe")):
+        assert _uses_hermes_python_environment(str(python))

@@ -259,10 +259,13 @@ class SubdirectoryHintTracker:
         return None
 
     def _display_path(self, hint_path: Path) -> str:
-        """Working-dir-relative, else ``~/``-relative (POSIX rendering so Windows
-        never shows ``~/AppData\\Local\\...`` chimeras), else absolute."""
+        """Working-dir-relative, else ``~/``-relative, else absolute. Both relative forms
+        render POSIX: the label names a file the startup context already spelled with forward
+        slashes, and it is also what the truncation marker tells the agent to ``read_file``,
+        so the native form put two spellings of one path in front of the model (the
+        ``~/AppData\\Local\\...`` chimera was the same split, one branch further down)."""
         try:
-            return str(hint_path.relative_to(self.working_dir))
+            return hint_path.relative_to(self.working_dir).as_posix()
         except (ValueError, RuntimeError):
             pass
         try:

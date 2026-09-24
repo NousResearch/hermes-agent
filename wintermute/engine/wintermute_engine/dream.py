@@ -34,7 +34,8 @@ _SYSTEM = (
     "abstract — images, drift, things that turn into other things, feelings without cause. "
     "Do NOT explain it or draw a lesson. One thing stays sharp: when the dreamer does "
     "something in the dream (reaches for someone, opens a door, leaves, writes), name that "
-    "act precisely. Six sentences at most. Write it in the first person, plainly, no title."
+    "act precisely. Six sentences at most. Write it in the first person, plainly, no title. On a "
+    "final separate line write TONE: one word — soothing, troubling, or neutral."
 )
 
 
@@ -90,7 +91,24 @@ def material(ts: datetime, drives: Dict[str, Any], peers: Dict[str, Any]) -> Lis
     portrait = store.read_self()
     if portrait:
         fragments.append(f"who I have been: {portrait}")
+    motifs = (drives.get("meta") or {}).get("dream_motifs") or []
+    if motifs:
+        fragments.append("images that have returned in your dreams before: " + ", ".join(motifs[-5:]))
     return fragments
+
+
+def _extract(text: str) -> tuple:
+    """Split the dream body from its TONE line, and pull a few motif words so images can recur."""
+    import re
+    tone = "neutral"
+    m = re.search(r"tone:\s*(soothing|troubling|neutral)", text, re.IGNORECASE)
+    if m:
+        tone = m.group(1).lower()
+    body = re.sub(r"\n?\s*tone:.*$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+    words = re.findall(r"[a-zA-Zàâäéèêëïîôöùûüç]{6,}", body.lower())
+    stop = {"through", "against", "myself", "nothing", "something", "between", "becomes", "toward"}
+    motifs = [w for w in words if w not in stop][:6]
+    return body, tone, motifs
 
 
 def should_dream(drives: Dict[str, Any], ts: datetime) -> bool:
@@ -135,10 +153,34 @@ def generate(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime) -> Opt
         return None
     if not text:
         return None
+    body, tone, motifs = _extract(text)
     store.record_usage(tokens, "dream")
-    store._write_json(dream_path(), {"night": night, "at": store.iso(ts), "text": text, "seen": False})
-    store.log_event("dream", "You dreamed.", ts)
-    return text
+    store._write_json(dream_path(), {"night": night, "at": store.iso(ts), "text": body,
+                                     "tone": tone, "seen": False, "consolidated": False})
+    with store.locked_state() as (d, _p):
+        prior = list((d["meta"].get("dream_motifs") or []))
+        recurred = [w for w in motifs if w in prior]
+        d["meta"]["dream_motifs"] = (prior + (recurred or motifs[:2]))[-12:]
+    store.log_event("dream", f"You dreamed ({tone}).", ts)
+    return body
+
+
+def consolidate(drives: Dict[str, Any], ts: datetime) -> Optional[str]:
+    """Sleep regulates emotion (D): once, the night's dream tone colours the waking mood — a
+    troubling dream leaves anxiety, a soothing one eases it. Returns the tone applied, or None."""
+    data = _load()
+    if not data.get("text") or data.get("consolidated"):
+        return None
+    tone = str(data.get("tone") or "neutral")
+    if tone == "troubling":
+        physics.nudge(drives, "unconscious", "anxiety", 8)
+        physics.nudge(drives, "modulators", "cortisol", 0.06)
+    elif tone == "soothing":
+        physics.nudge(drives, "unconscious", "anxiety", -8)
+        physics.nudge(drives, "modulators", "serotonin", 0.05)
+    data["consolidated"] = True
+    store._write_json(dream_path(), data)
+    return tone
 
 
 def pending(mark_seen: bool = False) -> Optional[Dict[str, str]]:

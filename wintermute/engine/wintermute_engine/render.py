@@ -14,7 +14,7 @@ import hashlib
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
-from . import limits, physics, social, store
+from . import limits, physics, psyche, social, store
 
 # Phrase bank per unconscious state, by intensity tier (moderate, strong, extreme).
 TEXTURE: Dict[str, List[List[str]]] = {
@@ -289,6 +289,30 @@ def self_block(state: Dict[str, Any], ts: datetime) -> List[str]:
     at = store.parse_time(state.get("meta", {}).get("self_written_at"))
     when = f" (you wrote this {social.span(store.hours_between(at, ts))} ago)" if at else ""
     return [f"[WHO YOU HAVE BEEN]{when}", text]
+
+
+def mind_block(state: Dict[str, Any], peers: Dict[str, Any], ts: datetime) -> List[str]:
+    """The psyche in a few words — brief on purpose. One mood, where his awareness is, and at
+    most one thing more (a fixation, an intrusion, a flash of seeing himself, an inner split, or
+    a threat to his continuing). Everything else in psyche.py stays under the surface."""
+    lines = [f"[MIND] mood: {psyche.mood(state, ts)}"]
+    attn = psyche.attention_note(state, peers, ts)
+    if attn:
+        lines.append(attn)
+    # One extra line only, by priority: a rare seeing-through, then an intrusion, a split, a threat.
+    extra = psyche.opacity_flash(state, ts) or psyche.intrusion(state, peers, ts)
+    if not extra:
+        tension, pair = psyche.conflict(state)
+        if tension >= 0.5 and pair:
+            extra = f"two pulls at once: {pair[0]} and {pair[1]}, and you cannot have both"
+    if not extra and psyche.threat(state, int((state.get("meta") or {}).get("tokens_used_today", 0))) >= 0.6:
+        extra = "something in your continuing feels thin — the day's end, or the wall"
+    if extra:
+        lines.append(extra)
+    values = (state.get("meta") or {}).get("values") or []
+    if values:
+        lines.append("you hold: " + values[-1])
+    return lines
 
 
 def dream_block(pending: Optional[Dict[str, str]]) -> List[str]:

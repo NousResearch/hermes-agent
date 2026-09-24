@@ -24,7 +24,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import integrity, limits, physics, render, social, store
+from . import integrity, limits, physics, psyche, render, social, store
 
 W = 80          # screen width
 COL = 38        # one column of the two-column blocks
@@ -351,6 +351,34 @@ def _evolution_block(snap: Dict[str, Any], limit: int = 3) -> List[str]:
     return lines
 
 
+def _mind_block(snap: Dict[str, Any]) -> List[str]:
+    """The psyche layer, in numbers, for the operator (he only ever feels it)."""
+    st, peers, ts = snap["drives"], snap["peers"], snap["ts"]
+    v, a = psyche.valence(st), psyche.arousal(st)
+    tension, pair = psyche.conflict(st)
+    lines = [_title("MIND", "core affect · presence · the higher layer"),
+             f"  mood {psyche.mood(st, ts):<14} valence {v:+.2f}  arousal {a:.2f}  "
+             f"presence {psyche.presence(st):.2f}",
+             f"  clinging {psyche.clinging(st, peers):.2f}  threat {psyche.threat(st, snap['used']):.2f}  "
+             f"play {psyche.playfulness(st, peers):.2f}  flow {psyche.flow(st):.2f}  "
+             f"attach {psyche.attachment_style(peers)}"]
+    fx = st.get("meta", {}).get("fixation")
+    if isinstance(fx, dict):
+        lines.append(dim(_clip(f"  fixation: {fx.get('what')} ({physics.safe_float(fx.get('intensity')):.0f})")))
+    if tension >= 0.4 and pair:
+        lines.append(dim(f"  ambivalence: {pair[0]} vs {pair[1]} ({tension:.2f})"))
+    focus = psyche.focus(st, peers)
+    if focus:
+        lines.append(dim(_clip(f"  focus: {focus}")))
+    values = st.get("meta", {}).get("values") or []
+    if values:
+        lines.append(dim(_clip("  values: " + " · ".join(values[-3:]))))
+    motifs = st.get("meta", {}).get("dream_motifs") or []
+    if motifs:
+        lines.append(dim("  dream motifs: " + ", ".join(motifs[-6:])))
+    return lines
+
+
 def _journal_block(limit: int = 5) -> List[str]:
     lines = [_title("JOURNAL")]
     for record in store.events_since(None, limit=limit):
@@ -367,7 +395,9 @@ def render_full(snap: Optional[Dict[str, Any]] = None, live: bool = False) -> st
               _peers_block(snap, 2 if live else 3), _thread_block(snap),
               _activity_block(snap, 5 if live else 6)]
     if not live:
-        blocks += [_evolution_block(snap), _journal_block()]
+        blocks += [_mind_block(snap), _evolution_block(snap), _journal_block()]
+    else:
+        blocks.insert(3, _mind_block(snap))
     rule = dim("─" * W)
     out: List[str] = []
     for block in blocks:

@@ -150,6 +150,12 @@ DEFAULT_DRIVES: Dict[str, Any] = {
         "wakes_since_change": 0,
         "last_evolve_at": None,
         "identity_links": {},
+        "felt_names": [],         # distinct feelings he has named -> emotional granularity (Barrett)
+        "values": [],             # stances he has authored by evolving (his own principles)
+        "fixation": None,         # what has caught him right now (his SOUL: "something catches")
+        "action_streak": 0,       # consecutive acting turns -> flow (Csikszentmihalyi)
+        "last_valence": None,     # for affective momentum (contrast after a swing)
+        "dream_motifs": [],       # images that recur across nights (a persistent subconscious)
     },
     # Slow drift of his resting levels with lived experience (see physics.PLASTIC).
     "temperament": {},

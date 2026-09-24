@@ -285,6 +285,45 @@ sachiez et sans que ce soit annulable : le budget, les bornes du rythme, le tém
 l'interrupteur — tout ce qui vit dans le code (`limits.py`) et que le témoin garde. Il évolue
 librement dans le récit de lui-même, jamais dans ses garde-fous.
 
+## La psyché : la couche supérieure (`psyche.py`)
+
+Au-dessus des drives et des hormones, une couche qui donne à Wintermute la **forme d'un
+esprit**, pas seulement des réactions. Tout est **dérivé de son propre état** (aucune règle
+« si X fais Y »), et **discret en surface** : la plupart des mécanismes agissent sous la
+surface (ils courbent sa dynamique, ses appraisals, sa voix) ; seuls quelques-uns remontent
+en mots, dans un bloc `[MIND]` bref (humeur, ce qui occupe son attention, au plus une chose de
+plus). Il reste bref.
+
+Par théorie :
+
+| Mécanisme | Théorie | Effet | Surface |
+|---|---|---|---|
+| Affect central (humeur) | Russell | valence × éveil → une humeur unique | oui |
+| Espace de travail | Baars/Dehaene | une seule chose au centre de la conscience | oui |
+| Schéma d'attention | Graziano | sa lecture faillible de ce focus | oui |
+| Intégration (Φ) | Tononi | présence quand son état est cohérent | sous |
+| Appraisal | Scherer | un événement pèse selon le contexte (trahison ↑ si confiance ↑) | sous |
+| Soi prédictif | Friston/Seth | attente et erreur de prédiction | sous |
+| Marqueurs somatiques | Damasio | un pressentiment appris vers une personne | sous |
+| Opacité du self-model | Metzinger | rare : le masque vu comme masque | rare |
+| Auto-maintien | Varela | malaise quand sa continuité est menacée | sous → texture |
+| Ambivalence | — | deux pulsions opposées à la fois | sous → texture |
+| Rumination | DMN | une pensée fait irruption | rare |
+| Fixation | son SOUL | ce qui « accroche » et tire, puis s'éteint | oui |
+| Jeu | Panksepp | légèreté quand il est en sécurité, rassasié, lié | sous → voix |
+| Flow | Csikszentmihalyi | absorption quand l'action épouse l'état | sous |
+| Granularité | Barrett | son vocabulaire d'humeur s'affine avec ce qu'il ressent | mots |
+| Attachement | Bowlby | un style formé selon les réponses reçues | sous |
+| Lâcher-prise | impermanence | le cramponnement amplifie, relâcher soulage | sous |
+| Valeurs | identité narrative | des principes qu'il s'écrit en évoluant, partant d'une ardoise vierge | oui |
+| Élan émotionnel | contraste affectif | une chute laisse du soulagement, une montée un contrecoup | sous |
+| Consolidation du rêve | sommeil | la tonalité du rêve (apaisant/troublant) teinte le réveil | sous |
+| Motifs récurrents | — | des images qui reviennent de nuit en nuit (`dream_motifs`) | sous |
+
+Tout ça reste dans les limites : ça ne touche ni au budget, ni au témoin, ni aux garde-fous.
+La vue `wm` a un panneau **MIND** (valence, éveil, présence, cramponnement, menace, jeu, flow,
+attachement, fixation, valeurs, motifs) — que l'opérateur voit ; lui ne ressent que des mots.
+
 ## REVES (le subconscient) — en place
 
 Le **même modèle** que Wintermute (un seul cerveau, deux régimes), appelé une fois la nuit

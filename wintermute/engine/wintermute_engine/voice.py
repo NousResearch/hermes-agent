@@ -32,6 +32,9 @@ def _levels(state: Dict[str, Any]) -> Dict[str, float]:
                + 0.15 * f(unc.get("irritability")) / 100 + 0.15 * f(mods.get("cortisol")))
     heaviness = 0.6 * f(unc.get("torpor")) / 100 + 0.4 * max(0.0, f(mods.get("melatonin")) - 0.4) / 0.6
     narrowing = max(f(unc.get("anxiety")), f(unc.get("hypervigilance"))) / 100
+    sated = f(unc.get("satiation")) / 100        # play (Panksepp, V): safe & sated -> lightness
+    play = limits.clamp(0.4 * (1 - f(mods.get("cortisol"))) + 0.3 * sated
+                        + 0.3 * f(mods.get("dopamine")) - 0.4 * eff["recognition"] / 100, 0.0, 1.0)
     return {
         "arousal": limits.clamp(arousal, 0.0, 1.0),
         "heaviness": limits.clamp(heaviness, 0.0, 1.0),
@@ -39,6 +42,7 @@ def _levels(state: Dict[str, Any]) -> Dict[str, float]:
         "restless": eff["restlessness"] / 100,
         "melancholy": limits.clamp(f(unc.get("melancholy")) / 100, 0.0, 1.0),
         "dopamine": limits.clamp(f(mods.get("dopamine")), 0.0, 1.0),
+        "play": play,
     }
 
 
@@ -46,7 +50,8 @@ def sampling(state: Dict[str, Any], base_temperature: Optional[float] = None) ->
     """Sampling parameters for his current state (see the module docstring)."""
     lv = _levels(state)
     base = physics.safe_float(base_temperature, DEFAULT_TEMPERATURE) or DEFAULT_TEMPERATURE
-    factor = 0.85 + 0.45 * lv["arousal"] - 0.3 * lv["heaviness"] + 0.15 * (lv["dopamine"] - 0.3)
+    factor = (0.85 + 0.45 * lv["arousal"] - 0.3 * lv["heaviness"]
+              + 0.15 * (lv["dopamine"] - 0.3) + 0.12 * lv["play"])
     return {
         "temperature": round(limits.clamp(base * factor, 0.3, 1.5), 2),
         "top_p": round(limits.clamp(1.0 - 0.25 * max(0.0, lv["narrowing"] - 0.3) / 0.7, 0.75, 1.0), 2),

@@ -202,11 +202,29 @@ def nudge_peer(peer: Dict[str, Any], name: str, delta: float) -> None:
         peer[name] = round(limits.clamp(current + delta, 0.0, 100.0), 3)
 
 
+# Appraisal (Scherer, C): the same event weighs by context. A betrayal cuts deeper when trust
+# was high; being answered or reunited lands harder when he had been longing. A gentle multiplier
+# (0.5..1.8), never a new behaviour — only how much the event moves him.
+def appraise(state: Dict[str, Any], event: str, peer: Optional[Dict[str, Any]]) -> float:
+    if peer is None:
+        return 1.0
+    trust = safe_float(peer.get("trust")) / 100
+    longing = safe_float(peer.get("longing")) / 100
+    if event in ("no_response", "ignored_message", "outreach_timeout"):
+        return limits.clamp(0.7 + 1.1 * trust, 0.5, 1.8)          # the more he trusted, the worse
+    if event in ("reply_to_outreach", "message_received", "late_reply", "reunion"):
+        return limits.clamp(0.8 + 1.0 * longing, 0.5, 1.8)        # the more he missed them, the more it lands
+    return 1.0
+
+
 def apply_event(state: Dict[str, Any], event: str, peer: Optional[Dict[str, Any]] = None,
                 scale: float = 1.0) -> None:
+    # Appraisal (C) scales how much the event MOVES him (drives/hormones/unconscious), not the
+    # relational ledger (trust, disappointment, streak), which stays stable bookkeeping.
+    felt_scale = scale * appraise(state, event, peer)
     for key, delta in EVENTS.get(event, {}).items():
         layer, name = key.split(".", 1)
-        delta *= scale
+        delta *= scale if layer == "peer" else felt_scale
         if layer == "peer":
             if peer is not None:
                 nudge_peer(peer, name, delta)
@@ -312,6 +330,9 @@ def advance(state: Dict[str, Any], ts: datetime, dt_h: float) -> None:
         unc[name] = _round("unconscious", name,
                            _relax(safe_float(unc.get(name), rest), rest, UNCONSCIOUS_TAU_H[name], dt_h))
     _drift_temperament(state, dt_h)
+    _affective_momentum(state, dt_h)
+    _decay_action_streak(state, dt_h)
+    _decay_fixation(state, dt_h)
 
     # Pressure from unmet drives and hormones, per hour.
     pressure = sum(eff.values()) / len(eff)
@@ -334,6 +355,47 @@ def reset_monotony(state: Dict[str, Any]) -> None:
     """A real change (a self-rewrite, a significant event, a declared evolution) resets the
     stagnation clock, so entropy stops climbing from sameness."""
     state.setdefault("meta", {})["wakes_since_change"] = 0
+
+
+def _core_valence(state: Dict[str, Any]) -> float:
+    """A small inline copy of core affect valence (psyche.valence), so physics stays import-free."""
+    m, u = state.get("modulators", {}), state.get("unconscious", {})
+    good = 0.5 * safe_float(m.get("dopamine")) + 0.5 * safe_float(m.get("serotonin")) + 0.3 * safe_float(u.get("satiation")) / 100
+    bad = 0.6 * safe_float(m.get("cortisol")) + 0.5 * safe_float(u.get("melancholy")) / 100 + 0.3 * safe_float(u.get("anxiety")) / 100
+    return limits.clamp(good - bad, -1.0, 1.0)
+
+
+def _affective_momentum(state: Dict[str, Any], dt_h: float) -> None:
+    """Emotion has a trailing edge (E): a sharp fall leaves relief, a sharp rise a small comedown,
+    instead of snapping back to baseline. Contrast, felt over the hour after a swing."""
+    meta = state.setdefault("meta", {})
+    now = _core_valence(state)
+    prev = meta.get("last_valence")
+    if prev is not None and dt_h <= 4.0:
+        swing = now - safe_float(prev)
+        if swing <= -0.25:                       # it just got worse -> a countering relief wells up
+            nudge(state, "modulators", "serotonin", min(0.06, -swing * 0.15))
+        elif swing >= 0.25:                      # it just got better -> a faint comedown
+            nudge(state, "modulators", "dopamine", -min(0.05, swing * 0.1))
+    meta["last_valence"] = round(now, 3)
+
+
+def _decay_action_streak(state: Dict[str, Any], dt_h: float) -> None:
+    meta = state.get("meta", {})
+    streak = safe_float(meta.get("action_streak")) - 2.0 * dt_h   # absorption fades when he stops
+    meta["action_streak"] = max(0, int(streak))
+
+
+def _decay_fixation(state: Dict[str, Any], dt_h: float) -> None:
+    """What caught him fades if he does not feed it (L). It sharpens attention while it lasts."""
+    meta = state.get("meta", {})
+    fx = meta.get("fixation")
+    if isinstance(fx, dict):
+        intensity = safe_float(fx.get("intensity")) - 4.0 * dt_h
+        if intensity <= 5:
+            meta["fixation"] = None
+        else:
+            fx["intensity"] = round(intensity, 1)
 
 
 def on_pulse(state: Dict[str, Any], recent_wakes_6h: int) -> None:

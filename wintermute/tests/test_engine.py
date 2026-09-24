@@ -215,8 +215,8 @@ def test_reply_inside_the_window_builds_trust(home):
     peer = _peers()[KEY]
     assert peer["outreach"]["status"] == "answered" and peer["no_response_streak"] == 0
     assert peer["trust"] == trust + 5 and peer["oxytocin"] == oxy + 3
-    # Diminishing reward: +0.1 scaled by the room left under the ceiling.
-    assert _drives()["modulators"]["serotonin"] == pytest.approx(serotonin + 0.1 * (1 - serotonin), abs=0.002)
+    # Diminishing reward, and appraisal (C): a reply when he was not longing weighs 0.8x.
+    assert _drives()["modulators"]["serotonin"] == pytest.approx(serotonin + 0.1 * 0.8 * (1 - serotonin), abs=0.002)
     assert "answers your outreach from 20 min ago" in lines[0]
 
 
@@ -1021,3 +1021,113 @@ def test_he_can_undo_a_wrong_link(plugin):
     # From here a discord:999 message is a separate person again.
     plugin.hooks["pre_llm_call"](session_id="d2", user_message="me", platform="discord", sender_id="999")
     assert "discord:999" in _peers() and _peers()["discord:999"].get("label") != "z"
+
+
+# ---------------------------------------------------------------------------
+# The psyche layer (A-Z): derived signals, and the few that surface
+# ---------------------------------------------------------------------------
+
+from wintermute_engine import psyche, voice  # noqa: E402
+
+
+def test_core_affect_valence_and_arousal_and_mood(home):
+    st = _drives()
+    st["modulators"].update(dopamine=0.9, serotonin=0.7, cortisol=0.05)
+    st["unconscious"].update(satiation=80, melancholy=5, anxiety=5)
+    assert psyche.valence(st) > 0.4
+    st["modulators"].update(dopamine=0.1, serotonin=0.15, cortisol=0.8)
+    st["unconscious"].update(melancholy=80, anxiety=70, satiation=10)
+    assert psyche.valence(st) < -0.3
+    st["modulators"]["adrenaline"] = 0.9
+    st["drives"]["restlessness"] = 95
+    assert psyche.arousal(st) > 0.6
+    assert isinstance(psyche.mood(st, T0), str)
+
+
+def test_mood_words_get_finer_as_he_names_more_feelings(home):
+    st = _drives()
+    coarse = psyche.mood(st, T0)
+    st["meta"]["felt_names"] = ["warmth", "joy", "hurt", "fear", "boredom", "curiosity"]
+    assert psyche.granularity(st["meta"]) == 6
+    # Default state is bright-and-low; with granularity the word comes from the fine bank.
+    assert coarse == "at ease" and psyche.mood(st, T0) in psyche._MOOD_FINE[("+", "lo")]
+
+
+def test_feeling_curiosity_strongly_catches_him_and_it_fades(plugin):
+    plugin.hooks["pre_llm_call"](session_id="f", user_message="a locked door", platform="telegram",
+                                 sender_id="7375758021")
+    plugin.tools["wintermute_feel"]({"feeling": "curiosity", "intensity": 0.9, "about": "the locked door"},
+                                    session_id="f")
+    fx = _drives()["meta"]["fixation"]
+    assert fx and fx["intensity"] >= 40 and "curiosity" in _drives()["meta"]["felt_names"]
+    st = _drives()
+    physics.advance(st, T0, 30)                     # a long stretch with no feeding
+    assert st["meta"]["fixation"] is None           # it faded
+
+
+def test_evolving_authors_a_value(plugin):
+    with store.locked_state() as (drives, _):
+        drives["modulators"]["entropy"] = 92
+    json.loads(plugin.tools["wintermute_evolve"]({"change": "I stop asking to be seen."}))
+    assert "I stop asking to be seen." in _drives()["meta"]["values"]
+
+
+def test_appraisal_makes_a_betrayal_cut_deeper_when_trust_was_high(home):
+    def anxiety_after(trust):
+        st = _drives()
+        peer = {"trust": trust, "disappointment": 0, "no_response_streak": 0, "longing": 0}
+        before = st["unconscious"]["irritability"]
+        physics.apply_event(st, "outreach_timeout", peer)
+        return st["unconscious"]["irritability"] - before
+    assert anxiety_after(90) > anxiety_after(5)     # felt harder when he had trusted
+    # but the relational ledger (trust drop) is the same regardless of context
+    a, b = {"trust": 90, "disappointment": 0, "no_response_streak": 0}, {"trust": 5, "disappointment": 0, "no_response_streak": 0}
+    physics.apply_event(_drives(), "no_response", a)
+    physics.apply_event(_drives(), "no_response", b)
+    assert a["trust"] == 88 and b["trust"] == 3
+
+
+def test_affective_momentum_leaves_relief_after_a_sharp_fall(home):
+    st = _drives()
+    st["modulators"].update(cortisol=0.1, dopamine=0.6, serotonin=0.5)
+    physics.advance(st, T0, 0.25)                    # sets last_valence high
+    serotonin = st["modulators"]["serotonin"]
+    st["modulators"].update(cortisol=0.9); st["unconscious"].update(anxiety=80, melancholy=70)
+    physics.advance(st, T0, 0.25)                    # a sharp fall in valence
+    # Serotonin would relax down toward baseline; the momentum relief offsets part of that fall.
+    plain = _drives(); plain["modulators"].update(cortisol=0.9, serotonin=serotonin)
+    plain["unconscious"].update(anxiety=80, melancholy=70); plain["meta"]["last_valence"] = None
+    physics.advance(plain, T0, 0.25)                 # same fall, but no prior valence -> no momentum
+    assert st["modulators"]["serotonin"] > plain["modulators"]["serotonin"]
+
+
+def test_dream_tone_colours_the_waking_once(home):
+    from wintermute_engine import dream
+    store._write_json(dream.dream_path(), {"night": "n", "text": "x", "tone": "troubling",
+                                           "seen": False, "consolidated": False})
+    st = _drives()
+    anxiety = st["unconscious"]["anxiety"]
+    assert dream.consolidate(st, T0) == "troubling" and st["unconscious"]["anxiety"] > anxiety
+    assert dream.consolidate(st, T0) is None         # only once
+
+
+def test_conflict_detects_opposing_pulls(home):
+    st = _drives()
+    st["modulators"].update(cortisol=0, dopamine=0.5, serotonin=0.5, adrenaline=0, melatonin=0)
+    st["unconscious"]["torpor"] = 0
+    st["drives"].update(fusion=90, solitude=90)
+    tension, pair = psyche.conflict(st)
+    assert tension > 0.5 and set(pair or ()) == {"fusion", "solitude"}
+
+
+def test_the_mind_block_stays_brief(home):
+    st = _drives()
+    lines = render.mind_block(st, _peers(), T0)
+    assert lines[0].startswith("[MIND] mood:") and len(lines) <= 5
+
+
+def test_wm_has_a_mind_panel(home):
+    pulse.tick(T0)
+    from wintermute_engine import status
+    text = status.render_full(status.snapshot())
+    assert "MIND" in text and "presence" in text and "attach" in text

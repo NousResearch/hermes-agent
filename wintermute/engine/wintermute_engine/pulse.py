@@ -156,6 +156,8 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
             return False, SLEEP_GATE
 
         # This tick is a wake.
+        if not store._dry_run:
+            dream.consolidate(drives, ts)          # last night's dream colours this waking (once)
         recent = _recent_wakes(meta, ts) + [store.iso(ts)]
         events = store.events_since(last_pulse)
         social.pulse_social(drives, peers, ts)
@@ -174,6 +176,7 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
                       render.kept_block(ts)):
             if block:
                 lines += [""] + block
+        lines += [""] + render.mind_block(drives, peers, ts)
         lines += ["", "[DRIVES]"] + render.felt_drives(drives)
         body = render.felt_body(drives)
         if body:

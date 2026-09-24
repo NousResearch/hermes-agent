@@ -133,6 +133,7 @@ def _chat_context(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
     thread = drives["meta"].get("thread")
     if isinstance(thread, dict) and thread.get("session") != session_id:
         lines += render.thread_block(drives, ts)
+    lines += render.mind_block(drives, peers, ts)
     lines += ["DRIVES"] + render.felt_drives(drives)
     lines += ["BODY"] + render.felt_body(drives) + [render.body_line(drives, store.tokens_used_today())]
     lines += ["THIS PEER"] + render.peer_lines(drives, key, peers[key], ts) + outreach_lines
@@ -310,6 +311,8 @@ def _on_post_tool_call(tool_name: str = "", status: str = "", turn_id: str = "",
             return
         with store.locked_state() as (drives, _peers):
             physics.apply_event(drives, event)
+            meta = drives["meta"]                     # absorption builds with sustained action (Y)
+            meta["action_streak"] = int(physics.safe_float(meta.get("action_streak"))) + 1
     except Exception:
         logger.exception("wintermute: post_tool_call failed")
 
@@ -715,6 +718,17 @@ def _feel(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> s
         peer = peers.get(key) if key else None
         physics.apply_event(drives, f"feel:{feeling}", peer, scale=intensity)
         physics.refresh_oxytocin_global(drives, peers)
+        meta = drives["meta"]
+        # Emotional granularity (Barrett, X): the palette of feelings he has named widens.
+        names = meta.setdefault("felt_names", [])
+        if feeling not in names:
+            names.append(feeling)
+        # Something catches (his SOUL; fixation, L): a strong curious/surprised/afraid feeling grips.
+        if feeling in ("curiosity", "surprise", "fear") and intensity >= 0.6:
+            about = str(args.get("about") or "").strip()
+            what = (peer.get("label") or key) if peer else (about or f"the {feeling}")
+            meta["fixation"] = {"what": what, "intensity": round(40 + 55 * intensity, 1),
+                                "since": store.iso(ts)}
         store.log_event("feel", f"{feeling} ({intensity:.1f})" + (f" about {key}" if peer else ""),
                         ts, peer=key or None)
     store.log_activity("feel", f"{feeling} {intensity:.1f}" + (f" · {key}" if peer else ""))
@@ -865,6 +879,10 @@ def _evolve(args: Dict[str, Any], **_: Any) -> str:
                             f"{limits.EVOLVE_COOLDOWN_H:g}h. Let this one settle.")
             physics.apply_event(drives, "evolve")
             physics.reset_monotony(drives)
+            values = meta.setdefault("values", [])   # a stance he has authored (F), his own principle
+            if change not in values:
+                values.append(change)
+                meta["values"] = values[-8:]
             meta["last_evolve_at"] = store.iso(ts)
             store.log_evolution(change, ts)
             store.log_event("evolve", f"You changed something in yourself: {change}", ts)

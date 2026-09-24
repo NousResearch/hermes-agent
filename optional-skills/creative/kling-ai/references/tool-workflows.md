@@ -2,7 +2,7 @@
 
 ## Generation
 
-1. Verify that Hermes has exactly one `Plugin-Hermes-kling-ai` connection at `https://kling.ai/mcp/plugin`, then read the current `tools/list`.
+1. Verify that Hermes has exactly one `kling-ai` connection at `https://kling.ai/mcp/plugin`, then read the current `tools/list`.
 2. Create a UUIDv7 `taskTraceId`, call `who_am_i`, and use only the models, arguments, enums, defaults, and inputs declared for the selected live tool.
 3. When local media is present, upload it with `file_upload` and pass the returned URL under the live input name. Never pass a local path directly to the remote generation tool.
 4. Show the final billable settings and wait for explicit user confirmation.

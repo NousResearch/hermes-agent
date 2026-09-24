@@ -14,7 +14,7 @@ metadata:
 
 # Kling AI Skill
 
-Use only the packaged server `Plugin-Hermes-kling-ai` at the Global endpoint `https://kling.ai/mcp/plugin`. This package does not bundle, start, or depend on a local MCP server.
+Use only the packaged server `kling-ai` at the Global endpoint `https://kling.ai/mcp/plugin`. This package does not bundle, start, or depend on a local MCP server.
 
 ## When to Use
 
@@ -27,14 +27,14 @@ An attachment does not determine its role. When the user has not specified one, 
 
 ## Prerequisites
 
-- Use native Hermes MCP OAuth for `Plugin-Hermes-kling-ai`. Never request an API key, token, cookie, authorization header, or credential file. Never log private account fields or signed URLs.
+- Use native Hermes MCP OAuth for `kling-ai`. Never request an API key, token, cookie, authorization header, or credential file. Never log private account fields or signed URLs.
 - Hermes owns OAuth registration, PKCE, credential storage, and refresh. Preserve its native flow and the packaged server identity. The `X-Kling-Integration: Plugin-Hermes` header is telemetry-only and must not affect authorization or billing.
 - Create one RFC 4122 UUIDv7 `taskTraceId` for each unrelated new objective. Reuse it across discovery, upload, generation, and querying for the same objective. Present `generationId` as the task number; do not expose `taskTraceId` unless troubleshooting requires it.
 - Preserve `oauth.client_name: Plugin-Hermes`, `X-Kling-Integration: Plugin-Hermes`, and `supports_parallel_tool_calls: false` from `mcp.config.yaml`. The official Catalog schema cannot carry these fields; apply the packaged config before first OAuth login. Do not claim Catalog production readiness until this gap is resolved.
 
 ## How to Run
 
-Discover the live tools exposed by `Plugin-Hermes-kling-ai`. Never infer tool prefixes, models, or arguments from examples.
+Discover the live tools exposed by `kling-ai`. Never infer tool prefixes, models, or arguments from examples.
 
 ### Billing and single submission
 
@@ -82,7 +82,7 @@ Apply these defaults only when the user did not specify another choice and the l
 
 ## Pitfalls
 
-- Unauthorized: run `hermes mcp login Plugin-Hermes-kling-ai`; continue only after native authorization succeeds.
+- Unauthorized: run `hermes mcp login kling-ai`; continue only after native authorization succeeds.
 - Unsupported argument: refresh the live tool definitions and change only the rejected field. Show the revised settings and obtain confirmation again before any new generation.
 - Insufficient credits or provider failure: report the provider message and task number, then stop. Do not retry automatically.
 - Expired result URL: query the original task number for a fresh URL; do not create a new task.
@@ -90,7 +90,7 @@ Apply these defaults only when the user did not specify another choice and the l
 
 ## Verification
 
-- `hermes mcp list` and `hermes mcp test Plugin-Hermes-kling-ai` verify the single native connection.
+- `hermes mcp list` and `hermes mcp test kling-ai` verify the single native connection.
 - All three Kling Skills and their linked references are installed together.
 - Submission happens only once after confirmation, and status uses the original task number.
 - Interactive MCP App rendering must be verified on the target build before it is claimed; otherwise preserve the provider text fallback.

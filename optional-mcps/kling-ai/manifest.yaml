@@ -1,5 +1,5 @@
 manifest_version: 1
-name: Plugin-Hermes-kling-ai
+name: kling-ai
 description: Create and monitor Kling AI image and video generations.
 source: https://kling.ai/
 

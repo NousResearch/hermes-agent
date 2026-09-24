@@ -10,7 +10,7 @@ MANIFEST = ROOT / "optional-mcps" / "kling-ai" / "manifest.yaml"
 def test_kling_ai_catalog_manifest() -> None:
     entry = _parse_manifest(MANIFEST)
 
-    assert entry.name == "Plugin-Hermes-kling-ai"
+    assert entry.name == "kling-ai"
     assert entry.transport.type == "http"
     assert entry.transport.url == "https://kling.ai/mcp/plugin"
     assert entry.auth.type == "oauth"

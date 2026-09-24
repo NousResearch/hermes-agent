@@ -22,7 +22,7 @@ Use for Kling image generation and controlled variations; use the core Skill for
 
 ## Prerequisites
 
-Install the core `kling-ai` Skill alongside this Skill and authorize the single `Plugin-Hermes-kling-ai` server at `https://kling.ai/mcp/plugin` through Hermes-native OAuth. Follow the core connection and billing contract.
+Install the core `kling-ai` Skill alongside this Skill and authorize the single `kling-ai` server at `https://kling.ai/mcp/plugin` through Hermes-native OAuth. Follow the core connection and billing contract.
 
 ## How to Run
 

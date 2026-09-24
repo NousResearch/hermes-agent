@@ -40,7 +40,7 @@ def test_kling_ai_skill_contract_and_structure() -> None:
     positions = [text.index(heading) for heading in headings]
     assert positions == sorted(positions)
     for phrase in (
-        "Plugin-Hermes-kling-ai",
+        "kling-ai",
         "https://kling.ai/mcp/plugin",
         "credit-consuming",
         "at most once",

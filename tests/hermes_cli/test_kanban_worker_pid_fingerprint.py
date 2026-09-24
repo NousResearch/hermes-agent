@@ -154,7 +154,9 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
 def _drifted_live_fingerprint(forward_cs: int) -> str:
     """The value a spawn would have recorded before a macOS sleep/wake drifted psutil's reading of
     the (still live) process forward: the epoch half kept, the start half earlier by ``forward_cs``
-    centiseconds than today's reading — exactly the stale row the reaper misread in #118326."""
+    centiseconds than today's reading — exactly the stale row the reaper misread in #118326. A
+    negative ``forward_cs`` yields the reaper-reads-lower half of the bidirectional read
+    disagreement (recorded newer than today's reading)."""
     live = kbd._process_fingerprint(os.getpid())
     assert live is not None and "|" in live
     epoch, _, start = live.partition("|")
@@ -205,6 +207,36 @@ def test_gross_start_drift_is_still_a_recycle(board):
     tid = _claimed_running(conn, pid=os.getpid(), started_at=gross)
 
     assert kbd._worker_alive(os.getpid(), gross) is False
+    assert kb.release_stale_claims(conn) == 1
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_read_disagreement_below_recorded_start_keeps_the_live_worker(board):
+    """The cross-process read disagreement is bidirectional (#118326): a long-lived reaper can read
+    the same live worker's start time ~1 s BELOW the spawn-time record. The negative half must not
+    conclude recycled — the exact release-beside-a-live-worker loop reported on the PR — so the
+    expired claim is extended, never released."""
+    conn = board
+    killed = []
+    disagreed = _drifted_live_fingerprint(-100)  # 100 cs below today's reading
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=disagreed)
+
+    assert kbd._worker_alive(os.getpid(), disagreed) is True
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    assert "claim_extended" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_backward_start_gap_beyond_the_read_tolerance_is_still_a_recycle(board):
+    """The negative widening is bounded by the shared comparator's tolerance (2 s), not the 12 h
+    sleep-drift ceiling: a 3 s backward gap keeps its recycle meaning."""
+    conn = board
+    beyond = _drifted_live_fingerprint(-300)  # 3 s below today's reading
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=beyond)
+
+    assert kbd._worker_alive(os.getpid(), beyond) is False
     assert kb.release_stale_claims(conn) == 1
     assert kb.get_task(conn, tid).status == "ready"
 

@@ -1076,9 +1076,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
-        if is_group and self.require_mention and not self._message_matches_mention_patterns(text):
-            self._finish_inbound_claim(message_id, claim, accepted=True)
-            return _ok()
+        if is_group and self.require_mention:
+            if not self._message_matches_mention_patterns(text):
+                self._finish_inbound_claim(message_id, claim, accepted=True)
+                return _ok()
+            text = self._clean_mention_text(text)
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
@@ -1146,22 +1148,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             text = "(attachment unavailable)"
         # --- End attachment handling ---
 
-        chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         if not sender or not (chat_guid or chat_identifier) or not text:
             self._finish_inbound_claim(message_id, claim, accepted=False)
             return web.json_response({"error": "missing message fields"}, status=400)
         session_chat_id = chat_guid or chat_identifier
-        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
-        # Mention gate BEFORE the attachment downloads: an unmentioned group message must not
-        # pull every attachment through the REST API only to be dropped.
-        if is_group and self.require_mention:
-            if not self._message_matches_mention_patterns(text):
-                logger.debug(
-                    "[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)"
-                )
-                self._finish_inbound_claim(message_id, claim, accepted=True)
-                return web.Response(text="ok")
-            text = self._clean_mention_text(text)
         try:
             source = self.build_source(
                 chat_id=session_chat_id,

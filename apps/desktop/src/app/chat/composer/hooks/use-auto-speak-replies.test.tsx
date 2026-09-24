@@ -114,10 +114,11 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
     )
 
     act(() => {
-      $messages.set([assistantMessage('assistant-stream-1', 'hello there')])
+      $messages.set([assistantMessage('assistant-stream-1', 'saved peyton-sample-20260922.wav')])
     })
 
     await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+    expect(playSpeechText).toHaveBeenCalledWith('saved a file', expect.any(Object))
 
     await act(async () => {
       settleFallback?.()

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { normalizeTextForSpeech } from '@/lib/tts-text'
 import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
@@ -75,7 +76,12 @@ export function useAutoSpeakReplies({
       // ran in every window, so peers just stay quiet.
       void ownsAmbientCue(`speak:${reply.id}`).then(owns => {
         if (owns) {
-          void playSpeechText(reply.text, { connectionId, messageId: reply.id, profile, source: 'read-aloud' }).catch(
+          void playSpeechText(normalizeTextForSpeech(reply.text), {
+            connectionId,
+            messageId: reply.id,
+            profile,
+            source: 'read-aloud'
+          }).catch(
             error => notifyError(error, failureLabel)
           )
         }

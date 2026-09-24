@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.kanban._helpers import Board, wait_until
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
@@ -27,10 +28,12 @@ pytestmark = [
     pytest.mark.live_system_guard_bypass,  # teardown SIGKILLs this board's reparented workers
 ]
 
-KNOWN: dict[str, str] = {
-    "outside": "#120647 kanban_complete artifact outside the workspace is silently never attached",
-    "test_worker_with_unresolvable_pinned_skill_still_starts_its_session":
-        "#119619 dispatcher-owned worker with a stale --skill pin exits rc=1 before its session",
+KNOWN: dict[str, tuple[str, str]] = {
+    "outside": (r"card done with its declared outside-workspace artifact never attached",
+                "#120647 kanban_complete artifact outside the workspace is silently never attached"),
+    "test_worker_with_unresolvable_pinned_skill_still_starts_its_session": (
+        r"worker died before its session \(exits=",
+        "#119619 dispatcher-owned worker with a stale --skill pin exits rc=1 before its session"),
 }
 
 _TASK_RE = re.compile(r"work kanban task (t_[0-9a-f]+)")
@@ -40,7 +43,8 @@ SKILL_MARK = "E2E_PINNED_SKILL_BODY_7f3a"
 
 
 class KnownGap(AssertionError):
-    """The tracked bug's own assertion. Only this is xfailed; any harness failure stays red."""
+    """The tracked bug's own assertion, the only type ``known_gate`` accepts; any harness failure
+    stays red."""
 
 
 def _task_id(rec: dict) -> str:
@@ -67,10 +71,7 @@ def _artifact_location(board: Board, tid: str, where: str) -> Path:
             "outside": board.hermes_home / "scripts" / f"{tid}-deliverable.md"}[where]
 
 
-@pytest.mark.parametrize("where", [
-    pytest.param(w, marks=pytest.mark.xfail(strict=True, raises=KnownGap, reason=KNOWN[w])) if w in KNOWN else w
-    for w in ("inside", "outside")
-])
+@pytest.mark.parametrize("where", ["inside", "outside"])
 def test_declared_artifact_is_attached_or_reported(tmp_path, where: str) -> None:
     board_ref: dict[str, Board] = {}
     blocked: dict[str, bool] = {}
@@ -98,9 +99,10 @@ def test_declared_artifact_is_attached_or_reported(tmp_path, where: str) -> None
             status = board.task(tid)["status"]
             attached = board._q("SELECT * FROM task_attachments WHERE task_id = ?", (tid,))
             stored = [Path(a["stored_path"]) for a in attached]
-            if status == "done" and not attached:
-                raise KnownGap(f"card done with its declared {where}-workspace artifact never attached\n"
-                               f"{board.diag(tid)}")
+            with known_gate(KNOWN, where, raises=KnownGap):
+                if status == "done" and not attached:
+                    raise KnownGap(f"card done with its declared {where}-workspace artifact never attached\n"
+                                   f"{board.diag(tid)}")
             assert status == "done" or where == "outside", board.diag(tid)
             if status != "done":
                 _assert_visible_refusal(board, srv, tid, _artifact_location(board, tid, where))
@@ -161,8 +163,6 @@ def test_worker_with_resolvable_pinned_skill_sees_it_on_first_request(tmp_path) 
             board.kill_workers()
 
 
-@pytest.mark.xfail(strict=True, raises=KnownGap,
-                   reason=KNOWN["test_worker_with_unresolvable_pinned_skill_still_starts_its_session"])
 def test_worker_with_unresolvable_pinned_skill_still_starts_its_session(tmp_path) -> None:
     with FakeLLMServer(_completing_responder) as srv:
         board = Board(tmp_path, srv.base_url)
@@ -176,8 +176,10 @@ def test_worker_with_unresolvable_pinned_skill_still_starts_its_session(tmp_path
             exits = [int(rc) for rc in _EXIT_RE.findall(log)]
             # The bug's own signature: no model call at all, and the worker died of the stale pin
             # (nonzero exit trailer, or its log names the missing skill). Anything else stays red.
-            if not srv.main_requests() and ((exits and exits[-1] != 0) or "e2e-archived" in log):
-                raise KnownGap(f"worker died before its session (exits={exits}); board:\n{board.diag(tid)}")
+            with known_gate(KNOWN, "test_worker_with_unresolvable_pinned_skill_still_starts_its_session",
+                            raises=KnownGap):
+                if not srv.main_requests() and ((exits and exits[-1] != 0) or "e2e-archived" in log):
+                    raise KnownGap(f"worker died before its session (exits={exits}); board:\n{board.diag(tid)}")
             assert SKILL_MARK not in str(srv.main_requests()[0]["messages"]), "removed skill still loaded"
             assert board.task(tid)["status"] == "done", board.diag(tid)
         finally:

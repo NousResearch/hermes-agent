@@ -1088,7 +1088,7 @@ export const zhHant = defineLocale({
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
-        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「開始 / 停止聽寫」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
+        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
       showOptions: '顯示選項'
     },
     hudModifier: {

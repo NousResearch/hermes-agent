@@ -106,6 +106,7 @@ import {
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
+import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
@@ -610,7 +611,7 @@ registry.register(
     icon: Terminal,
     keywords: ['terminal', 'shell', 'console', 'pty'],
     get: () => isPaneVisible('terminal'),
-    set: () => togglePaneVisible('terminal')
+    set: () => toggleTerminalPane()
   })
 )
 

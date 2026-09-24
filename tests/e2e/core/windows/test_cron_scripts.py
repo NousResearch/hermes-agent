@@ -21,12 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core.windows._helpers import WinHome, expect, hermes, known, make_home, nonce
+from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core.windows._helpers import KnownBugSymptom, WinHome, expect, hermes, make_home, nonce
 
 pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
 
-KNOWN: dict[str, str] = {
-    "sh_script": "#120504 cron .sh scripts resolve bash via bare PATH lookup (WSL stub), not Git Bash",
+# key -> (the bug's own failure signature, "#issue reason"); see _pending_fixes.known_failure.
+KNOWN: dict[str, tuple[str, str]] = {
+    "sh_script": (r"^bare PATH lookup finds (None|'[^']*(?i:system32|windowsapps)[^']*'); job status",
+                  "#120504 cron .sh scripts resolve bash via bare PATH lookup (WSL stub), not Git Bash"),
 }
 
 _JOB_ID = re.compile(r"Created job: (\S+)")
@@ -75,7 +78,6 @@ def test_python_script_job_delivers_stdout(tmp_path: Path) -> None:
     assert f"{marker} win32" in output, f"script stdout not delivered:\n{output}"
 
 
-@known("sh_script", KNOWN)
 def test_sh_script_job_runs_under_git_bash(tmp_path: Path) -> None:
     git_bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe")
     assert git_bash.is_file(), f"precondition: Git for Windows installed at {git_bash}"
@@ -87,6 +89,7 @@ def test_sh_script_job_runs_under_git_bash(tmp_path: Path) -> None:
     native_path = _native_process_path()
     job, output = _run_script_job(home, "report.sh", env_extra={"PATH": native_path})
     bare = shutil.which("bash", path=native_path)
-    expect(job["last_status"] == "ok" and marker in output,
-           f"bare PATH lookup finds {bare!r}; job status {job['last_status']!r}: {job.get('last_error')}\n{output}")
+    with known_gate(KNOWN, "sh_script", raises=KnownBugSymptom):
+        expect(job["last_status"] == "ok" and marker in output,
+               f"bare PATH lookup finds {bare!r}; job status {job['last_status']!r}: {job.get('last_error')}\n{output}")
     assert "_NT-" in output, f".sh job ran, but not under Git Bash (MSYS/MinGW uname):\n{output}"

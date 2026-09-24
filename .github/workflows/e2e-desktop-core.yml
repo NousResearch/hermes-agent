@@ -74,6 +74,14 @@ jobs:
         working-directory: apps/desktop
         run: npm run build
 
+      # Package the Linux app the way users get it (electron-builder --dir; no
+      # installer formats, no publish). Reuses the npm-installed Electron dist,
+      # so no download. packaged-smoke.spec.ts asserts the asarUnpack contract
+      # on this output (#121097) and boots the packaged binary to a first chat.
+      - name: Package the desktop app (electron-builder --dir)
+        working-directory: apps/desktop
+        run: npm run builder -- --dir --publish never --linux
+
       - name: Run the core suite under xvfb
         working-directory: apps/desktop
         run: |
@@ -81,6 +89,8 @@ jobs:
             npx playwright test -c e2e/core/playwright.config.ts
         env:
           CI: 'true'
+          # The pack step above ran: a missing release/linux-unpacked is a failure, not a skip.
+          HERMES_E2E_REQUIRE_PACKAGED: '1'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''

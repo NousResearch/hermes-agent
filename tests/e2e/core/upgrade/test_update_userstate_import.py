@@ -31,17 +31,7 @@ SKILL = "---\nname: demo\ndescription: demo skill from the backup\n---\n" + ("bo
 
 
 class Gap(Exception):
-    """Contract breach tracked in KNOWN (not an AssertionError: a crash still fails the test)."""
-
-
-KNOWN: dict[str, str] = {
-    "partial": "#119953 import that skipped members prints 'restored' and exits 0",
-    "rotten-member": "#121258 import of an archive with one corrupt member dies with a zlib.error traceback",
-}
-
-
-def known(key: str):
-    return pytest.mark.xfail(strict=True, raises=Gap, reason=KNOWN[key]) if key in KNOWN else ()
+    """Contract breach (not an AssertionError, so a crash reads differently from a wrong answer)."""
 
 
 def _home(root: Path, name: str) -> dict:
@@ -99,7 +89,7 @@ def _rotten_member(src: Path, dst: Path) -> None:
 BROKEN = {"truncated": _truncated, "not-a-zip": _not_a_zip, "rotten-member": _rotten_member}
 
 
-@pytest.mark.parametrize("kind", [pytest.param(k, marks=known(k)) for k in BROKEN])
+@pytest.mark.parametrize("kind", list(BROKEN))
 def test_import_of_a_broken_archive_fails_and_leaves_the_home_alone(archive, kind):
     root, good = archive
     bad = root / f"{kind}.zip"
@@ -120,8 +110,7 @@ def test_import_of_a_broken_archive_fails_and_leaves_the_home_alone(archive, kin
     assert not skill.exists() or skill.read_text(encoding="utf-8") == SKILL, "a corrupt member was written as the skill"
 
 
-@pytest.mark.parametrize("key", [pytest.param("partial", marks=known("partial"))])
-def test_import_that_skips_members_reports_incomplete(archive, key):
+def test_import_that_skips_members_reports_incomplete(archive):
     root, good = archive
     env = _home(root, "dst-partial")
     hh = Path(env["HERMES_HOME"])

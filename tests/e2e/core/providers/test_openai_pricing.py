@@ -38,20 +38,17 @@ from tests.e2e.core.providers._openai_helpers import (
     REPO_ROOT,
     Home,
     bug_assertions,
-    known_marks,
     write_sitecustomize_shim,
 )
 from tests.e2e.core.providers._openai_tui import TuiGateway
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
 
-KNOWN: dict[str, str] = {
-    "custom_twin_priced": "#120757 custom:<key> row pointing at a priced aggregator gets no picker prices",
+KNOWN: dict[str, tuple[str, str]] = {
+    "custom_twin_priced": (
+        r"custom:openrouter row has 0/\d+ models priced",
+        "#120757 custom:<key> row pointing at a priced aggregator gets no picker prices"),
 }
-
-
-def known(name: str) -> list:
-    return known_marks(KNOWN, name)
 
 
 VENDOR_ORIGIN = "https://openrouter.ai"
@@ -254,15 +251,14 @@ def test_relay_without_catalog_gets_no_borrowed_prices(picker, slug: str) -> Non
     assert _priced(relay) == {}, f"{slug} (upstream: the relay) borrowed prices: {relay.get('pricing')}"
 
 
-@pytest.mark.parametrize("scenario", [pytest.param("custom_twin_priced", marks=known("custom_twin_priced"))])
-def test_config_defined_twin_row_is_priced_like_the_aggregator(picker, scenario) -> None:
+def test_config_defined_twin_row_is_priced_like_the_aggregator(picker) -> None:
     """The ``custom:openrouter`` row serves the same upstream as the built-in row; its models
     must carry the aggregator's prices, not none."""
     payload, _requests = picker
     twin, builtin = _row(payload, "custom:openrouter"), _row(payload, "openrouter")
     assert twin is not None and set(TWIN_MODELS) <= set(twin.get("models") or []), payload.get("providers")
     priced = _priced(twin)
-    with bug_assertions():
+    with bug_assertions(KNOWN, "custom_twin_priced"):
         assert set(priced) == set(TWIN_MODELS), (
             f"custom:openrouter row has {len(priced)}/{len(TWIN_MODELS)} models priced "
             f"(pricing={twin.get('pricing')!r})")

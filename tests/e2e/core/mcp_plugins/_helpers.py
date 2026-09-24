@@ -37,7 +37,7 @@ TURN_TIMEOUT = 240.0
 _SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_ACCESS_KEY")
 _PASSTHROUGH_ENV = frozenset({"PATH", "LANG", "LANGUAGE", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ"})
 
-__all__ = ["FINAL", "E2EHome", "HttpMcpServer", "KnownSymptom", "apply_known", "build_home", "stdio_server",
+__all__ = ["FINAL", "E2EHome", "HttpMcpServer", "KnownSymptom", "build_home", "stdio_server",
            "http_server_cfg", "script", "call_tool", "run_chat_q", "inbound", "calls_received", "tool_results",
            "tool_name", "tool_names", "payload", "symptom", "kill_tagged", "tagged_pids", "wait_until"]
 
@@ -50,22 +50,16 @@ def tool_name(server: str, tool: str) -> str:
 
 
 class KnownSymptom(Exception):
-    """Raised ONLY by the assertion that observes a KNOWN bug's symptom. KNOWN cells are strict
-    xfails with ``raises=KnownSymptom``, so every other failure in them (a server that never starts,
-    a timeout, a precondition, a crashed host, teardown) is a plain error and stays red."""
+    """Raised ONLY by :func:`symptom`, the assertion that observes a KNOWN bug's symptom. It is the
+    type ``known_gate(KNOWN, request.node.name, raises=KnownSymptom)`` accepts around that assertion,
+    so every other failure in a KNOWN cell (a server that never starts, a timeout, a precondition, a
+    crashed host, teardown) is a plain error and stays red."""
 
 
 def symptom(ok: Any, message: str) -> None:
     """Assert the property a KNOWN bug breaks; its violation raises :class:`KnownSymptom`."""
     if not ok:
         raise KnownSymptom(message)
-
-
-def apply_known(request: Any, known: dict[str, str]) -> None:
-    """From an autouse fixture: strict-xfail the current test when its node name is a KNOWN key."""
-    reason = known.get(request.node.name)
-    if reason:
-        request.applymarker(pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=reason))
 
 
 def payload(result: str) -> dict[str, Any]:

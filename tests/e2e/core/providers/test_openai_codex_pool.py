@@ -37,7 +37,6 @@ from tests.e2e.core.providers._openai_helpers import (
     REPO_ROOT,
     Home,
     bug_assertions,
-    known_marks,
     oneshot,
     write_sitecustomize_shim,
 )
@@ -45,13 +44,11 @@ from tests.fakes.providers.openai_responses import FakeResponsesServer, Message,
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
 
-KNOWN: dict[str, str] = {
-    "independent_login_survives": "#120741 terminal refresh failure on one pooled login quarantines an independent login",
+KNOWN: dict[str, tuple[str, str]] = {
+    "independent_login_survives": (
+        r"login A was quarantined by B's invalid_grant: live pool is ",
+        "#120741 terminal refresh failure on one pooled login quarantines an independent login"),
 }
-
-
-def known(name: str) -> list:
-    return known_marks(KNOWN, name)
 
 
 TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -216,9 +213,7 @@ def _live_order(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return [(r["id"], r["source"]) for r in sorted(live, key=lambda r: r.get("priority", 0))]
 
 
-@pytest.mark.parametrize("scenario", [pytest.param("independent_login_survives",
-                                                   marks=known("independent_login_survives"))])
-def test_dead_grant_on_independent_login_keeps_login_a(tmp_path, scenario) -> None:
+def test_dead_grant_on_independent_login_keeps_login_a(tmp_path) -> None:
     """B's refresh token is terminally rejected (``invalid_grant``). B leaves rotation; A — a
     different grant, a different account — keeps its pool row (id, source, first place in the
     fill_first order), its singleton tokens, and keeps serving turns in later processes."""
@@ -235,7 +230,7 @@ def test_dead_grant_on_independent_login_keeps_login_a(tmp_path, scenario) -> No
     b_row = next((r for r in pools[0] if r["id"] == "login-b"), None)
     assert b_row is None or b_row.get("last_status") == "dead", b_row
     # A is a different grant: nothing about it may change.
-    with bug_assertions():
+    with bug_assertions(KNOWN, "independent_login_survives"):
         assert stores[0]["providers"]["openai-codex"]["tokens"] == a, stores[0]["providers"]["openai-codex"]
         for rows in pools:
             assert _live_order(rows) == [("login-a", "device_code")], (

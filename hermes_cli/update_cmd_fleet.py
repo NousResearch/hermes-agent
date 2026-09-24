@@ -492,10 +492,12 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
 def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
     """Print the specific interrupted-update fleet-restart warning."""
     stream = sys.stderr if startup else sys.stdout
-    print("⚠ A previous `hermes update` pulled new code but did not restart running gateways.", file=stream)
+    print("⚠ Post-update status: a previous `hermes update` pulled new code but did not restart running gateways.", file=stream)
     print("  Gateways may still be serving pre-update modules (mixed sys.modules).", file=stream)
     if startup:
-        print("  Run `hermes update` or `hermes gateway restart`.", file=stream)
+        print("  This is a status report about the host — not a command for you to run from here.", file=stream)
+        print("  Host owner action required (run from a shell outside the gateway):", file=stream)
+        print("    hermes update   or   hermes gateway restart", file=stream)
 
 
 def _warn_pending_fleet_restart_on_startup() -> None:

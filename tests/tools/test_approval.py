@@ -830,6 +830,49 @@ class TestGatewayProtection:
         assert dangerous is False
 
 
+class TestReadonlyHermesUpdateExemption:
+    """P4: the dangerous-command guard must not refuse the read-only forms of ``hermes update``.
+
+    ``hermes update --check`` / ``--plan`` / ``--list-venv-holders`` answer a question and
+    install nothing; the detector matches the command word, so they were refused exactly like
+    the destructive spelling (and a stored approval for the pattern description cannot
+    distinguish them). Exempt ONLY the exact argv shapes, fail-closed on everything else.
+    """
+
+    @pytest.mark.parametrize("flag", ["--check", "--plan", "--list-venv-holders"])
+    def test_readonly_flags_allowed(self, flag):
+        dangerous, key, desc = detect_dangerous_command(f"hermes update {flag}")
+        assert dangerous is False, f"{flag} should be allowed"
+        assert key is None and desc is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "hermes update",
+            "hermes update --yes",
+            "hermes update --yes --branch main",
+            "hermes update --check && git push",
+            "hermes update --check && rm -rf /tmp/x",
+            "hermes update --branch main",
+            "hermes update --check --branch main",
+            "hermes update --check --yes",
+            "sudo hermes update --check",
+            "hermes update --check; hermes gateway restart",
+            "hermes update --unknown-flag",
+            "nohup hermes update --check",
+            "cd ~/.hermes && hermes update --check",
+        ],
+    )
+    def test_mutating_or_compound_forms_stay_refused(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is True, command
+        assert key is not None, command
+
+    def test_readonly_spelling_in_quoted_prose_still_refused(self):
+        """Prose mentioning ``hermes update`` was always flagged (the pattern matches the command
+        word anywhere); the narrow exemption must not widen that — only the exact read-only argv
+        shape is allowed, everything else keeps the pre-existing fail-closed refusal."""
+        assert detect_dangerous_command("echo 'run hermes update --check'")[0] is True
 
 
 class TestWebhookApprovalExclusion:

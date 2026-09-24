@@ -2408,6 +2408,7 @@ def _update_preflight_handled(args) -> bool:
         _cmd_update_check(
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
+            json_=bool(getattr(args, "json", False)),
         )
         return True
     return False

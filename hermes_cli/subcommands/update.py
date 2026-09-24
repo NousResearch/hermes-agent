@@ -17,7 +17,13 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     )
     update_parser.add_argument(
         "--check", action="store_true", default=False,
-        help="Check whether an update is available without installing anything")
+        help="Check whether an update is available without installing anything. "
+            "Exit code: 0 when current, 10 when an update is available.")
+    update_parser.add_argument(
+        "--json", action="store_true", default=False,
+        help="With --check, emit the verdict as machine-readable JSON: "
+            "head, remote_head, new_commits, ahead_commits, dependency_files, "
+            "verdict (current / update_needed / unknown).")
     update_parser.add_argument(
         "--plan", action="store_true", default=False,
         help="Show the update plan and exit without changing anything: install "

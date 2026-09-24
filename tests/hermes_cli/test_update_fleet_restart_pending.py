@@ -706,6 +706,111 @@ def test_already_up_to_date_skips_restart_when_nothing_pending(
     assert "did not restart running gateways" not in capsys.readouterr().out
 
 
+def test_already_current_short_circuit_receipt_when_nothing_owed(
+    monkeypatch, tmp_path, capsys
+):
+    """P2 acceptance: current checkout + nothing owed → ``Already current`` line, receipt with
+    ``stop_reason == \"already_current\"``, ``pre_update.sha == post_update.sha``, and no gateway
+    restart recorded (the no-op no longer looks like a real update)."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+
+    seen = {"ran": False}
+    monkeypatch.setattr(
+        update_cmd,
+        "_run_pending_fleet_restart",
+        lambda: seen.__setitem__("ran", True) or True,
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_run_pending_fleet_restart",
+        lambda: seen.__setitem__("ran", True) or True,
+    )
+
+    # The P2 path relies on the repo's real receipt start/finalize. The existing updater
+    # integration starts a receipt, so assert on the receipt it wrote.
+    import hermes_cli.update_receipt as update_receipt_mod
+
+    real_finalize = update_receipt_mod.finalize_update_receipt
+    finalized = []
+
+    def spy_finalize(outcome, fleet=None, stop_reason=""):
+        result = real_finalize(outcome, fleet=fleet, stop_reason=stop_reason)
+        finalized.append((outcome, stop_reason))
+        return result
+
+    monkeypatch.setattr(update_receipt_mod, "finalize_update_receipt", spy_finalize)
+
+    hermes_main.cmd_update(args)
+
+    assert seen["ran"] is False, "no gateway restart may be recorded for a no-op"
+    out = capsys.readouterr().out
+    assert "Already current" in out
+    assert "nothing to do" in out
+    assert finalized, "the short-circuit must finalize the receipt"
+    assert (finalized[0][0], finalized[0][1]) == ("success", "already_current")
+
+
+def test_already_current_short_circuit_leaves_receipt_with_already_current_stop_reason(
+    monkeypatch, tmp_path,
+):
+    """P2 acceptance (receipt file): the persisted receipt records ``stop_reason ==
+    \"already_current\"`` — not the generic command-boundary reason — so automation can tell
+    a no-op from a real update without diffing SHAs."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+
+    import hermes_cli.update_receipt as update_receipt_mod
+
+    hermes_main.cmd_update(args)
+
+    latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
+    assert latest.exists()
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt["stop_reason"] == "already_current"
+    assert receipt["pre_update"].get("sha") == receipt["post_update"].get("sha")
+
+
+def test_already_current_short_circuit_does_not_hide_owed_catchup(
+    monkeypatch, tmp_path, capsys
+):
+    """P2 regression guard (#91277): current checkout + an armed restart obligation → the
+    catch-up STILL executes and the receipt is NOT marked ``already_current``. The short-circuit
+    must never swallow an owed restart."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: "abc123")
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha="abc123", runtimes=[{"kind": "gateway", "profile": "default"}]
+    )
+
+    seen = {"ran": False}
+
+    def _restart():
+        seen["ran"] = True
+        return True
+
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _restart)
+    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", _restart)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [{"profile": "default", "state": "current", "code_sha": "abc123"}]
+        if seen["ran"]
+        else [],
+    )
+
+    hermes_main.cmd_update(args)
+
+    assert seen["ran"] is True, "the owed restart must still run (#91277)"
+    out = capsys.readouterr().out
+    assert "did not restart running gateways" in out
+    # The receipt must NOT carry the short-circuit stop reason — this run owed a restart.
+    latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
+    assert latest.exists()
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt.get("stop_reason") != "already_current"
+
+
 def test_startup_warn_prints_when_marker_present(capsys):
     update_cmd._write_fleet_restart_pending_marker()
     update_cmd._warn_pending_fleet_restart_on_startup()

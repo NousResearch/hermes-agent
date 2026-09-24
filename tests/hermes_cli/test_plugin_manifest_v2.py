@@ -7,6 +7,7 @@ declare-only seam (surfaced, never installed).
 """
 
 import logging
+from pathlib import Path
 
 import pytest
 import yaml
@@ -543,6 +544,32 @@ class TestBundledKeyShadowing:
             for attr in ("_shadow_probe", "_override_probe"):
                 if hasattr(sys, attr):
                     delattr(sys, attr)
+
+
+class TestSameSourceManifestCollisions:
+    def test_canonical_directory_wins_over_same_source_backup(self, hermes_home, caplog):
+        """Regression for #121078: a copied ``foo.bak-*`` must not replace ``foo``."""
+        _write_plugin(
+            hermes_home / "plugins", "foo",
+            register_body="import sys; sys._collision_probe = 'canonical'",
+        )
+        _write_plugin(
+            hermes_home / "plugins", "foo.bak-20260924",
+            manifest_extra={"name": "foo"},
+            register_body="import sys; sys._collision_probe = 'backup'",
+        )
+        _enable(hermes_home, ["foo"])
+        import sys
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            assert Path(mgr._plugins["foo"].manifest.path).name == "foo"
+            assert sys._collision_probe == "canonical"
+            assert "same-source manifest collision" in caplog.text
+        finally:
+            if hasattr(sys, "_collision_probe"):
+                del sys._collision_probe
 
 
 class TestManifestParsingRobustness:

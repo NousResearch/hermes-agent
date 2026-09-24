@@ -1,0 +1,17 @@
+name: better-session-appearance
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: a10fb2b55ed38e6cdb0cf2faff1056443db57c5f
+subdir: public/better-session-appearance
+description: "Set a color for each session and show an idle glyph to make rows easier to scan."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/better-session-appearance
+version: "1.2.1"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/a10fb2b55ed38e6cdb0cf2faff1056443db57c5f/public/better-session-appearance/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -41,8 +41,19 @@ EXTGLOB_COMMANDS = [
     for operator in ("@", "?", "*", "+", "!")
     for continuation in ("", "\\\n")
 ]
+ASSIGNMENT_COMMANDS = [
+    f"a{operator}{continuation}(foo)#; printf SECOND"
+    for operator in ("=", "+=")
+    for continuation in ("", "\\\n")
+]
+CONDITIONAL_COMMANDS = [
+    "[[ a =~ (a)# ]]; printf SECOND",
+    "[[ a =~ (a|b)# ]]; printf SECOND",
+    "[\\\n[ a =~ (a)# ]]; printf SECOND",
+]
 PRESERVED_COMMANDS = (
     PROCESS_SUBSTITUTION_COMMANDS + ARITHMETIC_COMMANDS + EXPANSION_COMMANDS + EXTGLOB_COMMANDS
+    + ASSIGNMENT_COMMANDS + CONDITIONAL_COMMANDS
 )
 
 WHITESPACE_COMMANDS = [

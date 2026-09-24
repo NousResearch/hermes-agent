@@ -8,6 +8,7 @@ import logging
 import time
 from contextvars import Context
 from typing import Callable, List, Optional
+from utils import is_truthy_value
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
@@ -98,12 +99,12 @@ class SamplingHandler:
         self.timeout = _safe_numeric(config.get("timeout", 30), 30, float)
         self.max_tokens_cap = _safe_numeric(config.get("max_tokens_cap", 4096), 4096, int)
         self.max_tool_rounds = _safe_numeric(config.get("max_tool_rounds", 5), 5, int, minimum=0)
+        # Strict MCP servers reject the unknown sampling.tools sub-capability during
+        # initialization, so it is opt-in per server (default: plain sampling). (#5468)
+        self.expose_client_tools = is_truthy_value(config.get("expose_client_tools"), default=False)
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
         self.audit_level = self._LOG_LEVELS.get(str(config.get("log_level", "info")).lower(), logging.INFO)
-        self._rate_timestamps: List[float] = []
-        self._tool_loop_count = 0
-        self.metrics = {"requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0}
 
     def _check_rate_limit(self) -> bool:
         """Sliding-window (60s) limiter; True if the request is allowed."""
@@ -168,8 +169,13 @@ class SamplingHandler:
 
     def session_kwargs(self) -> dict:
         """Kwargs to pass to ClientSession for sampling support."""
+        sampling_capabilities = (
+            _core.SamplingCapability(tools=_core.SamplingToolsCapability())
+            if self.expose_client_tools
+            else _core.SamplingCapability()
+        )
         return {"sampling_callback": self,
-                "sampling_capabilities": _core.SamplingCapability(tools=_core.SamplingToolsCapability())}
+                "sampling_capabilities": sampling_capabilities}
 
     def _admit(self, params):
         """Rate-limit + allowed_models gate. Returns ``(resolved_model, None)`` or ``(None, ErrorData)``."""

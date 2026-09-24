@@ -4227,6 +4227,17 @@ export const zhHant = defineLocale({
     }
   },
 
+  keybinds: {
+    actions: {
+      'view.toggleHud': '切換 HUD 模式',
+      'hud.snapToPointer': '將 HUD 移至指標位置（全域，HUD 開啟時有效）',
+      'view.newTerminal': '新增終端機',
+      'view.nextTerminal': '下一個終端機',
+      'view.prevTerminal': '上一個終端機',
+      'view.closeTerminal': '關閉終端機',
+    },
+  },
+
   ui: {
     search: {
       clear: '清除搜尋'

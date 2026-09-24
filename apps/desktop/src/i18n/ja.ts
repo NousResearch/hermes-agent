@@ -4080,6 +4080,17 @@ export const ja = defineLocale({
     openLogs: 'ログを開く'
   },
 
+  keybinds: {
+    actions: {
+      'view.toggleHud': 'HUDモードを切り替え',
+      'hud.snapToPointer': 'HUDをポインターに移動（グローバル、HUD表示中）',
+      'view.newTerminal': '新しいターミナル',
+      'view.nextTerminal': '次のターミナル',
+      'view.prevTerminal': '前のターミナル',
+      'view.closeTerminal': 'ターミナルを閉じる',
+    },
+  },
+
   ui: {
     search: {
       clear: '検索をクリア'

@@ -235,7 +235,8 @@ describe('useVoiceConversation playback rearm', () => {
     })
 
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
-    expect(hook.result.current.status).toBe('listening')
+    // status flips to 'listening' only after start() resolves — poll for it.
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
   })
 
   it('honors Stop while streaming playback is still preparing', async () => {
@@ -301,7 +302,8 @@ describe('useVoiceConversation playback rearm', () => {
       })
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
-    expect(hook.result.current.status).toBe('listening')
+    // status flips to 'listening' only after start() resolves — poll for it.
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
   })
 
   it('speaks completed fallback sentences before the response finishes', async () => {
@@ -327,7 +329,8 @@ describe('useVoiceConversation playback rearm', () => {
       })
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
-    expect(hook.result.current.status).toBe('listening')
+    // status flips to 'listening' only after start() resolves — poll for it.
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
   })
 
   it('does not play the next fallback sentence or re-arm after Stop', async () => {

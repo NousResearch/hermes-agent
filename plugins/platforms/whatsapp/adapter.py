@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -279,6 +280,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
         self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
+        # Per-chat banner map (JID -> prefix) for the multiplex bridge. Config-driven:
+        # group banners come from config (reply_prefixes), not a hardcoded literal in
+        # bridge.js / whatsapp_common.py.
+        self._reply_prefixes: Dict[str, str] = dict(extra.get("reply_prefixes") or {})
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(_extra_or_secret(extra, "group_policy", "WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
@@ -389,6 +394,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
         else:
             bridge_env.pop("WHATSAPP_REPLY_PREFIX", None)
+        if self._reply_prefixes:
+            # Pass the per-chat banner map to the bridge so it replaces the
+            # hardcoded GROUP_PREFIXES literal with config-driven banners.
+            bridge_env["WHATSAPP_REPLY_PREFIXES"] = json.dumps(self._reply_prefixes)
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
@@ -725,7 +734,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
+                                # Debounce for any event with text or media (TEXT, VOICE,
+                                # AUDIO, PHOTO, VIDEO, DOCUMENT — any media+text combo
+                                # within 8s merges into one turn). Binary/media-only
+                                # events still join via media_urls/media_types; gateway
+                                # run.py filters non-processable types downstream.
+                                # Immediate dispatch only for pure non-text/non-media
+                                # events (e.g. LOCATION, STICKER, standalone polls).
+                                has_media = bool(event.media_urls) or event.message_type != MessageType.TEXT
+                                has_text = bool((event.text or "").strip())
+                                if has_media or has_text:
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)
@@ -750,6 +768,37 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer text for the quiet-period batch, except on an ACTIVE gateway turn.
+
+        The base debounce coalesces a quiet chat; holding a follow-up 5-10s while
+        a turn is running delays the busy handshake (steer/redirect/interrupt)
+        until the turn finished, so the user's "stop" arrives only once there is
+        nothing left to interrupt. A message that would land on an active turn is
+        dispatched immediately instead — as a task, so the synchronous poll-loop
+        caller is not blocked. Everything else keeps the shared batching behavior
+        from ``BasePlatformAdapter._enqueue_text_event``.
+        """
+        busy_query = getattr(self, "_busy_state_query", None)
+        if callable(busy_query):
+            try:
+                # Pass the EVENT (not a key): the gateway callback resolves the
+                # source's ROUTED profile (catch-all routes included) before
+                # building the session key. The adapter's own key answers for the
+                # default-profile lane under multiplex (source.profile is stamped
+                # later, inside the message handler), so keying the busy check
+                # here would never match the routed profile's live turn.
+                if busy_query(event):
+                    asyncio.create_task(self.handle_message(event))
+                    return
+            except Exception:
+                logger.debug(
+                    "[%s] busy-state query failed; falling through to debounce",
+                    self.name, exc_info=True,
+                )
+        super()._enqueue_text_event(event)
+
 
     @staticmethod
     def _classify_bridge_message(data: Dict[str, Any]) -> MessageType:

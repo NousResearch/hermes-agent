@@ -825,9 +825,9 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
-        # Stream reasoning live before the response; otherwise thinking models show only a spinner
-        # for tens of seconds.
-        "show_reasoning": True,
+        # The CLI defaults to showing reasoning when this key is absent (see
+        # cli_init_mixin.py). Keep it out of generated config.yaml so a CLI-only
+        # default cannot override the gateway's per-platform opt-in default.
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).
         "reasoning_full": False,

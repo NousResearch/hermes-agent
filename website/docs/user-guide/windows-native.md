@@ -39,7 +39,39 @@ No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and add
 | `-NoVenv` | off | Skip venv creation (advanced — you manage Python yourself) |
 | `-SkipSetup` | off | Skip the post-install `hermes setup` wizard |
 | `-HermesHome` | `%LOCALAPPDATA%\hermes` | Override data directory |
-| `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | Override code location |
+| `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | Override code location (checkout + venv) |
+
+Both directories can also be chosen with environment variables, which is the only
+route open to the plain one-liner — `irm ... | iex` invokes the script with no
+arguments, so its parameters are unreachable from that form:
+
+| Variable | Effect |
+|---|---|
+| `HERMES_HOME` | Data directory (same as `-HermesHome`) |
+| `HERMES_INSTALL_DIR` | Code location (same as `-InstallDir`) |
+
+```powershell
+# ~1 GB of checkout + venv on D:, config/sessions/skills stay on C:
+$env:HERMES_INSTALL_DIR = "D:\hermes\hermes-agent"
+irm https://hermes-agent.nousresearch.com/install.ps1 | iex
+```
+
+Precedence, highest first: an explicit `-InstallDir` argument, `HERMES_INSTALL_DIR`,
+a location derived from `-HermesHome`/`HERMES_HOME` (`<home>\hermes-agent`), then
+the default. Because the derivation is shared, `-HermesHome D:\hermes` moves the
+checkout to `D:\hermes\hermes-agent` as well; name `-InstallDir`/`HERMES_INSTALL_DIR`
+explicitly when you want the two on different volumes.
+
+The desktop GUI installer still derives its layout from `HERMES_HOME` alone, so a
+split (data and code on separate volumes) is a CLI-installer arrangement: for an
+install the desktop app will also manage, set `HERMES_HOME` and leave
+`HERMES_INSTALL_DIR` at its derived default.
+
+Check what the installer will use without installing anything:
+
+```powershell
+.\install.ps1 -ShowResolvedPaths
+```
 
 The installer auto-retries flaky git fetches and strips BOM from any downloaded `install.ps1` payload, so a UTF-8 BOM picked up during HTTP transit no longer breaks the `[scriptblock]::Create((irm ...))` form.
 

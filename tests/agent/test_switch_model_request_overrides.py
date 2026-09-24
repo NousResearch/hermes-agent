@@ -115,3 +115,14 @@ def test_switch_endpoint_mismatch_does_not_inherit():
     )
     arh._apply_switched_provider_request_overrides(a, "custom:main-think")
     assert "extra_body" not in a.request_overrides  # base_url mismatch -> cleared
+
+def test_switch_rederives_pinned_fast_mode_for_destination():
+    a = _agent(model="local-model", base_url="http://10.0.0.1:8000/v1",
+               request_overrides={"speed": "fast", "temperature": 0.2})
+    a.service_tier = "priority"
+    arh._apply_switched_provider_request_overrides(a, "custom:main-think")
+    assert a.request_overrides == {"temperature": 0.2}
+
+    a.model, a.base_url = "gpt-5.4", "https://api.openai.com/v1"
+    arh._apply_switched_provider_request_overrides(a, "openai")
+    assert a.request_overrides == {"temperature": 0.2, "service_tier": "priority"}

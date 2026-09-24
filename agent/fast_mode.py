@@ -16,6 +16,23 @@ from typing import Any
 BOUNDED_MODES = frozenset({"auto", "cold"})
 DEFAULT_WINDOW_SECONDS = 60
 
+def rederive_static_fast_overrides(agent: Any) -> None:
+    """Keep pinned fast params scoped to the current route after a model/provider swap."""
+    if getattr(agent, "service_tier", None) != "priority":
+        return
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    overrides = dict(getattr(agent, "request_overrides", None) or {})
+    overrides.pop("speed", None)
+    overrides.pop("service_tier", None)
+    base_url = getattr(agent, "base_url", None)
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        base_url = getattr(agent, "_anthropic_base_url", None) or base_url
+    overrides.update(resolve_fast_mode_overrides(
+        getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url,
+    ) or {})
+    agent.request_overrides = overrides
+
 
 def begin_turn(agent: Any, conversation_history: Any) -> None:
     """Open (or refuse) the fast window at a user-turn boundary."""

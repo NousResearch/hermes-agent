@@ -413,6 +413,22 @@ class CreateTaskBody(BaseModel):
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
+        # A pathless worktree task anchors on the board's default_workdir; with neither set it
+        # would be created but never spawn (#70865). Check the pairing here so the UI gets a
+        # field-tagged 422, rather than matching words in whatever ValueError the DB layer raises
+        # — unrelated server-state failures mentioning these fields are not request problems.
+        if payload.workspace_kind == "worktree" and not payload.workspace_path:
+            if not (kanban_db.read_board_metadata(board).get("default_workdir") or "").strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail=[{
+                        "loc": ["body", "workspace_path"],
+                        "msg": (
+                            "workspace_kind='worktree' requires a workspace_path, or board "
+                            f"{board!r} must have a default_workdir set"
+                        ),
+                        "type": "value_error",
+                    }])
         # CreateTaskBody field names match create_task's keyword parameters.
         task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
         task = kanban_db.get_task(conn, task_id)

@@ -123,7 +123,9 @@ it('keeps the pending generated-image frame when its result arrives', async () =
   mounted.rerender(<GeneratedImage aspectRatio="landscape" />)
   expect(parseFloat(frame(mounted.container).style.aspectRatio)).toBeCloseTo(16 / 9)
   const pendingStyle = frame(mounted.container).style.cssText
-  mounted.rerender(<GeneratedImage aspectRatio="landscape" result={{ success: true, image: path, pixel_size: '900x600' }} />)
+  mounted.rerender(
+    <GeneratedImage aspectRatio="landscape" result={{ success: true, image: path, pixel_size: '900x600' }} />
+  )
 
   // Must hold before the file read settles, not just after img.onload.
   expect(frame(mounted.container).style.cssText).toBe(pendingStyle)
@@ -141,7 +143,9 @@ it('keys inline data sources by a bounded digest so they are remembered', async 
   first.unmount()
 
   expect(parseFloat(frame(render(<MarkdownImage alt="inline" src={big('A')} />).container).style.aspectRatio)).toBe(1.5)
-  expect(parseFloat(frame(render(<MarkdownImage alt="inline" src={big('B')} />).container).style.aspectRatio)).not.toBe(1.5)
+  expect(parseFloat(frame(render(<MarkdownImage alt="inline" src={big('B')} />).container).style.aspectRatio)).not.toBe(
+    1.5
+  )
 })
 
 it.each(['markdown', 'generated'])('%s dimensions follow owner and source, not stale reads or hints', async kind => {

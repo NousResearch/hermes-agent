@@ -2675,6 +2675,22 @@ class BasePlatformAdapter(ABC):
         directly)."""
         return None
 
+
+    def progress_cards_enabled(self) -> bool:
+        """Opt-in quiet per-turn cards; disabled for existing adapters."""
+        return False
+
+    async def send_progress_card(
+        self, chat_id: str, snapshot: dict, *, message_id=None,
+        reply_to=None, metadata=None,
+    ) -> SendResult:
+        """Create or update a native card. Failures must never become spam.
+
+        Snapshot contains public, redacted, bounded details and turn status.
+        The caller owns message identity, throttling and a single fallback.
+        """
+        return SendResult(success=False, error="Progress cards unsupported")
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a sent message (optional: success=False makes callers send anew). ``finalize`` marks

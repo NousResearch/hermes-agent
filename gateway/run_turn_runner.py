@@ -138,6 +138,9 @@ class TurnRunner:
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
+        # Quiet cards consume only ID-bearing lifecycle events and completed commentary.
+        if ctx._progress_cards:
+            return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return
@@ -707,6 +710,10 @@ class TurnRunner:
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
+        if ctx._progress_cards:
+            from gateway.progress_cards import run_progress_card
+            await run_progress_card(ctx, adapter)
+            return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
@@ -794,9 +801,35 @@ class TurnRunner:
             return
         from agent.display import build_tool_preview
         name = str(tool_name or "tool")
+        label = None
+        if self._ctx._progress_cards:
+            if name == "_thinking":
+                return
+            if name == "clarify":
+                # Keep confirmation questions and choices on their existing UI.
+                self._ctx.progress_queue.put({
+                    "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
+                })
+                return
+            from agent.display import build_tool_label, get_tool_emoji
+            from agent.redact import redact_sensitive_text
+            try:
+                # Redact BEFORE preview truncation; a partial credential can evade the redactor.
+                args = json.loads(redact_sensitive_text(
+                    json.dumps(args or {}, default=str), force=True, redact_url_credentials=True,
+                ))
+                if not isinstance(args, dict):
+                    args = {}
+            except Exception:
+                # Redaction may break JSON syntax. Never fall back to raw arguments.
+                args = {}
+            label = (
+                f"{get_tool_emoji(name)} " + ("terminal · " if name == "terminal" else "")
+                + (build_tool_label(name, args, max_len=500) or name)
+            )
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
-            "preview": build_tool_preview(name, args or {}, max_len=64) or "",
+            "label": label, "preview": build_tool_preview(name, args or {}, max_len=64) or "",
         })
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):
@@ -814,7 +847,7 @@ class TurnRunner:
         """Compose the voice ack + native task-card start consumers."""
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
-        if self._ctx._native_slack_task_cards:
+        if self._ctx._native_slack_task_cards or self._ctx._progress_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
@@ -921,11 +954,12 @@ class TurnRunner:
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = not ctx.scheduled_heartbeat and (
+        want_stream_deltas = not (ctx.scheduled_heartbeat or ctx._progress_cards) and (
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
-        want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
-        if want_stream_deltas or want_interim_messages:
+        # Quiet cards collect completed commentary without streaming speculative text bubbles.
+        want_interim_messages = (bool(ctx.interim_assistant_messages_enabled) or ctx._progress_cards) and not ctx.scheduled_heartbeat
+        if want_stream_deltas or (want_interim_messages and not ctx._progress_cards):
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
@@ -981,6 +1015,9 @@ class TurnRunner:
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            if ctx._progress_cards:
+                ctx.progress_queue.put({"type": "commentary", "text": text})
+                return
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
@@ -1255,9 +1292,9 @@ class TurnRunner:
         # callback, so neither infers identity from tool names.
         agent.tool_start_callback = (
             (ctx.native_tool_start_callback or ctx.voice_ack_callback)
-            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards) else None
+            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards or ctx._progress_cards) else None
         )
-        agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
+        agent.tool_complete_callback = ctx.native_tool_complete_callback if (ctx._native_slack_task_cards or ctx._progress_cards) else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None

@@ -94,6 +94,8 @@ class TurnContext:
     # ``native_task_cards_enabled()`` opt-in is set for this turn's platform. The ID-bearing lifecycle
     # callbacks are published by TurnRunner (like voice_ack_callback above) so tool starts and completions
     # correlate by real tool-call ID instead of tool name.
+    _progress_cards: bool = False
+    _progress_outcome: Optional[str] = None
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None

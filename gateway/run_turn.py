@@ -3032,6 +3032,13 @@ class GatewayTurnMixin:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        _progress_cards = False
+        card_opt_in = getattr(adapter, "progress_cards_enabled", None)
+        if callable(card_opt_in):
+            try:
+                _progress_cards = card_opt_in() is True
+            except Exception:
+                logger.warning("Progress card config check failed")
         return self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
@@ -3042,7 +3049,8 @@ class GatewayTurnMixin:
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
+            _progress_cards=_progress_cards,
+            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards or _progress_cards,
             _generic_status_phrase=_generic_status_phrase,
         )
 
@@ -3051,7 +3059,7 @@ class GatewayTurnMixin:
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
-        "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards", "_progress_cards",
     )
 
     def _run_agent_build_turn_context(
@@ -4248,6 +4256,7 @@ class GatewayTurnMixin:
                 interim_assistant_messages_enabled=False,
                 _thinking_enabled=False,
                 _native_slack_task_cards=False,
+                _progress_cards=False,
                 needs_progress_queue=False,
             )
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
@@ -4302,14 +4311,33 @@ class GatewayTurnMixin:
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
+                if turn_ctx._progress_cards and progress_task:
+                    from gateway.progress_cards import finish_progress_card
+                    await finish_progress_card(turn_ctx, progress_task, result=response)
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
+            # A new cancellation during card flushing must still release the active-session slot.
+            card_cleanup_cancelled = False
+            if turn_ctx._progress_cards and progress_task:
+                import sys
+                from gateway.progress_cards import finish_progress_card
+                try:
+                    await finish_progress_card(
+                        turn_ctx, progress_task,
+                        cancelled=isinstance(sys.exc_info()[1], asyncio.CancelledError),
+                        result=locals().get("response"),
+                    )
+                except asyncio.CancelledError:
+                    card_cleanup_cancelled = True
+                    progress_task.cancel()
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
             )
+            if card_cleanup_cancelled:
+                raise asyncio.CancelledError()
 
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)
         self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)

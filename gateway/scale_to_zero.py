@@ -31,12 +31,11 @@ FLY_API_SOCKET = "/.fly/api"
 # its own signed credential in the query string, like GATEWAY_RELAY_WAKE_URL.
 SLEEP_URL_ENV = "GATEWAY_RELAY_SLEEP_URL"
 
-# Touched by NAS on every relay wake where the platform resumes a paused VM in
-# place, so this process survives the pause and has to let its re-dial go.
+# Touched by NAS once a wake has resumed the VM in place, on platforms where this
+# process survives the pause and has to let its re-dial go. A touch means the
+# instance is back, never that a wake was merely requested.
 WAKE_MARKER_ENV = "HERMES_WAKE_MARKER_PATH"
 WAKE_MARKER_TICK_S = 0.5
-# Mirrors ws_transport.REDIAL_HOLD_MAX_S: the transport frees itself at that point anyway.
-WAKE_MARKER_WAIT_MAX_S = 60.0
 
 _malformed_sleep_url_logged = False
 

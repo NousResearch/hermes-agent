@@ -348,6 +348,9 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
+    # Stamped by NAS on hosts that resume in place; a leak would park the brokered
+    # suspend tests on a marker nobody touches.
+    "HERMES_WAKE_MARKER_PATH",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.

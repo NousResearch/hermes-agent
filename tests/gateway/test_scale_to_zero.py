@@ -411,12 +411,10 @@ def test_request_brokered_suspend_fails_awake():
         assert request_brokered_suspend(_SLEEP_URL, opener=opener) is False
 
 
-def test_wake_marker_path_only_accepts_an_absolute_path():
+def test_wake_marker_path_only_accepts_an_absolute_path(tmp_path):
     from gateway.scale_to_zero import wake_marker_path
 
+    absolute = str(tmp_path / "wake")
     assert wake_marker_path({}) is None
     assert wake_marker_path({"HERMES_WAKE_MARKER_PATH": "state/wake"}) is None
-    assert (
-        wake_marker_path({"HERMES_WAKE_MARKER_PATH": "/opt/data/state/wake"})
-        == "/opt/data/state/wake"
-    )
+    assert wake_marker_path({"HERMES_WAKE_MARKER_PATH": absolute}) == absolute

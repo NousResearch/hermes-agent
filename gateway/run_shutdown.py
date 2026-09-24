@@ -524,7 +524,9 @@ class GatewayShutdownMixin:
                     continue
                 # Quiesce only when a suspend can follow: otherwise the re-dial after the socket
                 # close just clears the flip again.
-                from gateway.scale_to_zero import suspend_available
+                from gateway.scale_to_zero import (
+                    suspend_available, wake_marker_path, wake_marker_stamp
+                )
                 if not suspend_available():
                     if not self._scale_to_zero_no_suspend_logged:
                         self._scale_to_zero_no_suspend_logged = True
@@ -540,6 +542,10 @@ class GatewayShutdownMixin:
                     self._scale_to_zero_idle_timeout_seconds(),
                 )
                 self._scale_to_zero_status("draining", "scale-to-zero: status mark failed")
+                # Read before the connector starts buffering: a wake that lands during the
+                # handshake has to count as a wake, not become the baseline.
+                marker = wake_marker_path()
+                stamp = wake_marker_stamp(marker) if marker else None
                 # Both levers: the 1s dormant re-dial can beat either suspend and clear the flip.
                 # Held BEFORE go_dormant, whose close arms it.
                 if not self._scale_to_zero_hold_redial(True):
@@ -579,20 +585,24 @@ class GatewayShutdownMixin:
                     logger.info("scale-to-zero: inbound arrived during quiesce — skipping suspend")
                     self._scale_to_zero_abandon_suspend()
                     continue
-                await self._scale_to_zero_self_suspend()
+                await self._scale_to_zero_self_suspend(marker, stamp)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the watcher must never crash the gateway
                 logger.debug("scale-to-zero watcher iteration error", exc_info=True)
 
-    async def _scale_to_zero_self_suspend(self) -> None:
+    async def _scale_to_zero_self_suspend(
+        self, marker: Optional[str] = None, stamp: Optional[int] = None
+    ) -> None:
         """Suspend this machine, in-guest where possible and via NAS otherwise (fail-awake).
 
         Called ONLY after a clean, acked go_dormant(), with the re-dial already held.
+        `marker` and `stamp` are the wake marker and its mtime as read before that
+        handshake, on platforms that have one.
         """
         from gateway.scale_to_zero import (
             brokered_sleep_url, request_brokered_suspend, self_suspend_available, suspend_self,
-            wake_marker_path, wake_marker_stamp,
+            wake_marker_stamp,
         )
         try:
             if self_suspend_available():
@@ -617,10 +627,14 @@ class GatewayShutdownMixin:
                         "scale-to-zero: no suspend lever available — dormant without platform suspend"
                     )
                     return
-                # The watcher already holds the supervisor across this call. The marker
-                # baseline is read first so a wake that lands during the request counts.
-                marker = wake_marker_path()
-                stamp = wake_marker_stamp(marker) if marker else None
+                if marker and wake_marker_stamp(marker) != stamp:
+                    # Someone woke us during the handshake; the stop would undo that wake.
+                    logger.info(
+                        "scale-to-zero: wake marker touched during quiesce — skipping suspend"
+                    )
+                    self._scale_to_zero_abandon_suspend()
+                    return
+                # The watcher already holds the supervisor across this call.
                 accepted = await asyncio.to_thread(request_brokered_suspend, url)
                 lever = "brokered suspend"
                 if not accepted:
@@ -642,20 +656,24 @@ class GatewayShutdownMixin:
         A platform that resumes a paused VM in place keeps this process alive across the
         pause, so the fence taken for the brokered stop would otherwise park the reconnect
         until its cap. Only a marker change ends the wait: the loop clock stops with the VM,
-        so elapsed time says nothing about a wake, and the transport cap still bounds a
-        marker that never comes.
+        so elapsed time says nothing about a wake, and the transport's own cap, shared here
+        so the two cannot drift apart, still bounds a marker that never comes.
         """
-        from gateway.scale_to_zero import (
-            WAKE_MARKER_TICK_S, WAKE_MARKER_WAIT_MAX_S, wake_marker_stamp
-        )
+        from gateway.relay.ws_transport import REDIAL_HOLD_MAX_S
+        from gateway.scale_to_zero import WAKE_MARKER_TICK_S, wake_marker_stamp
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + WAKE_MARKER_WAIT_MAX_S
+        deadline = loop.time() + REDIAL_HOLD_MAX_S
         while self._running and loop.time() < deadline:
             if wake_marker_stamp(path) != stamp:
                 logger.info("scale-to-zero: wake marker touched, reconnecting the relay")
                 self._scale_to_zero_hold_redial(False)
                 return
             await asyncio.sleep(WAKE_MARKER_TICK_S)
+        if self._running:
+            logger.info(
+                "scale-to-zero: wake marker never touched — leaving the re-dial to the "
+                "transport cap"
+            )
 
     async def _scale_to_zero_await_freeze_gap(self) -> None:
         """Hold the re-dial fence across the flaps-2xx -> kernel-freeze gap.

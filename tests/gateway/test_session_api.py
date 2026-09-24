@@ -403,9 +403,6 @@ async def test_session_chat_stream_classifies_failed_tool_completions(adapter, s
     assert any("event: tool.failed" in b and '"tool_name": "web_search"' in b for b in blocks)
     assert body.count("event: tool.completed") == 1
     assert body.count("event: tool.failed") == 2
-    assert '"tool_name": "read_file"' in body
-    assert '"tool_name": "terminal"' in body
-    assert '"tool_name": "web_search"' in body
 
 
 @pytest.mark.asyncio

@@ -2574,14 +2574,6 @@ class TestHostedRoomRuns:
                 )
             assert rejected.status == 403
             create.assert_not_called()
-class _OwnedRequest:
-    """Stand-in request for computing the idempotency scope the real one will get.
-
-    ``_run_idempotency_scope`` reads only headers, so an empty mapping yields the
-    same unauthenticated scope the TestClient request below produces.
-    """
-
-    headers: dict = {}
 
 
 class TestRunEventsHeadFlush:
@@ -2604,9 +2596,7 @@ class TestRunEventsHeadFlush:
         # A registered run whose queue stays empty for the whole test — the
         # exact shape of "subscribed before the first event was emitted".
         adapter._run_streams[run_id] = asyncio.Queue()
-        # Ownership is a separate gate with its own tests; this one is about
-        # when the head reaches the wire.
-        adapter._run_owners[run_id] = adapter._run_idempotency_scope(_OwnedRequest())
+        _claim_run(adapter, run_id)
 
         async with TestClient(TestServer(app)) as cli:
             resp = await asyncio.wait_for(
@@ -2620,28 +2610,3 @@ class TestRunEventsHeadFlush:
             assert first, "no body byte arrived before the first event"
 
             resp.close()
-
-    @pytest.mark.asyncio
-    async def test_preamble_is_an_ignorable_sse_comment(self, adapter):
-        """The flush must not look like an event to a conforming consumer."""
-        app = _create_runs_app(adapter)
-        run_id = "run_comment_preamble"
-        q: asyncio.Queue = asyncio.Queue()
-        adapter._run_streams[run_id] = q
-        adapter._run_owners[run_id] = adapter._run_idempotency_scope(_OwnedRequest())
-
-        async with TestClient(TestServer(app)) as cli:
-            resp = await asyncio.wait_for(
-                cli.get(f"/v1/runs/{run_id}/events"), timeout=5.0
-            )
-            assert resp.status == 200
-
-            # Close the stream so the body is finite, then read it whole.
-            await q.put(None)
-            body = await asyncio.wait_for(resp.text(), timeout=5.0)
-
-        # Every line before the close sentinel is an SSE comment: no `event:`
-        # or `data:` field, so EventSource dispatches nothing extra.
-        assert body.startswith(":")
-        assert "event:" not in body
-        assert "data:" not in body

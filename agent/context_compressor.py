@@ -418,6 +418,7 @@ def _archive_watermark_for(session_db: Any, session_id: str, held: List[Dict[str
     from agent.conversation_compression import held_archive_watermark
     return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True)
 
+
 def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
     """Fulfil the post-commit contract of ``SessionDB.archive_and_compact()``.
     Single stamp site for all callers. Call ONLY after the commit succeeded, on the dict instances the
@@ -3295,19 +3296,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         next_rearm_tokens = after + runway
         if session_db and session_id:
             try:
-                watermark = _archive_watermark_for(session_db, session_id, messages)
+                session_db.archive_and_compact(
+                    session_id, pruned_msgs,
+                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
+                    watermark=_archive_watermark_for(session_db, session_id, messages),
+                )
             except StaleHeldHistory:
                 # Another compaction already committed this session's history; a lease-less prune of the
                 # generation this process holds would publish beside the winner. Leave the input alone.
                 logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
                 self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
-            try:
-                session_db.archive_and_compact(
-                    session_id, pruned_msgs,
-                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
-                    watermark=watermark,
-                )
             except Exception as exc:
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
                 return messages, 0

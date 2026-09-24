@@ -38,12 +38,13 @@ def test_keepalive_jitter_is_stable_and_bounded():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event", ["shutdown", "reconnect", "probe"])
-async def test_keepalive_phase_preserves_cadence_and_lifecycle(monkeypatch, event):
+@pytest.mark.parametrize("interval,jitter", [(10, 3), (5, 15)])
+async def test_keepalive_phase_preserves_cadence_and_lifecycle(monkeypatch, event, interval, jitter):
     from tools.mcp_tool import MCPServerTask
     from tools import mcp_tool_server_run as lifecycle
 
     task = MCPServerTask("github")
-    task._config["keepalive_interval"] = 10
+    task._config["keepalive_interval"] = interval
     task.session = object()
     timeouts = []
     real_wait = asyncio.wait
@@ -60,10 +61,10 @@ async def test_keepalive_phase_preserves_cadence_and_lifecycle(monkeypatch, even
     async def probe():
         task._shutdown_event.set()
 
-    monkeypatch.setattr(lifecycle, "_mcp_keepalive_jitter_seconds", lambda _: 3)
+    monkeypatch.setattr(lifecycle, "_mcp_keepalive_jitter_seconds", lambda _: jitter)
     monkeypatch.setattr(lifecycle.asyncio, "wait", phase_wait)
     task._keepalive_probe = AsyncMock(side_effect=probe)
     reason = await asyncio.wait_for(task._wait_for_lifecycle_event(), timeout=2)
-    assert timeouts[:2] == [7, 3]
+    assert timeouts[:2] == [interval - min(interval, jitter), min(interval, jitter)]
     assert reason == ("reconnect" if event == "reconnect" else "shutdown")
     assert task._keepalive_probe.await_count == (1 if event == "probe" else 0)

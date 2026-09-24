@@ -177,6 +177,40 @@ class TestDropThinkingOnlyAndMergeUsers:
         assert [m["role"] for m in out] == ["system", "user"]
         assert out[-1]["role"] != "assistant"
 
+    def test_keeps_only_user_continuation_nudge_for_tool_followup(self):
+        """A cross-protocol retry must not turn a valid tool followup into a tool-only request."""
+        from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+
+        msgs = [
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "contents"},
+            {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE},
+        ]
+
+        out = AIAgent._drop_thinking_only_and_merge_users(
+            msgs, drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE,
+        )
+
+        assert any(message.get("role") == "user" for message in out)
+        assert out[-1]["content"] == _CODEX_INCOMPLETE_NUDGE
+
+    def test_drops_continuation_nudge_when_a_real_user_turn_remains(self):
+        """The Codex-only nudge stays off a Chat Completions wire when it is safe to drop."""
+        from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+
+        out = AIAgent._drop_thinking_only_and_merge_users(
+            [
+                {"role": "user", "content": "real request"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE},
+            ],
+            drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE,
+        )
+
+        assert [message["content"] for message in out] == ["real request", "working"]
+
     def test_system_messages_ignored_by_pass(self):
         msgs = [
             {"role": "system", "content": "sys prompt"},

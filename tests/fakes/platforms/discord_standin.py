@@ -696,4 +696,3 @@ class DiscordStandin(StandinServer):
                 for comp in row.get("components") or []:
                     out.append({**comp, "message_id": vis.message_id})
         return out
-

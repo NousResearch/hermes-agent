@@ -104,6 +104,11 @@ def group_obeys_require_mention(rig: Rig, tag: str) -> None:
     wait_reply(rig, inbound.chat_id, f"A-{loud}")
     barrier(rig, f"gb-{tag}", group=True)
     assert turns(rig, quiet) == 0, f"unmentioned group message started a model turn\n{rig.ctx()}"
+    # Rapid messages may be batched into one turn: the quiet text must not ride along in any prompt.
+    leaked = [t for t, reqs in rig.director.requests.items()
+              if any(f"[in:{quiet}]" in str(m.get("content")) for r in reqs for m in r.get("messages", [])
+                     if m.get("role") == "user")]
+    assert not leaked, f"unmentioned group message reached the model inside turn(s) {leaked}\n{rig.ctx()}"
     assert not copies(rig.drv.visible(inbound.chat_id), f"A-{quiet}"), "unmentioned message was answered"
     assert len(complete(rig.drv.visible(inbound.chat_id), f"A-{loud}")) == 1, rig.ctx()
 
@@ -258,11 +263,11 @@ def platform_toolsets_are_honored(rig: Rig, tag: str) -> None:
 
 
 def disabled_toolsets_are_honored(rig: Rig, tag: str) -> None:
-    """``agent.disabled_toolsets: [web]``: web tools gone, the rest of the platform preset kept."""
+    """``agent.disabled_toolsets: [file]``: the file tools gone, the rest of the platform preset kept."""
     names = _offered_tools(rig, tag)
     assert "terminal" in names, f"control: the platform preset lost terminal: {sorted(names)}"
-    web = sorted(n for n in names if n.startswith("web_"))
-    assert not web, f"disabled toolset 'web' still offered: {web}"
+    leaked = sorted(names & {"read_file", "write_file", "patch", "search_files"})
+    assert not leaked, f"disabled toolset 'file' still offered: {leaked}"
 
 
 def merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:

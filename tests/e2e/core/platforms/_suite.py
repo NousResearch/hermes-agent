@@ -3,7 +3,7 @@
 A test module declares ``KNOWN`` (scenario -> "#<issue> <symptom>") and gets:
 
 * two module-scoped rigs: ``rig`` (the adapter's default delivery config, ``agent.disabled_toolsets:
-  [web]``, supervisor-owned so ``/restart`` exits 75) and ``rig_stream`` (edit-streaming on,
+  [file]``, supervisor-owned so ``/restart`` exits 75) and ``rig_stream`` (edit-streaming on,
   ``platform_toolsets.<platform>: [file]``);
 * one parametrized ``test_contract`` over every scenario, KNOWN ones as ``xfail(strict=True)`` so
   a fix turns them red until the entry is removed.
@@ -105,7 +105,7 @@ def rig_fixtures(driver_cls: type) -> Tuple[Any, Any]:
 
     @pytest.fixture(scope="module")
     def rig(tmp_path_factory: pytest.TempPathFactory):
-        r = _make(tmp_path_factory, "a", {"agent": {"disabled_toolsets": ["web"]}},
+        r = _make(tmp_path_factory, "a", {"agent": {"disabled_toolsets": ["file"]}},
                   {"HERMES_GATEWAY_EXTERNAL_SUPERVISOR": "1"})
         yield r
         _teardown(r)

@@ -6,7 +6,7 @@ into a live one (profile distributions) import this rather than duplicating the 
 """
 from typing import Any, Dict
 
-from cron.jobs import _apply_schedule_update
+from cron.jobs import _apply_schedule_update, parse_schedule
 from cron.quota_hold import clear_state as _clear_quota_hold
 
 # Persisted fields authored by create_job rather than advanced by the scheduler.
@@ -20,7 +20,10 @@ JOB_DEFINITION_FIELDS = frozenset({
 
 
 def merge_job_definition(local: Dict[str, Any], authored: Dict[str, Any]) -> Dict[str, Any]:
-    """Refresh authored fields while preserving this store's scheduler-owned state."""
+    """Refresh authored fields while preserving this store's scheduler-owned state.
+
+    Raises ValueError when the authored schedule cannot be scheduled (unparseable string,
+    past one-shot for a live job)."""
     merged = {
         key: value for key, value in local.items()
         if key not in JOB_DEFINITION_FIELDS and key != "repeat"
@@ -30,16 +33,17 @@ def merge_job_definition(local: Dict[str, Any], authored: Dict[str, Any]) -> Dic
         "completed": (local.get("repeat") or {}).get("completed", 0),
         "times": (authored.get("repeat") or {}).get("times"),
     }
+    if isinstance(merged.get("schedule"), str):
+        merged["schedule"] = parse_schedule(merged["schedule"])
 
     if local.get("schedule") != merged.get("schedule"):
         merged.pop("pending_slot", None)
         _clear_quota_hold(merged)
         if merged.get("enabled", True) and merged.get("state") != "paused":
-            _apply_schedule_update(
-                merged,
-                {"schedule": merged["schedule"], "schedule_display": merged.get("schedule_display")},
-                str(merged.get("id") or "imported job"),
-            )
+            updates = {"schedule": merged["schedule"]}
+            if "schedule_display" in authored:
+                updates["schedule_display"] = authored["schedule_display"]
+            _apply_schedule_update(merged, updates, str(merged.get("id") or "imported job"))
         else:
             merged["next_run_at"] = None
     return merged

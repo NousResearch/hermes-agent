@@ -10,6 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import json
 import shutil
 import stat
 import subprocess
@@ -494,6 +495,25 @@ class TestUpdate:
         assert jobs[shipped["id"]]["schedule"]["minutes"] == 7 * 24 * 60
         assert jobs[shipped["id"]]["next_run_at"] != old_next_run
         assert jobs[shipped["id"]]["enabled"] is True
+
+        # An authored schedule the live job cannot take (past one-shot) is rejected as a
+        # job-labelled DistributionError before any other file is replaced.
+        (staged / "SOUL.md").write_text("upstream v3\n")
+        store = staged / "cron" / "jobs.json"
+        data = json.loads(store.read_text(encoding="utf-8"))
+        data["jobs"][0]["schedule"] = {"kind": "once", "run_at": "2020-01-01T00:00:00+00:00", "display": "once"}
+        store.write_text(json.dumps(data), encoding="utf-8")
+        with pytest.raises(DistributionError, match="cron job 'daily'"):
+            update_distribution("cron_merge")
+        assert (plan.target_dir / "SOUL.md").read_text() != "upstream v3\n"
+        with use_cron_store(plan.target_dir):
+            assert {j["id"]: j for j in list_jobs(include_disabled=True)}[shipped["id"]]["schedule"] == \
+                jobs[shipped["id"]]["schedule"]
+
+        # A corrupt target store surfaces as DistributionError too, not a raw RuntimeError.
+        (plan.target_dir / "cron" / "jobs.json").write_text("42", encoding="utf-8")
+        with pytest.raises(DistributionError, match="Could not merge cron jobs"):
+            update_distribution("cron_merge")
 
 
     def test_update_refuses_symlinked_owned_container(self, profile_env):

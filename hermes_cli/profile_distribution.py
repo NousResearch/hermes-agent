@@ -393,10 +393,33 @@ def _replace_entry(src: Path, dest: Path) -> None:
         shutil.copy2(src, dest)
 
 
+def _shipped_cron_store(entries: List[Tuple[Path, Tuple[str, ...]]]) -> Optional[Path]:
+    """Return the staged ``cron/jobs.json`` when the distribution owns it (via ``cron/`` or exactly)."""
+    for src, rel_parts in entries:
+        if rel_parts == _CRON_STORE_REL:
+            return src
+        if rel_parts == _CRON_STORE_REL[:1] and (src / _CRON_STORE_REL[1]).is_file():
+            return src / _CRON_STORE_REL[1]
+    return None
+
+
 def _merge_cron_store(src: Path, dest: Path) -> None:
-    """Merge a distribution's cron store by job id; new jobs arrive paused."""
+    """Merge a distribution's cron store by job id; new jobs arrive paused.
+
+    Nothing is written when a shipped job cannot be scheduled (unparseable schedule, past
+    one-shot for a job the installer resumed); the error names the job."""
+    from hermes_time import now as _hermes_now
+
     from cron import jobs as cron_jobs
     from cron.job_definition import merge_job_definition
+
+    def merge(local: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return merge_job_definition(local, incoming)
+        except ValueError as exc:
+            raise DistributionError(
+                f"Could not merge cron job {incoming.get('name') or local.get('id')!r} into {dest}: {exc}"
+            ) from exc
 
     try:
         with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
@@ -409,7 +432,7 @@ def _merge_cron_store(src: Path, dest: Path) -> None:
                     if isinstance(job, dict) and job.get("id")
                 }
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = _hermes_now().isoformat()
         new_state = {
             "enabled": False,
             "state": "paused",
@@ -422,13 +445,13 @@ def _merge_cron_store(src: Path, dest: Path) -> None:
             merged = []
             for local in cron_jobs.load_jobs():
                 incoming = shipped.pop(local.get("id"), None)
-                merged.append(local if incoming is None else merge_job_definition(local, incoming))
+                merged.append(local if incoming is None else merge(local, incoming))
             merged.extend(
-                merge_job_definition({"id": job_id, **new_state}, incoming)
+                merge({"id": job_id, **new_state}, incoming)
                 for job_id, incoming in shipped.items()
             )
             cron_jobs.save_jobs(merged)
-    except RuntimeError as exc:  # load_jobs: corrupt/unreadable store; OSError/ValueError propagate as-is
+    except RuntimeError as exc:  # load_jobs: corrupt/unreadable store; OSError propagates as-is
         raise DistributionError(f"Could not merge cron jobs into {dest}: {exc}") from exc
 
 
@@ -470,8 +493,8 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
         if _is_distribution_runtime_path(parts):
             continue
         if parts == _CRON_STORE_REL:
-            _merge_cron_store(child, dest / child.name)
-        elif _is_container(child):
+            continue  # merged up front by _copy_dist_payload
+        if _is_container(child):
             _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
@@ -517,7 +540,15 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
 
+    # The cron merge runs first: it is the one step that can reject shipped content
+    # (an unschedulable job), and rejecting before any file is replaced keeps the profile whole.
+    cron_store = _shipped_cron_store(entries)
+    if cron_store is not None:
+        _merge_cron_store(cron_store, _real_dir(target, _CRON_STORE_REL[:-1]) / _CRON_STORE_REL[-1])
+
     for src, rel_parts in entries:
+        if rel_parts == _CRON_STORE_REL:
+            continue
         if len(rel_parts) == 1:
             name = rel_parts[0]
             if name == ENV_TEMPLATE_FILENAME:
@@ -529,11 +560,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
             if src.is_dir():
                 _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
                 continue
-        parent = _real_dir(target, rel_parts[:-1])
-        if rel_parts == _CRON_STORE_REL:
-            _merge_cron_store(src, parent / rel_parts[-1])
-        else:
-            _replace_entry(src, parent / rel_parts[-1])
+        _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():

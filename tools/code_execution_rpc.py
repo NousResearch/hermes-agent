@@ -30,6 +30,46 @@ def _default_dispatch(task_id):
     return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
 
 
+def _private_dirs_cmd(mkdir_dirs, chmod_dirs) -> str:
+    """Shell command creating remote dirs owner-only on a shared host. ``umask 077``
+    makes intermediates and leaves private at creation (no mkdir-then-chmod window
+    where a co-tenant could open a dir fd); ``chmod`` then repairs a dir that
+    already existed with permissive modes."""
+    mkdir = " ".join(shlex.quote(d) for d in mkdir_dirs)
+    chmod = " ".join(shlex.quote(d) for d in chmod_dirs)
+    return f"umask 077 && mkdir -p {mkdir} && chmod 700 {chmod}"
+
+
+def _remote_write_cmd(env, remote_path: str, content: str, *, atomic: bool = False) -> tuple:
+    """Build ``(command, stdin_data)`` writing *content* owner-only to *remote_path*.
+
+    Payload transport follows the backend's stdin capability: ``pipe`` mode
+    (ssh, docker, local, singularity — the real shared-host backends) gets the
+    base64 via real stdin so the content never enters argv, where a co-tenant
+    can read it via ``/proc/*/cmdline`` for the command's lifetime.
+    ``heredoc``/``payload`` modes (modal, daytona, vercel, managed_modal —
+    isolated sandboxes where Modal-family stdin delivery is also unreliable)
+    keep the base64 echo form: the argv window there is one short write rather
+    than the whole run."""
+    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    target = shlex.quote(remote_path)
+    write = (f"base64 -d > {target}.tmp && mv -f {target}.tmp {target}"
+             if atomic else f"base64 -d > {target}")
+    if getattr(env, "_stdin_mode", "pipe") == "pipe":
+        return f"umask 077 && {write}", encoded
+    return f"umask 077 && echo '{encoded}' | {write}", None
+
+
+def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
+                  timeout: int = 30):
+    """Execute an owner-only remote write; returns the execute() result."""
+    cmd, stdin_data = _remote_write_cmd(env, remote_path, content, atomic=atomic)
+    kwargs = {"cwd": "/", "timeout": timeout}
+    if stdin_data is not None:
+        kwargs["stdin_data"] = stdin_data
+    return env.execute(cmd, **kwargs)
+
+
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
     """Constant-time token check; an empty server token fails closed. Compared as bytes:
     compare_digest raises TypeError on a non-ASCII str, and the token is script-supplied JSON."""
@@ -161,20 +201,23 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                     logger.debug("Unauthorized RPC request in %s", req_file)
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
+                seq = request.get("seq", 0)
+                if not isinstance(seq, int):
+                    # A non-int seq cannot form the res_NNNNNN name the caller
+                    # polls; formatting it after dispatch would raise, leave the
+                    # request in place, and replay the tool call every cycle.
+                    logger.debug("RPC request with malformed seq in %s", req_file)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    continue
                 tool_result = _handle_rpc_request(
                     request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
                     max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
                     call_start=call_start, where="remote sandbox",
                 )
-                # Write the response atomically (tmp + rename) via echo piping —
-                # Modal doesn't reliably deliver stdin_data to chained commands.
-                quoted_res_file = shlex.quote(f"{rpc_dir}/res_{request.get('seq', 0):06d}")
-                encoded_result = base64.b64encode(tool_result.encode("utf-8")).decode("ascii")
-                env.execute(
-                    f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
-                    f" && mv {quoted_res_file}.tmp {quoted_res_file}",
-                    cwd="/", timeout=60,
-                )
+                # Atomic (tmp + rename) and owner-only; results carry tool output
+                # on a shared-host backend.
+                _remote_write(env, f"{rpc_dir}/res_{seq:06d}", tool_result,
+                              atomic=True, timeout=60)
                 env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
         except Exception as e:
             if not stop_event.is_set():

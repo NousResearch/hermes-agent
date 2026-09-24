@@ -54,19 +54,72 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # Respawn guard constants
 # ---------------------------------------------------------------------------
 
-# Patterns in last_failure_error that indicate a quota / auth blocker.
-# These errors won't resolve by retrying immediately — auto-block instead.
-# The auth family is a curated list, not an open `auth\w*` stem: that stem
-# also matched ordinary English words like "author"/"authored"/"authoring"/
-# "authoritative" in worker progress prose, parking a healthy card forever
-# (#117009).
+# Patterns in ``last_failure_error`` that gate re-spawn. Split into two sets so
+# transient quota walls self-heal while real auth failures stay surfaced.
+#
+# ``_RESPAWN_QUOTA_RE`` — transient. A worker crashed / timed out on a quota or
+# billing error ("HTTP 429", "rate limit", "billing", "subscription", "out of
+# credits", "exhausted", "token plan"). The provider recovers on the order of
+# minutes; apply a cooldown (see ``DEFAULT_QUOTA_BLOCK_SECONDS``) and let the
+# next tick probe. This is the fix for #t_cfbbb112: a quota-flavoured
+# ``last_failure_error`` stamped by a crashed worker used to park the task
+# forever under ``blocker_auth``.
+#
+# ``_RESPAWN_AUTH_RE`` — terminal. The provider returned 401/403/"unauthorized"
+# /"forbidden"/"invalid api key" /"access denied" /"permission denied", or the
+# worker's own diagnostics named ``auth*`` ("ANTHROPIC_TOKEN not set"). A retry
+# won't help; surface via ``blocker_auth`` for a human.
+#
+# ``_RESPAWN_BLOCKER_RE`` — kept as the UNION for backward compatibility with
+# anything that imports it (diagnostics, snapshots, tests). New code should pick
+# the specific set it needs.
+_RESPAWN_QUOTA_RE = re.compile(
+    r"\b("
+    r"quota|"
+    r"rate[\s_\-]?limit|rate[\s_\-]?limited|"
+    r"429|"
+    r"billing|"
+    r"subscription|"
+    r"out[\s_]of[\s_]credits|"
+    r"entitlement[\s_]exhausted|"
+    r"exhausted|"
+    r"token[\s_]plan"
+    r")\b",
+    re.IGNORECASE,
+)
+_RESPAWN_AUTH_RE = re.compile(
+    r"\b("
+    r"403|"
+    r"auth\w*|"
+    r"unauthorized|"
+    r"forbidden|"
+    r"invalid[\s_]api[\s_]key|"
+    r"access[\s_]denied|"
+    r"permission[\s_]denied"
+    r")\b",
+    re.IGNORECASE,
+)
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|"
-    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
-    r"authoris(?:e|es|ed|ing|ation)|authz|"
-    r"unauthorized|forbidden|billing|subscription|"
-    r"access[\s_]denied|permission[\s_]denied|"
-    r"invalid[\s_]api[\s_]key)\b",
+    r"\b("
+    # Quota family (transient — self-heals via DEFAULT_QUOTA_BLOCK_SECONDS).
+    r"quota|"
+    r"rate[\s_\-]?limit(?:ed)?|"
+    r"429|"
+    r"billing|"
+    r"subscription|"
+    r"out[\s_]of[\s_]credits|"
+    r"entitlement[\s_]exhausted|"
+    r"exhausted|"
+    r"token[\s_]plan|"
+    # Auth family (terminal — surfaces via blocker_auth).
+    r"403|"
+    r"auth\w*|"
+    r"unauthorized|"
+    r"forbidden|"
+    r"invalid[\s_]api[\s_]key|"
+    r"access[\s_]denied|"
+    r"permission[\s_]denied"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -78,6 +131,19 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # wall, burning a worker slot every tick for hours. Overridable via
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+
+# Cooldown after a CRASH / TIMEOUT that stamped a quota-flavoured
+# ``last_failure_error``. Distinct from the rate-limit cooldown above: that
+# path only fires when the latest run's outcome is ``rate_limited`` (a clean
+# EX_TEMPFAIL exit). When a worker crashes (pid died), times out, or
+# otherwise ends without a rate-limited requeue, the quota text in
+# ``last_failure_error`` used to park the task forever under ``blocker_auth``.
+# This cooldown gives the same self-heal to the crash path, keyed off the
+# latest ended run's timestamp. Long enough to skip the next tick (don't burn
+# a worker slot on a still-warm wall), short enough that recovery is
+# automatic once the provider is healthy. Overridable via
+# ``HERMES_KANBAN_QUOTA_BLOCK_SECONDS``.
+DEFAULT_QUOTA_BLOCK_SECONDS = 900  # 15 minutes
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -143,9 +209,15 @@ class DispatchResult:
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
-    """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
-    (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    """``(task_id, reason)`` skipped by the respawn guard. Reasons:
+    ``"blocker_auth"`` (auth pattern in ``last_failure_error`` — surfaces for a
+    human; retrying will not help), ``"quota_cooldown"`` (quota/billing/rate
+    text from a crashed worker; transient — wait
+    ``DEFAULT_QUOTA_BLOCK_SECONDS`` then probe), ``"rate_limit_cooldown"``
+    (latest run ``rate_limited`` within the rate-limit cooldown;
+    ``DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS``), ``"recent_success"`` (completed
+    run within guard window), ``"active_pr"`` (GitHub PR URL in a recent
+    comment)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -1536,17 +1608,22 @@ def check_respawn_guard(
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
     refused — no restart-safe scope — within the cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    checked BEFORE ``quota_cooldown`` / ``blocker_auth`` because the requeue
+    stamps a quota-flavored ``last_failure_error`` that would otherwise park
+    the task forever — that path never increments ``consecutive_failures``),
+    then ``"quota_cooldown"`` (latest ended run stamped quota text via a
+    CRASH/TIMEOUT, not a clean ``rate_limited`` requeue — wait one
+    ``DEFAULT_QUOTA_BLOCK_SECONDS`` and probe again; if the cooldown has
+    elapsed, return ``None`` so the next tick can attempt the work), then
+    ``"blocker_auth"`` (auth pattern in ``last_failure_error`` — retrying
+    won't help; surface for a human; the breaker still trips eventually), then
+    for the ready lane only ``"recent_success"`` (completed run within the
+    window, unless a re-queue event arrived after it — a deliberate re-run)
+    and ``"active_pr"`` (PR URL in a recent comment; re-spawning risks a
+    duplicate PR — unless a handoff event followed the comment: the named
+    profile must work on that PR). The review lane skips the last two: they
+    are the *inputs* to a review handoff. Stale / dead claim locks are NOT a
+    guard reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1587,13 +1664,39 @@ def check_respawn_guard(
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.  A plain
-    # crash is different: its persisted error includes the worker's last
-    # captured output, which is context rather than a diagnosis and may contain
-    # benign commands such as ``claude auth status`` (#117097).
+    # 2. Quota-cooldown. A CRASH / TIMEOUT stamped quota text in
+    #    ``last_failure_error`` (e.g. an out-of-credits / 429 / rate-limit
+    #    message from the worker's last output). Distinct from the rate-limit
+    #    cooldown above: that path only fires for a clean ``rate_limited``
+    #    requeue (EX_TEMPFAIL sentinel). Here the worker died any other way
+    #    and the quota text is a residual. Apply the same temporal decay
+    #    keyed off the latest ended run's timestamp — wait one
+    #    ``DEFAULT_QUOTA_BLOCK_SECONDS`` and let the next tick probe the
+    #    provider. Self-healing: a single provider hiccup no longer parks a
+    #    card forever; the breaker (separate ``consecutive_failures`` counter)
+    #    still trips if the quota wall persists across many probes.
     err = _kb._lossy_text(row["last_failure_error"])
-    latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    quota_block = _kb._resolve_quota_block_seconds()
+    if err and _RESPAWN_QUOTA_RE.search(err):
+        if quota_block <= 0:
+            # Disabled — respawn immediately, skipping blocker_auth so the
+            # stamped quota text doesn't re-trap the task. Matches the
+            # rate-limit escape above.
+            return None
+        # The latest ended run is the one that stamped ``last_failure_error``
+        # (only end-of-run writes touch that column). Reuse the row fetched
+        # for the rate-limit path — it's already in scope.
+        if latest_run is not None and latest_run["ended_at"] is not None:
+            ended_at = int(latest_run["ended_at"])
+            if (now - ended_at) < quota_block:
+                return "quota_cooldown"
+        # Cooldown elapsed OR no ended run to anchor against (legacy row):
+        # return None so the next tick can attempt the work. ``blocker_auth``
+        # below is intentionally NOT consulted for quota text.
+        return None
+
+    # 3. Auth blocker: retrying will not help. Surface for a human.
+    if err and _RESPAWN_AUTH_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
@@ -1601,7 +1704,7 @@ def check_respawn_guard(
     if lane == "review":
         return None
 
-    # 3. Completed run within guard window. Exception: an explicit re-queue
+    # 4. Completed run within guard window. Exception: an explicit re-queue
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
     #    a deliberate "run it again" — otherwise a manual done→ready would sit
     #    silently held until the window elapses.
@@ -1624,7 +1727,7 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 5. GitHub PR URL in a recent comment — prior worker already opened a PR.
     #    Exception: a handoff AFTER the newest PR comment (operator reassign,
     #    reviewer changes_requested, review reopen) names the profile that must
     #    now work on THAT PR — a closer or the implementer finishing it, not a

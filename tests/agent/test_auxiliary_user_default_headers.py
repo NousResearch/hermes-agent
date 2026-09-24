@@ -110,3 +110,46 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+
+class TestAuxClientHonorsProfileDefaultHeaders:
+    """Auxiliary clients must forward ``ProviderProfile.default_headers`` too.
+
+    The main-client tests cover construction; this covers the auxiliary
+    api-key chain (``_resolve_api_key_provider`` → ``_profile_default_headers``),
+    the second consumer of profile headers. Regression guard for the Kimi
+    ``Accept-Encoding: gzip`` brotli workaround (#28043): if the aux path ever
+    stops copying profile headers, title/compression/vision calls to
+    api.moonshot.* re-negotiate brotli independently of the main turn.
+    """
+
+    @pytest.mark.parametrize(
+        ("api_key_env", "provider_id"),
+        [
+            ("KIMI_API_KEY", "kimi-coding"),
+            ("KIMI_CN_API_KEY", "kimi-coding-cn"),
+        ],
+    )
+    def test_kimi_aux_client_forwards_gzip_accept_encoding(self, monkeypatch, api_key_env, provider_id):
+        monkeypatch.setenv(api_key_env, "test-key")
+        # Restrict the api-key chain to this provider: an ambient key for an
+        # earlier registry entry would otherwise win the race and the mock
+        # would record a different provider's headers. Deliberate full-dict
+        # replacement, not a partial mock — monkeypatch restores it after
+        # the test.
+        import hermes_cli.auth as _auth
+        assert provider_id in _auth.PROVIDER_REGISTRY, f"{provider_id} must be in PROVIDER_REGISTRY"
+        monkeypatch.setattr(_auth, "PROVIDER_REGISTRY", {provider_id: _auth.PROVIDER_REGISTRY[provider_id]})
+        with patch("agent.auxiliary_client._create_openai_client") as mock_create:
+            mock_create.return_value = MagicMock()
+            from agent.auxiliary_client import _resolve_api_key_provider
+            client, model = _resolve_api_key_provider()
+
+        assert client is not None, "kimi api-key chain must resolve with only its key set"
+        assert model is not None
+        mock_create.assert_called_once()
+        headers = mock_create.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("Accept-Encoding") == "gzip", (
+            f"aux client for {provider_id} must force gzip Accept-Encoding; got {headers!r}"
+        )
+        assert headers.get("User-Agent", "").startswith("HermesAgent/")

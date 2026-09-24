@@ -6,6 +6,8 @@ referrerUrl / appName / User-Agent flow into gateway analytics.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -181,3 +183,47 @@ def test_openrouter_headers_no_cache_when_disabled(mock_openai):
     assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
     assert "X-OpenRouter-Cache" not in headers
     assert "X-OpenRouter-Cache-TTL" not in headers
+
+
+# ---------------------------------------------------------------------------
+# profile.default_headers forwarding — explicit-credential construction (#28043)
+# aux api-key chain counterpart: tests/agent/test_auxiliary_user_default_headers.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("kimi-coding", "https://api.moonshot.ai/v1"),
+        ("kimi-coding-cn", "https://api.moonshot.cn/v1"),
+    ],
+)
+@patch("agent.process_bootstrap.OpenAI")
+def test_kimi_explicit_creds_apply_gzip_accept_encoding(mock_openai, provider, base_url):
+    """#28043: explicit-credential clients must receive the profile's gzip-only
+    Accept-Encoding, or api.moonshot.* re-negotiates brotli and the
+    httpx/brotlicffi streaming decode bug returns. Moonshot hosts match no
+    entry in ``_HOST_DEFAULT_HEADERS``, so delivery rides the profile
+    fallback in ``_explicit_client_kwargs`` — pin that this path forwards
+    the header, not just that the profile declares it."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        provider=provider,
+        api_key="test-key",
+        base_url=base_url,
+        model="kimi-k2-turbo-preview",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    # Internal state: the profile fallback populated _client_kwargs.
+    headers = agent._client_kwargs["default_headers"]
+    assert headers.get("Accept-Encoding") == "gzip"
+    assert headers.get("User-Agent", "").startswith("HermesAgent/")
+    # End of the chain: construction actually received those headers, so a
+    # regression between _client_kwargs and OpenAI(...) also fails here.
+    mock_openai.assert_called_once()
+    ctor_headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
+    assert ctor_headers.get("Accept-Encoding") == "gzip"
+    assert ctor_headers.get("User-Agent", "").startswith("HermesAgent/")

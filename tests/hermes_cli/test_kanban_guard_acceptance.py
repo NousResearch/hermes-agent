@@ -75,3 +75,27 @@ def test_rejected_completion_keeps_auth_hold_and_coalesces_ticks(tmp_path, monke
             "SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guard_cleared'", (tid,),
         ).fetchone()[0] == 1
         assert spawned == [tid]
+
+
+def test_rejection_survives_expired_rate_limit_cooldown(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    kbc.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="held after cooldown", completion_contract="example/widgets",
+        )
+        kb.claim_task(conn, tid)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET outcome='rate_limited', ended_at=1 WHERE task_id=?",
+                (tid,),
+            )
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert not kb.complete_task(conn, tid, summary="rejected")
+        assert kb.get_task(conn, tid).acceptance_rejected
+        assert kbd.check_respawn_guard(conn, tid) == "acceptance_rejected"

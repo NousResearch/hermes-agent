@@ -121,5 +121,7 @@ class SlackDriver:
         pred = (lambda p: match(str(p.get("text", "")))) if match else None
         self.standin.fail("chat.postMessage", {"ok": False, "error": "channel_not_found"}, times=times, match=pred)
 
-    def fail_edit(self, *, times: int = 1) -> None:
-        self.standin.fail("chat.update", {"ok": False, "error": "cant_update_message"}, times=times)
+    def fail_edit(self, *, times: int = 1, match: Optional[Callable[[str], bool]] = None) -> None:
+        pred = (lambda p: match(str(p.get("text", "")) + str(p.get("markdown_text", "")))) if match else None
+        for method in ("chat.update", "chat.appendStream", "chat.stopStream"):
+            self.standin.fail(method, {"ok": False, "error": "cant_update_message"}, times=times, match=pred)

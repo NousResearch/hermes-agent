@@ -133,5 +133,7 @@ class DiscordDriver:
         self.standin.fail("create_message", {"message": "Missing Access", "code": 50001},
                           status=403, times=times, match=pred)
 
-    def fail_edit(self, *, times: int = 1) -> None:
-        self.standin.fail("edit_message", {"message": "Unknown Message", "code": 10008}, status=404, times=times)
+    def fail_edit(self, *, times: int = 1, match: Optional[Callable[[str], bool]] = None) -> None:
+        pred = (lambda p: match(str(p.get("content", "")))) if match else None
+        self.standin.fail("edit_message", {"message": "Unknown Message", "code": 10008}, status=404, times=times,
+                          match=pred)

@@ -45,11 +45,15 @@ def hermetic_env(home: Path, extra: Optional[Dict[str, str]] = None) -> Dict[str
            if not (k.endswith(_STRIP_SUFFIXES) or k.startswith(_STRIP_PREFIXES))}
     for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
                 "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-                "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "NOTIFY_SOCKET", "INVOCATION_ID"):
+                "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "NOTIFY_SOCKET", "INVOCATION_ID",
+                "PYTEST_CURRENT_TEST"):
         env.pop(var, None)
+    extra = dict(extra or {})
+    shim = extra.pop("PYTHONPATH_PREPEND", "")
     env.update(
         HOME=str(home), HERMES_HOME=str(home / ".hermes"), XDG_STATE_HOME=str(home / ".local" / "state"),
-        PYTHONPATH=os.pathsep.join(p for p in (str(REPO_ROOT), (extra or {}).pop("PYTHONPATH_PREPEND", "")) if p),
+        # a stand-in's sitecustomize shim (if any) first, then the checkout under test
+        PYTHONPATH=os.pathsep.join(p for p in (shim, str(REPO_ROOT)) if p),
         NO_COLOR="1", TERM="dumb", NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
         HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_DISABLE_LAZY_INSTALLS="1", TZ="UTC", PYTHONUNBUFFERED="1",
         TIRITH_ENABLED="false", AWS_EC2_METADATA_DISABLED="true",
@@ -106,10 +110,13 @@ class GatewayUnderTest:
         self.log_path = root / "gateway.log"
         self._env = dict(env)
         self._ready = ready
-        base = {"updates": {"check": False}, "approvals": {"destructive_slash_confirm": False}}
-        merged = _deep_merge(base, config)
-        write_hermes_home(self.hermes_home, llm_base_url,
-                          extra_config=yaml.safe_dump(merged, sort_keys=False))
+        # approvals.mode manual: a dangerous command waits for a human click (``smart`` would ask the
+        # fake model to judge it).
+        base = {"updates": {"check": False},
+                "approvals": {"mode": "manual", "destructive_slash_confirm": False}}
+        cfg_path = write_hermes_home(self.hermes_home, llm_base_url) / "config.yaml"
+        merged = _deep_merge(_deep_merge(yaml.safe_load(cfg_path.read_text()), base), config)
+        cfg_path.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
         self.proc: Optional[subprocess.Popen] = None
         self.pids: List[int] = []
 
@@ -163,6 +170,15 @@ class GatewayUnderTest:
             return "--- gateway log tail\n" + self.log_path.read_text(errors="replace")[-n:]
         except OSError:
             return "--- (no gateway log)"
+
+    def grep(self, pattern: str, limit: int = 30) -> str:
+        """Gateway log lines matching ``pattern`` (case-insensitive), for assertion context."""
+        try:
+            lines = self.log_path.read_text(errors="replace").splitlines()
+        except OSError:
+            return ""
+        rx = re.compile(pattern, re.I)
+        return "\n".join([ln for ln in lines if rx.search(ln)][-limit:])
 
     def user_rows(self, needle: str) -> List[str]:
         if not self.db_path.exists():

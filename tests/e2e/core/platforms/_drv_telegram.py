@@ -111,7 +111,8 @@ class TelegramDriver:
                                           "description": "Bad Request: chat not found"},
                           status=400, times=times, match=pred)
 
-    def fail_edit(self, *, times: int = 1) -> None:
+    def fail_edit(self, *, times: int = 1, match: Optional[Callable[[str], bool]] = None) -> None:
+        pred = (lambda p: match(str(p.get("text", "")))) if match else None
         self.standin.fail("editMessageText", {"ok": False, "error_code": 400,
                                               "description": "Bad Request: message can't be edited"},
-                          status=400, times=times)
+                          status=400, times=times, match=pred)

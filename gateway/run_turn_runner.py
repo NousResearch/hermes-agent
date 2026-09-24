@@ -2016,6 +2016,7 @@ class TurnRunner:
                     "Use /login to sign in again, or /model to pick a different model. If it keeps "
                     "failing, run `hermes doctor` on the host."),
                 "messages": [], "api_calls": 0, "tools": [],
+                "failed": True, "completed": False, "error": str(exc),
             }
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)

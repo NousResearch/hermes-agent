@@ -4239,13 +4239,6 @@ class GatewayTurnMixin:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
-        if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
-                message=message, context_prompt=context_prompt, history=history, source=source,
-                session_id=session_id, session_key=session_key, run_generation=run_generation,
-                event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
-            )
-
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
@@ -4280,7 +4273,7 @@ class GatewayTurnMixin:
                 response = await self._run_agent_via_proxy(
                     message=message, context_prompt=context_prompt, history=history, source=source,
                     session_id=session_id, session_key=session_key, run_generation=run_generation,
-                    event_message_id=event_message_id,
+                    event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
                 )
             else:
                 response = await self._run_agent_local_turn(

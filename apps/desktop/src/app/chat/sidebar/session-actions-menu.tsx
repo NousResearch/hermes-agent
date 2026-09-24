@@ -32,7 +32,7 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -158,6 +158,16 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  // The flat (non-grouped) sidebar view only warms $projectTree on a
+  // background timer (PROJECT_TREE_WARM_MS in sidebar/index.tsx), so opening
+  // this submenu before that timer fires — or before the grouped view has
+  // ever been visited this run — showed "No other projects" even when
+  // projects exist. Refresh on open so the list is authoritative regardless
+  // of sidebar grouping state or timing.
+  useEffect(() => {
+    void refreshProjectTree()
+  }, [])
 
   if (targets.length === 0) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>

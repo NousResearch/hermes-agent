@@ -377,7 +377,11 @@ class CLIModelSwitchMixin:
 
             fallback_model = DEFAULT_CODEX_MODELS[0]
             try:
-                available = get_codex_model_ids(access_token=self.api_key if self.api_key else None)
+                # self.base_url is the live agent route (override/model.base_url already
+                # resolved): the credential probes only the host it is authorized for (#121486).
+                available = get_codex_model_ids(
+                    access_token=self.api_key if self.api_key else None,
+                    base_url=str(getattr(self, "base_url", "") or ""))
                 if available:
                     fallback_model = available[0]
             except Exception:

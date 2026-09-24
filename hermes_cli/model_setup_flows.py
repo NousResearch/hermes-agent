@@ -383,7 +383,11 @@ def _model_flow_openai_codex(config, current_model=""):
             from hermes_cli.auth import resolve_codex_runtime_credentials
             _codex_token = resolve_codex_runtime_credentials().get("api_key")
 
-    codex_models = get_codex_model_ids(access_token=_codex_token)
+    # Setup flow: the credential probes the route it will be activated against (the profile-scoped
+    # override when set), still paired rather than ambient (#121486); model.base_url is not read
+    # here — this flow is what configures it.
+    from hermes_cli.auth_codex import codex_route_base_url
+    codex_models = get_codex_model_ids(access_token=_codex_token, base_url=codex_route_base_url())
     selected = _prompt_model_selection(
         codex_models, current_model=current_model, confirm_provider="openai-codex",
         confirm_base_url=DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")

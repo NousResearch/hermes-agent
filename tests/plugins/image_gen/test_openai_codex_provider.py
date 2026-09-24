@@ -11,6 +11,7 @@ import base64
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -19,6 +20,29 @@ import pytest
 # for the dotted-import form. Load it via importlib so tests don't need to
 # touch sys.path or rename the directory.
 codex_plugin = importlib.import_module("plugins.image_gen.openai-codex")
+
+
+def _codex_jwt(subject: str) -> str:
+    """JWT-shaped test stand-in (signature never verified client-side): the canonical host
+    only answers for a JWT, so route fixtures that must be accepted use this shape (#121486)."""
+    enc = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    header = enc(b'{"alg":"RS256"}')
+    payload = enc(json.dumps({"sub": subject}).encode())
+    return f"{header}.{payload}.test-signature"
+
+
+# dummy fixture credentials (not real secrets): an auth-store OAuth token is JWT-shaped;
+# a gateway pool key is opaque.
+_JWT_TOKEN = _codex_jwt("codex-image-account")
+_GATEWAY_POOL_KEY = "dummy-gateway-pool-key"
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_pool(monkeypatch):
+    """Keep the route resolver on the singleton branch unless a test stages a pool row
+    explicitly (the tmp HERMES_HOME pool is empty anyway — this pins it)."""
+    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda provider: (False, None))
+    monkeypatch.setattr("agent.auxiliary_client._codex_base_url_override", lambda: "")
 
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()
@@ -55,7 +79,7 @@ def provider(monkeypatch):
 def codex_backend(monkeypatch):
     """Route the plugin's ``httpx.Client`` at a fake Codex images backend; returns the request log
     and lets a test swap the response via ``state["respond"]``."""
-    monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: _JWT_TOKEN)
     state = {"requests": [], "respond": None}
 
     def _default(request):
@@ -105,7 +129,7 @@ class TestAvailability:
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
     def test_available_with_codex_token(self, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "tok")
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: _JWT_TOKEN)
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
 
     def test_openai_api_key_alone_is_not_enough(self, monkeypatch):
@@ -142,7 +166,7 @@ class TestGenerate:
 
         (request,) = codex_backend["requests"]
         assert request.url.path.endswith("/backend-api/codex/images/generations")
-        assert request.headers["Authorization"] == "Bearer codex-token"
+        assert request.headers["Authorization"] == f"Bearer {_JWT_TOKEN}"
         assert request.headers["x-codex-image-turn-id"]
         body = json.loads(request.content)
         assert body == {
@@ -153,9 +177,12 @@ class TestGenerate:
         assert not any(key in body for key in ("tools", "input", "instructions"))
 
     def test_custom_codex_base_receives_the_image_request(self, provider, codex_backend, tmp_path, monkeypatch):
-        """With ``HERMES_CODEX_BASE_URL`` set, image requests go to the gateway's base instead of
-        the hard-coded chatgpt.com host (#121486) — the text client honours the same override."""
-        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex-gw.example/backend-api/codex")
+        """When the routing decision resolves a custom Codex base (the profile-scoped override),
+        image requests go to that base instead of the hard-coded chatgpt.com host — the credential
+        and its destination travel as one pair (#121486)."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._codex_base_url_override",
+            lambda: "https://codex-gw.example/backend-api/codex")
 
         result = provider.generate("a cat")
 
@@ -233,6 +260,82 @@ class TestGenerate:
 
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
+
+
+# ── Route authority (#121486) ───────────────────────────────────────────────
+
+
+class TestImageRouteAuthority:
+    """The credential and its destination are carried as one authority object: every test
+    asserts that no Authorization-bearing request reaches a host other than the one the
+    credential is bound to."""
+
+    def test_pool_credential_travels_with_its_row_base(self, monkeypatch, codex_backend):
+        """A pool-selected credential is sent only to its own row's base — never to chatgpt.com."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._select_pool_entry",
+            lambda provider: (True, SimpleNamespace(provider="openai-codex")))
+        monkeypatch.setattr("agent.auxiliary_client._pool_runtime_api_key", lambda entry: _GATEWAY_POOL_KEY)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._pool_runtime_base_url",
+            lambda entry, fallback="": "https://gw.example/backend-api/codex")
+
+        token, base = codex_plugin._codex_image_route()
+        assert token == _GATEWAY_POOL_KEY
+        assert base == "https://gw.example/backend-api/codex"
+
+        result = codex_plugin.OpenAICodexImageGenProvider().generate("a cat")
+        assert result["success"] is True
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "gw.example"
+        assert request.headers["Authorization"] == f"Bearer {_GATEWAY_POOL_KEY}"
+
+    def test_override_wins_for_a_pool_credential(self, monkeypatch):
+        """The profile-scoped override outranks the pool row's own base, for every reader of
+        the row — same rule as the runtime's ``_pool_entry_mode_and_url``."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._select_pool_entry",
+            lambda provider: (True, SimpleNamespace(provider="openai-codex")))
+        monkeypatch.setattr("agent.auxiliary_client._pool_runtime_api_key", lambda entry: _GATEWAY_POOL_KEY)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._pool_runtime_base_url",
+            lambda entry, fallback="": "https://gw.example/backend-api/codex")
+        monkeypatch.setattr(
+            "agent.auxiliary_client._codex_base_url_override", lambda: "https://override.example/api")
+
+        token, base = codex_plugin._codex_image_route()
+        assert token == _GATEWAY_POOL_KEY and base == "https://override.example/api"
+
+    def test_opaque_pool_key_is_declined_for_the_canonical_host(self, monkeypatch, codex_backend):
+        """An opaque pool key paired with the canonical chatgpt.com host is a gateway key that
+        chatgpt.com cannot answer for — the route is declined and no request leaves the process."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._select_pool_entry",
+            lambda provider: (True, SimpleNamespace(provider="openai-codex")))
+        monkeypatch.setattr("agent.auxiliary_client._pool_runtime_api_key", lambda entry: _GATEWAY_POOL_KEY)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._pool_runtime_base_url",
+            lambda entry, fallback="": "https://chatgpt.com/backend-api/codex")
+
+        token, base = codex_plugin._codex_image_route()
+        assert token is None
+
+        result = codex_plugin.OpenAICodexImageGenProvider().generate("a cat")
+        assert result["success"] is False and result["error_type"] == "auth_required"
+        assert codex_backend["requests"] == []
+
+    def test_direct_chatgpt_positive_control(self, monkeypatch, codex_backend):
+        """Positive control: a singleton OAuth JWT with no override is served by the canonical
+        host, exactly as before the authority pairing."""
+        token, base = codex_plugin._codex_image_route()
+        assert token == _JWT_TOKEN
+        assert base == "https://chatgpt.com/backend-api/codex"
+
+        result = codex_plugin.OpenAICodexImageGenProvider().generate("a cat")
+        assert result["success"] is True
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "chatgpt.com"
+        assert request.headers["Authorization"] == f"Bearer {_JWT_TOKEN}"
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

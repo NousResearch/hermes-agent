@@ -1305,13 +1305,20 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # until the runtime lease refreshes it.
     try:
         from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+        from hermes_cli.auth_codex import codex_route_base_url
+        from hermes_cli.config import read_raw_config
 
         access_token = resolve_codex_runtime_credentials(read_only=True).get("api_key")
         if _codex_access_token_is_expiring(access_token, 0):
             access_token = None
+        # The credential and its destination come from one routing decision (#121486): the
+        # profile-scoped override wins, else model.base_url when the route is codex-configured.
+        model_cfg = read_raw_config().get("model")
+        route_base = codex_route_base_url(model_cfg if isinstance(model_cfg, dict) else None)
     except Exception:
         access_token = None
-    return get_codex_model_ids(access_token=access_token)
+        route_base = ""
+    return get_codex_model_ids(access_token=access_token, base_url=route_base)
 
 
 _COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest

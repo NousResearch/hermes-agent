@@ -71,6 +71,30 @@ def _codex_base_url() -> str:
     return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
 
 
+def codex_route_base_url(model_cfg: Optional[Dict[str, Any]] = None) -> str:
+    """Destination authority for outbound Codex catalog/image requests (#121486).
+
+    A credential and the host it may be sent to must come from one routing decision, mirroring
+    ``runtime_provider._pool_entry_mode_and_url``: the profile-scoped ``HERMES_CODEX_BASE_URL``
+    override (``get_secret_str``, never a raw ``os.getenv`` — under a multiplexer the routed
+    profile's .env decides, a sibling's process env must not) wins for every credential source;
+    next ``model.base_url`` — the gateway-configured route, honoured only when ``model.provider``
+    is ``openai-codex`` so a stale base_url cannot leak in from another provider; else canonical
+    chatgpt.com. Consumers accept this resolved base as a pair with their credential instead of
+    re-deriving an ambient env coordinate on their own.
+    """
+    from agent.secret_scope import get_secret_str
+    override = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+    if override:
+        return override
+    if isinstance(model_cfg, dict):
+        from hermes_cli.runtime_provider import _config_base_url_for_provider
+        configured = _config_base_url_for_provider(model_cfg, "openai-codex")
+        if configured:
+            return configured
+    return DEFAULT_CODEX_BASE_URL
+
+
 def _codex_runtime_result(
     api_key: str, *, source: str, last_refresh: Optional[str]) -> Dict[str, Any]:
     return {

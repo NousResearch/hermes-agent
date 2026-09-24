@@ -39,7 +39,7 @@ def test_codex_catalog_never_offers_chatgpt_rejected_pro_slugs(monkeypatch, tmp_
     # synthesis rule; none of what it adds may be -pro.
     templates = list(dict.fromkeys(t for _, ts in _FORWARD_COMPAT_TEMPLATE_MODELS for t in ts))
     monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api", lambda access_token: templates
+        "hermes_cli.codex_models._fetch_models_from_api", lambda access_token, base_url="": templates
     )
     live = get_codex_model_ids(access_token="codex-access-token")
     assert {synthetic for synthetic, _ in _FORWARD_COMPAT_TEMPLATE_MODELS} <= set(live)
@@ -135,7 +135,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token: [])
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token, base_url="": [])
 
     assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
     assert "openai/gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
@@ -145,7 +145,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
     monkeypatch.setattr(
         codex_models,
         "_fetch_models_from_api",
-        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"]),
+        lambda _token, base_url="": codex_models._finalize_codex_models(["gpt-6-astra"]),
     )
     entitled = get_codex_model_ids(access_token="entitled-token")
     assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
@@ -178,7 +178,7 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
     monkeypatch.setattr(
         "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.4", "gpt-5.5"],
+        lambda access_token=None, base_url="": ["gpt-5.4", "gpt-5.5"],
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
@@ -346,8 +346,9 @@ def test_gateway_key_is_never_sent_to_the_direct_catalog(monkeypatch):
 
 
 def test_picker_catalog_honours_the_custom_codex_base(monkeypatch):
-    """With ``HERMES_CODEX_BASE_URL`` set, the picker's live discovery probes the gateway's
-    own ``/models``, not the hard-coded chatgpt.com host (#121486)."""
+    """When the routing decision resolves a custom Codex base (``codex_route_base_url``), the
+    picker's live discovery probes the gateway's own ``/models``, not the hard-coded chatgpt.com
+    host — the credential and its destination travel as one pair (#121486)."""
     import sys
     from urllib.parse import urlparse
 
@@ -356,9 +357,9 @@ def test_picker_catalog_honours_the_custom_codex_base(monkeypatch):
     seen_urls = []
     get = _gated_codex_catalog(seen_urls)
     monkeypatch.setitem(sys.modules, "httpx", type("_FakeHttpx", (), {"get": staticmethod(get)}))
-    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex-gw.example/backend-api/codex")
 
-    assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token=_codex_jwt("acct"))
+    assert "gpt-6-sol" in codex_models._fetch_models_from_api(
+        access_token=_codex_jwt("acct"), base_url="https://codex-gw.example/backend-api/codex")
     assert seen_urls, "discovery must still run for a JWT credential"
     for url in seen_urls:
         parsed = urlparse(url)
@@ -383,3 +384,39 @@ def test_catalog_falls_back_to_the_ungated_sentinel_when_newest_client_is_reject
     entries, status = fetch_codex_catalog_entries(rejecting)
     assert [e["slug"] for e in entries] == ["gpt-5.5"] and status == 200
     assert fetch_codex_catalog_entries(lambda url: _Resp(200, [])) == ([], 200)
+
+
+def test_route_authority_prefers_model_base_url_when_env_unset(monkeypatch):
+    """#121486 adversarial case (a): the effective Codex route is expressed through
+    model.base_url with the env unset — the resolved authority is that base, so a credential
+    carried with it can never be sent to chatgpt.com."""
+    from hermes_cli.auth_codex import codex_route_base_url
+
+    monkeypatch.setattr("agent.secret_scope.get_secret_str", lambda name, default="": "")
+    resolved = codex_route_base_url({"provider": "openai-codex", "base_url": "https://gw.example/api"})
+    assert resolved == "https://gw.example/api"
+
+
+def test_route_authority_env_override_wins_over_model_base_url(monkeypatch):
+    """#121486 adversarial case (b): env/base disagreement resolves exactly like the runtime
+    (``_pool_entry_mode_and_url``) — the profile-scoped override wins for every reader, so the
+    catalog probes what the runtime actually talks to."""
+    from hermes_cli.auth_codex import codex_route_base_url
+
+    monkeypatch.setattr(
+        "agent.secret_scope.get_secret_str",
+        lambda name, default="": "https://override.example/api" if name == "HERMES_CODEX_BASE_URL" else default,
+    )
+    assert codex_route_base_url({"provider": "openai-codex", "base_url": "https://gw.example/api"}) == \
+        "https://override.example/api"
+    assert codex_route_base_url() == "https://override.example/api"
+
+
+def test_route_authority_ignores_a_foreign_providers_base_url(monkeypatch):
+    """A stale model.base_url left over from another provider must not leak into the Codex route
+    (``_config_base_url_for_provider`` only honours the matching provider)."""
+    from hermes_cli.auth_codex import codex_route_base_url
+
+    monkeypatch.setattr("agent.secret_scope.get_secret_str", lambda name, default="": "")
+    resolved = codex_route_base_url({"provider": "openai", "base_url": "https://api.openai.com/v1"})
+    assert resolved == "https://chatgpt.com/backend-api/codex"

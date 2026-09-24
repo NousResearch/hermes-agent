@@ -36,10 +36,36 @@ logger = logging.getLogger(__name__)
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
-def _codex_base_url() -> str:
-    """Codex API base for image requests: a ``HERMES_CODEX_BASE_URL`` gateway replaces the
-    hard-coded chatgpt.com host (the text client honours the override the same way, #121486)."""
-    return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or _CODEX_BASE_URL
+def _codex_image_route() -> Tuple[Optional[str], str]:
+    """``(credential, authorized_base)`` resolved as ONE routing decision (#121486), mirroring
+    ``auxiliary_client._build_codex_client``: a pool credential travels with its own row's base
+    (the profile-scoped override wins for every reader of the row); the auth-store singleton is
+    a ChatGPT OAuth JWT the canonical host answers for. A non-JWT credential paired with the
+    canonical host is a gateway key chatgpt.com cannot answer for — declined, never sent."""
+    try:
+        from agent.auxiliary_client import (
+            _codex_base_url_override, _pool_runtime_api_key, _pool_runtime_base_url, _select_pool_entry)
+
+        override = _codex_base_url_override()
+        pool_present, entry = _select_pool_entry("openai-codex")
+        if pool_present:
+            token = _pool_runtime_api_key(entry)
+            base = override or _pool_runtime_base_url(entry) or _CODEX_BASE_URL
+        else:
+            token = _read_codex_access_token() or ""
+            base = override or _CODEX_BASE_URL
+    except Exception as exc:
+        logger.debug("Could not resolve the Codex image route: %s", exc)
+        return None, _CODEX_BASE_URL
+    if not token:
+        return None, base
+    if base.rstrip("/") == _CODEX_BASE_URL:
+        from hermes_cli.auth_constants import _decode_jwt_claims
+        if not _decode_jwt_claims(token):
+            logger.debug(
+                "Codex image route declined: non-JWT credential is not answerable by chatgpt.com (#121486)")
+            return None, base
+    return token, base
 
 
 _MAX_ERROR_BODY_CHARS = 500
@@ -194,10 +220,14 @@ def _build_image_request(
 
 
 def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    token: str, base_url: str, *, prompt: str, size: str, quality: str,
+    input_images: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
-    ``imagegen_request_id`` (backend correlation id, for support tickets)."""
+    ``imagegen_request_id`` (backend correlation id, for support tickets).
+
+    ``base_url`` is the host this credential is authorized for (``_codex_image_route``) — the
+    credential and its destination travel as one pair, never an ambient env re-derivation (#121486)."""
     import httpx
     from agent.codex_headers import codex_cloudflare_headers
 
@@ -210,7 +240,7 @@ def _post_image_request(
     path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        response = http.post(f"{_codex_base_url()}/{path}", json=body)
+        response = http.post(f"{(base_url or _CODEX_BASE_URL).rstrip('/')}/{path}", json=body)
     if response.status_code >= 400:
         raise RuntimeError(
             f"Codex images API returned HTTP {response.status_code}: "
@@ -242,7 +272,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     price = "varies"
 
     def is_available(self) -> bool:
-        return bool(_read_codex_access_token()) and _httpx_available()
+        return bool(_codex_image_route()[0]) and _httpx_available()
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
@@ -270,7 +300,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
-        token = _read_codex_access_token()
+        token, route_base = _codex_image_route()
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():
@@ -287,7 +317,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
 
         try:
             payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
+                token, route_base, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")

@@ -151,16 +151,20 @@ def _ranked_slugs(entries: object) -> List[str]:
     return _dedupe(slug for _, slug in sortable)
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+def _fetch_models_from_api(access_token: str, base_url: str = "") -> List[str]:
+    """Fetch available models from the Codex API. Returns visible models sorted by priority.
+
+    ``base_url`` is the destination the credential is authorized for, resolved by the caller
+    as one routing decision (``auth_codex.codex_route_base_url``) — never re-derived here from
+    an ambient env coordinate (#121486)."""
     try:
-        # Real Codex access tokens are JWTs; a custom base's gateway key is not one. Refusing to
+        # Real Codex access tokens are JWTs; a gateway's opaque key is not one. Refusing to
         # probe non-JWT credentials keeps the key off chatgpt.com (#121486) and skips a request
         # that can never answer for it — mirroring the quota probe's gate in auth_codex.
         from hermes_cli.auth_constants import DEFAULT_CODEX_BASE_URL, _decode_jwt_claims
         if not access_token or not _decode_jwt_claims(access_token):
             return []
-        catalog_base = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+        catalog_base = (base_url or "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
         import httpx
         # The per-account catalog needs ChatGPT-Account-ID (else ``{"models":[]}`` with HTTP 200
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
@@ -201,11 +205,14 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     return _ranked_slugs(entries if isinstance(entries, list) else [])
 
 
-def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
-    """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults."""
+def get_codex_model_ids(access_token: Optional[str] = None, base_url: str = "") -> List[str]:
+    """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults.
+
+    ``base_url`` is the destination the credential is authorized for (``auth_codex.codex_route_base_url``),
+    carried alongside the token so the two can never disagree (#121486)."""
     codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     if access_token:
-        api_models = _fetch_models_from_api(access_token)
+        api_models = _fetch_models_from_api(access_token, base_url)
         if api_models:
             return _finalize_codex_models(api_models)
     default_model = _read_default_model(codex_home)

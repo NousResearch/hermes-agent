@@ -478,9 +478,8 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     enabled_mcp = enabled_mcp_server_names(cfg)
     if set(result) & enabled_mcp:
         return result
-    for name in sorted(enabled_mcp):
-        if name not in result:
-            result.append(name)
+    # Per-job enabled_toolsets is a restrictive allowlist — do NOT auto-add
+    # all globally-enabled MCP servers. The user gets exactly what they listed.
     return result
 
 

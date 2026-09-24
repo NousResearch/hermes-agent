@@ -2628,6 +2628,8 @@ DEFAULT_CONFIG = {
     # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
     # llama-server in router mode. No context/VRAM knobs by design.
     "local_runtime": {
+        # Independent of the managed runtime: release idle local Ollama models under pressure.
+        "ollama_idle_release": False,
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
         # Pinned llama.cpp release tag; bumped by Hermes releases after validation.

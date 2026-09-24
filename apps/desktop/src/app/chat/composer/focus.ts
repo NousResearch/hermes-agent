@@ -721,6 +721,21 @@ export const focusComposerInput = (el: HTMLElement | null) => {
       return
     }
 
+    // A document selection is global. A scheduled composer-focus retry can run
+    // while the user is copying transcript text, and moving focus to the
+    // contenteditable collapses that selection. Leave any range that is not
+    // wholly inside this editor to its owner.
+    const selection = window.getSelection()
+
+    if (
+      selection &&
+      !selection.isCollapsed &&
+      selection.rangeCount > 0 &&
+      (!el.contains(selection.anchorNode) || !el.contains(selection.focusNode))
+    ) {
+      return
+    }
+
     const active = document.activeElement
 
     if (

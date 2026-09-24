@@ -24,9 +24,9 @@ from rich.table import Table
 _BWS_VERSION = "2.0.0"
 
 from hermes_cli._secrets_common import (
-    arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
-    prompt_index, register_subcommands, require_enabled, rotate_token, secret_cli_env, section_cfg,
-    yn,
+    arg, cfg_str, cli_version, console_safe, disable_secret_source, flag, print_status_panel,
+    print_table, prompt_index, register_subcommands, require_enabled, rotate_token, secret_cli_env,
+    section_cfg, yn,
 )
 from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -157,7 +157,8 @@ def _setup_project(binary: Path, token: str, console: Console, server_url: str) 
                       "and grant it access to at least one project.")
         return None
     print_table(console, (("#", {"style": "cyan", "width": 4}), "Name", ("ID", {"style": "dim"})),
-                ((str(i), p.get("name", "?"), p.get("id", "?")) for i, p in enumerate(projects, 1)))
+                ((str(i), console_safe(str(p.get("name", "?"))), console_safe(str(p.get("id", "?"))))
+                 for i, p in enumerate(projects, 1)))
     idx = prompt_index(console, f"  Select project [1-{len(projects)}]: ", len(projects))
     return projects[idx - 1]["id"]
 
@@ -216,9 +217,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         console.print("  [yellow]Fetch succeeded but the project has no secrets.[/yellow]")
     else:
         print_table(console, (("Name", {"style": "cyan"}), "Status"),
-                    ((key, _fetch_status(key, token_env)) for key in sorted(secrets)))
+                    ((console_safe(key), _fetch_status(key, token_env)) for key in sorted(secrets)))
     for w in warnings:
-        console.print(f"  [yellow]warning:[/yellow] {w}")
+        console.print(f"  [yellow]warning:[/yellow] {console_safe(w)}")
     secrets_cfg.update(enabled=True, project_id=project_id, server_url=server_url)
     for key, default in (("access_token_env", token_env), ("cache_ttl_seconds", 300),
                          ("override_existing", True), ("auto_install", True)):
@@ -355,7 +356,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             access_token=token, project_id=project_id, use_cache=False, server_url=cfg_str(bw_cfg, "server_url"),
         )
     except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Fetch failed: {exc}[/red]")
+        console.print(f"[red]Fetch failed: {console_safe(str(exc))}[/red]")
         return 1
     if not secrets:
         console.print("[yellow]No secrets in project.[/yellow]")
@@ -375,7 +376,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             action = "[green]exported[/green]" + (" (overrode)" if already else "")
         else:
             action = "[green]would export[/green]" + (" (overrides)" if already else "")
-        rows.append((key, action))
+        rows.append((console_safe(key), action))
     print_table(console, (("Name", {"style": "cyan"}), "Action"), rows, warnings)
     if not args.apply:
         console.print("\n  This was a dry-run — secrets are picked up automatically on the "
@@ -424,7 +425,9 @@ def _token_validation_status(
     if _list_projects(binary, token, probe_console, server_url=server_url) is None:
         details = probe_console.export_text(styles=False).strip()
         if details:
-            messages.extend(line.rstrip() for line in details.splitlines())
+            # The exported lines are plain text: re-escape so console.print does not
+            # re-parse literal markup the probe rendered verbatim.
+            messages.extend(console_safe(line.rstrip()) for line in details.splitlines())
         return "[red]failed[/red]", messages
     return "[green]passed[/green]", messages
 
@@ -456,11 +459,11 @@ def _list_projects(
             [str(binary), "project", "list", "--output", "json"],
             env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        console.print(f"  [red]Couldn't list projects: {exc}[/red]")
+        console.print(f"  [red]Couldn't list projects: {console_safe(str(exc))}[/red]")
         return None
     if res.returncode != 0:
         err = (res.stderr or res.stdout).strip()[:300]
-        console.print(f"  [red]bws project list failed: {err}[/red]")
+        console.print(f"  [red]bws project list failed: {console_safe(err)}[/red]")
         lowered = err.lower()
         for needles, hint in _PROJECT_LIST_HINTS:
             if any(n in lowered for n in needles):
@@ -470,7 +473,7 @@ def _list_projects(
     try:
         data = json.loads(res.stdout or "[]")
     except json.JSONDecodeError as exc:
-        console.print(f"  [red]bws returned non-JSON: {exc}[/red]")
+        console.print(f"  [red]bws returned non-JSON: {console_safe(str(exc))}[/red]")
         return None
     if not isinstance(data, list):
         return []

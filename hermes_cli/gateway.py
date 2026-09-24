@@ -3660,8 +3660,12 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
 
     # The host record answers first: it names the live host process whatever home launched it, so a
     # multiplexer started by a named profile is visible here too.
-    if host_multiplexer_serving(suffix) is not None:
-        return True
+    host = host_multiplexer_serving(suffix)
+    if host is not None:
+        # A standalone named gateway publishes through the same host rendezvous record as a
+        # multiplexer, but it serves only itself. Treating it as the default multiplexer makes
+        # `hermes -p <name> gateway restart` refuse before it can restart that profile's service.
+        return not host.standalone
 
     try:
         from hermes_constants import get_default_hermes_root

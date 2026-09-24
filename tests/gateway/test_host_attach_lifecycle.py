@@ -165,6 +165,25 @@ def test_a_standalone_owner_is_the_per_profile_topology_not_a_refusal(tmp_path, 
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
 
 
+def test_probe_marks_a_standalone_owner_from_its_identity(tmp_path, monkeypatch, owner_pid):
+    """CLI lifecycle checks must distinguish a standalone owner from a multiplexer."""
+    owner_home = tmp_path / "root" / "profiles" / "coder"
+    _publish(owner_pid, owner_home, ("coder",))
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda dialled, **kw: {
+            "pid": owner_pid,
+            "hermes_home": str(owner_home),
+            "served_profiles": ["coder"],
+            "multiplex": False,
+        },
+    )
+
+    owner = host_attach.host_gateway_serving("coder")
+
+    assert owner is not None and owner.standalone is True
+
+
 def test_replace_starts_beside_a_standalone_owner_it_does_not_belong_to(tmp_path, monkeypatch, owner_pid):
     """Generated launchd/s6 units all run ``gateway run --replace``. When ANOTHER profile's standalone
     gateway holds the host lock, ``--replace`` must not target it: that owner never serves us, the

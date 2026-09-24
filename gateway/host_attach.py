@@ -176,7 +176,10 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     while True:
         identity = _identify(home)
         if _identity_matches(identity, record, home):
-            return HostGateway(record.pid, home, _served_from_identity(identity))
+            return HostGateway(
+                record.pid, home, _served_from_identity(identity),
+                standalone=identity.get("multiplex") is False,
+            )
         if time.monotonic() >= deadline:
             break
         time.sleep(_CHANNEL_POLL_S)

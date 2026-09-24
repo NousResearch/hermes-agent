@@ -267,6 +267,19 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     host_path = _write_to_spillover(content, filename)
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
+        if env is None:
+            # No sandbox yet, but the configured terminal backend may still be a remote/
+            # container one: the next read_file/execute_code creates that sandbox, where the
+            # host path does not exist. Announce the path the sandbox will see and keep the
+            # host path as a fallback reference (#121024). Local backends translate to the
+            # same path, so nothing changes there.
+            try:
+                from tools.credential_files import to_agent_visible_cache_path
+                visible = to_agent_visible_cache_path(host_path)
+            except Exception:
+                visible = host_path
+            if visible != host_path:
+                return _persisted(visible, f" [host: {host_path}]")
         return _persisted(host_path)
     if not host_side:
         # Remote backend: reference the mounted/synced path when the sandbox can actually read

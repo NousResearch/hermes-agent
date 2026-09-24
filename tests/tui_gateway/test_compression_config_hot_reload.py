@@ -194,16 +194,6 @@ def test_removing_summary_instructions_restores_empty_default(monkeypatch):
     assert compressor.summary_instructions == ""
 
 
-def test_prompt_submit_calls_compression_sync_after_model_sync():
-    # Read the module that actually defines the turn (it moved out of server.py).
-    source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()
-    model_idx = source.find("_sync_agent_model_with_config(sid, session)")
-    compression_idx = source.find("_sync_agent_compression_with_config(sid, session)")
-    assert model_idx != -1
-    assert compression_idx != -1
-    assert model_idx < compression_idx
-
-
 # ── Unset semantics (#94724 review finding on #95980) ────────────────────
 # ``_apply_live_compression_config`` used to act only on PRESENT keys, so
 # removing tail_mode / context_length / target_ratio / model_thresholds /

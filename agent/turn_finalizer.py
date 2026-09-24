@@ -349,25 +349,26 @@ def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_r
         logger.info(_diag_msg, *_diag_args)
 
 
-def _append_file_mutation_footer(agent, final_response, logger):
-    """Append the verifier advisory when ``write_file`` / ``patch`` calls failed and were
-    never superseded by a successful write to the same path (surfaces over-claiming)."""
+def _append_file_mutation_footer(agent, final_response, logger, *, interrupted=False):
+    """Log unresolved mutations, optionally appending the user-facing advisory."""
     try:
-        # File-mutation verifier footer. This catches the specific case — reported by Ben Eng
-        # (#15524-adjacent) — where a model issues a batch of parallel patches, half of them fail with
-        # "Could not find old_string", and the model summarises the turn claiming every file was edited. The
-        # user then has to manually run ``git status`` to catch the lie. With this footer the truth is
-        # surfaced on every turn, so over-claiming is structurally impossible past the model. Gate: only
-        # applied when a real text response exists for this turn and the user didn't interrupt.
-        # Empty/interrupted turns already have other surface text that shouldn't be augmented.
+        # Display settings suppress the advisory, never the diagnostic evidence.
+        # Log unresolved attempts even when an empty/interrupted turn has no footer.
         _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
-        if _failed and agent._file_mutation_verifier_enabled():
+        if _failed:
             _failed = agent._file_mutations_still_failed(_failed)
+        for path, info in _failed.items():
+            logger.warning(
+                "Unresolved file mutation: session=%s tool=%s path=%r error=%r",
+                agent.session_id or "none", info.get("tool") or "patch",
+                path, info.get("error_preview") or "",
+            )
+        if _failed and final_response and not interrupted and agent._file_mutation_verifier_enabled():
             footer = agent._format_file_mutation_failure_footer(_failed)
             if footer:
                 final_response = final_response.rstrip() + "\n\n" + footer
     except Exception as _ver_err:
-        logger.debug("file-mutation verifier footer failed: %s", _ver_err)
+        logger.debug("file-mutation verifier reporting failed: %s", _ver_err)
     return final_response
 
 
@@ -571,9 +572,9 @@ def finalize_turn(
 
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
-    # Response transforms apply only to real, uninterrupted responses.
-    if final_response and not interrupted:
-        final_response = _append_file_mutation_footer(agent, final_response, logger)
+    final_response = _append_file_mutation_footer(
+        agent, final_response, logger, interrupted=interrupted,
+    )
     if not interrupted:
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,

@@ -245,7 +245,7 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
 
-    def test_footer_omits_file_changed_after_failed_call(self, tmp_path):
+    def test_footer_omits_file_changed_after_failed_call(self, tmp_path, monkeypatch, caplog):
         """A file modified after the failed call (terminal redirect, execute_code — no receipt)
         is not reported at turn end; an untouched one still is (#111771)."""
         changed, untouched = tmp_path / "changed.txt", tmp_path / "untouched.txt"
@@ -263,6 +263,24 @@ class TestRecordFileMutationResult:
         os.utime(changed, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
         still_failed = agent._file_mutations_still_failed(agent._turn_failed_file_mutations)
         assert list(still_failed) == [str(untouched)]
+
+        import logging
+        from agent.turn_finalizer import _append_file_mutation_footer
+
+        agent.session_id = "mutation-recovery"
+        monkeypatch.setenv("HERMES_FILE_MUTATION_VERIFIER", "0")
+        with caplog.at_level("WARNING"):
+            response = _append_file_mutation_footer(
+                agent, "The update needs another attempt.", logging.getLogger(__name__),
+            )
+        assert response == "The update needs another attempt."
+        warnings = [
+            record.getMessage() for record in caplog.records
+            if record.getMessage().startswith("Unresolved file mutation:")
+        ]
+        assert len(warnings) == 1
+        assert str(untouched) in warnings[0]
+        assert str(changed) not in warnings[0]
 
 
 
@@ -346,5 +364,4 @@ class TestVerifierEnabled:
 # ---------------------------------------------------------------------------
 # Module-level invariants
 # ---------------------------------------------------------------------------
-
 

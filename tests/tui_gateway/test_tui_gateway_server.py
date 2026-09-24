@@ -11977,7 +11977,7 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
         def interrupt(self, *args, **kwargs):
             calls["interrupt_called"] = True
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    server._sessions["sid"] = _session(agent=_Agent(), running=True)
     try:
         resp = server.handle_request(
             {
@@ -11994,6 +11994,64 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert resp["result"]["text"] == "also check auth.log"
     assert calls["steer_text"] == "also check auth.log"
     assert "interrupt_called" not in calls  # must NOT interrupt
+
+
+class _RecordingSteerAgent:
+    def __init__(self):
+        self.steered = []
+
+    def steer(self, text):
+        self.steered.append(text)
+        return True
+
+
+def test_session_steer_on_idle_session_is_rejected_not_parked():
+    """#64578: with no live turn a steer has no tool call to ride. Accepting it parked the text in
+    the agent's pending-steer slot, where the next turn's pre-API drain spliced it after an OLD tool
+    row. It must come back 'rejected' (clients then send it as a normal prompt) and never reach
+    agent.steer()."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.steer", "params": {"session_id": "sid", "text": "check the logs"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "rejected", resp
+    assert agent.steered == []
+
+
+def test_steer_slash_on_idle_session_sends_as_next_turn():
+    """#64578: idle `/steer <text>` via command.dispatch must go out as a normal next-turn message
+    with a notice saying so, not claim "Steer queued" while stashing the text on the agent."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    result = res["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "check the logs"
+    assert result.get("notice")
+    assert agent.steered == []
+
+
+def test_steer_slash_during_live_turn_still_steers():
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=True)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert res["result"]["type"] == "exec"
+    assert agent.steered == ["check the logs"]
 
 
 def test_session_steer_rejects_empty_text():

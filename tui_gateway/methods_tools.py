@@ -777,13 +777,17 @@ def _cmd_retry(rid, params, session, name, arg):
 def _cmd_steer(rid, params, session, name, arg):
     if not arg:
         return _err(rid, 4004, "usage: /steer <prompt>")
-    agent = session.get("agent") if session else None
+    shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"
+    # An idle agent still accepts steer(), but nothing drains it until the NEXT turn's pre-API
+    # drain, which splices it after whatever tool row is newest (#64578). Idle → a normal message.
+    if not (session and session.get("running")):
+        return _ok(rid, {"type": "send", "message": arg, "notice": f"No agent running; sent as next turn: {shown}"})
+    agent = session.get("agent")
     if agent and hasattr(agent, "steer"):
         with contextlib.suppress(Exception):
             if agent.steer(arg):
-                shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"
                 return _exec_out(rid, f"⏩ Steer queued — arrives after the next tool call: {shown}")
-    return _ok(rid, {"type": "send", "message": arg})  # no active run: next-turn message
+    return _ok(rid, {"type": "send", "message": arg})  # turn still building / steer refused: next-turn message
 
 
 def _cmd_goal(rid, params, session, name, arg):

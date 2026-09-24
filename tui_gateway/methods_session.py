@@ -2146,6 +2146,10 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
+        # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool
+        # row (#64578). 'rejected' makes the client queue it as a normal next prompt.
+        if verb == "steer" and not session.get("running"):
+            return _ok(rid, {"status": "rejected", "text": text})
         return _apply_correction(rid, session, verb, text, accepted_status)
 
 

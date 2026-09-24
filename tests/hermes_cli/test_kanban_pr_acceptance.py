@@ -206,3 +206,27 @@ def test_plan_limited_fallback_requires_exact_authority_and_nonexecuted_actions(
     assert not receipt()["ok"]
     github.pop("plan_limited")
     assert receipt()["ok"]  # Reachable required-check API never uses configured fallback.
+
+
+@pytest.mark.linux_only
+def test_archived_pr_restoration_preserves_contract_and_regates_children(github):
+    with connect() as conn:
+        parent = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="release", parents=[parent])
+        assert kb.archive_task(conn, parent)
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (parent,),
+        ).fetchone()[0]
+        assert not kb.restore_archived_task(conn, parent, archive_event_id=event_id + 1,
+                                            completion_contract="acme/repo", reason="mistake")
+        assert not kb.restore_archived_task(conn, parent, archive_event_id=event_id,
+                                            completion_contract="local-only", reason="mistake")
+        assert kb.restore_archived_task(conn, parent, archive_event_id=event_id,
+                                        completion_contract="acme/repo", reason="mistake")
+        restored, gated = kb.get_task(conn, parent), kb.get_task(conn, child)
+        assert restored is not None and restored.status == "blocked"
+        assert gated is not None and gated.status == "todo"
+        assert not kb.restore_archived_task(conn, parent, archive_event_id=event_id,
+                                            completion_contract="acme/repo", reason="duplicate")
+        assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='archive_restored'",
+                            (parent,)).fetchone()[0] == 1

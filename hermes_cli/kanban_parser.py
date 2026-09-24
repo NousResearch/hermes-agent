@@ -359,6 +359,12 @@ _SPECS = [
         _arg("--rm", dest="purge_ids", nargs="+",
              help="Permanently delete already-archived task ids from the board"),
     ], help="Archive one or more tasks"),
+    _cmd("restore-archived", [
+        _TASK_ID,
+        _arg("--archive-event-id", type=int, required=True, help="Exact archived task_event id"),
+        _arg("--completion-contract", required=True, help="Exact persisted completion contract"),
+        _arg("--reason", required=True, help="Audited reason for restoration"),
+    ], help="Restore an accidentally archived card to blocked with expected-state checks"),
     _cmd("tail", [_TASK_ID, _arg("--interval", type=float, default=1.0)], help="Follow a task's event stream"),
     _cmd("dispatch", [
         _arg("--dry-run", action="store_true", help="Don't actually spawn processes; just print what would happen"),

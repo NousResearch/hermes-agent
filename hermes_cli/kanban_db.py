@@ -3920,6 +3920,60 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     return True
 
 
+def restore_archived_task(conn: sqlite3.Connection, task_id: str, *, archive_event_id: int,
+                          completion_contract: str, reason: str) -> bool:
+    """Operator-only restoration to blocked, fenced by archive receipt and contract.
+
+    Archive may have released dependent tasks; restoring must reapply the parent
+    gate immediately. No prior claim or workspace is resurrected.
+    """
+    if not reason.strip() or not completion_contract or archive_event_id <= 0:
+        return False
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, completion_contract FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        event = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'archived' "
+            "ORDER BY id DESC LIMIT 1", (task_id,),
+        ).fetchone()
+        if (not row or row["status"] != "archived" or
+                row["completion_contract"] != completion_contract or
+                not event or event["id"] != archive_event_id):
+            return False
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
+            "WHERE id = ? AND status = 'archived'", (task_id,),
+        )
+        _append_event(conn, task_id, "archive_restored", {
+            "archive_event_id": archive_event_id, "completion_contract": completion_contract,
+            "reason": reason.strip(), "restored_status": "blocked",
+        })
+        _append_event(conn, task_id, "blocked", {
+            "reason": "Restored archive requires acceptance and operator release",
+            "kind": "needs_input", "archive_event_id": archive_event_id,
+        })
+        # Archiving may already have promoted dependency children. Retract only
+        # unclaimed ready descendants; in-flight workers retain their own claims
+        # but cannot complete while this parent is blocked (_parents_satisfied).
+        ready = conn.execute(
+            "WITH RECURSIVE descendants(id) AS ("
+            " SELECT child_id FROM task_links WHERE parent_id = ? UNION "
+            " SELECT l.child_id FROM task_links l JOIN descendants d ON l.parent_id = d.id) "
+            "SELECT id FROM tasks WHERE id IN (SELECT id FROM descendants) AND status = 'ready'",
+            (task_id,),
+        ).fetchall()
+        for child in ready:
+            conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                         (child["id"],))
+            _append_event(conn, child["id"], "status", {
+                "status": "todo", "reason": "archived_parent_restored", "parent": task_id,
+            })
+    recompute_ready(conn)
+    return True
+
+
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
     """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))

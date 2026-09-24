@@ -72,6 +72,26 @@ def test_kanban_show_json_includes_runtime_limit(kanban_home):
     assert uncapped["task"]["max_runtime_seconds"] is None
 
 
+def test_restore_archived_cli_requires_archive_receipt_and_keeps_pr_contract(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="reviewed PR", completion_contract="acme/repo")
+        assert kb.archive_task(conn, task_id)
+    archived = json.loads(kc.run_slash(f"show {task_id} --json"))
+    archive_id = next(e["id"] for e in archived["events"] if e["kind"] == "archived")
+    refusal = kc.run_slash(
+        f"restore-archived {task_id} --archive-event-id {archive_id + 1} "
+        "--completion-contract acme/repo --reason mistake")
+    assert "refused" in refusal
+    result = kc.run_slash(
+        f"restore-archived {task_id} --archive-event-id {archive_id} "
+        "--completion-contract acme/repo --reason mistake")
+    assert "Restored" in result
+    restored = json.loads(kc.run_slash(f"show {task_id} --json"))
+    assert restored["task"]["status"] == "blocked"
+    assert restored["task"]["completion_contract"] == "acme/repo"
+    assert any(e["kind"] == "archive_restored" for e in restored["events"])
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

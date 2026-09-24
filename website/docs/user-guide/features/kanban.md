@@ -102,6 +102,15 @@ guard, not OS isolation against arbitrary direct database writes. GitHub Enterpr
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
+If a PR card was accidentally archived before acceptance, an operator can restore
+the **same card** with `hermes kanban restore-archived TASK --archive-event-id ID
+--completion-contract URL --reason "..."`. The event ID comes from its archived
+event (`hermes kanban show TASK --json`). The exact latest archive event and
+persisted contract must match; restoration records an audit event and leaves the
+card blocked, with promoted unclaimed descendants re-gated. It does not accept
+the PR, restore an old worker claim, or bypass the completion contract. Retry
+normal completion after deploying and configuring the acceptance repair.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.

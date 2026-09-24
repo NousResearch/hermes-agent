@@ -22,24 +22,28 @@ describe('flattenSessionsWithBranches', () => {
     ])
   })
 
-  it('keeps compression continuations flat before and after their parent is sealed', () => {
+  it('uses legacy nesting when an older backend omits is_branch', () => {
     const parent = session('parent', { last_active: 20 })
+    const branch = session('branch', { last_active: 10, parent_session_id: 'parent' })
+
+    expect(flattenSessionsWithBranches([parent, branch])).toEqual([
+      { session: parent },
+      { branchStem: '└─ ', session: branch }
+    ])
+  })
+
+  it('keeps an active compression continuation flat with its visible parent', () => {
+    const parent = session('parent', { last_active: 20 })
+
     const activeContinuation = session('active-continuation', {
       is_branch: false,
       last_active: 15,
       parent_session_id: 'parent'
     })
-    const sealedContinuation = session('sealed-continuation', {
-      _lineage_root_id: 'parent',
-      is_branch: false,
-      last_active: 10,
-      parent_session_id: 'parent'
-    })
 
-    expect(flattenSessionsWithBranches([parent, activeContinuation, sealedContinuation])).toEqual([
+    expect(flattenSessionsWithBranches([parent, activeContinuation])).toEqual([
       { session: parent },
-      { session: activeContinuation },
-      { session: sealedContinuation }
+      { session: activeContinuation }
     ])
   })
 

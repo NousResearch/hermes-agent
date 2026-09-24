@@ -164,22 +164,33 @@ CORRUPT_STORE_DETAIL = {
 
 @contextlib.contextmanager
 def corrupt_store_as_status(db_path):
-    """Map a corrupt-image ``sqlite3.DatabaseError`` from a state.db read to a 503 status
+    """Map a corrupt-image ``sqlite3.DatabaseError`` or ``StateDbReplacedError`` from a state.db read to a 503 status
     payload, warning once per store per :data:`_CORRUPT_STORE_WARN_INTERVAL_S`.
     Busy/locked and every other error propagate unchanged."""
-    from hermes_state_errors import is_malformed_db_error
+    from hermes_state_errors import is_malformed_db_error, StateDbReplacedError, DeletedWalGenerationError
 
     try:
         yield
-    except sqlite3.DatabaseError as exc:
-        if not is_malformed_db_error(exc):
+    except (sqlite3.DatabaseError, StateDbReplacedError) as exc:
+        if isinstance(exc, sqlite3.DatabaseError) and not is_malformed_db_error(exc):
             raise
         key, now = str(db_path), time.monotonic()
         last = _corrupt_store_warned_at.get(key)
+        detail = dict(CORRUPT_STORE_DETAIL)
+        if isinstance(exc, DeletedWalGenerationError):
+            detail = {
+                "error": "deleted_wal",
+                "message": "state.db replaced underneath with deleted WAL generation — click Recover or run `hermes doctor --fix`.",
+            }
+        elif isinstance(exc, StateDbReplacedError):
+            detail = {
+                "error": "state_db_replaced",
+                "message": "state.db replaced underneath — click Recover or run `hermes doctor --fix`.",
+            }
         if last is None or now - last >= _CORRUPT_STORE_WARN_INTERVAL_S:
             _corrupt_store_warned_at[key] = now
-            log.warning("state.db at %s is corrupt (%s); dashboard reads return a status payload until it is "
-                        "repaired — run `hermes doctor`", db_path, exc)
+            log.warning("state.db at %s has error (%s); dashboard reads return a status payload until it is "
+                        "repaired — run `hermes doctor --fix`", db_path, exc)
         else:
-            log.debug("state.db at %s still corrupt: %s", db_path, exc)
-        raise HTTPException(status_code=503, detail={**CORRUPT_STORE_DETAIL, "path": key}) from exc
+            log.debug("state.db at %s still has error: %s", db_path, exc)
+        raise HTTPException(status_code=503, detail={**detail, "path": key}) from exc

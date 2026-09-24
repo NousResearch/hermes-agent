@@ -252,3 +252,64 @@ def test_repin_that_widens_the_plugin_requires_consent_on_every_surface(world, m
     # Consent given → applied.
     assert pc.dashboard_update_user_plugin("cat-plugin", accept_capabilities=True)["unchanged"] is False
     assert _head(target) == wide
+
+
+def _stringio_console(monkeypatch) -> "io.StringIO":
+    """Capture everything cmd_install prints (the world fixture silences the console)."""
+    import io
+
+    from rich.console import Console
+
+    out = io.StringIO()
+    monkeypatch.setattr(pc, "_console", lambda: Console(file=out, force_terminal=False, width=250))
+    return out
+
+
+def _pin_memory_provider(world) -> None:
+    """Re-pin the fixture repo so the installed tree carries the memory-provider contract markers."""
+    (world["repo"] / "__init__.py").write_text(
+        "from plugins.memory import MemoryProvider\n\n\ndef register_memory_provider():\n    return None\n")
+    world["state"]["pin"] = _commit(world["repo"], "memory provider")
+
+
+def test_memory_provider_install_hints_the_memory_provider_switch(world, monkeypatch):
+    """`plugins enable` cannot activate a memory provider — the switch is `memory.provider`
+    (#119909), so the post-install hint must point at `hermes memory setup`, like the remove
+    path's wording when it resets that knob."""
+    _pin_memory_provider(world)
+    out = _stringio_console(monkeypatch)
+
+    pc.cmd_install("cat-plugin", enable=False)
+
+    text = out.getvalue()
+    assert "hermes memory setup" in text
+    assert "memory.provider: cat-plugin" in text
+
+
+def test_plain_plugin_install_keeps_the_plugins_enable_hint(world, monkeypatch):
+    """Non-provider plugins keep the generic `plugins enable` hint — the memory wording only
+    appears for a tree carrying the provider contract markers."""
+    out = _stringio_console(monkeypatch)
+
+    pc.cmd_install("cat-plugin", enable=False)
+
+    text = out.getvalue()
+    assert "hermes plugins enable cat-plugin" in text
+    assert "memory setup" not in text
+
+
+def test_memory_provider_hint_follows_an_enable_too(world, monkeypatch):
+    """Saying yes to "Enable now?" still writes only `plugins.enabled` — the user must be told
+    that the provider itself is activated via `hermes memory setup`."""
+    import hermes_cli.plugins_activation as pact
+
+    _pin_memory_provider(world)
+    out = _stringio_console(monkeypatch)
+    monkeypatch.setattr(pact, "activate_plugin_now", lambda name, *, in_process: {})
+    monkeypatch.setattr(pact, "activation_hint", lambda result: "activation note")
+
+    pc.cmd_install("cat-plugin", enable=True)
+
+    text = out.getvalue()
+    assert "Plugin cat-plugin enabled" in text
+    assert "hermes memory setup" in text

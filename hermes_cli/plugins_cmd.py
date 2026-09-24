@@ -992,6 +992,13 @@ def cmd_install(
         console.print(
             f"[dim]Plugin installed but not enabled. "
             f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+    from plugins.memory import _is_memory_provider_dir
+    if _is_memory_provider_dir(target):
+        # `plugins.enabled` cannot activate a memory provider — the switch is `memory.provider`
+        # (#119909). Same wording the remove path prints when it resets that knob (#118854).
+        console.print(
+            "[yellow]This plugin is a memory provider: activate it with `hermes memory setup` "
+            f"(or set `memory.provider: {installed_name}`).[/yellow]")
 
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _declared_capabilities_from_manifest(installed_manifest, installed_name)

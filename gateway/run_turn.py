@@ -1526,6 +1526,10 @@ class GatewayTurnMixin:
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
+        # pre_turn-short-circuited turn: the plugin produced the final deliverable; the hidden-
+        # reasoning / silence / empty-response normalization below must not rewrite it.
+        if agent_result.get("substituted"):
+            return response, False, agent_result.get("messages", [])
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
@@ -1602,6 +1606,8 @@ class GatewayTurnMixin:
     def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
         """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
         requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
+        if agent_result.get("substituted"):
+            return response
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
@@ -1643,6 +1649,8 @@ class GatewayTurnMixin:
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
         (display.runtime_footer.enabled=false)."""
+        if agent_result.get("substituted"):
+            return ""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
@@ -1926,6 +1934,11 @@ class GatewayTurnMixin:
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
+        # pre_turn-short-circuited turn: the plugin already produced the final deliverable.
+        # Deliver the text verbatim — no voice reply, no trailing footer, no media re-scan.
+        if agent_result.get("substituted"):
+            event._substituted = True
+            return response
         if diagnostic_wake_muted(event):
             return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).

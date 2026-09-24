@@ -1515,6 +1515,28 @@ def _run_conversation_turn(
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
     stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged."""
+    # pre_turn: generic turn-level short-circuit extension point (contract in hermes_cli/plugins.py).
+    # Any plugin may return a complete turn result dict; the first non-None dict wins and replaces the
+    # whole normal routing path (context build / provider / tool placement / persistence are then the
+    # plugin's responsibility). Returning None continues the normal path unchanged.
+    try:
+        from hermes_cli.lifecycle import has_hook as _has_hook, invoke_hook as _invoke_hook
+        if _has_hook("pre_turn"):
+            for _short in _invoke_hook(
+                "pre_turn", agent=agent, user_message=user_message,
+                system_message=system_message, conversation_history=conversation_history,
+                task_id=task_id, stream_callback=stream_callback,
+                persist_user_message=persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
+                persist_user_platform_id=persist_user_platform_id,
+            ):
+                if isinstance(_short, dict):
+                    return _short
+    except Exception as exc:
+        logger.warning("pre_turn hook failed, falling through to normal path: %s", exc)
+
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message

@@ -201,6 +201,17 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # pre_turn: once at the very top of agent/conversation_loop._run_conversation_turn, BEFORE
+    # moa decode, context build, model/tool routing and persistence. Kwargs: agent, user_message,
+    # system_message, conversation_history, task_id, stream_callback, persist_user_message,
+    # persist_user_timestamp, persist_user_display_kind, persist_user_display_metadata,
+    # persist_user_platform_id. A callback may return a complete turn result dict (built through
+    # public agent/session APIs; a normal user/assistant pair can be written into the session
+    # without any model call); the first non-None dict is used AS the turn result and the normal
+    # path is skipped. Return None to continue. Structure the dict like a run_conversation result
+    # and, when the turn replaced the model path, set symbol "substituted": True so the gateway
+    # layer skips TTS/attachment/runtime-footer normalization.
+    "pre_turn",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

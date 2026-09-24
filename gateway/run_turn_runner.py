@@ -1735,7 +1735,7 @@ class TurnRunner:
         ctx = self._ctx
         # Canonicalize a model-emitted computer-use screenshot path at the common result boundary so
         # the streaming finalizer and the non-streaming delivery path see the same response.
-        if isinstance(result, dict) and isinstance(result.get("final_response"), str):
+        if isinstance(result, dict) and not result.get("substituted") and isinstance(result.get("final_response"), str):
             result["final_response"] = repair_explicit_computer_use_media_paths(
                 result["final_response"], result.get("messages", []), history_offset=len(agent_history),
             )
@@ -1979,6 +1979,7 @@ class TurnRunner:
             "error": result.get("error"),
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
+            "substituted": result.get("substituted", False),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,
@@ -1991,7 +1992,8 @@ class TurnRunner:
             # NOTE: deliberately omits agent_persisted/last_reasoning/response_* — the caller
             # defaults agent_persisted differently when the key is absent.
             return {"final_response": final_response, **common}
-        final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
+        if not result.get("substituted"):
+            final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.
         return {

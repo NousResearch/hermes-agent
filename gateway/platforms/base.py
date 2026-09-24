@@ -4117,7 +4117,8 @@ class BasePlatformAdapter(ABC):
         skipped when streaming TTS already delivered audio this turn."""
         generation = getattr(interrupt_event, "_hermes_run_generation", None)
         return bool(
-            self._should_auto_tts_for_chat(event.source.chat_id)
+            not getattr(event, "_substituted", False)
+            and self._should_auto_tts_for_chat(event.source.chat_id)
             and event.message_type == MessageType.VOICE and text_content and not media_files
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
@@ -4371,6 +4372,10 @@ class BasePlatformAdapter(ABC):
         image URLs → residual directives → bare local paths (skipped for ephemeral notices so config
         paths stay text; unknown-extension MEDIA tags survive for the bare-path detector). History
         dedup is bare-path only, off-loop, fail-open. An emptied non-empty response is recovered."""
+        # pre_turn-short-circuited turn: plugin-delivered text is deliverable verbatim; skip the
+        # MEDIA/image/local-file extraction pipeline so legitimate path-looking text is untouched.
+        if getattr(event, "_substituted", False):
+            return _ExtractedResponse(response, [], [], [], False, response)
         # Captured before extract_media strips it: images then go via send_document (no recompression).
         force_document = "[[as_document]]" in response
         pre_extract = response
@@ -4490,6 +4495,8 @@ class BasePlatformAdapter(ABC):
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                if getattr(event, "_substituted", False):
+                    _final_thread_metadata["_substituted"] = True
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):

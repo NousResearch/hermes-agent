@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
+from gateway.session_group_files import GROUP_FILE_FIELDS, GROUP_FILE_METHODS, dispatch_group_files
 
 
 GROUP_METHODS = {
@@ -14,8 +15,7 @@ GROUP_METHODS = {
     'groups.rename': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
-    'groups.attachment.upload': 'session:submit',
-    'groups.attachment.download': 'session:read',
+    **GROUP_FILE_METHODS,
     'groups.stop': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
@@ -30,8 +30,7 @@ _FIELDS = {
     'groups.rename': {'room_id', 'event_id', 'name'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
-    'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
-    'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
+    **GROUP_FILE_FIELDS,
     'groups.stop': {'room_id', 'cancel_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
@@ -68,6 +67,9 @@ async def dispatch_group_control(connection, method, params):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
+                if method in {'groups.peer.revoke', 'groups.peer.revoke_exact'}:
+                    from gateway.session_group_files_revoke import dispatch_native_revoke
+                    return dispatch_native_revoke(connection, method, supplied)
                 return _group(authority, actor, home, method, supplied)
             except RuntimeStoreError:
                 raise
@@ -96,12 +98,8 @@ def _group(authority, actor, home, method, params):
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
         room_authorizer(actor.subject, params['room_id'], create=method == 'groups.create')
-    if method in {'groups.attachment.upload', 'groups.attachment.download'}:
-        if service is None:
-            raise RuntimeStoreError('runtime_coordination_required')
-        from gateway.session_hosted_attachments import upload, download
-        handler = upload if method == 'groups.attachment.upload' else download
-        return handler(service, actor, params)
+    if method in GROUP_FILE_METHODS:
+        return dispatch_group_files(getattr(authority, 'hosted_room_service', None), actor, method, params)
     if method in execution_methods:
         if service is None:
             raise RuntimeStoreError('runtime_coordination_required')

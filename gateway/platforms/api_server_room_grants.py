@@ -57,15 +57,16 @@ def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[
     return profile, installation_id
 
 
-def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict, dict]:
+def _local_room_catalog(self, profile: str, installation_id: str, *, _connection=None) -> tuple[dict, dict]:
     """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
     from gateway.hosted_room_execution_policy import execution_policy_mapping
     with self._profile_scope(profile):
         execution_policy = execution_policy_mapping(target_profile=profile)
+    from gateway.session_peer_input import peer_input_available
     catalog = catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,), link_modes=("direct",),
-        persistent_process=True, text=True, attachments=False, target_profile=profile,
+        persistent_process=True, text=True, attachments=peer_input_available(self, profile, connection=_connection), target_profile=profile,
         execution_policy=execution_policy)
     return execution_policy, catalog
 

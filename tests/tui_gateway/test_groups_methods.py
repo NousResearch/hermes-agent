@@ -9,6 +9,7 @@ import pytest
 from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
 import tui_gateway.server as srv
 from tui_gateway import methods_groups
+from tests.tui_gateway.test_legacy_files_rpc import legacy_files  # noqa: F401
 
 
 @pytest.fixture
@@ -299,14 +300,19 @@ def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
         )
 
 
-def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeypatch):
+@pytest.mark.parametrize('attachments', [False, True])
+def test_register_peer_route_probes_scope_and_persists_via_service(legacy_files, monkeypatch, attachments):
     from gateway.hosted_room_peer import catalog_mapping
     from gateway.hosted_rooms import local_authority_gateway_id
 
+    profile_home = legacy_files.home / 'profiles' / 'ops'
+    profile_home.mkdir(parents=True)
+    (profile_home / 'config.yaml').write_text('{}\n')
     catalog = catalog_mapping(
             target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
+        attachments=attachments,
     )
     captured = {}
     room = _create_room()
@@ -329,7 +335,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
             }
 
     class FakeService:
-        db_path = hosted_rooms_default_db_path()
+        db_path = legacy_files.service.db_path
 
         def register_peer_route(self, **kwargs):
             captured["registered"] = kwargs
@@ -355,6 +361,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
     assert result["registered"] is True
     assert captured["api_key"] == ""
     assert captured["registered"]["target_url"] == ("https://peer.example.test")
+    assert captured['registered']['route'].attachments is attachments
 
 
 def test_register_rejects_plaintext_non_loopback(home, monkeypatch):

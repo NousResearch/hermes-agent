@@ -159,14 +159,16 @@ def admission_media_references(payload):
 def _held_media_paths(conn):
     # Project only references, not potentially large inline-image/history payloads.
     rows = conn.execute("""SELECT status, json_extract(payload_json,
-            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media')
+            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media',
+            '$.api_turn_v1.settings.room_input_media.media')
             FROM session_admissions WHERE status!='terminal'
-            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL""").fetchall()
+            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL
+            OR json_type(payload_json, '$.api_turn_v1.settings.room_input_media.media') IS NOT NULL""").fetchall()
     held = set()
     for status, encoded in rows:
-        attachments, native, api = json.loads(encoded)
-        # API images remain canonical history context after the turn completes.
-        references = list(api or ())
+        attachments, native, api, peer = json.loads(encoded)
+        # Private API images remain holders after execution; G owns v3 documents.
+        references = list(api or ()) + list(peer or ())
         if status != 'terminal':
             references.extend(attachments or ())
             references.extend(native or ())

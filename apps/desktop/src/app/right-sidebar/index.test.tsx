@@ -6,11 +6,16 @@ import { $connection, $selectedStoredSessionId, $workspaceCwdOwner, setCurrentCw
 
 import { $showIgnoredRoots } from './files/prefs'
 import { resetProjectTreeState } from './files/use-project-tree'
+
 import { RightSidebarPane } from './index'
 
-vi.mock('@/api/client', () => ({ hermesApi: vi.fn().mockResolvedValue({ entries: [] }) }))
+vi.mock('@/api/client', async importOriginal => ({
+  ...(await importOriginal()),
+  hermesApi: vi.fn().mockResolvedValue({ entries: [] })
+}))
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
+
 function installBridge() {
   ;(window as unknown as { hermesDesktop: { readDir: typeof readDir } }).hermesDesktop = { readDir }
 }

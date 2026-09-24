@@ -237,47 +237,81 @@ def interrupted_pull_marker(root: Path) -> Path:
     return _git_dir(root) / INTERRUPTED_PULL_MARKER
 
 
+def _trees_git_could_write(git, pre: str, target: str) -> tuple[list[str], set[str]]:
+    """The trees the killed git was moving the checkout to, and the paths whose new content is unknowable.
+
+    A fast-forward or ``reset --hard`` writes ``target``. On a custom branch the updater runs
+    ``git merge``, whose files are the merge of both sides: ``merge-tree`` computes the same tree. A
+    conflicted path (its markers carry other labels) and, on git < 2.38 (no ``--write-tree``), every
+    path both sides changed count as git's whatever their content.
+    """
+    base = git("merge-base", pre, target).stdout.strip()
+    if not base or base == pre:  # fast-forward, or unrelated histories (only a reset can land those)
+        return [target], set()
+    merged = git("merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", pre, target)
+    if merged.returncode in (0, 1):  # 1: conflicts
+        tree, *conflicted = merged.stdout.split("\0")
+        return [target, tree], set(filter(None, conflicted))
+    changed = [set(filter(None, git("diff", "--name-only", "-z", "--no-renames", base, side).stdout.split("\0")))
+               for side in (pre, target)]
+    return [target], changed[0] & changed[1]
+
+
+def _hash_worktree(git, paths: list[str]) -> dict[str, str]:
+    """Blob ids of the checkout's files, through the repo's clean filters, like ``git add`` would store."""
+    listed = [p for p in paths if "\n" not in p]  # --stdin-paths is newline-delimited
+    blobs = {}
+    if listed:
+        hashed = git("hash-object", "--stdin-paths", stdin="\n".join(listed) + "\n")
+        if hashed.returncode != 0:
+            raise subprocess.SubprocessError(hashed.stderr.strip())
+        blobs.update(zip(listed, hashed.stdout.split()))
+    for path in set(paths) - set(listed):
+        blobs[path] = git("hash-object", "--", path).stdout.strip()
+    return blobs
+
+
 def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str], list[str]] | None:
     """Paths the killed git already touched on the way to ``target``: (restore from HEAD, delete as added).
 
     Git rewrites a file as unlink, create, write, so a kill leaves it missing, empty or cut short:
-    all of those count as git's, like the full ``target`` blob. Content that matches neither side and
-    is not the start of the target is the user's own edit (e.g. a re-applied stash) and is left
-    alone. ``None``: git no longer knows ``target``.
+    all of those count as git's, like the full new blob. Content that matches neither side and is not
+    the start of a new blob is the user's own edit (e.g. a re-applied stash) and is left alone.
+    ``None``: git no longer knows ``target``.
     """
-    diff = git("diff", "--raw", "-z", "--no-renames", "--no-abbrev", pre, target)
-    if diff.returncode != 0:
+    if git("rev-parse", "-q", "--verify", f"{target}^{{commit}}").returncode != 0:
         return None
-    parts = diff.stdout.split("\0")
-    entries = []  # (status, path, pre mode, pre blob, target blob)
-    for meta, path in zip(parts[::2], parts[1::2]):
-        old_mode, new_mode, old_blob, new_blob, status = meta.lstrip(":").split()
-        if status == "D" and old_mode in _REGULAR_FILE_MODES:
-            entries.append((status, path, old_mode, old_blob, None))
-        elif status != "D" and new_mode in _REGULAR_FILE_MODES:
-            entries.append((status, path, old_mode, old_blob, new_blob))
-    present = [path for _s, path, _m, _o, blob in entries if blob and (root / path).is_file()]
-    hashed = git("hash-object", "--stdin-paths", stdin="\n".join(present) + "\n") if present else None
-    if hashed is not None and hashed.returncode != 0:
-        raise subprocess.SubprocessError(hashed.stderr.strip())
-    worktree_blob = dict(zip(present, hashed.stdout.split() if hashed else ()))
+    trees, unknown = _trees_git_could_write(git, pre, target)
+    entries = {}  # path -> (pre mode, pre blob or None when git adds it, [(new mode, new blob or None)])
+    for tree in trees:
+        diff = git("diff", "--raw", "-z", "--no-renames", "--no-abbrev", pre, tree)
+        if diff.returncode != 0:
+            raise subprocess.SubprocessError(diff.stderr.strip())
+        parts = diff.stdout.split("\0")
+        for meta, path in zip(parts[::2], parts[1::2]):
+            old_mode, new_mode, old_blob, new_blob, status = meta.lstrip(":").split()
+            if (old_mode if status == "D" else new_mode) not in _REGULAR_FILE_MODES:
+                continue
+            entry = entries.setdefault(path, (old_mode, None if status == "A" else old_blob, []))
+            entry[2].append((new_mode, None if status == "D" else new_blob))
+    worktree_blob = _hash_worktree(git, [path for path in entries if (root / path).is_file()])
     restore, added = [], []
-    for status, path, old_mode, old_blob, blob in entries:
-        file = root / path
-        if blob is None:
-            written = not file.exists()
-        elif path not in worktree_blob:
-            written = status != "A"  # unlinked, not yet recreated
-        elif worktree_blob[path] not in (old_blob, blob):  # git's own file, cut short, starts the target
-            smudged = subprocess.run(["git", "-C", str(root), "cat-file", "--filters", f"--path={path}", blob],
-                                     capture_output=True, check=True, timeout=120, stdin=subprocess.DEVNULL)
-            written = smudged.stdout.startswith(file.read_bytes())
-        elif old_blob == blob:  # mode-only: only the exec bit tells whether git got here
-            written = sys.platform != "win32" and bool(file.stat().st_mode & 0o100) != (old_mode == "100755")
-        else:
-            written = worktree_blob[path] == blob
+    for path, (old_mode, old_blob, new) in entries.items():
+        file, blobs = root / path, {blob for _mode, blob in new if blob}
+        if path not in worktree_blob:
+            written = old_blob is not None  # unlinked (or deleted), not yet recreated
+        elif worktree_blob[path] == old_blob:  # only a mode change tells whether git got here
+            written = (sys.platform != "win32" and any(b == old_blob and m != old_mode for m, b in new)
+                       and bool(file.stat().st_mode & 0o100) != (old_mode == "100755"))
+        elif worktree_blob[path] in blobs or path in unknown:
+            written = True
+        else:  # git's own file cut short starts one of the new blobs
+            content = file.read_bytes()
+            written = any(subprocess.run(["git", "-C", str(root), "cat-file", "--filters", f"--path={path}", blob],
+                                         capture_output=True, check=True, timeout=120,
+                                         stdin=subprocess.DEVNULL).stdout.startswith(content) for blob in blobs)
         if written:
-            (added if status == "A" else restore).append(path)
+            (added if old_blob is None else restore).append(path)
     return restore, added
 
 
@@ -292,6 +326,12 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
     (the target's content, or torn on the way there) returns to HEAD (the commit the venv was built
     for), so the install is whole again and ``hermes update`` redoes the update from the start. Local
     edits are never touched; the updater's autostash (if any) stays in ``git stash list``.
+
+    Limits, by design: a torn ``hermes_cli/__init__.py`` or ``hermes_bootstrap.py`` fails before this
+    runs (``git -C <root> reset --hard <pre>`` from the marker repairs it). A file git also changes
+    that the user deleted, emptied or cut to a prefix of git's version looks exactly like git's own
+    half-written file and is restored too, as is a user edit to a conflicted path or, on git < 2.38, to a
+    path both sides of a custom-branch merge changed.
     """
     try:
         root = _project_root() if project_root is None else project_root

@@ -4,14 +4,15 @@
 #   evals/update_pipeline/interrupted_pull_ab.sh <repo> <installed-sha> <label> [python]
 #
 # Builds a disposable origin + install at <installed-sha>; origin/main gets one commit that changes
-# utils.py, makes hermes_cli/config.py import a new utils name, changes run_agent.py and adds a
-# package. Runs the REAL autostash + _pull_updates from the install's own tree and the REAL entry point
+# utils.py, makes hermes_cli/config.py and run_agent.py import a new utils name, and adds a package. Runs the REAL autostash + _pull_updates from the install's own tree and the REAL entry point
 # (`python -m hermes_cli.main config path`) under a disposable HOME/HERMES_HOME:
 #   A  updater SIGKILLed before git wrote anything; user edits upstream-changed files, fetches, runs hermes
 #   B  custom branch whose commit conflicts upstream: update exits 1; user merges by hand, runs hermes
 #   C  git wrote config.py + the new package, SIGKILL; user edits an upstream-changed file git never wrote
 #   D  C in a linked-worktree install (`.git` is a file)
-# Fixed: A/B untouched, C/D restored with the user edit kept and the re-update lands; one VERDICT line.
+#   E  custom branch whose commit merges cleanly: the kill lands inside the `git merge`, after it wrote
+#      the merged run_agent.py; the user edits a file git never wrote, then runs `hermes-agent`'s import
+# Fixed: A/B untouched, C/D/E restored with the user edit kept and the re-update lands; one VERDICT line.
 # [python] defaults to <repo>/venv/bin/python (needs the Hermes deps).
 set -u
 REPO=$1; REF=$2; LABEL=$3
@@ -48,7 +49,7 @@ setup() {  # $1 = install kind: clone | worktree
     printf '\n\ndef _torn_probe():\n    return 1\n' >> utils.py
     sed -i 's/^from utils import atomic_replace, fast_safe_load, file_signature$/from utils import atomic_replace, fast_safe_load, file_signature, _torn_probe  # noqa: F401/' hermes_cli/config.py
     grep -q _torn_probe hermes_cli/config.py || { echo "SETUP: config.py import line not found"; exit 1; }
-    echo "# upstream change" >> run_agent.py
+    echo "from utils import _torn_probe  # noqa: E402,F401" >> run_agent.py
     mkdir -p torn_newpkg && echo "from utils import _torn_probe" > torn_newpkg/__init__.py
     git add -A && git commit -qm "upstream B" )
   if [ "$1" = worktree ]; then
@@ -141,7 +142,36 @@ EOF
   echo "  after re-update: HEAD==origin/main? $([ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && echo yes || echo no) user edit kept=$(grep -c USER_EDIT run_agent.py)"
   [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && [ "$(grep -c USER_EDIT run_agent.py)" = 1 ] && CD_OK=$((CD_OK + 1))
 done
+# ---- E: the custom-branch `git merge` wrote its merged run_agent.py, SIGKILL; `hermes-agent` launches ----
+echo; echo "--- E: kill inside the custom-branch merge, then the hermes-agent entry point (run_agent)"
+setup clone >/dev/null
+git checkout -q -b mywork && sed -i "1a LOCAL_WORK = 1" run_agent.py && git commit -qam "local work that merges cleanly"
+cat > "$U/fakebin/git" <<'EOF'
+#!/bin/bash
+# The merge writes run_agent.py as the merge of both sides (upstream's half imports a utils name git has
+# not written yet), holds index.lock, and is SIGKILLed.
+for a in "$@"; do
+  if [ "$a" = "--no-edit" ]; then
+    /usr/bin/git show "$(/usr/bin/git merge-tree --write-tree HEAD origin/main):run_agent.py" > run_agent.py
+    touch "$(/usr/bin/git rev-parse --git-dir)/index.lock"
+    sleep 30
+  fi
+done
+exec /usr/bin/git "$@"
+EOF
+chmod +x "$U/fakebin/git"
+PID=$(pull_bg); for i in $(seq 60); do grep -q _torn_probe run_agent.py && break; sleep 0.5; done; sleep 1
+kill -KILL -- -$PID; wait $PID 2>/dev/null
+echo "  torn: HEAD=$(git rev-parse --short HEAD) [$(git status --porcelain | tr '\n' ' ')] marker=[$(marker | cut -c1-60)...]"
+sed -i '2a MY_UNCOMMITTED_WORK = 42' utils.py  # upstream changes this file too; git never wrote it
+PYTHONPATH=$U/install timeout 120 "$PY" -c "import run_agent; print('run_agent imported')" 2>&1 | grep -v '^$' | tail -4 | sed 's/^/    hermes-agent> /'
+echo "  RESULT E: [$(git status --porcelain | tr '\n' ' ')] user edit kept=$(grep -c MY_UNCOMMITTED_WORK utils.py) marker=[$(marker)]"
+PATH=/usr/bin:$PATH $PY $U/pull.py $U/install 2>&1 | grep PULL | sed 's/^/    re-update> /'
+E_MERGED=$(git merge-base --is-ancestor origin/main HEAD && grep -q LOCAL_WORK run_agent.py && echo yes || echo no)
+echo "  after re-update: origin/main merged with the local commit? $E_MERGED user edit kept=$(grep -c MY_UNCOMMITTED_WORK utils.py)"
+E_OK=$([ "$E_MERGED" = yes ] && [ "$(grep -c MY_UNCOMMITTED_WORK utils.py)" = 1 ] && echo 1 || echo 0)
+
 echo
-if [ "$A_OK$B_OK$CD_OK" = 112 ]; then echo "VERDICT: FIXED ($LABEL) — user work untouched in A/B, torn tree restored with user edits kept in C/D"
-else echo "VERDICT: FIRES ($LABEL) — A_ok=$A_OK B_ok=$B_OK CD_ok=$CD_OK/2"; fi
+if [ "$A_OK$B_OK$CD_OK$E_OK" = 1121 ]; then echo "VERDICT: FIXED ($LABEL) — user work untouched in A/B, torn tree restored with user edits kept in C/D/E"
+else echo "VERDICT: FIRES ($LABEL) — A_ok=$A_OK B_ok=$B_OK CD_ok=$CD_OK/2 E_ok=$E_OK"; fi
 rm -rf "$U"

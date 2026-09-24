@@ -24,6 +24,29 @@ def _git(root: Path, *args: str) -> str:
                           text=True, encoding="utf-8").stdout.strip()
 
 
+_MULTI = "top = 1\nx = 0\ny = 0\nz = 0\nend = 1\n"
+
+
+# Runs an entry module with the repair replaced by a probe that lists the checkout modules imported so
+# far (the entry module, its packages and what hermes_bootstrap needs excluded), then stops.
+_ENTRY_SPY = """
+import importlib, json, os, sys
+import hermes_bootstrap
+from hermes_cli import _early_recovery as er
+
+before, venv, entry = set(sys.modules), os.path.realpath(sys.prefix), sys.argv[1]
+
+def probe():
+    loaded = (n for n in set(sys.modules) - before if not f"{entry}.".startswith(n + "."))
+    files = {n: os.path.realpath(str(getattr(sys.modules[n], "__file__", None))) for n in loaded}
+    print(json.dumps(sorted(n for n, f in files.items() if f.startswith(os.getcwd()) and not f.startswith(venv))))
+    raise SystemExit(0)
+
+er.restore_interrupted_pull = probe
+importlib.import_module(entry)
+"""
+
+
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
     """An install at commit A whose fetched ``origin/main`` is B (modifies, deletes, adds, flips a mode)."""
@@ -33,12 +56,12 @@ def checkout(tmp_path, monkeypatch):
     _git(origin, "config", "user.email", "t@example.invalid")
     _git(origin, "config", "user.name", "t")
     files = {"utils.py": "OLD = 1\n", "other.py": "a = 1\n", "gone.py": "x = 1\n", "cut.py": "c = 1\n",
-             "blank.py": "b = 1\n", "half.py": "h = 1\n", "tool.sh": "echo\n"}
+             "blank.py": "b = 1\n", "half.py": "h = 1\n", "tool.sh": "echo\n", "multi.py": _MULTI}
     for name, body in files.items():
         (origin / name).write_text(body, encoding="utf-8", newline="")
     _git(origin, "add", "-A")
     _git(origin, "commit", "-qm", "A")
-    for name, body in {"utils.py": "NEW = 1\n", "other.py": "a = 2\n", "cut.py": "c = 2\n",
+    for name, body in {"utils.py": "NEW = 1\n", "other.py": "a = 2\n", "cut.py": "c = 2\n", "multi.py": "top = 2\n" + _MULTI[8:],
                        "blank.py": "b = 2\n", "half.py": "h = 2  # long enough to span pages\n"}.items():
         (origin / name).write_text(body, encoding="utf-8", newline="")
     (origin / "gone.py").unlink()
@@ -111,6 +134,14 @@ def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monk
     _pull(root)  # `hermes update` again: a normal fast-forward
     assert _git(root, "rev-parse", "HEAD") == b and not marker.exists()
 
+    # Every console script (`hermes`, `hermes-agent`, `hermes-acp`) repairs before its entry module imports
+    # any other checkout module past hermes_bootstrap: any of them may be a half-written file.
+    repo = os.path.realpath(Path(er.__file__).parent.parent)
+    for entry in ("hermes_cli.main", "run_agent", "acp_adapter.entry"):
+        run = subprocess.run([sys.executable, "-c", _ENTRY_SPY, entry], cwd=repo, capture_output=True, text=True,
+                             encoding="utf-8", env={**os.environ, "PYTHONPATH": repo}, timeout=120)
+        assert run.stdout.strip().splitlines()[-1:] == ["[]"], (entry, run.stdout[-500:], run.stderr[-2000:])
+
 
 def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout):
     """sys.exit on a merge conflict is not a kill, and a marker git never acted on restores nothing."""
@@ -145,3 +176,21 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout):
     # A target git no longer knows (gc, re-clone) can never be compared against: drop the marker.
     marker.write_text(stale.replace(b, "0" * 40), encoding="utf-8", newline="")
     assert er.restore_interrupted_pull(root) is False and not marker.exists()
+
+    # Killed inside the custom-branch `git merge`: its files are the merge of both sides, not origin's
+    # blob, and still git's (torn ones too), while the user's own edit survives.
+    _git(root, "reset", "-q", "--hard", a)
+    (root / "multi.py").write_text(_MULTI.replace("end = 1", "end = 'mine'"), encoding="utf-8", newline="")
+    _git(root, "commit", "-qam", "local work that merges cleanly")
+    pre = _git(root, "rev-parse", "HEAD")
+    merged = _git(root, "merge-tree", "--write-tree", pre, b)
+    merged_multi = _git(root, "show", f"{merged}:multi.py") + "\n"
+    assert merged_multi == "top = 2\nx = 0\ny = 0\nz = 0\nend = 'mine'\n"  # neither side's blob
+    (root / "multi.py").write_text(merged_multi, encoding="utf-8", newline="")
+    (root / "utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")
+    (root / "half.py").write_bytes(b"h = 2  # long")
+    (root / "other.py").write_text("a = 1  # my edit\n", encoding="utf-8", newline="")
+    marker.write_text(f"pid=0\npre={pre}\ntarget={b}\nstash=\n", encoding="utf-8", newline="")
+    assert er.restore_interrupted_pull(root) is True
+    assert _git(root, "rev-parse", "HEAD") == pre and not marker.exists()
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == "M other.py"

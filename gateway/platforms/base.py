@@ -4036,14 +4036,13 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
                 return
         if self._busy_session_handler is not None:
-            handled = False
             try:
                 handled = await self._busy_session_handler(event, session_key)
             except Exception as e:
                 logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
                 # It may have stored the event before raising: queuing or starting it again below
                 # would run it twice.
-                handled = getattr(event, "_gateway_accepted", False) is True
+                handled = event._gateway_accepted is True
             # The handler awaits (profile scope load, compression-lock read). If the owner task
             # finished meanwhile, it found the slot empty and released the guard, so nothing would
             # drain what the handler queued: start that now. If the handler left this event to the

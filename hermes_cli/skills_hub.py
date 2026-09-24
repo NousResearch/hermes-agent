@@ -1209,7 +1209,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
         resp = call("post", f"{target_repo}/forks", timeout=30)
         if resp.status_code in {200, 202}:
             fork = resp.json()
-            fork_repo = fork.get("full_name", "")
+            fork_repo = fork.get("full_name", "") if isinstance(fork, dict) else ""
             if not fork_repo:
                 return False, (
                     "GitHub fork response missing 'full_name'. "

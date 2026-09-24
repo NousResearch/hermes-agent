@@ -11,7 +11,7 @@ from hermes_cli.skills_hub import do_publish
 from tools.skills_hub_github import GitHubAuth
 
 
-@pytest.mark.parametrize("failure", ["fork_missing", "fork_empty", "fork_null", "branch", "upload", "network", "read"])
+@pytest.mark.parametrize("failure", ["fork_missing", "fork_empty", "fork_null", "fork_json_null", "fork_json_list", "branch", "upload", "network", "read"])
 def test_publish_reports_failure_without_creating_pr(tmp_path, monkeypatch, failure):
     skill = tmp_path / "example"
     skill.mkdir()
@@ -26,8 +26,8 @@ def test_publish_reports_failure_without_creating_pr(tmp_path, monkeypatch, fail
         path = request.url.path
         if path.endswith("/forks"):
             if failure.startswith("fork_"):
-                data = {"fork_missing": {}, "fork_empty": {"full_name": ""}, "fork_null": {"full_name": None}}[failure]
-                return httpx.Response(202, json=data)
+                data = {"fork_missing": {}, "fork_empty": {"full_name": ""}, "fork_null": {"full_name": None}, "fork_json_null": None, "fork_json_list": []}[failure]
+                return httpx.Response(202, text=json.dumps(data))
             return httpx.Response(202, json={"full_name": "contributor/project"})
         if path == "/repos/owner/project":
             return httpx.Response(200, json={"default_branch": "development"})

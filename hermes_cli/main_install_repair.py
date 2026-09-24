@@ -241,8 +241,22 @@ def _recover_core_update_marker_locked() -> None:
     Narrow lazy-refresh import probes are not proof that a generic interrupted core
     install finished — a missing dep outside that probe set would look healthy and
     clear the breadcrumb too early.
+
+    Shares the early pass's attempt budget (the marker's JSON body). Past it, this path
+    used to reinstall on EVERY boot from a process that already maps native venv
+    extensions — the reinstall loop of #81594; now it prints the manual recovery instead.
     """
     from hermes_cli.main import PROJECT_ROOT
+    marker = _update_marker_path()
+    attempts = _early_recovery_mod._read_marker_attempts(marker)
+    max_attempts = _early_recovery_mod._CORE_INSTALL_MAX_ATTEMPTS
+    if attempts >= max_attempts:
+        print(
+            f"✗ Finishing an interrupted `hermes update` failed {attempts} times; automatic "
+            "retries are paused so Hermes stops reinstalling on every launch.")
+        for line in _manual_core_recovery_lines(PROJECT_ROOT, marker, windows=_is_windows()):
+            print(line)
+        return
     print(
         "⚠ A previous `hermes update` was interrupted mid-install — "
         "finishing dependency installation now...")
@@ -259,9 +273,8 @@ def _recover_core_update_marker_locked() -> None:
             "then quarantined full reinstall (core marker stays until that "
             "succeeds)...")
         _repair_venv_via_import_probes(install_prefix, env=install_env)
+    from hermes_cli import _install_repair as _ir
     try:
-        from hermes_cli import _install_repair as _ir
-
         # ensure_uv bootstraps uv itself when missing (the early pass's stdlib-only lookup
         # cannot), so a venv whose uv vanished mid-update still heals.
         from hermes_cli.managed_uv import ensure_uv
@@ -272,23 +285,39 @@ def _recover_core_update_marker_locked() -> None:
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")
     except Exception as exc:
-        # Leave the marker so the next launch retries; give the exact manual command.
+        # Leave the marker so the next launch retries (within the shared budget); give the
+        # exact manual command.
+        attempts = _ir.bump_marker_attempts(marker)
         logger.debug("Interrupted-install recovery failed: %s", exc)
-        print("✗ Could not auto-recover the interrupted install.")
-        manual = (
-            "  Hermes is still running from the launcher that needs "
-            "replacing. Close other Hermes windows, restart from a "
-            "different terminal, then run:",
-            f'    cd /d "{PROJECT_ROOT}"',
-            f'    "{sys.executable}" -m pip install -e ".[all]"',
-        ) if self_locked else (
-            "  Recover manually with:",
-            f"    cd {PROJECT_ROOT}",
-            f"    {sys.executable} -m ensurepip --upgrade",
-            f"    {sys.executable} -m pip install -e '.[all]'",
-        )
-        for line in manual:
+        retry = ("the next launch will retry" if attempts < max_attempts
+                 else "automatic retries are now paused")
+        print(f"✗ Could not auto-recover the interrupted install "
+              f"(attempt {attempts}/{max_attempts}; {retry}).")
+        for line in _manual_core_recovery_lines(
+                PROJECT_ROOT, marker, windows=self_locked or _is_windows()):
             print(line)
+
+
+def _manual_core_recovery_lines(root: Path, marker: Path, *, windows: bool) -> tuple[str, ...]:
+    """The exact commands that finish a pending core install by hand and clear its marker.
+
+    On Windows another Hermes process (Desktop backend, gateway, a second terminal) mapping a
+    venv ``.pyd`` is what keeps the automatic install failing, so they must be closed first.
+    """
+    if windows:
+        return (
+            "  Close every Hermes window (Desktop app, gateways, other terminals), then from a "
+            "new terminal run:",
+            f'    cd /d "{root}"',
+            f'    "{sys.executable}" -m ensurepip --upgrade',
+            f'    "{sys.executable}" -m pip install -e ".[all]"',
+            f'    del "{marker}"')
+    return (
+        "  Recover manually with:",
+        f"    cd {shlex.quote(str(root))}",
+        f"    {sys.executable} -m ensurepip --upgrade",
+        f"    {sys.executable} -m pip install -e '.[all]'",
+        f"    rm -f {shlex.quote(str(marker))}")
 
 
 def _norm_exe_path(path) -> str:
@@ -310,6 +339,26 @@ def _windows_shim_in_process_chain() -> Path | None:
 
     See #88838, #89599.
     """
+    _match = _venv_shim_matcher()
+    if _match is None:
+        return None
+
+    main_mod = sys.modules.get("__main__")
+    candidates = [*sys.argv[:1], *filter(None, (
+        getattr(main_mod, "__file__", None),
+        getattr(getattr(main_mod, "__spec__", None), "origin", None)))]
+    for candidate in candidates:
+        matched = _match(candidate)
+        if matched is not None:
+            return matched
+
+    ancestor = _windows_shim_ancestor(_match)
+    return None if ancestor is None else ancestor[0]
+
+
+def _venv_shim_matcher():
+    """``candidate -> shim | None`` against the project venv's own console shims, or ``None`` when
+    there is nothing to match (not Windows, no venv, no shims)."""
     if not _is_windows():
         return None
     scripts_dir = _venv_scripts_dir()
@@ -325,15 +374,11 @@ def _windows_shim_in_process_chain() -> Path | None:
             path = path.parent
         return shims.get(_norm_exe_path(path))
 
-    main_mod = sys.modules.get("__main__")
-    candidates = [*sys.argv[:1], *filter(None, (
-        getattr(main_mod, "__file__", None),
-        getattr(getattr(main_mod, "__spec__", None), "origin", None)))]
-    for candidate in candidates:
-        matched = _match(candidate)
-        if matched is not None:
-            return matched
+    return _match
 
+
+def _windows_shim_ancestor(_match) -> tuple[Path, int] | None:
+    """``(shim, pid)`` of the nearest process in our chain (self first) whose executable IS a shim."""
     with contextlib.suppress(Exception):
         import psutil
         me = psutil.Process()
@@ -343,8 +388,17 @@ def _windows_shim_in_process_chain() -> Path | None:
             except Exception:
                 continue
             if matched is not None:
-                return matched
+                return matched, proc.pid
     return None
+
+
+def _windows_shim_holder_pid() -> int:
+    """Pid a detached child must outwait before touching the venv: the ``hermes.exe`` launcher
+    ancestor that holds the shim image open (it spawns this interpreter and exits only after
+    reaping it), else this process — argv names the shim but it is the launcher that locks it."""
+    _match = _venv_shim_matcher()
+    ancestor = _windows_shim_ancestor(_match) if _match is not None else None
+    return os.getpid() if ancestor is None else ancestor[1]
 
 
 def _windows_running_hermes_launcher_locked() -> bool:
@@ -356,7 +410,7 @@ def _windows_running_hermes_launcher_locked() -> bool:
 _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
 
 
-def _reexec_dependency_sync_off_windows_shim() -> bool:
+def _reexec_dependency_sync_off_windows_shim(gateway_resume: dict | None = None) -> bool:
     """Hand the dependency sync to the venv interpreter, off the console shim.
 
     Returns True when a child was spawned and the caller must exit at once (releasing the
@@ -373,12 +427,10 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     date" early return from swallowing the sync. ``.update-incomplete`` is already written, so
     a child that dies mid-install is finished by the next launch's recovery.
 
-    Called at the dependency-sync boundary, NOT at the top of the command — the same placement rule as the
-    native-module deferral beside it, and for the same reason (#86735): a hand-off that fires before the
-    fetch detaches every run, including the ``Already up to date!`` no-op that never touches the venv at
-    all, and it takes the interactive prompts with it. By the time we reach here the code swap is done and
-    every question — stash, branch switch, config migration — has already been asked and answered in the
-    user's own console.
+    The child owns the Windows gateway resume from the moment it exists: ``gateway_resume``
+    travels in its env and this process's copy is disarmed, so the parent exits at once instead
+    of relaunching gateways while it still holds the shim (#101600). The child waits for this
+    pid before its own pause/venv work (``update_handoff.wait_for_shim_parent_exit``).
     ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with the shim as its script and
     holds it open without ``FILE_SHARE_DELETE`` for the whole command, so the quarantine rename is refused
     and uv fails to replace it with os error 32 (#88838, #89599).
@@ -389,12 +441,16 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     if shim is None:
         return False
     from hermes_constants import venv_python_path
+    from hermes_cli.update_handoff import detached_shim_child_env
     python_exe = venv_python_path(shim.parent.parent, windows=True)
     cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
     if python_exe.is_file():
         try:
             subprocess.Popen(
-                cmd, env={**os.environ, _UPDATE_REEXEC_ENV: "1"}, stdin=subprocess.DEVNULL)
+                cmd, env=detached_shim_child_env({**os.environ, _UPDATE_REEXEC_ENV: "1"}, gateway_resume),
+                stdin=subprocess.DEVNULL)
+            if gateway_resume is not None:
+                gateway_resume["resume_needed"] = False
             print(
                 f"→ Windows: {shim.name} cannot replace itself while it runs; "
                 "finishing the dependency install under the venv Python.")
@@ -984,10 +1040,64 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}")
     if failed_extras:
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
+        _warn_configured_features_missing_deps(install_cmd_prefix, env=env)
     # uv's incremental resolver has left newly added base deps silently missing on a half-stale
     # venv, surfacing hours later as a downstream ModuleNotFoundError. Verify here instead.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
     _verify_console_scripts_installed(install_cmd_prefix, env=env)
+
+
+_CONFIGURED_FEATURES_SCRIPT = (
+    "import importlib.util\n"
+    "try:\n"
+    "    from gateway.config import load_gateway_config\n"
+    "    from gateway.platform_registry import platform_registry\n"
+    "    for platform in load_gateway_config().get_connected_platforms():\n"
+    "        entry = platform_registry.get(platform.value)\n"
+    "        if entry is not None and not entry.check_fn():\n"
+    "            print(entry.label + '\\t' + (entry.install_hint or 'reinstall the %r extra' % platform.value))\n"
+    "except Exception:\n"
+    "    pass\n"
+    "try:\n"
+    "    from hermes_cli.config import load_config\n"
+    "    if (load_config().get('mcp_servers') or {}) and importlib.util.find_spec('mcp') is None:\n"
+    "        print('MCP servers\\tinstall the ' + repr('mcp') + ' extra')\n"
+    "except Exception:\n"
+    "    pass\n"
+)
+
+
+def _configured_features_missing_deps(
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None) -> list[tuple[str, str]]:
+    """``(feature, hint)`` for every configured platform / MCP whose optional deps are not importable
+    in the TARGET venv. A running gateway masks the gap until its next restart (#10651), so the
+    update has to say which configured feature will fail to load. Probed in a fresh interpreter:
+    the updater's own process may be the outer Python and its import caches predate the install,
+    so an in-process ``check_fn`` reports stale state."""
+    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None:
+        return []
+    try:
+        result = _venv_probe(venv_python, _CONFIGURED_FEATURES_SCRIPT, env=env)
+    except Exception as exc:  # the update must finish even when the probe cannot run
+        logger.debug("configured-feature dependency check skipped: %s", exc)
+        return []
+    missing: list[tuple[str, str]] = []
+    for line in _nonblank_lines(result.stdout):
+        feature, _, hint = line.partition("\t")
+        missing.append((feature, hint or "reinstall its optional extra"))
+    return missing
+
+
+def _warn_configured_features_missing_deps(install_cmd_prefix: list[str], *, env: dict[str, str] | None = None) -> None:
+    missing = _configured_features_missing_deps(install_cmd_prefix, env=env)
+    if not missing:
+        return
+    prefix = " ".join(shlex.quote(part) for part in install_cmd_prefix)
+    print("  ⚠ Configured features whose dependencies are still missing — the gateway will fail to load them on restart:")
+    for feature, hint in missing:
+        print(f"    - {feature}: {hint}")
+    print(f"    Retry with: {prefix} install -e '.[all]'")
 
 
 def _load_console_script_names() -> list[str]:
@@ -1152,12 +1262,17 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
 
 
 def _is_windows_npm_path(npm_path: str) -> bool:
-    """True if ``npm_path`` points at a Windows npm shim (WSL ``/mnt/c`` interop, ``.cmd``/``.exe``, UNC).
+    """True if ``npm_path`` points at a Windows npm shim (WSL drive interop, ``.cmd``/``.exe``, UNC).
 
     Callers use this only on a POSIX host — on native Windows ``npm.cmd`` is correct.
     """
     low = npm_path.lower()
-    return low.endswith((".exe", ".cmd", ".bat")) or low.startswith("/mnt/") or "\\" in npm_path
+    mount = low.split("/", 3)[2] if low.startswith("/mnt/") else ""
+    return (
+        low.endswith((".exe", ".cmd", ".bat"))
+        or (len(mount) == 1 and mount.isalpha())
+        or "\\" in npm_path
+    )
 
 
 def _resolve_node_runtime_npm() -> str | None:
@@ -1165,7 +1280,7 @@ def _resolve_node_runtime_npm() -> str | None:
 
     On WSL, PATH interop can hand back a Windows npm that fails with EISDIR / symlink errors over
     ``\\\\wsl.localhost\\...`` UNC paths. Refuse it on a POSIX host and re-scan PATH minus the
-    ``/mnt/*`` drive mounts. ``None`` when no suitable npm is reachable.
+    Windows drive mounts. ``None`` when no suitable npm is reachable.
 
     On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed through PATH interop. See #30271.
     """
@@ -1178,7 +1293,7 @@ def _resolve_node_runtime_npm() -> str | None:
     if not _is_windows_npm_path(npm):
         return npm
     for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory or directory.lower().startswith("/mnt/"):
+        if not directory or _is_windows_npm_path(directory):
             continue
         candidate = shutil.which("npm", path=directory)
         if candidate and not _is_windows_npm_path(candidate):

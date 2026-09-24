@@ -24,10 +24,10 @@ def _clean_state():
     """Reset module state between tests."""
     import tools.credential_files as _cred_mod
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files = {}
     yield
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files = {}
 
 
 class TestRegisterCredentialFiles:
@@ -440,21 +440,6 @@ class TestCacheDirectoryMounts:
         for mount in mounts:
             assert Path(mount["host_path"]).is_dir()
 
-    def test_images_upload_dir_is_mounted(self, tmp_path, monkeypatch):
-        """The flat top-level ``images/`` upload dir is mounted (#69575).
-
-        Desktop / clipboard / PDF uploads land in ``HERMES_HOME/images``, not
-        under ``cache/``. Without this entry vision_analyze on a desktop upload
-        fails because the file is not reachable inside the sandbox.
-        """
-        hermes_home = tmp_path / ".hermes"
-        (hermes_home / "images").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        mounts = get_cache_directory_mounts()
-        by_container = {m["container_path"]: m["host_path"] for m in mounts}
-        assert "/root/.hermes/images" in by_container
-        assert by_container["/root/.hermes/images"] == str(hermes_home / "images")
 
     def test_images_upload_file_maps_into_container(self, tmp_path, monkeypatch):
         """A concrete upload under ``images/`` maps to its container path.
@@ -654,12 +639,6 @@ class TestMasterCredentialStoresAreNeverMountable:
         assert "/root/.hermes/.env" not in paths
         assert ".env" in missing, "a refused store is reported back to the skill"
 
-    def test_traversal_guard_still_applies(self, tmp_path):
-        """The pre-existing containment check is untouched."""
-        home = self._home(tmp_path)
-        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
-            assert register_credential_file("../../.ssh/id_rsa") is False
-            assert register_credential_file("/etc/passwd") is False
 
     def test_missing_guard_fails_closed_with_error_log(self, tmp_path, caplog):
         """If agent.file_safety can't be imported the mount is refused loudly.

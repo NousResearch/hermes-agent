@@ -27,7 +27,9 @@ def get_provider_env(name: str) -> str:
     delegate children / subprocess runs. Stripped value, or ``""`` when unset.
 
     Falls back to a bare ``os.getenv`` when the config module is unavailable (stripped installs, early
-    import contexts). See #40190.
+    import contexts). See #40190. Never when a profile secret scope is bound: a scoped miss means the
+    served profile has no key, and ``os.environ`` holds the LAUNCH profile's — a routed profile without
+    an Exa/Parallel key must be refused, not search on another profile's key.
     """
     try:
         from hermes_cli.config import get_env_value
@@ -35,9 +37,17 @@ def get_provider_env(name: str) -> str:
         val = get_env_value(name)
     except Exception:  # noqa: BLE001 — config layer optional here
         val = None
-    if val is None:
+    if val is None and not _secret_scope_bound():
         val = os.getenv(name, "")
     return (val or "").strip()
+
+
+def _secret_scope_bound() -> bool:
+    try:
+        from agent.secret_scope import current_secret_scope
+    except Exception:  # noqa: BLE001 — stripped install without the scope module
+        return False
+    return current_secret_scope() is not None
 
 
 class WebSearchProvider(ProviderBase):

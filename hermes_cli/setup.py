@@ -60,9 +60,14 @@ def _sub_dict(parent: dict, key: str) -> dict:
 
 def _current_reasoning_effort(config: dict) -> str:
     agent_cfg = config.get("agent")
-    if isinstance(agent_cfg, dict):
-        return str(agent_cfg.get("reasoning_effort") or "").strip().lower()
-    return ""
+    if not isinstance(agent_cfg, dict):
+        return ""
+    effort = agent_cfg.get("reasoning_effort")
+    if isinstance(effort, dict):  # {enabled, effort} form: the tier name, never str(dict)
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(effort) or {}
+        effort = "none" if parsed.get("enabled") is False else parsed.get("effort")
+    return str(effort or "").strip().lower()
 
 
 def _set_reasoning_effort(config: dict, effort: str) -> None:
@@ -80,7 +85,7 @@ def is_interactive_stdin() -> bool:
 def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     """Print guidance for headless/non-interactive setup flows."""
     print()
-    print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
+    print(color("☤ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
     print()
     if reason:
         print_info(reason)
@@ -380,8 +385,11 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _info(None, "Provider setup skipped.")
     except Exception as exc:
         logger.debug("select_provider_and_model error during setup: %s", exc)
-        print_warning(f"Provider setup encountered an error: {exc}")
-        print_info("You can try again later with: hermes model")
+        from hermes_cli.auth_error_copy import provider_setup_failure_lines
+        lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes model")
+        print_warning(lead)
+        for line in rest:
+            print_info(line)
 
     # Re-sync from disk in place: cmd_model saved via its own load/save cycle and the wizard's
     # final save_config(config) must not clobber it with stale values. Rotation, vision and TTS
@@ -400,12 +408,11 @@ def _apply_default_agent_settings(config: dict):
     # config.yaml is authoritative for max_turns (the gateway bridges it into HERMES_MAX_ITERATIONS);
     # a stale .env entry silently shadowing it caused the 60-vs-500 bug, so drop it.
     remove_env_value("HERMES_MAX_ITERATIONS")
-    config.setdefault("display", {})["tool_progress"] = "all"
     config.setdefault("compression", {})["enabled"] = True
     config["compression"]["threshold"] = 0.50
     save_config(config)
     print_success("Applied recommended defaults:")
-    _info("  Max iterations: 150", "  Tool progress: all", "  Compression threshold: 0.50",
+    _info("  Max iterations: 150", "  Compression threshold: 0.50",
           "  Run `hermes setup agent` later to customize.")
 
 
@@ -456,14 +463,19 @@ def setup_agent_settings(config: dict):
 
     # ── Tool Progress Display ──
     _info("", *_TOOL_PROGRESS_HELP)
-    current_mode = cfg_get(config, "display", "tool_progress", default="all")
-    mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
+    # Unset = each platform keeps its own default (CLI all, Telegram/Slack off). Enter on an unset key must keep
+    # that: a global display.tool_progress beats every platform tier (#121230).
+    current_mode = cfg_get(config, "display", "tool_progress")
+    mode = prompt("Tool progress mode" if current_mode else "Tool progress mode (Enter keeps per-platform defaults)",
+                  current_mode)
+    if not mode and not current_mode:
+        print_info("Keeping each platform's default tool progress")
+    elif mode.lower() in {"off", "new", "all", "verbose", "log"}:
         config.setdefault("display", {})["tool_progress"] = mode.lower()
         save_config(config)
         print_success(f"Tool progress set to: {mode.lower()}")
     else:
-        print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
+        print_warning(f"Unknown mode '{mode}', keeping '{current_mode or 'per-platform defaults'}'")
 
     # ── Context Compression ──
     print_header("Context Compression")
@@ -588,7 +600,7 @@ def _run_setup_section(config: dict, section: str) -> None:
         print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
         return
     label, func = entry
-    _print_banner(f"│     ⚕ Hermes Setup — {label:<34s} │")
+    _print_banner(f"│     ☤ Hermes Setup — {label:<34s} │")
     _run_setup_steps([(label, lambda: func(config))])
     save_config(config)
     print()
@@ -679,7 +691,7 @@ def _run_setup_wizard_impl(args):
     from hermes_cli.auth import get_active_provider
     is_existing = bool(get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
                        or get_active_provider() is not None)
-    _print_banner("│             ⚕ Hermes Agent Setup Wizard                │",
+    _print_banner("│             ☤ Hermes Agent Setup Wizard                │",
                   "├─────────────────────────────────────────────────────────┤",
                   "│  Let's configure your Hermes Agent installation.       │",
                   "│  Press Ctrl+C at any time to exit.                     │")

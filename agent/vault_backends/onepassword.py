@@ -105,8 +105,8 @@ class OnePasswordLoginBackend(LoginBackend):
         out: List[VaultItemMeta] = []
         for item in raw if isinstance(raw, list) else []:
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
-            origin = _first_origin(urls)
-            if not origin:
+            origins = _all_origins(urls)
+            if not origins:
                 continue
             username = str(item.get("additional_information") or "").strip() or None
             item_id = str(item.get("id") or "")
@@ -114,40 +114,63 @@ class OnePasswordLoginBackend(LoginBackend):
             vault_id = str(vault.get("id") or "")
             opaque_id = f"{vault_id}:{item_id}" if vault_id else item_id
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{opaque_id}", kind="login", label=str(item.get("title") or origin),
-                origin=origin, created_at=str(item.get("created_at") or ""),
-                identifier_type="username" if username else None, identifier=username))
+                id=f"{self.prefix}{opaque_id}", kind="login", label=str(item.get("title") or origins[0]),
+                origin=origins[0], created_at=str(item.get("created_at") or ""),
+                identifier_type="username" if username else None, identifier=username,
+                allowed_origins=_web_origins(origins)))
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
-        return next((m for m in self.list_items() if m.id == handle), None)
+        opaque_id = handle[len(self.prefix):]
+        return next((m for m in self.list_items()
+                     if m.id == handle or (":" not in opaque_id and m.id.rpartition(":")[2] == opaque_id)), None)
+
+    def _item_selector(self, handle: str) -> List[str]:
+        """Recover the listed vault for item-only handles from older sessions."""
+        opaque_id = handle[len(self.prefix):]
+        vault_id, separator, item_id = opaque_id.partition(":")
+        if separator and vault_id and item_id:
+            return [item_id, "--vault", vault_id]
+        meta = self.get_meta(handle)
+        if meta is not None and meta.id != handle:
+            listed_vault, separator, listed_id = meta.id[len(self.prefix):].partition(":")
+            if separator and listed_vault and listed_id == opaque_id:
+                return [opaque_id, "--vault", listed_vault]
+        return [opaque_id]
 
     def resolve_password(self, handle: str) -> str:
-        return self._run("item", "get", *_item_selector(handle, self.prefix),
+        return self._run("item", "get", *self._item_selector(handle),
                          "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", *_item_selector(handle, self.prefix), "--otp").strip()
+            code = self._run("item", "get", *self._item_selector(handle), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None
 
 
-def _item_selector(handle: str, prefix: str) -> List[str]:
-    """Recover the item and vault IDs carried by a model-opaque backend handle."""
-    opaque_id = handle[len(prefix):]
-    vault_id, separator, item_id = opaque_id.partition(":")
-    if separator and vault_id and item_id:
-        return [item_id, "--vault", vault_id]
-    return [opaque_id]
+def _web_origins(origins: List[str]) -> tuple:
+    """Fill targets are browser pages, so app URIs (``androidapp://`` etc.) never
+    widen the fill set; an item whose only URI is an app URI keeps its single
+    (unfillable-from-a-page) origin exactly as before."""
+    web = tuple(o for o in origins if o.startswith(("http://", "https://")))
+    return web or (origins[0],)
 
 
-def _first_origin(urls: List[str]) -> Optional[str]:
+def _all_origins(urls: List[str]) -> List[str]:
+    """Every normalized origin saved on the item, deduped, order preserved.
+
+    A 1Password Login item can carry several websites; each of them is a place the
+    user told 1Password the credential belongs, so all of them are valid fill targets.
+    """
+    out: List[str] = []
     for u in urls:
         try:
-            return normalize_origin(u)
+            origin = normalize_origin(u)
         except Exception:
             continue
-    return None
+        if origin not in out:
+            out.append(origin)
+    return out

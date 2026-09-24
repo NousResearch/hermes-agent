@@ -35,3 +35,27 @@ def test_service_account_item_reads_keep_vault_in_opaque_handle():
     assert backend._run.call_args_list[2].args == (
         "item", "get", "item-id", "--vault", "vault-id", "--otp",
     )
+
+
+def test_legacy_handle_recovers_vault_and_keeps_all_saved_origins():
+    with patch("agent.secret_scope.get_secret", return_value="service-token"):
+        backend = OnePasswordLoginBackend()
+
+    listed = json.dumps([{
+        "id": "item-id", "title": "Example", "vault": {"id": "vault-id"},
+        "urls": [{"href": "https://example.com/login"},
+                 {"href": "https://other.example/login"}],
+    }])
+    backend._run = Mock(side_effect=[listed, listed, "password\n", listed, "123456\n"])
+
+    meta = backend.get_meta("op:item-id")
+    assert meta is not None
+    assert meta.id == "op:vault-id:item-id"
+    assert meta.allowed_origins == ("https://example.com", "https://other.example")
+    assert backend.resolve_password("op:item-id") == "password"
+    assert backend.resolve_otp("op:item-id") == "123456"
+    reads = [call.args for call in backend._run.call_args_list if call.args[:2] == ("item", "get")]
+    assert reads == [
+        ("item", "get", "item-id", "--vault", "vault-id", "--fields", "label=password", "--reveal"),
+        ("item", "get", "item-id", "--vault", "vault-id", "--otp"),
+    ]

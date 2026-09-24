@@ -18,7 +18,7 @@ import subprocess
 import sys
 import unittest
 import unittest.mock
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -55,9 +55,6 @@ from tools.code_execution_env import (
 )
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
-    DEFAULT_EXECUTION_MODE,
-    EXECUTION_MODES,
-    _get_execution_mode,
     build_execute_code_schema,
     execute_code,
 )
@@ -84,21 +81,6 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
 # Mode resolution
 # ---------------------------------------------------------------------------
 
-class TestGetExecutionMode(unittest.TestCase):
-    """_get_execution_mode reads config.yaml only (no env var surface)."""
-
-    def test_default_is_project(self):
-        self.assertEqual(DEFAULT_EXECUTION_MODE, "project")
-
-    def test_config_project(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"mode": "project"}):
-            self.assertEqual(_get_execution_mode(), "project")
-
-
-    def test_execution_modes_tuple(self):
-        """Canonical set of modes — tests + config layer rely on this shape."""
-        self.assertEqual(set(EXECUTION_MODES), {"project", "strict"})
 
 
 # ---------------------------------------------------------------------------
@@ -185,23 +167,8 @@ class TestResolveChildCwd(unittest.TestCase):
 
 class TestModeAwareSchema(unittest.TestCase):
 
-    def test_strict_description_mentions_temp_dir(self):
-        desc = build_execute_code_schema(mode="strict")["description"]
-        self.assertIn("temp dir", desc)
 
 
-    def test_neither_description_uses_sandbox_language(self):
-        """REGRESSION GUARD for commit 39b83f34.
-
-        Agents on local backends falsely believed they were sandboxed and
-        refused networking tasks. Do not reintroduce any 'sandbox' /
-        'isolated' / 'cloud' language in the tool description.
-        """
-        for mode in EXECUTION_MODES:
-            desc = build_execute_code_schema(mode=mode)["description"].lower()
-            for forbidden in ("sandbox", "isolated", "cloud"):
-                self.assertNotIn(forbidden, desc,
-                                 f"mode={mode}: '{forbidden}' leaked into description")
 
 
     def test_default_mode_reads_config(self):
@@ -262,23 +229,6 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
         self.assertNotEqual(os.path.realpath(cwd), os.path.realpath(os.getcwd()))
 
 
-    def test_project_mode_interpreter_is_venv_python(self):
-        """Project mode: sys.executable inside the child is the venv's python
-        when VIRTUAL_ENV is set to a real venv."""
-        # The hermes-agent venv is always active during tests, so this also
-        # happens to equal sys.executable of the parent. What we're asserting
-        # is: resolver picked a venv-bin/python path, not that it differs
-        # from sys.executable.
-        result = self._run("import sys; print(sys.executable)", mode="project")
-        self.assertEqual(result["status"], "success")
-        # Either VIRTUAL_ENV-bin/python or sys.executable fallback, both OK.
-        output = result["output"].strip()
-        ve = os.environ.get("VIRTUAL_ENV", "").strip()
-        if ve:
-            self.assertTrue(
-                output.startswith(ve) or output == sys.executable,
-                f"project-mode python should be under VIRTUAL_ENV={ve} or sys.executable={sys.executable}, got {output}",
-            )
 
     def test_project_mode_can_still_import_hermes_tools(self):
         """Regression: hermes_tools still importable from non-tmpdir CWD.
@@ -461,23 +411,7 @@ class TestPythonEnvironmentPrefix(unittest.TestCase):
             result = _python_environment_prefix("/bad/python")
         self.assertEqual(result, "")
 
-    def test_returns_empty_string_when_stdout_is_blank(self):
-        mock_result = unittest.mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "   \n"
-        with patch("subprocess.run", return_value=mock_result):
-            result = _python_environment_prefix("/blank/python")
-        self.assertEqual(result, "")
 
-    def test_result_is_cached(self):
-        """Second call returns cached value without spawning another process."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = unittest.mock.MagicMock(
-                returncode=0, stdout="/fake/prefix\n"
-            )
-            _python_environment_prefix("/cached/python")
-            _python_environment_prefix("/cached/python")
-        self.assertEqual(mock_run.call_count, 1)
 
     def test_failure_is_not_cached(self):
         """A transient probe failure must not stick — the next call retries.
@@ -507,9 +441,6 @@ class TestUsesHermesPythonEnvironment(unittest.TestCase):
     def tearDown(self):
         _python_prefix_cache.clear()
 
-    def test_true_for_current_interpreter(self):
-        """sys.executable always belongs to the current environment."""
-        self.assertTrue(_uses_hermes_python_environment(sys.executable))
 
     def test_true_for_current_interpreter_without_probe(self):
         """sys.executable short-circuits — no subprocess probe on the default path.

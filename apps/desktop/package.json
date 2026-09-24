@@ -2,7 +2,7 @@
   "name": "hermes",
   "productName": "Hermes",
   "private": true,
-  "version": "0.17.2",
+  "version": "0.17.6",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
   "repository": {
@@ -62,7 +62,6 @@
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
     "fix": "npm run lint:fix && npm run fmt",
     "test:ui": "vitest run --project ui",
-    "test:task-scroll": "node --test scripts/tasks-scroll.test.mjs",
     "test:desktop:platforms": "vitest run --project electron",
     "test:find-in-page-native": "electron electron/find-in-page-native-fixture",
     "test": "vitest run",
@@ -75,8 +74,7 @@
     "test:e2e": "npm run build && playwright test e2e/",
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
     "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
-    "repro:short-session-hang": "node scripts/run-short-session-hang-repro.mjs",
-    "repro:short-session-hang:test": "node --test scripts/run-short-session-hang-repro.test.mjs"
+    "repro:short-session-hang": "node scripts/run-short-session-hang-repro.mjs"
   },
   "dependencies": {
     "@assistant-ui/core": "0.2.23",
@@ -96,6 +94,7 @@
     "@icons-pack/react-simple-icons": "13.11.1",
     "@lezer/highlight": "1.2.3",
     "@nanostores/react": "1.1.0",
+    "@novnc/novnc": "1.7.0",
     "@nous-research/ui": "0.18.2",
     "@streamdown/code": "1.1.1",
     "@streamdown/math": "1.0.2",
@@ -116,6 +115,7 @@
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "d3-force": "3.0.0",
+    "dbus-native": "0.15.2",
     "dnd-core": "14.0.1",
     "dompurify": "3.4.13",
     "driver.js": "1.8.0",
@@ -124,12 +124,14 @@
     "frimousse": "0.3.0",
     "hast-util-from-html-isomorphic": "2.0.0",
     "hast-util-to-text": "4.0.2",
+    "https-proxy-agent": "7.0.6",
     "ignore": "7.0.6",
     "katex": "0.16.47",
     "mermaid": "11.16.1",
     "motion": "12.42.2",
     "nanostores": "1.4.2",
     "node-pty": "1.1.0",
+    "proxy-from-env": "2.1.0",
     "qrcode": "1.5.4",
     "radix-ui": "1.6.7",
     "react": "19.2.7",
@@ -151,7 +153,8 @@
     "unist-util-visit-parents": "6.0.2",
     "use-stick-to-bottom": "1.1.6",
     "vfile": "6.0.3",
-    "web-haptics": "0.0.6"
+    "web-haptics": "0.0.6",
+    "yaml": "2.8.1"
   },
   "optionalDependencies": {
     "get-windows": "9.3.0"
@@ -167,6 +170,7 @@
     "@types/d3-force": "3.0.10",
     "@types/hast": "3.0.5",
     "@types/node": "22.20.1",
+    "@types/proxy-from-env": "1.0.4",
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
@@ -213,6 +217,7 @@
     ],
     "beforeBuild": "scripts/before-build.mjs",
     "beforePack": "scripts/before-pack.mjs",
+    "afterExtract": "scripts/after-extract.mjs",
     "afterPack": "scripts/after-pack.mjs",
     "extraResources": [
       {

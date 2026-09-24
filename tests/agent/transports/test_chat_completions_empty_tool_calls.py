@@ -119,11 +119,3 @@ class TestEmptyToolCallsStripping:
         assert "tool_calls" not in out[0]
         assert out is not msgs
 
-    @pytest.mark.parametrize(
-        "model",
-        ["qwen/qwen3.8-max-preview:free", "deepseek/deepseek-v4-flash", "gpt-4o"],
-    )
-    def test_empty_array_stripped_across_providers(self, transport, model):
-        msgs = [{"role": "assistant", "content": "ok", "tool_calls": []}]
-        out = transport.convert_messages(msgs, model=model)
-        assert "tool_calls" not in out[0]

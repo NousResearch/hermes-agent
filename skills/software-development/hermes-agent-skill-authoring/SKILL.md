@@ -63,8 +63,6 @@ license: MIT
 platforms: [linux, macos, windows]   # audit, don't guess — see Platform Gating
 metadata:
   hermes:
-    editorial_name: My Skill Name
-    editorial_description: Human-readable summary for skill browsing surfaces.
     tags: [Short, Descriptive, Tags]
     related_skills: [other-in-repo-skill]
 ---
@@ -103,6 +101,7 @@ Bad: `Use when a user asks to monitor named competitors or companies for product
 | `osascript`, `defaults`, `pmset` | `[macos]` |
 | `apt`/`systemctl`/`/proc` | `[linux]` |
 
+<!-- no-tmp: ok — names the anti-pattern skill authors must avoid -->
 POSIX-only signals to search for in `scripts/`: `fcntl`, `termios`, `pty`, `os.fork`, `os.killpg`, `signal.SIGKILL`, `os.kill(pid, 0)` liveness checks, hardcoded `/tmp` `/proc` `/etc`. Default posture: fix cross-platform first (`tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists`); gate narrower only when the dependency is genuinely platform-bound, and say why in `## Pitfalls`.
 
 ## Size Limits
@@ -202,7 +201,6 @@ A skill exists to make the agent's process more predictable — the agent reliab
 - [ ] File at `skills/<category>/<name>/SKILL.md` or `optional-skills/<category>/<name>/SKILL.md`
 - [ ] Frontmatter starts at byte 0 with `---`, closes with `\n---\n`
 - [ ] `name`, `description`, `version`, `author`, `license`, `platforms`, `metadata.hermes.{tags, related_skills}` all present
-- [ ] New skills include `metadata.hermes.{editorial_name, editorial_description}`; legacy skills may omit them
 - [ ] Description ≤ 60 chars, one sentence, ends with a period, no marketing words
 - [ ] `author` credits the human contributor first
 - [ ] `platforms:` audited against actual prose/scripts, not copied from a sibling

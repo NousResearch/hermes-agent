@@ -3,7 +3,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $localRuntimeInstallStarting, $localRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -21,10 +21,14 @@ vi.mock('@/hermes', () => ({
   getLocalModelsJobs: vi.fn(),
   getLocalModelsStatus: vi.fn(),
   getLocalRuntimeJob: vi.fn(),
+  // The page imports the profile store (settings-scope chip), whose module
+  // body subscribes $activeGatewayProfile → setApiRequestProfile at load.
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
   installLocalRuntime: vi.fn(),
   listHFRepoFiles: vi.fn(),
   quickstartLocalModels: vi.fn(),
   searchHFModels: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 
@@ -113,10 +117,10 @@ function renderPane() {
 
 // The fresh-machine states these tests exercise now lead with the
 // quickstart card; the full pane (runtime rows, model list, browser)
-// is one 'Configure…' click away. Render and click through.
+// is one 'Let me choose' click away. Render and click through.
 async function renderFullPane() {
   const result = renderPane()
-  const configure = await screen.findByRole('button', { name: /configure/i })
+  const configure = await screen.findByRole('button', { name: /let me choose/i })
 
   fireEvent.click(configure)
 
@@ -134,43 +138,104 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  // A running job arms the store's 700ms re-poll; drain it so the timer cannot
+  // fire into a torn-down test environment.
+  $localRuntimeJobs.set([])
 })
 
 describe('LocalModelsSettings', () => {
-  it('offers the runtime install with a plain-language explanation', async () => {
-    await renderFullPane()
+  it.each(['starting', 'running'])(
+    'keeps the runtime update view visible with no staged models while %s',
+    async phase => {
+      mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true, update_available: true })
 
-    expect(await screen.findByText('Install the local runtime')).toBeTruthy()
-    expect(screen.getByText(/runs? entirely on this machine/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /install runtime/i })).toBeTruthy()
+      const jobs: LocalRuntimeJob[] =
+        phase === 'running'
+          ? [
+              {
+                job_id: 'engine-update',
+                kind: 'runtime-install',
+                target: 'target',
+                model_id: null,
+                status: 'running',
+                phase: 'downloading',
+                detail: 'Downloading engine archive',
+                total_bytes: 100,
+                done_bytes: 40,
+                percent: 40,
+                error: null
+              }
+            ]
+          : []
+
+      mocked.getLocalModelsJobs.mockResolvedValue({ jobs })
+      $localRuntimeJobs.set(jobs)
+      $localRuntimeInstallStarting.set(phase === 'starting')
+      renderPane()
+      await screen.findByText('Qwen3.6 27B')
+      const setup = screen.queryByRole('button', { name: /set up for me/i })
+
+      const detail =
+        phase === 'running'
+          ? screen.queryByText('Downloading engine archive')
+          : screen.queryByRole('button', { name: /update engine/i })
+
+      act(() => $localRuntimeInstallStarting.set(false))
+      expect(setup).toBeNull()
+      expect(detail).toBeTruthy()
+    }
+  )
+  it('keeps a failed explicit update visible with a direct retry and no staged models', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true, update_available: true })
+    $localRuntimeInstallStarting.set(true)
+    const view = renderPane()
+    await screen.findByRole('button', { name: /update engine/i })
+
+    const failed: LocalRuntimeJob = {
+      job_id: 'failed-update',
+      total_bytes: null,
+      done_bytes: 0,
+      kind: 'runtime-install',
+      target: 'target',
+      model_id: null,
+      status: 'error',
+      phase: 'download',
+      detail: '',
+      error: 'Engine archive unavailable'
+    }
+
+    mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [failed] })
+    act(() => {
+      $localRuntimeJobs.set([failed])
+      $localRuntimeInstallStarting.set(false)
+    })
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+    expect(screen.getByText('Engine archive unavailable')).toBeTruthy()
+    view.unmount()
+    renderPane()
+    const retry = await screen.findByRole('button', { name: /update engine/i })
+    expect((retry as HTMLButtonElement).disabled).toBe(false)
+    mocked.installLocalRuntime.mockResolvedValue({ backend: 'cpu', job_id: 'retry', tag: 'next' })
+    fireEvent.click(retry)
+    await waitFor(() => expect(mocked.installLocalRuntime).toHaveBeenCalledTimes(1))
   })
-
-  it('shows every catalog model with fit pills; unaffordable ones stay visible with the reason', async () => {
+  it('starts runtime installation only once while the request is pending', async () => {
+    let finish!: (value: { backend: string; job_id: string; tag: string }) => void
+    mocked.installLocalRuntime.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
     await renderFullPane()
-
-    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
-    // The fitting model reads as pills, not prose: green memory pill +
-    // green full-context pill (start_window == native, resident on GPU).
-    expect(screen.getByText('Fits your GPU')).toBeTruthy()
-    expect(screen.getByText('Full 256K context').className).toContain('emerald')
-
-    // The refused model is NOT hidden (discoverability rule): red memory
-    // pill, plus the ceiling it would have had.
-    expect(screen.getByText('Huge Model')).toBeTruthy()
-    expect(screen.getByText('Too big for this machine')).toBeTruthy()
-
-    // The spilled model reads amber + ONE quiet ceiling pill — the same
-    // 'Up to' shape the refused row wears; no start/grow pair.
-    expect(screen.getByText('Spilled Model')).toBeTruthy()
-    expect(screen.getByText('Uses system RAM')).toBeTruthy()
-    expect(screen.getAllByText('Up to 256K context').length).toBe(2)
-    expect(screen.queryByText(/Starts at/)).toBeNull()
-
-    // Its download button is disabled; the fitting model's is enabled once
-    // the runtime exists (here runtime_installed=false, so both disabled —
-    // asserted separately below).
-    const buttons = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
-    expect(buttons.every(b => (b as HTMLButtonElement).disabled)).toBe(true)
+    const button = screen.getByRole('button', { name: /install runtime/i })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(mocked.installLocalRuntime).toHaveBeenCalledTimes(1)
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      finish({ backend: 'cpu', job_id: 'install', tag: 'next' })
+    })
   })
 
   it('orders the catalog by fit: resident first, then spilled, then too-big', async () => {
@@ -186,26 +251,6 @@ describe('LocalModelsSettings', () => {
       .map(el => el.textContent?.replace('Recommended', ''))
 
     expect(names).toEqual(['Qwen3.6 27B', 'Spilled Model', 'Huge Model'])
-  })
-
-  it('never greens the full-context pill on a system-RAM model', async () => {
-    // Full native window, but earned by spilling into system RAM: the
-    // pill must not wear the green that would recommend exactly the
-    // wrong model.
-    const spilledFull: LocalCatalogModel = {
-      ...FITTING_MODEL,
-      id: 'Spilled-Full',
-      display_name: 'Spilled Full',
-      recommended: false,
-      spilled: true,
-      fit_summary: 'runs its full 256K context, partly from system RAM'
-    }
-
-    mocked.getLocalCatalog.mockResolvedValue({ models: [spilledFull] })
-    await renderFullPane()
-    await screen.findByText('Spilled Full')
-
-    expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
   it('explains the Recommended pick on hover', async () => {
@@ -238,14 +283,6 @@ describe('LocalModelsSettings', () => {
     await screen.findByText('Qwen3.6 27B')
     const [fittingButton] = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
     expect((fittingButton as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('shows hardware facts after backfill', async () => {
-    await renderFullPane()
-
-    expect(await screen.findByText('NVIDIA GeForce RTX 5090')).toBeTruthy()
-    expect(screen.getByText(/32\.0 GB GPU memory/)).toBeTruthy()
-    expect(screen.getByText(/256\.0 GB RAM/)).toBeTruthy()
   })
 
   it('tracks a download job to completion and refreshes', async () => {
@@ -393,7 +430,7 @@ describe('quickstart', () => {
     renderPane()
 
     expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
-    // One job, one view: no Set up / Configure buttons while it runs.
+    // One job, one view: no setup or model-choice buttons while it runs.
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })
 
@@ -413,6 +450,47 @@ describe('quickstart', () => {
 })
 
 describe('BrowseSection', () => {
+  it('keeps manual spill selection and HF browsing available without an automatic recommendation', async () => {
+    const stagedId = 'Spilled-Model-Q4_K_M'
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    mocked.getLocalCatalog.mockResolvedValue({ models: [SPILLED_MODEL] })
+    renderPane()
+
+    await screen.findByText('Spilled Model')
+    expect(screen.getByText('No automatic recommendation for this machine')).toBeTruthy()
+    expect(screen.getByText('Uses system RAM')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+
+    // Attach the browser-only scroll method to the real search container,
+    // so a missing or misdirected click handler cannot satisfy the assertion.
+    const search = screen.getByPlaceholderText(/search models/i)
+    const browse = search.closest('#local-model-browse')
+    expect(browse).not.toBeNull()
+    const scroll = vi.fn()
+    Object.defineProperty(browse, 'scrollIntoView', { configurable: true, value: scroll })
+    fireEvent.click(screen.getByRole('button', { name: /browse models/i }))
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(mocked.downloadLocalModel).not.toHaveBeenCalled()
+
+    // The backend reports the completed download on refresh. Use must send
+    // the staged variant id, not the catalog family id or an automatic pick.
+    mocked.downloadLocalModel.mockResolvedValue({ already_downloaded: true, job_id: null })
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      models: [{ id: stagedId, size_bytes: SPILLED_MODEL.size_bytes, size_label: SPILLED_MODEL.size_label }]
+    })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...SPILLED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
+    })
+    fireEvent.click(screen.getByRole('button', { name: /download ·/i }))
+    await waitFor(() => expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id))
+    mocked.activateLocalModel.mockResolvedValue({ job_id: 'explicit-spill' })
+    fireEvent.click(await screen.findByRole('button', { name: /^use$/i }))
+    await waitFor(() => expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId))
+    expect(mocked.quickstartLocalModels).not.toHaveBeenCalled()
+  })
+
   it('searches HF after a pause and shows fit-priced files on demand', async () => {
     vi.useFakeTimers()
 
@@ -438,7 +516,7 @@ describe('BrowseSection', () => {
         await vi.runOnlyPendingTimersAsync()
       })
       // Fresh machine leads with the quickstart card — enter the full pane.
-      fireEvent.click(screen.getByRole('button', { name: /configure/i }))
+      fireEvent.click(screen.getByRole('button', { name: /let me choose/i }))
 
       const box = screen.getByPlaceholderText(/search models/i)
       fireEvent.change(box, { target: { value: 'qwen' } })

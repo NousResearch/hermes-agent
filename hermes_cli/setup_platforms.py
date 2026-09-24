@@ -35,16 +35,20 @@ def _setup_telegram_auto_result():
     return auto_setup_telegram_bot_result(profile_name=profile_name)
 
 
-def _declines_reconfigure(env_var: str, label: str, question: str) -> bool:
-    """True when ``env_var`` is already set and the user does NOT want to reconfigure."""
+def declines_reconfigure(label: str, question: str, *env_vars: str) -> bool:
+    """True when any of ``env_vars`` is already set and the user does NOT want to reconfigure.
+
+    Shared by the core wizards and every platform plugin's ``interactive_setup`` so the
+    "already configured? Reconfigure? [y/N]" gate has one wording and one default.
+    """
     from hermes_cli.setup import get_env_value, print_info, prompt_yes_no
-    if not get_env_value(env_var):
+    if not any(get_env_value(v) for v in env_vars):
         return False
     print_info(f"{label}: already configured")
     return not prompt_yes_no(question, False)
 
 
-def _save_prompted(env_var: str, question: str, *, password: bool = False, success_msg: str | None = None,
+def save_prompted(env_var: str, question: str, *, password: bool = False, success_msg: str | None = None,
                    skip_msg: str | None = None, transform=None) -> str:
     """Prompt, persist the (optionally transformed) answer when non-empty, and report either way.
 
@@ -143,7 +147,7 @@ def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
     from hermes_cli.setup import _info, print_info, print_header, print_success, prompt, prompt_yes_no, save_env_value
     print_header("Telegram")
-    if _declines_reconfigure("TELEGRAM_BOT_TOKEN", "Telegram", "Reconfigure Telegram?"):
+    if declines_reconfigure("Telegram", "Reconfigure Telegram?", "TELEGRAM_BOT_TOKEN"):
         _telegram_allowlist_nudge()
         return
     token, setup_result = _obtain_telegram_token()
@@ -172,12 +176,12 @@ def _setup_telegram():
     first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
     if not first_user_id:
         print_info("   You can also set this later by typing /set-home in your Telegram chat.")
-        _save_prompted("TELEGRAM_HOME_CHANNEL", "Home channel ID (leave empty to set later)")
+        save_prompted("TELEGRAM_HOME_CHANNEL", "Home channel ID (leave empty to set later)")
     elif prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
         save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
         print_success(f"Telegram home channel set to {first_user_id}")
     else:
-        _save_prompted("TELEGRAM_HOME_CHANNEL", "Home channel ID (or leave empty to set later with /set-home in Telegram)")
+        save_prompted("TELEGRAM_HOME_CHANNEL", "Home channel ID (or leave empty to set later with /set-home in Telegram)")
 
 
 # _setup_slack and _write_slack_manifest_and_instruct moved to the slack plugin:
@@ -187,7 +191,7 @@ def _setup_bluebubbles():
     """Configure BlueBubbles iMessage gateway."""
     from hermes_cli.setup import _info, print_header, print_success, prompt, prompt_yes_no
     print_header("BlueBubbles (iMessage)")
-    if _declines_reconfigure("BLUEBUBBLES_SERVER_URL", "BlueBubbles", "Reconfigure BlueBubbles?"):
+    if declines_reconfigure("BlueBubbles", "Reconfigure BlueBubbles?", "BLUEBUBBLES_SERVER_URL"):
         return
     _info("Connects Hermes to iMessage via BlueBubbles — a free, open-source",
           "macOS server that bridges iMessage to any device.",
@@ -199,7 +203,7 @@ def _setup_bluebubbles():
          lambda v: v.rstrip("/")),
         ("BlueBubbles server password", "BLUEBUBBLES_PASSWORD", True, "Password", None),
     ):
-        if not _save_prompted(env_var, label, password=secret, transform=transform,
+        if not save_prompted(env_var, label, password=secret, transform=transform,
                               skip_msg=f"{what} is required — skipping BlueBubbles setup"):
             return
     print_success("BlueBubbles credentials saved")
@@ -209,7 +213,7 @@ def _setup_bluebubbles():
                       "BlueBubbles allowlist configured", "⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
     _info(None, "📬 Home Channel: phone or email for cron job delivery and notifications.",
           "   You can also set this later with /set-home in your iMessage chat.")
-    _save_prompted("BLUEBUBBLES_HOME_CHANNEL", "Home channel address (leave empty to set later)")
+    save_prompted("BLUEBUBBLES_HOME_CHANNEL", "Home channel address (leave empty to set later)")
     _info(None, "Advanced settings (defaults are fine for most setups):")
     if prompt_yes_no("Configure webhook listener settings?", False):
         _save_port("BLUEBUBBLES_WEBHOOK_PORT", prompt("Webhook listener port (default: 8645)"), "8645")
@@ -222,7 +226,7 @@ def _setup_webhooks():
     """Configure webhook integration."""
     from hermes_cli.setup import _info, print_header, print_success, print_warning, prompt, save_env_value
     print_header("Webhooks")
-    if _declines_reconfigure("WEBHOOK_ENABLED", "Webhooks", "Reconfigure webhooks?"):
+    if declines_reconfigure("Webhooks", "Reconfigure webhooks?", "WEBHOOK_ENABLED"):
         return
     print()
     print_warning("⚠  Webhook and SMS platforms require exposing gateway ports to the")
@@ -231,7 +235,7 @@ def _setup_webhooks():
     print()
     _info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/", None)
     _save_port("WEBHOOK_PORT", prompt("Webhook port (default 8644)"), "8644")
-    _save_prompted("WEBHOOK_SECRET", "Global HMAC secret (shared across all routes)", password=True,
+    save_prompted("WEBHOOK_SECRET", "Global HMAC secret (shared across all routes)", password=True,
                    success_msg="Webhook secret saved",
                    skip_msg="No secret set — you must configure per-route secrets in config.yaml")
     save_env_value("WEBHOOK_ENABLED", "true")

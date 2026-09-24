@@ -14,11 +14,14 @@ import json
 import logging
 import os
 import platform
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
+
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +219,25 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     return _append_entry(entry)
 
 
+def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
+    """Whether this process is the backend Desktop spawned and owns.
+
+    ``HERMES_DESKTOP=1`` is inherited by every shell and agent child the app launches, so the
+    flag alone is not ownership proof (same class as #116107). Desktop hands its backend a
+    per-spawn credential the terminal pane never receives (and the terminal tool's env policy
+    strips from agent children): the local pool spawn mints ``HERMES_DASHBOARD_SESSION_TOKEN``,
+    the SSH spawn passes a 0600 token FILE on argv and deliberately sets no token env var.
+    ``argv`` defaults to this process's own.
+    """
+    if os.environ.get("HERMES_DESKTOP") != "1":
+        return False
+    if os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"):
+        return True
+    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+
+    return is_desktop_ssh_backend_argv(list(sys.argv[1:] if argv is None else argv))
+
+
 def _desktop_spawner_identity() -> tuple[Optional[int], Optional[float]]:
     """Spawner ``(pid, create_time)`` from the Electron app's HERMES_PARENT_PID (+ optional
     ``winms:<ms>`` start marker) parent-death watchdog vars, so ledger lineage works with every
@@ -264,10 +286,11 @@ def _append_entry(entry: LedgerEntry) -> bool:
         ]
         pruned.append(asdict(entry))
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-            tmp.write_text(json.dumps(pruned, indent=2), encoding="utf-8")
-            os.replace(tmp, path)
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(path.parent)
+            # argv may carry surrogate-escaped bytes (non-UTF-8 paths); ensure_ascii keeps the
+            # utf-8 text handle from raising UnicodeEncodeError (a ValueError, not an OSError).
+            atomic_json_write(path, pruned, mode=0o600, ensure_ascii=True)
             return True
         except OSError:
             logger.debug("spawn ledger write failed", exc_info=True)

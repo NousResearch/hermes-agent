@@ -48,6 +48,7 @@ from hermes_cli.doctor_tools import (
     _check_tool_availability,
 )
 from hermes_cli.doctor_state import (
+    _check_checkpoint_store,
     _check_directory_structure,
     _check_memory_provider,
     _check_profiles,
@@ -113,7 +114,7 @@ DOCTOR_CHECKS = (
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
-    ('Directory Structure', _check_directory_structure), (None, _check_state_db),
+    ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
@@ -132,7 +133,9 @@ def _ack_advisory(ack_target: str) -> None:
     if ack_advisory(ack_target):
         print(color(f"  ✓ Acknowledged advisory {ack_target}. It will no longer trigger startup banners.", Colors.GREEN))
     else:
-        print(color(f"  ✗ Failed to persist ack for {ack_target}. Check ~/.hermes/config.yaml is writable.", Colors.RED))
+        print(color(f"  ✗ Could not save the acknowledgement for {ack_target}. Make sure {_DHH}/config.yaml is "
+                    f"writable (`hermes config path` prints the exact file), then re-run "
+                    f"`hermes doctor --ack {ack_target}`.", Colors.RED))
         sys.exit(1)
 
 
@@ -182,6 +185,7 @@ def run_doctor(args):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
+    return int(bool(total.issues or total.manual_issues))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

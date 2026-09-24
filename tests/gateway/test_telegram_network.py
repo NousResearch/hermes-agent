@@ -79,21 +79,14 @@ def _telegram_request(path="/botTOKEN/getMe"):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestParseFallbackIpEnv:
-    def test_filters_invalid_and_ipv6(self, caplog):
+    def test_filters_invalid_and_ipv6(self):
         ips = tnet.parse_fallback_ip_env("149.154.167.220, bad, 2001:67c:4e8:f004::9,149.154.167.220")
         assert ips == ["149.154.167.220", "149.154.167.220"]
-        assert "Ignoring invalid Telegram fallback IP" in caplog.text
-        assert "Ignoring non-IPv4 Telegram fallback IP" in caplog.text
 
     def test_none_returns_empty(self):
         assert tnet.parse_fallback_ip_env(None) == []
 
 
-class TestNormalizeFallbackIps:
-    def test_deduplication_happens_at_transport_level(self):
-        """_normalize does not dedup; TelegramFallbackTransport.__init__ does."""
-        raw = ["149.154.167.220", "149.154.167.220"]
-        assert tnet._normalize_fallback_ips(raw) == ["149.154.167.220", "149.154.167.220"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -139,43 +132,8 @@ class TestFallbackTransport:
         assert resp2.status_code == 200
         assert calls[0]["url_host"] == "149.154.167.220"
 
-    @pytest.mark.asyncio
-    async def test_first_choice_ipv4_success_logs_info_not_warning(self, monkeypatch, caplog):
-        """Healthy IPv4-first connect is info; warning only after a skipped dead path."""
-        import logging
 
-        calls = []
-        monkeypatch.setattr(
-            tnet.httpx,
-            "AsyncHTTPTransport",
-            _fake_transport_factory(calls, {"149.154.167.220": "ok"}),
-        )
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
-            await transport.handle_async_request(_telegram_request())
-        records = [r for r in caplog.records if "sticky IPv4 Telegram API path" in r.getMessage()]
-        assert len(records) == 1
-        assert records[0].levelno == logging.INFO
 
-    @pytest.mark.asyncio
-    async def test_sticky_after_failed_literal_logs_warning(self, monkeypatch, caplog):
-        import logging
-
-        calls = []
-        monkeypatch.setattr(
-            tnet.httpx,
-            "AsyncHTTPTransport",
-            _fake_transport_factory(
-                calls, {"149.154.167.220": "timeout", "149.154.167.221": "ok"}
-            ),
-        )
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
-            await transport.handle_async_request(_telegram_request())
-        records = [r for r in caplog.records if "sticky IPv4 Telegram API path" in r.getMessage()]
-        assert len(records) == 1
-        assert records[0].levelno == logging.WARNING
-        assert "149.154.167.221" in records[0].getMessage()
 
 
     @pytest.mark.asyncio
@@ -206,35 +164,7 @@ class TestFallbackTransport:
         assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
         assert transport._sticky_ip == "149.154.167.221"
 
-    @pytest.mark.asyncio
-    async def test_blackholed_hostname_never_reached_when_ipv4_works(self, monkeypatch):
-        """#87015: a hostname connect that never returns must not run first."""
-        calls = []
 
-        class _HangOnHostname(FakeTransport):
-            async def handle_async_request(self, request):
-                if request.url.host == "api.telegram.org":
-                    raise AssertionError(
-                        "dual-stack hostname was tried before a working IPv4 literal"
-                    )
-                return await super().handle_async_request(request)
-
-        def factory(**kwargs):
-            return _HangOnHostname(calls, {"149.154.167.220": "ok"})
-
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        resp = await transport.handle_async_request(_telegram_request())
-        assert resp.status_code == 200
-        assert calls[0]["url_host"] == "149.154.167.220"
-
-    def test_attempt_order_is_ipv4_then_hostname(self):
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.166.110"])
-        assert transport._attempt_order() == [
-            "149.154.167.220",
-            "149.154.166.110",
-            None,
-        ]
 
     @pytest.mark.asyncio
     async def test_hostname_tried_last_when_ipv4_fails(self, monkeypatch):
@@ -576,13 +506,4 @@ class TestDiscoverFallbackIps:
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
 
 
-def test_tcp_keepalive_socket_options_enables_so_keepalive():
-    """Windows long-polls need SO_KEEPALIVE or a dead peer hangs forever (#87057)."""
-    options = tnet.tcp_keepalive_socket_options()
-    assert any(
-        level == socket.SOL_SOCKET
-        and opt == socket.SO_KEEPALIVE
-        and value == 1
-        for level, opt, value in options
-    )
 

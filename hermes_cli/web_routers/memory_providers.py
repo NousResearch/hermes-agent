@@ -22,7 +22,7 @@ from hermes_cli.web_server_memory import (
     _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
 )
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
-from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
     STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
@@ -123,10 +123,13 @@ def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
     return _read_json_dict(_flat_json_path(provider), "memory provider config")
 
 
-def _honcho_resolvers():
-    """Lazily import the Honcho plugin's resolvers (optional plugin)."""
-    from plugins.memory.honcho.client import _host_block, resolve_active_host, resolve_config_path
-    return resolve_active_host, resolve_config_path, _host_block
+def _honcho_resolvers(name: str):
+    """Host-block resolvers of provider *name*'s own ``client`` module, wherever the provider is
+    installed (bundled or ``$HERMES_HOME/plugins/``)."""
+    from plugins.memory import import_provider_module
+
+    client = import_provider_module(name, "client")
+    return client.resolve_active_host, client.resolve_config_path, client._host_block
 
 
 def _save_submitted_secrets(provider: ProviderConfigSchema, values: Dict[str, str]) -> list:
@@ -164,7 +167,8 @@ def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], 
 
 def _write_json_0600(path: Path, data: Dict[str, Any]) -> None:
     from utils import atomic_json_write
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, mode=0o600)
 
 
@@ -178,16 +182,18 @@ def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str])
 def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
     """Persist submitted fields to Honcho's real config for the active host (partial
     saves touch only submitted keys; blank text clears a key — see ``_apply_field_values``)."""
-    from plugins.memory.honcho.oauth import ACCESS_TOKEN_PREFIX, _config_refresh_lock
+    from plugins.memory import import_provider_module
 
-    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+    oauth = import_provider_module(provider.name, "oauth")
+    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers(provider.name)
     host = resolve_active_host()
     # Write the file reads resolve, or a save shadows it with a sparse copy.
     path = resolve_config_path()
 
     # OAuth rotation is single-use; an unlocked RMW here can revoke the grant.
-    with _config_refresh_lock(path):
-        cfg = _read_json_dict(path, "Honcho config")
+    with oauth._refresh_lock, oauth._config_refresh_lock(path):
+        # Strict: a file that exists but does not parse must not be replaced by this host's block alone.
+        cfg = oauth._read_config_strict(path)
         hosts = cfg.get("hosts")
         cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
         # Update the block reads resolve (legacy dot-form included), never shadow it.
@@ -198,7 +204,7 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
         for field, submitted in _save_submitted_secrets(provider, values):
             # Persist where the client reads first; an OAuth token owns that slot.
             stored = host_block.get(field.key)
-            if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
+            if not (isinstance(stored, str) and stored.startswith(oauth.ACCESS_TOKEN_PREFIX)):
                 host_block[field.key] = submitted
 
         _apply_field_values(provider, values, lambda field: host_block if field.scope == "host" else cfg)
@@ -244,7 +250,7 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
     env = load_env()
     is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
     if is_honcho:
-        resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+        resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers(provider.name)
         host = resolve_active_host()
         raw = _read_json_dict(resolve_config_path(), "Honcho config")
         host_block = host_block_of(raw, host)
@@ -303,11 +309,12 @@ def _memory_section(config: Dict[str, Any]) -> Dict[str, Any]:
 def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
     writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
     writer(provider, values)
-    config = load_config()
-    memory_config = _memory_section(config)
-    if memory_config.get("provider") != provider.name:
-        memory_config["provider"] = provider.name
-        save_config(config)
+    with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+        config = load_config()
+        memory_config = _memory_section(config)
+        if memory_config.get("provider") != provider.name:
+            memory_config["provider"] = provider.name
+            save_config(config)
 
 
 # ── Setup: dependency installation ────────────────────────────────────────────
@@ -467,11 +474,12 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[s
         if _BaseMemoryProvider is None or type(provider).save_config is not _BaseMemoryProvider.save_config:
             provider.save_config(values, str(get_hermes_home()))
             return
-    cfg = load_config()
-    memory_cfg = _memory_section(cfg)
-    current = memory_cfg.get(name)
-    memory_cfg[name] = {**(current if isinstance(current, dict) else {}), **values}
-    save_config(cfg)
+    with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+        cfg = load_config()
+        memory_cfg = _memory_section(cfg)
+        current = memory_cfg.get(name)
+        memory_cfg[name] = {**(current if isinstance(current, dict) else {}), **values}
+        save_config(cfg)
 
 
 def _write_memory_provider_config_values(name: str, provider: Any, values: Dict[str, Any]) -> None:
@@ -530,20 +538,26 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
 
 
 @router.post("/api/memory/providers/{name}/setup")
-async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
+async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest,
+                                profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
-    provider = _load_memory_provider(name)
-    if provider is None and not _memory_provider_manifest(name):
-        # No discoverable plugin directory -> no manifest that could declare
-        # setup commands; refuse before the command-running path. (provider
-        # may be None with a manifest present when its pip deps aren't
-        # installed yet — that's the setup use case.)
-        raise _unknown_provider(name)
-    if provider is not None and body.values:
-        with _value_errors_as_http("Failed to persist memory provider setup values for %s", name, passthrough_http=False):
-            _write_memory_provider_config_values(name, provider, body.values)
-    _invalidate_plugins_hub_cache()
-    return _install_memory_provider_setup(name)
+
+    def _run():
+        provider = _load_memory_provider(name)
+        if provider is None and not _memory_provider_manifest(name):
+            # No discoverable plugin directory -> no manifest that could declare
+            # setup commands; refuse before the command-running path. (provider
+            # may be None with a manifest present when its pip deps aren't
+            # installed yet — that's the setup use case.)
+            raise _unknown_provider(name)
+        if provider is not None and body.values:
+            with _value_errors_as_http("Failed to persist memory provider setup values for %s", name,
+                                       passthrough_http=False):
+                _write_memory_provider_config_values(name, provider, body.values)
+        _invalidate_plugins_hub_cache()
+        return _install_memory_provider_setup(name)
+
+    return await scoped_to_thread(profile, _run)
 
 
 @router.put("/api/memory/providers/{name}/config")
@@ -566,9 +580,10 @@ async def update_memory_provider_config(
             raise _unknown_provider(name)
         _write_memory_provider_config_values(name, provider, values)
         _require_memory_provider_ready(name)
-        config = load_config()
-        _memory_section(config)["provider"] = name
-        save_config(config)
+        with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+            config = load_config()
+            _memory_section(config)["provider"] = name
+            save_config(config)
         _invalidate_plugins_hub_cache()
         return {"ok": True, "active": name}
 

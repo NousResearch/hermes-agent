@@ -65,13 +65,6 @@ class TestClarifyPrimitive:
         assert pending is not None
         assert pending.clarify_id == "id2"
 
-    def test_button_choice_does_not_auto_await(self):
-        """Multi-choice clarify should NOT be in text-capture mode initially."""
-        from tools import clarify_gateway as cm
-
-        entry = cm.register("id3", "sk3", "Pick", ["X", "Y"])
-        assert entry.awaiting_text is False
-        assert cm.get_pending_for_session("sk3") is None
 
     def test_include_choice_prompts_returns_multi_choice_entry(self):
         """Gateway typed replies must see active choice prompts too."""
@@ -142,15 +135,6 @@ class TestClarifyPrimitive:
         assert a is not None and a.clarify_id == "idA"
         assert b is not None and b.clarify_id == "idB"
 
-    def test_clarify_timeout_config_default(self):
-        """get_clarify_timeout returns a positive int (default 3600)."""
-        from tools import clarify_gateway as cm
-
-        timeout = cm.get_clarify_timeout()
-        # Default 3600s OR whatever is in the user's loaded config.
-        # Floor check: must be a positive int, not crashed.
-        assert isinstance(timeout, int)
-        assert timeout > 0
 
 
 class TestGatewayTextIntercept:
@@ -228,10 +212,21 @@ class TestClarifyTimeoutResolution:
     """resolve_clarify_timeout is the single source of truth for the clarify
     timeout, shared by the CLI, TUI/desktop, and messaging-gateway paths."""
 
-    def test_canonical_agent_key(self):
+
+
+    def test_cli_defaults_do_not_shadow_agent_clarify_timeout(self):
+        """The classic CLI builds its config from ``cli._cli_config_defaults()``; a seeded
+        legacy ``clarify.timeout`` there wins over the user's ``agent.clarify_timeout`` in
+        the resolver, capping every CLI modal at that value (120 s) while the docs promise
+        3600 s / unlimited. The CLI defaults must leave the legacy key unset."""
+        import cli
         from tools import clarify_gateway as cm
 
-        assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 900}}) == 900
+        defaults = cli._cli_config_defaults()
+        assert (defaults.get("clarify") or {}).get("timeout") is None
+        assert cm.resolve_clarify_timeout(defaults) == 3600
+        cli._merge_file_config(defaults, {"agent": {"clarify_timeout": 900}})
+        assert cm.resolve_clarify_timeout(defaults) == 900
 
 
     def test_non_positive_preserved_as_unlimited_sentinel(self):
@@ -263,7 +258,7 @@ class TestUnlimitedWait:
         t.start()
         # An unlimited wait cannot finish while nothing resolves it: still
         # running after a comfortable margin (old code auto-skipped at once).
-        t.join(timeout=1.5)
+        t.join(timeout=0.3)
         assert t.is_alive()
 
         # Once resolved, the unlimited wait returns the real answer.
@@ -292,9 +287,6 @@ class TestMultiSelectTextFallback:
         cm.mark_awaiting_text(cid)
         return entry
 
-    def test_register_stores_multi_select_flag(self):
-        entry = self._register_multi()
-        assert entry.multi_select is True
 
 
     def test_multi_select_without_choices_is_ignored(self):

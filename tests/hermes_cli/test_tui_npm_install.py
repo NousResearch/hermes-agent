@@ -2,6 +2,9 @@
 
 import json
 import os
+import shutil
+import subprocess
+import time
 import types
 from pathlib import Path
 
@@ -26,6 +29,68 @@ def _touch_tui_entry(root: Path) -> None:
     entry = root / "dist" / "entry.js"
     entry.parent.mkdir(parents=True, exist_ok=True)
     entry.write_text("console.log('tui')")
+
+
+def _write_build_script_fixture(root: Path) -> Path:
+    """Copy the production build script with a controllable esbuild stand-in."""
+    script = root / "scripts" / "build.mjs"
+    script.parent.mkdir(parents=True)
+    source = Path(__file__).parents[2] / "ui-tui" / "scripts" / "build.mjs"
+    script.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    module = root / "node_modules" / "esbuild"
+    module.mkdir(parents=True)
+    (module / "package.json").write_text('{"type":"module","main":"index.js"}')
+    (module / "index.js").write_text(
+        "import { mkdirSync, writeFileSync } from 'node:fs';\n"
+        "export async function build({ outfile }) {\n"
+        "  mkdirSync(new URL('.', `file://${outfile}`).pathname, { recursive: true });\n"
+        "  writeFileSync(process.env.BUILD_STARTED, process.env.BUILD_TOKEN);\n"
+        "  writeFileSync(outfile, '#!/usr/bin/env node\\npartial');\n"
+        "  await new Promise(resolve => setTimeout(resolve, 200));\n"
+        "  if (process.env.BUILD_FAIL === '1') throw new Error('injected build failure');\n"
+        "  writeFileSync(outfile, `#!/usr/bin/env node\\nconsole.log('${process.env.BUILD_TOKEN}')`);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def _start_fixture_build(script: Path, token: str, *, fail: bool = False) -> subprocess.Popen:
+    started = script.parent.parent / f"{token}.started"
+    env = {**os.environ, "BUILD_STARTED": str(started), "BUILD_TOKEN": token}
+    if fail:
+        env["BUILD_FAIL"] = "1"
+    return subprocess.Popen([shutil.which("node") or "node", str(script)], env=env)
+
+
+def test_tui_build_keeps_previous_bundle_intact_during_concurrent_or_failed_build(tmp_path: Path) -> None:
+    """Launches use the old complete bundle until a successful build replaces it (#121286)."""
+    if not shutil.which("node"):
+        pytest.skip("node is required to exercise the TUI build script")
+    script = _write_build_script_fixture(tmp_path)
+    entry = tmp_path / "dist" / "entry.js"
+    entry.parent.mkdir()
+    old_bundle = "console.log('previous complete bundle')"
+    entry.write_text(old_bundle)
+
+    first = _start_fixture_build(script, "first")
+    second = _start_fixture_build(script, "second")
+    deadline = time.monotonic() + 5
+    while not all((tmp_path / f"{token}.started").exists() for token in ("first", "second")):
+        assert time.monotonic() < deadline, "concurrent fixture builds did not start"
+        time.sleep(0.01)
+    assert entry.read_text() == old_bundle
+    assert first.wait(timeout=5) == 0
+    assert second.wait(timeout=5) == 0
+
+    failed = _start_fixture_build(script, "failed", fail=True)
+    deadline = time.monotonic() + 5
+    while not (tmp_path / "failed.started").exists():
+        assert time.monotonic() < deadline, "failing fixture build did not start"
+        time.sleep(0.01)
+    assert entry.read_text() in {"console.log('first')", "console.log('second')"}
+    assert failed.wait(timeout=5) != 0
+    assert entry.read_text() in {"console.log('first')", "console.log('second')"}
 
 
 def _assert_utf8_replace_capture(kwargs: dict) -> None:

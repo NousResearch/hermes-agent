@@ -1596,7 +1596,11 @@ os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_checkout_root = Path(__file__).resolve().parent.parent
+# Defensive only: append a real checkout root if missing so this file still imports standalone;
+# never prepend: the checkout must not shadow same-named installed packages process-wide.
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
 # The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)

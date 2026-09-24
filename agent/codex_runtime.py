@@ -1165,6 +1165,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise TimeoutError("Codex Responses stream request retired before retry")
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
+        # Each physical attempt starts with fresh scrubber state: a failed attempt may
+        # have ended inside an anchored tool-call block whose suppressed span would
+        # otherwise swallow this attempt's deltas. Already-delivered prose stays in
+        # _current_streamed_assistant_text (never re-delivered, never lost) — only the
+        # scrubbers' hold state is dropped.
+        for _scrubber_name in (
+            "_stream_think_scrubber", "_stream_toolcall_scrubber", "_stream_context_scrubber",
+        ):
+            _scrubber = getattr(agent, _scrubber_name, None)
+            if _scrubber is not None:
+                _scrubber.reset()
         if attempt > 0 and watchdog_state is not None and watchdog_state.phase_aware:
             # A physical reconnect has its own no-event TTFB phase. Its first parsed
             # event clears this marker and starts a fresh model-progress phase.

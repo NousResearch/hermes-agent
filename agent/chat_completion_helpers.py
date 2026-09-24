@@ -2448,6 +2448,13 @@ def _with_stream_emitters(agent, run):
         if end is not None:
             end(final_text="", finished=False, error=str(exc))
         raise
+    # Every logical stream end (chat, Anthropic, Bedrock, Codex funnels here): deliver
+    # benign scrubber tails to delta consumers BEFORE the terminal end hook, keeping the
+    # streamed-text record finalization reads. Without this a response ending in a safe
+    # partial tag never reaches consumers (the next per-turn reset discards it).
+    _flush_tails = getattr(agent, "_flush_stream_scrubber_tails", None)
+    if _flush_tails is not None:
+        _flush_tails()
     end = getattr(agent, "_emit_stream_end", None)
     if end is not None:
         end(final_text=_stream_final_text(response), finished=True, error=None)

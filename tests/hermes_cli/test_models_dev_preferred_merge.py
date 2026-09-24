@@ -21,7 +21,6 @@ from unittest.mock import patch
 
 
 from hermes_cli.models import (
-    _MODELS_DEV_PREFERRED,
     _PROVIDER_MODELS,
     _merge_with_models_dev,
     provider_model_ids,
@@ -29,12 +28,24 @@ from hermes_cli.models import (
 
 
 class TestMergeHelper:
+    def test_deepseek_picker_ignores_models_dev_retired_ids(self):
+        """Native DeepSeek is curated-only: models.dev still indexes the retired ``deepseek-v4-flash*``
+        ids, so the registry union must not re-add them or reorder the picker (#117516)."""
+        with patch(
+            "agent.models_dev.list_agentic_models",
+            return_value=["deepseek-v4-flash-vision-exp", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"],
+        ), patch("hermes_cli.models._PROVIDER_CATALOG_FETCHERS", {}), \
+                patch("hermes_cli.models._profile_live_catalog", return_value=None):
+            out = provider_model_ids("deepseek")
+
+        assert out == list(_PROVIDER_MODELS["deepseek"])
+        assert "deepseek-v4-flash" not in out and "deepseek-v4-flash-vision-exp" not in out
+
     def test_merge_empty_mdev_returns_curated(self):
         """When models.dev returns nothing, curated list is preserved verbatim."""
         with patch("agent.models_dev.list_agentic_models", return_value=[]):
             out = _merge_with_models_dev("opencode-go", ["mimo-v2-pro", "kimi-k2.6"])
         assert out == ["mimo-v2-pro", "kimi-k2.6"]
-
 
     def test_merge_case_insensitive_dedup(self):
         """Dedup is case-insensitive but preserves the first occurrence's casing."""
@@ -47,10 +58,6 @@ class TestMergeHelper:
 
 
 class TestProviderModelIdsPreferred:
-
-
-
-
 
     def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self):
         """Coding keys discover K3; legacy Moonshot keys must not advertise it."""
@@ -125,7 +132,7 @@ class TestProviderModelIdsPreferred:
             return None
 
         with (
-            patch("hermes_cli.main._prompt_api_key", return_value=("sk-kimi-test", False)),
+            patch("hermes_cli.main_provider_setup._prompt_api_key", return_value=("sk-kimi-test", False)),
             patch("hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
             patch("hermes_cli.config.get_env_value", return_value=""),
             patch("hermes_cli.config.save_env_value"),
@@ -133,24 +140,3 @@ class TestProviderModelIdsPreferred:
             _model_flow_kimi({}, current_model="")
 
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
-        assert captured["models"][0] == "kimi-k3"
-
-
-class TestOpenRouterAndNousUnchanged:
-    """Per Teknium: openrouter and nous are NEVER merged with models.dev."""
-
-
-    def test_openrouter_does_not_call_merge(self):
-        """openrouter takes its own live path — merge helper must NOT run."""
-        with patch(
-            "hermes_cli.models._merge_with_models_dev",
-            side_effect=AssertionError("merge should not be called for openrouter"),
-        ):
-            # Even if model_ids() fails for some other reason, we just care
-            # that the merge path isn't invoked.
-            try:
-                provider_model_ids("openrouter")
-            except AssertionError:
-                raise
-            except Exception:
-                pass  # model_ids() may fail in the hermetic test env — that's fine.

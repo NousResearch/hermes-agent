@@ -15,7 +15,10 @@ There are TWO on-disk doors, same contract and hot reload:
   unified agent-plugin package: the same folder that carries the Python
   plugin (`plugin.yaml`) and its `dashboard/plugin_api.py` backend ships its
   desktop UI beside them, so one feature installs/uninstalls as one folder.
-  This half is OPT-IN: it inventories in Settings → Plugins but stays off
+  The Electron shell copies that half into `desktop-plugins/<id>/` (with a
+  `.hermes-package.json` marker) — the ONLY root the renderer loads from — so
+  the pane is app-level and does not come and go with the selected profile.
+  This half is OPT-IN: it inventories in Capabilities → Plugins but stays off
   until the user toggles it (matching the Python half's `plugins.enabled`
   gate). Tell the user to flip it on after installing — don't debug a
   "plugin not appearing" report before checking that toggle.
@@ -58,7 +61,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `awaitingResponse`, `busyBySession`, `cwd`, `gateway` (socket state, not
   turn-busy), `model`, `profile`, `viewport`, plus the tile-aware focused
   session atoms: `focusedSessionId` (runtime id — key for `session.*` RPC),
-  `focusedStoredSessionId` (durable id — navigation / list matching), and
+  `focusedStoredSessionId` (durable id — navigation / list matching),
+  `focusedSessionProfile` (owner profile of the focused chat — prefer over
+  `profile` for per-bot/profile readouts; `profile` is the gateway socket's
+  home, which does not move with tab focus), and
   `focusedUsage` (live streamed `UsageStats` of the focused session, no RPC
   needed). `busy` is true while the focused chat is working after a send
   (thinking and streaming). `awaitingResponse` is true until the first
@@ -78,7 +84,13 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `'panes'` (layout zones — set `title` and
   `data: { placement, dock?, width?, height? }`; the pane auto-joins a
   matching zone), `PALETTE_AREA` (⌘K commands), `KEYBINDS_AREA` (rebindable
-  actions).
+  actions), `THEMES_AREA` (`data` is a full `DesktopTheme`).
+- THEMES: registering one only lists it in the picker. Select it with
+  `useTheme().setTheme(name)` from a component, or `requestTheme(name)` from a
+  callback with no component around it (a gateway event, a socket handler).
+  `requestTheme` returns `false` for a name that doesn't resolve and leaves the
+  appearance alone, so use it as the availability check instead of coercing the
+  user back to the default skin.
 - Pane placement: `placement: 'left'|'right'|'bottom'|'main'` is the
   semantic role — the pane stacks (tabs) with existing panes of that role.
   To land on a specific EDGE instead, add `dock: { pane, pos }` — the same
@@ -103,10 +115,15 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   user's instructions) — it won't discover the name on its own.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
 - `ctx.os` — the curated OS door, attributed to your plugin:
-  `ctx.os.notify({ title, body?, silent? })` posts a native OS notification.
-  Fires only while the user is away from Hermes (use `host.notify` for the
-  in-app toast); gated by Settings ▸ Notifications ▸ "Plugin notifications"
-  and throttled per plugin — reserve it for genuinely notable events.
+  `ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? })`
+  posts a native OS notification. Fires only while the user is away from Hermes
+  (use `host.notify` for the in-app toast); gated by Settings ▸ Notifications ▸
+  "Plugin notifications" and throttled per plugin — reserve it for genuinely
+  notable events. `activate` accepts a plugin deep link
+  (`hermes://index-network/intent/1`), a hash path (`/index-network/intent/1`),
+  or `{ path, params }` — same resolver as OS deep links. Action buttons may
+  set their own `activate` or an `onAction`
+  callback (renderer-only; only the action id crosses IPC).
   `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
   `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
   capability isn't available.

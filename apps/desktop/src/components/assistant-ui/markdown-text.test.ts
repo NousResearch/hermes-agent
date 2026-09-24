@@ -94,6 +94,78 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://www.getyourguide.com/culebra-island-l145468/from-fajardo-tour-t19894/>')
   })
 
+  it('does not include wrapper closing parens in raw-url autolinks', () => {
+    const output = preprocessMarkdown('Check (https://example.com/page)')
+
+    expect(output).toContain('(<https://example.com/page>)')
+    expect(output).not.toContain('<https://example.com/page)>')
+  })
+
+  it('strips wrapper closing parens from bare raw-url autolinks', () => {
+    const output = preprocessMarkdown('(https://example.com/page)')
+
+    expect(output).toBe('(<https://example.com/page>)')
+    expect(output).not.toContain('<https://example.com/page)>')
+  })
+
+  it('strips multiple wrapper closing parens from raw-url autolinks', () => {
+    const output = preprocessMarkdown('((https://example.com/page))')
+
+    expect(output).toBe('((<https://example.com/page>))')
+    expect(output).not.toContain('<https://example.com/page)>')
+    expect(output).not.toContain('<https://example.com/page))>')
+  })
+
+  it('leaves raw URLs inside inline code spans unchanged', () => {
+    const input = 'Keep `https://example.com/page)` literal.'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+  })
+
+  it('keeps trailing punctuation outside wrapper-paren raw-url autolinks', () => {
+    expect(preprocessMarkdown('(https://example.com/page).')).toBe('(<https://example.com/page>).')
+    expect(preprocessMarkdown('(https://example.com/page),')).toBe('(<https://example.com/page>),')
+  })
+
+  it('preserves balanced parens inside raw-url autolinks', () => {
+    const output = preprocessMarkdown('See https://example.com/wiki/Foo_(bar)')
+
+    expect(output).toContain('<https://example.com/wiki/Foo_(bar)>')
+  })
+
+  it('preserves a trailing balanced pair after an earlier stray closing paren', () => {
+    const output = preprocessMarkdown('See https://example.com/a)(b)')
+
+    expect(output).toContain('<https://example.com/a)(b)>')
+  })
+
+  it('strips three wrapper closing parens from raw-url autolinks', () => {
+    const output = preprocessMarkdown('(((https://example.com/page)))')
+
+    expect(output).toBe('(((<https://example.com/page>)))')
+  })
+
+  it('preserves an unmatched opening paren at the end of a raw URL', () => {
+    const output = preprocessMarkdown('https://example.com/foo(')
+
+    expect(output).toContain('<https://example.com/foo(>')
+  })
+
+  it('strips only the wrapper closing paren around balanced-paren URLs', () => {
+    const output = preprocessMarkdown('(https://example.com/wiki/Foo_(bar))')
+
+    expect(output).toBe('(<https://example.com/wiki/Foo_(bar)>)')
+    expect(output).not.toContain('<https://example.com/wiki/Foo_(bar))>')
+  })
+
+  it('does not autolink canonical markdown links', () => {
+    const input = '[link](https://github.com/NousResearch/hermes-agent/issues)'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+  })
+
   it('strips orphan numeric citation markers outside code spans', () => {
     const output = preprocessMarkdown('This is the source[0], but keep `items[0]` untouched.')
 
@@ -260,6 +332,21 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown(input)).toBe('Costs \\$5; outcome is $4\\in A$.')
   })
 
+  it('escapes prefixed currency written with a space before the amount', () => {
+    // `R$ 12.345` (BRL), `US$ 1,200`, `AU$ 40`: outside the US the symbol
+    // carries a letter prefix and a space. Two of them on one line used to
+    // pair as an inline math span and render the prose between as an equation.
+    expect(preprocessMarkdown('Saldo R$ 1.000 e diferença R$ 200.')).toBe('Saldo R\\$ 1.000 e diferença R\\$ 200.')
+    expect(preprocessMarkdown('R$800 mil, dos quais R$ 9.876,54 pagos.')).toBe(
+      'R\\$800 mil, dos quais R\\$ 9.876,54 pagos.'
+    )
+    expect(preprocessMarkdown('US$ 1,200 vs AU$ 40')).toBe('US\\$ 1,200 vs AU\\$ 40')
+  })
+
+  it('leaves spaced inline math alone — a space-then-digit is only currency after a letter', () => {
+    expect(preprocessMarkdown('valor $ 2 + 2 $ fim')).toBe('valor $ 2 + 2 $ fim')
+  })
+
   it('normalizes multiline bracket display math with delimiter-only lines', () => {
     const input = [
       'Correct.',
@@ -300,10 +387,81 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
   })
 
-  it('escapes currency dollars in prose so they are not parsed as math', () => {
-    const output = preprocessMarkdown('$5 and $10')
+  it('moves hugging $$ delimiters of multiline display math onto their own lines', () => {
+    const input = [
+      '$$\\begin{aligned}',
+      '\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\varepsilon_0} \\\\',
+      '\\nabla \\cdot \\mathbf{B} &= 0',
+      '\\end{aligned}$$'
+    ].join('\n')
 
-    expect(output).toContain('\\$5')
-    expect(output).toContain('\\$10')
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(
+      [
+        '$$',
+        '\\begin{aligned}',
+        '\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\varepsilon_0} \\\\',
+        '\\nabla \\cdot \\mathbf{B} &= 0',
+        '\\end{aligned}',
+        '$$'
+      ].join('\n')
+    )
+  })
+
+  it('keeps hugging display math inside its markdown container', () => {
+    const input = ['> $$\\begin{aligned}', '> a &= b', '> \\end{aligned}$$'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(['> $$', '> \\begin{aligned}', '> a &= b', '> \\end{aligned}', '> $$'].join('\n'))
+  })
+
+  it('splits the hugging $$ form that the bracket rewrite itself produces', () => {
+    const input = ['\\[\\begin{aligned}', 'a &= b', '\\end{aligned}\\]'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(['$$', '\\begin{aligned}', 'a &= b', '\\end{aligned}', '$$'].join('\n'))
+  })
+
+  it('keeps CRLF line endings consistent when splitting hugging delimiters', () => {
+    const input = '$$\\begin{aligned}\r\na &= b\r\n\\end{aligned}$$'
+
+    expect(preprocessMarkdown(input)).toBe('$$\r\n\\begin{aligned}\r\na &= b\r\n\\end{aligned}\r\n$$')
+  })
+
+  it('leaves single-line display math alone', () => {
+    expect(preprocessMarkdown('$$x^2 + y^2 = r^2$$')).toBe('$$x^2 + y^2 = r^2$$')
+  })
+
+  it('leaves a multiline $$ block that sits wholly inside one inline code span alone', () => {
+    const input = '`$$a\nb$$`'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('keeps a radical index inside inline math', () => {
+    expect(preprocessMarkdown('$\\sqrt[3]{8}$')).toBe('$\\sqrt[3]{8}$')
+  })
+
+  it('keeps a radical index inside display math', () => {
+    expect(preprocessMarkdown('$$\\sqrt[3]{8}$$')).toBe('$$\\sqrt[3]{8}$$')
+  })
+
+  it('keeps a radical index inside a multiline display block', () => {
+    const input = ['$$', '\\sqrt[3]{8} + \\sqrt[4]{16}', '$$'].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('keeps a radical index in math that arrived as bracket delimiters', () => {
+    expect(preprocessMarkdown('\\(\\sqrt[3]{8}\\)')).toContain('$\\sqrt[3]{8}$')
+  })
+
+  it('still strips a citation marker in prose that also contains math', () => {
+    const output = preprocessMarkdown('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
+
+    expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
   })
 })

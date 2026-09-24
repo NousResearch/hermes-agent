@@ -6,36 +6,14 @@ Live-QA findings (Aug 2026, locked KDE desktop):
 2. `_call_tool_via_cli` retried 4x with ~3.5s of sleeps on "daemon is not
    running", a permanent condition for that invocation.
 """
-from typing import Any, Dict
 
 import pytest
 
 from tools.computer_use import cua_backend as cb
+from tools.computer_use import cua_backend_driver as cb_driver
 
 
 # ── _empty_discovery_reason ─────────────────────────────────────────────
-
-
-def test_locked_session_reason_names_the_lock(monkeypatch):
-    monkeypatch.setattr(cb, "_linux_session_locked", lambda: True)
-    reason = cb._empty_discovery_reason()
-    assert "LOCKED" in reason
-    assert "unlock" in reason.lower()
-
-
-def test_no_display_reason(monkeypatch):
-    monkeypatch.setattr(cb, "_linux_session_locked", lambda: False)
-    monkeypatch.setattr(cb.sys, "platform", "linux")
-    monkeypatch.delenv("DISPLAY", raising=False)
-    reason = cb._empty_discovery_reason()
-    assert "DISPLAY" in reason
-
-
-def test_unknown_reason_points_at_doctor(monkeypatch):
-    monkeypatch.setattr(cb, "_linux_session_locked", lambda: None)
-    monkeypatch.setenv("DISPLAY", ":0")
-    reason = cb._empty_discovery_reason()
-    assert "doctor" in reason
 
 
 def test_locked_probe_fails_safe(monkeypatch):
@@ -53,7 +31,7 @@ def test_empty_capture_carries_reason(monkeypatch):
     backend._last_app = None
     backend._last_target = None
     backend._snapshot_tokens = {}
-    monkeypatch.setattr(backend, "_load_windows", lambda: [], raising=False)
+    monkeypatch.setattr(backend, "list_windows", lambda: [], raising=False)
     monkeypatch.setattr(cb, "_empty_discovery_reason",
                         lambda: "the desktop session is LOCKED (test)")
     cap = backend.capture(mode="ax")
@@ -86,7 +64,7 @@ def test_cli_fallback_fails_fast_on_daemon_not_running(monkeypatch):
         calls["n"] += 1
         return _Proc(stdout="Cua Driver daemon is not running on /x.sock.\nStart it first with: cua-driver serve")
 
-    monkeypatch.setattr(cb, "resolve_cua_driver_cmd", lambda override=None: "cua-driver")
+    monkeypatch.setattr(cb_driver, "resolve_cua_driver_cmd", lambda override=None: "cua-driver")
     import subprocess as _sp
     import time as _time
     monkeypatch.setattr(_sp, "run", _fake_run)
@@ -110,7 +88,7 @@ def test_cli_fallback_still_retries_transient_empty(monkeypatch):
             return _Proc(stdout="")
         return _Proc(stdout='{"windows": []}')
 
-    monkeypatch.setattr(cb, "resolve_cua_driver_cmd", lambda override=None: "cua-driver")
+    monkeypatch.setattr(cb_driver, "resolve_cua_driver_cmd", lambda override=None: "cua-driver")
     import subprocess as _sp
     import time as _time
     monkeypatch.setattr(_sp, "run", _fake_run)

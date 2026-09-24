@@ -39,6 +39,21 @@ import path from 'node:path'
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
+
+// Remote-side watchdog for probe commands, in seconds. runSsh SIGKILLs the
+// LOCAL ssh child on timeout, but the remote command keeps running as an
+// orphan (ppid=1) — a hung remote CLI (e.g. a wedged `hermes --version`)
+// accumulates orphans that busy-loop (#110478). Kept under
+// DEFAULT_EXEC_TIMEOUT_MS so the remote kill lands before the local timeout.
+const REMOTE_PROBE_TIMEOUT_SECS = 15
+// No-mux tunnels are one `ssh -N -L` child each; a transient child death
+// (network blip, sshd restart, laptop resume) used to instantly poison
+// isAlive() and cascade upstream into a full teardown that SIGTERM'd a
+// healthy backend (#96266). Instead, restart the child a bounded number of
+// times; consecutive pre-readiness failures exhaust the budget and only then
+// is the connection reported dead.
+const DEFAULT_TUNNEL_RESTART_LIMIT = 5
+const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
 const CONTROL_PERSIST_SECONDS = 300
 
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
@@ -313,6 +328,40 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
   return args
 }
 
+// Wrap a remote probe command in a POSIX watchdog so a hung remote CLI is
+// killed REMOTELY after `timeoutSecs` instead of orphaning when the local ssh
+// child is SIGKILLed (#110478). Pure POSIX sh (dash, macOS sh) — deliberately
+// not GNU `timeout`, which macOS remotes do not ship.
+//
+// The wrapped command must be a SINGLE command: the watchdog kills its direct
+// child, so the exact invocation that can hang must be the direct child —
+// a hung grandchild of a compound wrapper would orphan anyway. (The ownership
+// probe nests the watchdog around the inner `serve --help` inside its
+// `$( ... )` for this reason; note the load-bearing space in `$( (`.)
+// The wrapped command keeps its stdout; the shell exits non-zero when the
+// watchdog fires and the probe's existing failure path handles it.
+//
+// The sleeper's stdio is detached (</dev/null >/dev/null 2>&1): killing the
+// sleeper subshell orphans its `sleep` grandchild, and an orphan holding the
+// session pipes would keep the ssh channel open until the full timeout even on
+// the healthy path. Detached, the orphan is a benign self-reaping `sleep`.
+function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SECS) {
+  const secs = Number.isFinite(timeoutSecs) && timeoutSecs > 0 ? Math.floor(timeoutSecs) : REMOTE_PROBE_TIMEOUT_SECS
+
+  // Job control (`set -m`) puts the probe in its own process group so the
+  // watchdog can also reach a grandchild left behind by a launcher that runs
+  // the CLI without exec. Non-interactive zsh exits when asked to enable
+  // monitor mode, so skip that setup there and fall back to killing the direct
+  // child. Other shells retain the process-group cleanup where supported.
+  return (
+    `[ -n "\${ZSH_VERSION-}" ] || set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
+    `wait $__htp; __htrc=$?; ` +
+    `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +
+    `exit $__htrc`
+  )
+}
+
 // Bind the local end to 127.0.0.1 ONLY — never 0.0.0.0 — so the tunnel does not
 // re-expose the remote dashboard to the client's LAN.
 function forwardSpec(localPort, remotePort, remoteHost = '127.0.0.1') {
@@ -394,8 +443,9 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Spawn helper — runs an ssh invocation, races it against a hard timeout
 
-// Resolves { code, stdout, stderr }. On timeout the child is SIGKILLed and the
-// promise rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
+// Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
+// (null on a normal exit). On timeout the child is SIGKILLed and the promise
+// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
 function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -425,7 +475,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
     let stderr = ''
     let settled = false
 
-    const timer = setTimeout(() => {
+    const timer: any = setTimeout(() => {
       if (settled) {
         return
       }
@@ -485,7 +535,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       signal?.removeEventListener('abort', onAbort)
       reject(error)
     })
-    child.on('close', code => {
+    child.on('close', (code, closeSignal) => {
       if (settled) {
         return
       }
@@ -493,9 +543,35 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       settled = true
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ code, stdout, stderr })
+      resolve({ code, signal: closeSignal || null, stdout, stderr })
     })
   })
+}
+
+function sshCloseSignal(value) {
+  if (!value || typeof value === 'string') {
+    return null
+  }
+
+  return typeof value.signal === 'string' && value.signal ? value.signal : null
+}
+
+function sshCloseStderr(value) {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value && typeof value.stderr === 'string') {
+    return value.stderr
+  }
+
+  return value?.message || ''
+}
+
+// A normal exit is code 0 and no close signal. A signal death is not success,
+// even when the caller would otherwise treat a null code as a plain failure.
+function sshCloseOk(result) {
+  return Boolean(result) && !sshCloseSignal(result) && result.code === 0
 }
 
 function stopTunnelChild(child, timeoutMs = 5_000) {
@@ -547,6 +623,8 @@ class SshConnection {
   _connectTimeoutMs: number
   _execTimeoutMs: number
   _forwardTimeoutMs: number
+  _tunnelRestartLimit: number
+  _tunnelRestartDelayMs: number
   _opened: boolean
   _mux: boolean
   _tunnels: Map<string, any>
@@ -588,6 +666,8 @@ class SshConnection {
     this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this._execTimeoutMs = opts.execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
+    this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
+    this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
     this._opened = false
   }
 
@@ -608,10 +688,28 @@ class SshConnection {
       return err
     }
 
-    const stderr = typeof stderrOrErr === 'string' ? stderrOrErr : stderrOrErr?.message || ''
+    const closeSignal = sshCloseSignal(stderrOrErr)
+    const stderr = sshCloseStderr(stderrOrErr)
+
+    // A signal death with empty stderr is a local process death, not proof the
+    // host was unreachable. Callers that pass UNREACHABLE as the empty-stderr
+    // fallback must not win here.
+    if (closeSignal && !String(stderr).trim()) {
+      const detail = `ssh process exited from signal ${closeSignal}`
+      const err: any = new Error(sshErrorMessage(SSH_ERROR.UNKNOWN, this, detail))
+      err.kind = SSH_ERROR.UNKNOWN
+      err.signal = closeSignal
+
+      return err
+    }
+
     const kind = stderr ? classifySshError(stderr) : fallbackKind
     const err: any = new Error(sshErrorMessage(kind, this, stderr))
     err.kind = kind
+
+    if (closeSignal) {
+      err.signal = closeSignal
+    }
 
     return err
   }
@@ -649,8 +747,8 @@ class SshConnection {
         throw this._fail(error, SSH_ERROR.UNREACHABLE)
       }
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+      if (!sshCloseOk(result)) {
+        throw this._fail(result, SSH_ERROR.UNREACHABLE)
       }
 
       this._opened = true
@@ -697,8 +795,8 @@ class SshConnection {
       throw this._fail(error, SSH_ERROR.UNREACHABLE)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result, SSH_ERROR.UNREACHABLE)
     }
 
     this._opened = true
@@ -719,7 +817,7 @@ class SshConnection {
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -739,7 +837,7 @@ class SshConnection {
         signal
       })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -788,17 +886,156 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
 
     return result.stdout
   }
 
+  // Spawn one persistent `ssh -N -L` child for a no-mux tunnel and wait for it
+  // to confirm local forwarding on stderr. Resolves once ready. Rejects on a
+  // pre-readiness death or confirmation timeout, with the captured stderr on
+  // `error.tunnelStderr` so the caller can classify auth/bind failures. After
+  // readiness, a child death is a tunnel FLAP: it is routed into
+  // _handleNoMuxTunnelFlap (bounded restart) instead of poisoning isAlive()
+  // outright — the old instant-poison path is how a ~10s local tunnel blip
+  // cascaded into SIGTERM of a healthy backend (#96266).
+  _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
+    return new Promise<void>((resolve, reject) => {
+      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      tunnel.child = child
+      let stderr = ''
+      let readyConfirmed = false
+      let settled = false
+      let downHandled = false
+
+      const readyTimeout: any = setTimeout(() => {
+        finishFail(new Error('tunnel did not confirm local forwarding'))
+      }, this._forwardTimeoutMs)
+
+      readyTimeout.unref?.()
+
+      const finishOk = () => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        clearTimeout(readyTimeout)
+        resolve()
+      }
+
+      const finishFail = (error: any) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        clearTimeout(readyTimeout)
+        error.tunnelStderr = stderr
+        reject(error)
+      }
+
+      const onDown = (cause: string, error: any) => {
+        if (!readyConfirmed) {
+          tunnel.alive = tunnel.child === child ? false : tunnel.alive
+          finishFail(error)
+
+          return
+        }
+
+        if (downHandled || tunnel.child !== child) {
+          return
+        }
+
+        downHandled = true
+        this._handleNoMuxTunnelFlap(tunnel, spec, args, localPort, cause)
+      }
+
+      const readyPattern = new RegExp(`Local forwarding listening on .* port ${localPort}\\b`)
+      child.stderr?.on('data', (d: any) => {
+        if (readyConfirmed) {
+          return
+        }
+
+        stderr = `${stderr}${String(d)}`.slice(-16_384)
+
+        if (readyPattern.test(stderr)) {
+          readyConfirmed = true
+          finishOk()
+        }
+      })
+      child.on('error', (error: any) => onDown(`tunnel process failed (${error?.message || error})`, error))
+      child.on('exit', (code: any) =>
+        onDown(`tunnel process exited with code ${code}`, new Error(`tunnel process exited with code ${code}`))
+      )
+      child.on('close', (code: any) =>
+        onDown(`tunnel process closed with code ${code}`, new Error(`tunnel process closed with code ${code}`))
+      )
+    })
+  }
+
+  // A ready no-mux tunnel child died. Deliberate teardown (cancelForward /
+  // close) and superseded tunnels stay dead; otherwise restart the child up to
+  // the bounded budget, and only mark the tunnel (and thus the connection)
+  // unhealthy once the budget is exhausted. The budget is cumulative per
+  // forward — a tunnel that keeps dying immediately after confirming readiness
+  // must not restart forever.
+  _handleNoMuxTunnelFlap(tunnel: any, spec: string, args: string[], localPort: number | string, cause: string) {
+    if (tunnel.stopping || this._tunnels.get(spec) !== tunnel) {
+      tunnel.alive = false
+
+      return
+    }
+
+    if (tunnel.restarts >= this._tunnelRestartLimit) {
+      tunnel.alive = false
+      this._logLine(
+        `tunnel 127.0.0.1:${localPort} down (${cause}); restart budget exhausted (${this._tunnelRestartLimit})`
+      )
+
+      return
+    }
+
+    tunnel.restarts += 1
+    this._logLine(
+      `tunnel 127.0.0.1:${localPort} flapped (${cause}); restarting ` +
+        `(${tunnel.restarts}/${this._tunnelRestartLimit}) in ${this._tunnelRestartDelayMs}ms`
+    )
+
+    const timer: any = setTimeout(() => {
+      tunnel.restartTimer = null
+
+      if (tunnel.stopping || this._tunnels.get(spec) !== tunnel) {
+        tunnel.alive = false
+
+        return
+      }
+
+      this._startNoMuxTunnelChild(tunnel, spec, args, localPort).then(
+        () => {
+          tunnel.alive = true
+          this._logLine(`tunnel 127.0.0.1:${localPort} restarted`)
+        },
+        (error: any) => {
+          // A restart that never confirmed readiness may leave its child
+          // running; stop it before deciding whether to retry.
+          void Promise.resolve(stopTunnelChild(tunnel.child)).catch(() => undefined)
+          this._handleNoMuxTunnelFlap(tunnel, spec, args, localPort, `restart failed: ${error?.message || error}`)
+        }
+      )
+    }, this._tunnelRestartDelayMs)
+
+    timer.unref?.()
+    tunnel.restartTimer = timer
+  }
+
   // Establish a local→remote forward. Mux: `-O forward` against the master.
   // No-mux: spawn a persistent `ssh -N -L` child that IS the tunnel; ready when
-  // the local port accepts. The child dying = tunnel down (isAlive of the
-  // backend catches it upstream).
+  // the local port accepts. A child dying AFTER readiness is a tunnel flap and
+  // is restarted with a bounded budget (#96266); only an exhausted budget (or
+  // a deliberate cancel/close) marks the connection unhealthy for isAlive().
   async forward(localPort, remotePort, remoteHost = '127.0.0.1') {
     const spec = forwardSpec(localPort, remotePort, remoteHost)
     this._logLine(`forwarding 127.0.0.1:${localPort} -> ${remoteHost}:${remotePort}`)
@@ -815,67 +1052,20 @@ class SshConnection {
         target(this.user, this.host)
       ]
 
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
-      const tunnel = { child, alive: true }
+      const tunnel: any = { alive: true, child: null, restarts: 0, restartTimer: null, stopping: false }
       this._tunnels.set(spec, tunnel)
-      let stderr = ''
-      let readyConfirmed = false
-      let readyResolve
-      let readyReject
-
-      const ready = new Promise<void>((resolve, reject) => {
-        readyResolve = resolve
-        readyReject = reject
-      })
-
-      const readyPattern = new RegExp(`Local forwarding listening on .* port ${localPort}\\b`)
-      child.stderr?.on('data', d => {
-        if (readyConfirmed) {
-          return
-        }
-
-        stderr = `${stderr}${String(d)}`.slice(-16_384)
-
-        if (readyPattern.test(stderr)) {
-          readyConfirmed = true
-          readyResolve()
-        }
-      })
-      child.on('error', error => {
-        tunnel.alive = false
-        readyReject(error)
-      })
-      child.on('exit', code => {
-        tunnel.alive = false
-        readyReject(new Error(`tunnel process exited with code ${code}`))
-      })
-      child.on('close', code => {
-        tunnel.alive = false
-        readyReject(new Error(`tunnel process closed with code ${code}`))
-      })
-      let readyTimeout
 
       try {
-        await Promise.race([
-          ready,
-          new Promise((_, reject) => {
-            readyTimeout = setTimeout(
-              () => reject(new Error('tunnel did not confirm local forwarding')),
-              this._forwardTimeoutMs
-            )
-          })
-        ])
+        await this._startNoMuxTunnelChild(tunnel, spec, args, localPort)
       } catch (error: any) {
         try {
-          await stopTunnelChild(child)
+          await stopTunnelChild(tunnel.child)
           this._tunnels.delete(spec)
         } catch (stopError) {
           throw this._fail(stopError, SSH_ERROR.UNKNOWN)
         }
 
-        throw this._fail(stderr || error, SSH_ERROR.UNKNOWN)
-      } finally {
-        clearTimeout(readyTimeout)
+        throw this._fail(error?.tunnelStderr || error, SSH_ERROR.UNKNOWN)
       }
 
       return
@@ -890,8 +1080,8 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
   }
 
@@ -904,6 +1094,14 @@ class SshConnection {
       const tunnel = this._tunnels.get(spec)
 
       if (tunnel) {
+        tunnel.stopping = true
+        tunnel.alive = false
+
+        if (tunnel.restartTimer) {
+          clearTimeout(tunnel.restartTimer)
+          tunnel.restartTimer = null
+        }
+
         await stopTunnelChild(tunnel.child)
         this._tunnels.delete(spec)
         this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
@@ -931,6 +1129,14 @@ class SshConnection {
 
     if (!this._mux) {
       for (const [spec, tunnel] of this._tunnels) {
+        tunnel.stopping = true
+        tunnel.alive = false
+
+        if (tunnel.restartTimer) {
+          clearTimeout(tunnel.restartTimer)
+          tunnel.restartTimer = null
+        }
+
         await stopTunnelChild(tunnel.child)
         this._tunnels.delete(spec)
       }
@@ -946,8 +1152,8 @@ class SshConnection {
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr)
+      if (!sshCloseOk(result)) {
+        throw this._fail(result)
       }
 
       this._logLine('control master closed')
@@ -988,7 +1194,19 @@ function createSshProbeConnection(config, options: any = {}) {
   return new SshConnection(config, { ...options, mux: false })
 }
 
+// Bootstrap loops poll a remote for readiness; a newer attempt aborts the
+// signal so the stale one stops polling and unwinds. `superseded` tells the
+// caller this was replaced, not that it failed.
+function assertBootstrapNotSuperseded(signal) {
+  if (signal?.aborted) {
+    const error: any = new Error('SSH bootstrap was cancelled.')
+    error.kind = 'superseded'
+    throw error
+  }
+}
+
 export {
+  assertBootstrapNotSuperseded,
   baseSshOptions,
   buildControlArgs,
   buildExecArgs,
@@ -1005,6 +1223,7 @@ export {
   hostArgs,
   pickLocalPort,
   redactSecrets,
+  REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
   SSH_ERROR,
   SshConnection,
@@ -1012,5 +1231,6 @@ export {
   stopTunnelChild,
   target,
   validateKeyPath,
-  validateSshTarget
+  validateSshTarget,
+  withRemoteTimeout
 }

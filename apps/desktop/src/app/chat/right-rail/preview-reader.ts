@@ -15,6 +15,8 @@
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
 
+import { nudgeOverlay } from './preview-nudge'
+
 export interface PreviewReadOptions {
   /** Characters to return from `start` (capped at PREVIEW_READ_MAX_CHARS). */
   count?: number
@@ -88,6 +90,13 @@ export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<
   if (reader) {
     try {
       const page = await reader()
+
+      // Say it on the page. Reading is by far the cheapest thing the agent
+      // does — a few hundredths of a second against a model round trip either
+      // side of it — so a run of reads used to leave the pane dark for the
+      // twenty seconds it took to page through a document, immediately after
+      // the one moment that showed anything.
+      nudgeOverlay('read')
 
       return windowText(
         { kind: target.kind, path: target.path, title: page.title || target.label, url: page.url || target.url },

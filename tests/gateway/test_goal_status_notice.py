@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE
@@ -93,7 +93,7 @@ async def test_goal_status_notice_uses_profile_routed_adapter():
     default_adapter = FakeAdapter()
     profile_adapter = FakeAdapter()
     runner.adapters = {Platform.DISCORD: default_adapter}
-    runner._adapter_for_source = lambda source: profile_adapter
+    runner._delivery_adapter_for = lambda source: profile_adapter
 
     source = SessionSource(
         platform=Platform.DISCORD,
@@ -110,7 +110,7 @@ async def test_goal_status_notice_uses_profile_routed_adapter():
             "chat_id": "profile-channel",
             "content": "✓ Goal achieved: done",
             "reply_to": None,
-            "metadata": {"thread_id": "thread-123"},
+            "metadata": {"thread_id": "thread-123", "hermes_profile": "secondary"},
         }
     ]
 

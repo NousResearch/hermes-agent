@@ -998,6 +998,18 @@ class CLISessionMixin:
                     print(f"     {summary['note']}")
             except Exception as e:
                 finalize_context_engine_compression_notification(self.agent, committed=False)
+                from agent.conversation_compression import CommittedTranscriptReloadError
+                if isinstance(e, CommittedTranscriptReloadError):
+                    # A failed read did not undo the commit. Do not carry archived rows
+                    # into another turn until the canonical active transcript is read.
+                    self._compression_reload_pending = True
+                    try:
+                        self.conversation_history = self.agent._session_db.get_messages_as_conversation(
+                            self.agent.session_id, repair_alternation=True, include_row_ids=True)
+                    except Exception:
+                        pass  # chat() retries and refuses to run if the store stays unreadable.
+                    else:
+                        self._compression_reload_pending = False
                 print(f"  ❌ Compression failed: {e}")
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:

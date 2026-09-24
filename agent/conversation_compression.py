@@ -3731,12 +3731,17 @@ def _commit_compaction(
                 # The DB has already archived the held rows. Neither the old snapshot nor
                 # the summary-only candidate is a safe model input until a durable reload.
                 agent._last_compaction_in_place = True
-                raise RuntimeError("Committed compression requires a durable transcript reload") from e
+                raise CommittedTranscriptReloadError(
+                    "Committed compression requires a durable transcript reload") from e
     return _CommitOutcome(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
         split_status=split_status, session_commit_succeeded=session_commit_succeeded,
         compacted_in_place=compacted_in_place, made_progress=made_progress,
     )
+
+
+class CommittedTranscriptReloadError(RuntimeError):
+    """The compaction committed, but its active transcript could not be published."""
 
 
 @dataclasses.dataclass

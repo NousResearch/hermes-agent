@@ -1332,6 +1332,7 @@ class GatewayTurnMixin:
         histories don't cause repeated truncation/context failures. Token source: the API's
         prompt_tokens from the last turn, else a char/4 estimate."""
         from gateway.run import HygieneTurnHoldExceeded
+        from agent.conversation_compression import CommittedTranscriptReloadError
         if not history or len(history) < 4:
             return history
 
@@ -1367,6 +1368,9 @@ class GatewayTurnMixin:
             # Must not hit the generic "auto-compress failed" warning below: that log is how thinking-model
             # deployments read as permanently broken (#97963; surfaced by @686f6c61 in PR #99657).
             pass
+        except CommittedTranscriptReloadError:
+            # The DB already archived held rows; the original history is no longer safe.
+            return await self.async_session_store.load_transcript(session_entry.session_id)
         except Exception as e:
             logger.warning("Session hygiene auto-compress failed: %s", e)
         # A landed compression published a NEW transcript on attempt.history: leave it byte-identical.

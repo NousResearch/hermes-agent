@@ -77,6 +77,14 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        if getattr(self, "_compression_reload_pending", False):
+            try:
+                self.conversation_history = agent._session_db.get_messages_as_conversation(
+                    agent.session_id, repair_alternation=True, include_row_ids=True)
+            except Exception:
+                print("  ❌ Session history is unavailable after compression; retry when it can be read.")
+                return None
+            self._compression_reload_pending = False
         self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
         message = self._chat_route_images(message, images)
 

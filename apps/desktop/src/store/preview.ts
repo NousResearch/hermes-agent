@@ -202,14 +202,14 @@ function persistTabs() {
 // file is already imported by session-states.ts.)
 //
 // Which bucket the atom mirrors. A RENAME moves the view without the scope
-// changing, so this has to follow the rename or the persist subscriber below
+// changing, so this has to follow the rename or the persistence listener below
 // would resurrect the bucket the rename just deleted.
 let viewKey = 'default'
 
-export const $previewTabs = atom<PreviewTab[]>([])
+export const $previewTabs = atom<PreviewTab[]>(tabsByProfile[viewKey] ?? [])
 
-$previewTabs.subscribe(tabs => {
-  // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
+$previewTabs.listen(tabs => {
+  // `listen` hands a readonly view; the bucket is a mutable store of its own.
   tabsByProfile[viewKey] = [...tabs]
   persistTabs()
 })
@@ -219,15 +219,20 @@ $previewTabs.subscribe(tabs => {
  *  changes; the previous agent's tabs must not leak into the next one. */
 export function setPreviewScope(scope: string) {
   const next = normalizeProfileKey(scope) || 'default'
+  const legacyTabs = pendingLegacyTabs
 
-  if (next === viewKey) {
-    return
-  }
-
-  if (pendingLegacyTabs) {
-    tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
+  if (legacyTabs) {
+    tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...legacyTabs]
     pendingLegacyTabs = null
     persistTabs()
+  }
+
+  if (next === viewKey) {
+    if (legacyTabs) {
+      $previewTabs.set(tabsByProfile[next] ?? [])
+    }
+
+    return
   }
 
   viewKey = next
@@ -266,7 +271,7 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   }
 
   // The view belongs to the renamed profile; only its NAME changed. Re-point it
-  // BEFORE the atom is set, so the persist subscriber writes the new bucket
+  // BEFORE the atom is set, so the persistence listener writes the new bucket
   // rather than resurrecting the one just deleted.
   const wasInView = from === viewKey
 

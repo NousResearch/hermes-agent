@@ -206,6 +206,7 @@ import {
   terminalScriptExtension,
   tuiResumeArgs
 } from './external-terminal'
+import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
 import { type FaviconIo, resolveFavicon } from './favicon'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import {
@@ -1819,6 +1820,7 @@ const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const previewWatchers = new Map()
 let previewShortcutActive = false
+const f12ShortcutActiveWindows = new Set<number>()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {
@@ -7418,11 +7420,26 @@ function installDevToolsShortcut(window) {
   // Only Ctrl+Shift+I (or Cmd+Opt+I on Mac) opens DevTools.
   // F12 is explicitly blocked so Chromium's built-in handler doesn't open it.
   window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') {
+      return
+    }
+
     const key = input.key.toLowerCase()
 
-    // F12 opens DevTools by default; block only when the user disabled it.
+    // A renderer binding gets first refusal. Chromium otherwise claims F12
+    // before the renderer can capture or dispatch it.
     if (input.key === 'F12') {
-      if (f12Blocked) {
+      const decision = f12ShortcutDecision(input, f12ShortcutActiveWindows.has(window.webContents.id), f12Blocked)
+
+      if (decision === 'forward') {
+        event.preventDefault()
+
+        window.webContents.send('hermes:f12-shortcut', toF12KeyboardEventPayload(input))
+
+        return
+      }
+
+      if (decision === 'block') {
         event.preventDefault()
 
         return
@@ -16850,6 +16867,18 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
+})
+
+ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
+  if (active) {
+    f12ShortcutActiveWindows.add(event.sender.id)
+  } else {
+    f12ShortcutActiveWindows.delete(event.sender.id)
+  }
+})
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.once('destroyed', () => f12ShortcutActiveWindows.delete(contents.id))
 })
 
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {

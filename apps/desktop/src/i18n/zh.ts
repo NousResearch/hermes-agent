@@ -379,6 +379,7 @@ export const zh = defineLocale({
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',
       'composer.voice': '开始 / 停止语音对话',
+      'composer.dictate': '开始 / 停止听写',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
@@ -801,6 +802,10 @@ export const zh = defineLocale({
       backdropDesc: '对话后方那张淡淡的雕像图片。',
       userBubbleTitle: '消息气泡',
       userBubbleDesc: '你自己的消息有多透明。0 为不透明，100 时只保留边框。',
+      textDirectionTitle: '文本方向',
+      textDirectionDesc:
+        '设置聊天消息和输入框的文字方向。“自动”根据每段的第一个字母判断；混合文本排列不对时，可手动选择方向。代码始终从左到右显示。',
+      textDirection: { auto: '自动', rtl: '从右到左', ltr: '从左到右' },
       introSplashTitle: '开场标识',
       introSplashDesc: '空白对话中显示的字标和提示语。',
       reactionsTitle: '消息回应',
@@ -849,8 +854,6 @@ export const zh = defineLocale({
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
         roamTitle: '漫游',
         roamDesc: '空闲时让宠物自己在窗口内四处走动。',
-        on: '开启',
-        off: '关闭',
         chooseTitle: '选择宠物',
         chooseDesc: '选择后会自动安装（如需）并设为当前宠物。',
         searchPlaceholder: '搜索宠物…',
@@ -942,7 +945,6 @@ export const zh = defineLocale({
         maxSnapshots: '检查点上限'
       },
       voice: {
-        recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
         autoTts: '朗读回复',
         voiceChatMode: '语音聊天模式',
@@ -1302,6 +1304,9 @@ export const zh = defineLocale({
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      voiceShortcutHintTitle: '语音录制快捷键',
+      voiceShortcutHintDesc:
+        '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止听写”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
       showOptions: '显示选项'
     },
     hudModifier: {

@@ -355,6 +355,9 @@ Notes:
     won't move your container — pull the newer tag you actually want, or
     switch to ``:latest`` / ``:main`` for rolling updates.  See available
     tags at https://hub.docker.com/r/nousresearch/hermes-agent/tags
+  • On a ``-desktop`` tag (the one carrying Bot Screen)?  Keep the suffix:
+    the unsuffixed image has no Xvnc/Xfce and no sudo to add them, so
+    pulling it stops the bots' screens from starting.
   • Your config and session history live under ``$HERMES_HOME`` (``/opt/data``
     in the container, typically bind-mounted from the host) and persist
     across image upgrades — re-pulling doesn't lose any state.

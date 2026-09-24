@@ -661,6 +661,7 @@ export const en: Translations = {
       'composer.focus': 'Focus composer',
       'composer.modelPicker': 'Open model picker',
       'composer.voice': 'Start / stop voice conversation',
+      'composer.dictate': 'Start / stop dictation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
       'view.cycleSidebarGrouping': 'Cycle session grouping',
       'view.toggleRightSidebar': 'Toggle file browser',
@@ -1099,6 +1100,10 @@ export const en: Translations = {
       backdropDesc: 'The faint statue image behind the conversation.',
       userBubbleTitle: 'Message Bubble',
       userBubbleDesc: 'How see-through your own messages are. Solid at 0; only the outline remains at 100.',
+      textDirectionTitle: 'Text direction',
+      textDirectionDesc:
+        'How chat messages and the composer choose their direction. Auto follows the first letter of each paragraph; pick a direction when mixed text lines up the wrong way. Code always stays left-to-right.',
+      textDirection: { auto: 'Auto', rtl: 'Right-to-left', ltr: 'Left-to-right' },
       introSplashTitle: 'Intro Splash',
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
       reactionsTitle: 'Message Reactions',
@@ -1149,8 +1154,6 @@ export const en: Translations = {
           'Adopt an animated petdex mascot that floats over the app and reacts to what Hermes is doing — running while tools execute, celebrating on success, sulking on errors.',
         restartHint:
           'Pets need a quick restart — the running app started before this feature was added. Quit and reopen Hermes, then come back here.',
-        on: 'On',
-        off: 'Off',
         scaleTitle: 'Size',
         scaleDesc: 'Resize the floating mascot. Applies everywhere instantly.',
         roamTitle: 'Roam',
@@ -1337,6 +1340,9 @@ export const en: Translations = {
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
+      voiceShortcutHintTitle: 'Voice recording shortcut',
+      voiceShortcutHintDesc:
+        'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop dictation"). The voice.record_key config value only applies to the CLI and TUI.',
       showOptions: 'Show options'
     },
     hudModifier: {

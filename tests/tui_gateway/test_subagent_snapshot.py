@@ -15,15 +15,25 @@ def runtime(monkeypatch):
     transport = SimpleNamespace(write=lambda frame: True)
     owner = {"session_key": "parent", "history": [], "transport": transport}
     monkeypatch.setattr(server, "_sessions", {"ui-owner": owner})
-    monkeypatch.setattr(delegate_tool_registry, "_active_subagents", {})
-    monkeypatch.setattr(delegate_tool_registry, "_recent_subagents", {})
-    monkeypatch.setattr(async_delegation, "_records", {})
+    # Empty the shared registries IN PLACE rather than rebinding the module attributes:
+    # tools.delegate_tool_progress binds ``_active_subagents`` by name at import, so a rebound
+    # registry dict forks the two views whenever that module was imported by an earlier test
+    # (run_agent pulls it in) — the relay then writes last_tool into the orphaned original while
+    # ``_register_subagent`` and ``subagent.list`` use the replacement.
+    registries = (delegate_tool_registry._active_subagents, delegate_tool_registry._recent_subagents,
+                  async_delegation._records)
+    saved = [(reg, dict(reg)) for reg in registries]
+    for reg in registries:
+        reg.clear()
 
     def call(method, *, via=transport, **params):
         return server.dispatch({"id": 1, "method": method,
                                 "params": {"session_id": "ui-owner", **params}}, transport=via)
 
-    return server, owner, transport, call
+    yield server, owner, transport, call
+    for reg, snapshot in saved:
+        reg.clear()
+        reg.update(snapshot)
 
 
 def test_snapshot_projects_only_this_sessions_runtime_records(runtime):

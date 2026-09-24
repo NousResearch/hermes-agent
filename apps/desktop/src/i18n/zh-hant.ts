@@ -591,6 +591,10 @@ export const zhHant = defineLocale({
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       userBubbleTitle: '訊息氣泡',
       userBubbleDesc: '你自己的訊息有多透明。0 為不透明，100 時只保留邊框。',
+      textDirectionTitle: '文字方向',
+      textDirectionDesc:
+        '設定聊天訊息和輸入框的文字方向。「自動」依每段的第一個字母判斷；混合文字排列不對時，可手動選擇方向。程式碼一律從左到右顯示。',
+      textDirection: { auto: '自動', rtl: '從右到左', ltr: '從左到右' },
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
@@ -639,8 +643,6 @@ export const zhHant = defineLocale({
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
         roamTitle: '漫遊',
         roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
-        on: '開啟',
-        off: '關閉',
         chooseTitle: '選擇寵物',
         chooseDesc: '選擇後會自動安裝（如需）並設為目前寵物。',
         searchPlaceholder: '搜尋寵物…',
@@ -732,7 +734,6 @@ export const zhHant = defineLocale({
         maxSnapshots: '檢查點上限'
       },
       voice: {
-        recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
         autoTts: '朗讀回覆',
         voiceChatMode: '語音聊天模式',
@@ -1084,6 +1085,9 @@ export const zhHant = defineLocale({
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      voiceShortcutHintTitle: '語音錄製快捷鍵',
+      voiceShortcutHintDesc:
+        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「開始 / 停止聽寫」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
       showOptions: '顯示選項'
     },
     hudModifier: {

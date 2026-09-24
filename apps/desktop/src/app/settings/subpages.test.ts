@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
 
+import {
+  APPEARANCE_SETTING_IDS,
+  APPEARANCE_SETTINGS,
+  APPEARANCE_SUBPAGES,
+  appearanceSearchTargets,
+  appearanceSubpageForSetting
+} from './appearance-subpages'
 import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
 import { SECTIONS } from './constants'
 import { OTHER_SUBPAGES } from './other-subpages'
@@ -62,5 +69,33 @@ describe('settings subpage routing', () => {
     for (const [view, search, expected] of cases) {
       expect(resolveSettingsSubpage(view, new URLSearchParams(search))).toBe(expected)
     }
+  })
+
+  it('makes every Appearance row a routed, translated palette hit', () => {
+    const subpages = APPEARANCE_SUBPAGES.map(page => page.id)
+
+    for (const [key, setting] of Object.entries(APPEARANCE_SETTINGS)) {
+      const id = APPEARANCE_SETTING_IDS[key as keyof typeof APPEARANCE_SETTING_IDS]
+      expect(id).toMatch(/^appearance\.[a-z-]+$/)
+      expect(subpages).toContain(setting.subpage)
+      expect(appearanceSubpageForSetting(id)).toBe(setting.subpage)
+      expect(
+        resolveSettingsSubpage(
+          'config:appearance',
+          new URLSearchParams(settingsSearchTargetQuery({ view: 'config:appearance', setting: id }))
+        )
+      ).toBe(setting.subpage)
+      expect(setting.keywords.length).toBeGreaterThan(0)
+
+      for (const locale of Object.values(TRANSLATIONS)) {
+        expect(setting.copy(locale).label).toBeTruthy()
+      }
+    }
+
+    // Platform-gated rows aside, the whole manifest reaches the palette.
+    const targets = appearanceSearchTargets(TRANSLATIONS.en)
+    const gated = Object.values(APPEARANCE_SETTINGS).filter(setting => 'available' in setting).length
+    expect(targets.length).toBeGreaterThanOrEqual(Object.keys(APPEARANCE_SETTINGS).length - gated)
+    expect(targets.map(target => target.label)).toEqual(expect.arrayContaining(['In-App Tips', 'Guided Tours']))
   })
 })

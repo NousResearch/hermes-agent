@@ -6,6 +6,8 @@ import { resolve } from 'node:path'
 
 import { test } from 'vitest'
 
+import { macosSysroot, xcrunClangArgv } from '../scripts/macos-sysroot.mjs'
+
 // hud-modifier-gesture.h is the clean-tap state machine the macOS (.m) and
 // Linux XI2 (-x11.c) helpers both include. Compile its C contract and run it
 // wherever a C toolchain ships with the runner: Linux (the JS CI lane) and
@@ -21,7 +23,7 @@ test.skipIf(process.platform === 'win32')(
       const flags = ['-std=c11', '-Wall', '-Wextra', '-Werror', source, '-o', binary]
 
       if (process.platform === 'darwin') {
-        execFileSync('xcrun', ['--sdk', 'macosx', 'clang', ...flags])
+        execFileSync('xcrun', [...xcrunClangArgv(macosSysroot()), ...flags])
       } else {
         execFileSync('cc', flags)
       }

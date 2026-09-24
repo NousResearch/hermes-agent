@@ -1231,6 +1231,128 @@ describe('preserveLocalPendingTurnMessages', () => {
     )
   })
 
+  // A Codex Responses turn: an acknowledgement, two progress updates between
+  // tool rounds, then the answer. Live, each seals as its own bubble; history
+  // folds them into one row and may keep the public commentary only in
+  // `reasoning` (#119716). Tool call ids are the durable identity either way.
+  const tool = (toolCallId: string) =>
+    ({ type: 'tool-call', toolCallId, toolName: 'terminal', result: 'ok' }) as ChatMessagePart
+
+  const sealed = (id: string, parts: ChatMessagePart[], extra: Partial<ChatMessage> = {}) =>
+    ({ id, role: 'assistant', parts, pending: false, interim: true, ...extra }) as ChatMessage
+
+  const lunaTurn = (prefix: string, callPrefix: string) => [
+    sealed(`assistant-stream-${prefix}-ack`, [{ type: 'text', text: `${prefix}: on it, reading the logs.` }]),
+    sealed(`assistant-stream-${prefix}-progress-1`, [
+      tool(`${callPrefix}-1`),
+      { type: 'text', text: `${prefix}: logs clean.` }
+    ]),
+    sealed(`assistant-stream-${prefix}-progress-2`, [
+      tool(`${callPrefix}-2`),
+      { type: 'text', text: `${prefix}: config fixed.` }
+    ]),
+    sealed(
+      `assistant-stream-${prefix}-final`,
+      [tool(`${callPrefix}-3`), { type: 'text', text: `${prefix}: all done.` }],
+      {
+        interim: false
+      }
+    )
+  ]
+
+  const lunaFold = (id: string, prefix: string, callPrefix: string, commentary: 'reasoning' | 'text') =>
+    ({
+      id,
+      role: 'assistant',
+      parts: [
+        ...[`${prefix}: on it, reading the logs.`, `${prefix}: logs clean.`, `${prefix}: config fixed.`].flatMap(
+          (text, at) => [
+            commentary === 'text'
+              ? ({ type: 'text', text } as ChatMessagePart)
+              : ({ type: 'reasoning', text: `**Plan**\n\n${text}` } as ChatMessagePart),
+            tool(`${callPrefix}-${at + 1}`)
+          ]
+        ),
+        { type: 'text', text: `${prefix}: all done.` }
+      ]
+    }) as ChatMessage
+
+  it.each(['reasoning', 'text'] as const)(
+    'retires every sealed bubble of a folded turn whose commentary hydrated as %s',
+    commentary => {
+      const user = msg('1-user', 'user', 'fix it', { rowId: 1 })
+      const next = [user, lunaFold('2-assistant', 'a', 'call-a', commentary)]
+
+      expect(preserveLocalPendingTurnMessages(next, [user, ...lunaTurn('a', 'call-a')])).toBe(next)
+    }
+  )
+
+  // The previous turn's bubbles are not owned by the newest prompt, so they
+  // must not resurface under it (#119511, and the self-sustaining tail of
+  // stale commentary in #119362) — nor may they swallow the live reply.
+  it.each(['reasoning', 'text'] as const)(
+    'does not re-append an earlier turn under a newer prompt when its commentary hydrated as %s',
+    commentary => {
+      const next = [
+        msg('1-user', 'user', 'fix it', { rowId: 1 }),
+        lunaFold('2-assistant', 'a', 'call-a', commentary),
+        msg('3-user', 'user', 'and the other one', { rowId: 9 })
+      ]
+
+      const previous = [
+        msg('user-1-a', 'user', 'fix it', { rowId: 1 }),
+        ...lunaTurn('a', 'call-a'),
+        // No submit receipt yet, so no acknowledged boundary past turn a.
+        msg('user-2-b', 'user', 'and the other one'),
+        sealed('assistant-stream-live', [tool('call-b-1'), { type: 'text', text: 'b: still going.' }])
+      ]
+
+      expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+        '1-user',
+        '2-assistant',
+        '3-user',
+        'assistant-stream-live'
+      ])
+    }
+  )
+
+  // #118228: narration bubbles still marked pending when the rehydrate lands.
+  // A sealed interim's text is final, so the fold carrying it retires it.
+  it('retires pending interim narration the merged fold already carries, even with later turns stored', () => {
+    const user = msg('1-user', 'user', 'run the build', { rowId: 1 })
+
+    // More live bubbles than stored assistant rows: ordinal pairing runs out.
+    const turn = [
+      ...lunaTurn('a', 'call-a')
+        .slice(0, 3)
+        .map(row => ({ ...row, pending: true })),
+      msg('assistant-stream-a-tail', 'assistant', 'a: all done.', { pending: true })
+    ]
+
+    const next = [
+      user,
+      lunaFold('2-assistant', 'a', 'call-a', 'text'),
+      msg('3-system', 'system', 'Background Process Finished: bash build.sh'),
+      msg('4-assistant', 'assistant', 'build verified'),
+      msg('5-user', 'user', 'installed it, same problem', { rowId: 20 }),
+      msg('6-assistant', 'assistant', 'then it is not the line count')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, [user, ...turn])).toBe(next)
+  })
+
+  // The fold committed the tool rounds but not the answer yet: that bubble is
+  // the only copy and must survive, while the carried commentary retires.
+  it('keeps the final answer a fold has not committed yet', () => {
+    const user = msg('1-user', 'user', 'fix it', { rowId: 1 })
+    const fold = lunaFold('2-assistant', 'a', 'call-a', 'reasoning')
+    const next = [user, { ...fold, parts: fold.parts.filter(part => part.type !== 'text') }]
+
+    expect(
+      preserveLocalPendingTurnMessages(next, [user, ...lunaTurn('a', 'call-a')]).map(message => message.id)
+    ).toEqual(['1-user', '2-assistant', 'assistant-stream-a-final'])
+  })
+
   // The whole point of replacing rather than appending: one reply on screen,
   // and the committed history around the live turn untouched.
   it('does not duplicate or rewrite committed history around the live turn', () => {

@@ -643,6 +643,10 @@ export const ja = defineLocale({
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       userBubbleTitle: 'メッセージの吹き出し',
       userBubbleDesc: '自分のメッセージの透け具合。0 で不透明、100 で枠線だけが残ります。',
+      textDirectionTitle: 'テキストの方向',
+      textDirectionDesc:
+        'チャットのメッセージと入力欄の文字方向を設定します。「自動」は各段落の最初の文字で判断します。混在したテキストの並びがおかしいときは方向を選んでください。コードは常に左から右に表示されます。',
+      textDirection: { auto: '自動', rtl: '右から左', ltr: '左から右' },
       introSplashTitle: 'イントロ表示',
       introSplashDesc: '空のチャットに表示されるワードマークとプロンプト。',
       reactionsTitle: 'メッセージリアクション',
@@ -698,8 +702,6 @@ export const ja = defineLocale({
         scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
         roamTitle: '散歩',
         roamDesc: 'アイドル中にペットがウィンドウ内を自由に歩き回ります。',
-        on: 'オン',
-        off: 'オフ',
         chooseTitle: 'ペットを選ぶ',
         chooseDesc: '選ぶと（必要に応じて）インストールされ、アクティブになります。',
         searchPlaceholder: 'ペットを検索…',
@@ -790,7 +792,6 @@ export const ja = defineLocale({
         maxSnapshots: 'チェックポイント上限'
       },
       voice: {
-        recordKey: '音声ショートカット',
         maxRecordingSeconds: '最大録音時間',
         autoTts: '応答を読み上げる'
       },
@@ -1023,7 +1024,10 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      voiceShortcutHintTitle: '音声録音ショートカット',
+      voiceShortcutHintDesc:
+        '「設定 → キーボードショートカット」で音声録音ショートカット（「音声入力を開始 / 停止」）を設定します。voice.record_key は CLI と TUI 専用です。'
     },
     hudModifier: {
       title: 'キーをタップして HUD を呼び出す',

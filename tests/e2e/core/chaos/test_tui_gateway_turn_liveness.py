@@ -456,18 +456,7 @@ def scenario_futures(request: pytest.FixtureRequest, tmp_path_factory: pytest.Te
                 fut.cancel()
 
 
-# Real production bug on base (reported, not fixed here): when the gateway leaves mid-tool —
-# client closes stdin or supervisor SIGTERMs — _shutdown_sessions() closes the agents but the
-# in-flight foreground terminal command (its own process group) is never killed, so the
-# `bash -c ...` + `sleep 3600` tree survives, reparented to init, and its tool_call is left with
-# no result in state.db. strict: flips red once fixed. raises= names only the leftovers check's
-# exception, so everything before it is asserted normally.
-_ORPHANED_FOREGROUND_TOOL = pytest.mark.xfail(
-    strict=True, raises=ToolOutlivedGateway,
-    reason="tui_gateway exit (EOF/SIGTERM) orphans the running foreground terminal tool's process tree "
-           "and leaves its tool_call without a result")
-KNOWN_BUGS = {"stdin_eof_during_hung_tool": _ORPHANED_FOREGROUND_TOOL,
-              "sigterm_during_hung_tool": _ORPHANED_FOREGROUND_TOOL}
+KNOWN_BUGS: dict = {}
 
 
 @pytest.mark.parametrize("scn", [

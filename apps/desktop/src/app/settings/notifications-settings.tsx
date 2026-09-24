@@ -75,7 +75,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       {showSounds && (
         <ListRow
           action={
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <>
               <Select
                 onValueChange={value => {
                   const variantId = Number.parseInt(value, 10)
@@ -112,7 +112,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
                 <Play className="size-3.5" />
                 {copy.completionSoundPreview}
               </Button>
-            </div>
+            </>
           }
           description={copy.completionSoundDesc}
           title={copy.completionSoundTitle}

@@ -89,6 +89,10 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
         except Exception:
             pass
         _flush_logging_and_stdio()
+        # os._exit skips cleanup: a foreground command in its own process group would outlive us.
+        with suppress(Exception):
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes(now=True)
         os._exit(0)
 
     with suppress(Exception):  # never block shutdown on watchdog setup

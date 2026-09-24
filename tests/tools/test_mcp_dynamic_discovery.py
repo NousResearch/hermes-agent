@@ -255,6 +255,98 @@ class TestRefreshTools:
         assert discovering.session is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancel", [True, False], ids=["cancel-serving", "lifecycle-error"])
+    async def test_retirement_on_cancel_or_lifecycle_error(self, mock_registry, caplog, cancel):
+        from anyio import ClosedResourceError
+
+        server = MCPServerTask("interrupted_srv")
+        entered, finish = asyncio.Event(), asyncio.Event()
+        listed, close_list = asyncio.Event(), asyncio.Event()
+
+        async def wait_lifecycle():
+            entered.set()
+            await finish.wait()
+            raise RuntimeError("lifecycle exploded")
+
+        async def list_tools():
+            listed.set()
+            await close_list.wait()
+            raise ClosedResourceError()
+
+        session = SimpleNamespace(list_tools=list_tools)
+        with patch("tools.registry.registry", mock_registry), caplog.at_level(logging.ERROR), \
+             patch.object(MCPServerTask, "_negotiate_session", new_callable=AsyncMock), \
+             patch.object(MCPServerTask, "_discover_tools", new_callable=AsyncMock), \
+             patch.object(MCPServerTask, "_wait_for_lifecycle_event", side_effect=wait_lifecycle):
+            serving = asyncio.create_task(server._serve_session(session, 1))
+            await asyncio.wait_for(entered.wait(), 2)
+            refreshing = server._schedule_tools_refresh()
+            await asyncio.wait_for(listed.wait(), 2)
+            if cancel:
+                serving.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await serving
+            else:
+                finish.set()
+                with pytest.raises(RuntimeError, match="lifecycle exploded"):
+                    await serving
+            assert server.session is None
+            close_list.set()
+            await refreshing
+        assert not server._registered_tool_names
+        assert "dynamic tool refresh failed" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_cancelled_refresh_does_not_register_or_block_next_refresh(self, mock_registry, caplog):
+        server = MCPServerTask("cancel_srv")
+        listed = asyncio.Event()
+
+        async def blocked_list():
+            listed.set()
+            await asyncio.Event().wait()
+
+        server.session = SimpleNamespace(list_tools=blocked_list)
+        with patch("tools.registry.registry", mock_registry), caplog.at_level(logging.ERROR):
+            refreshing = server._schedule_tools_refresh()
+            await asyncio.wait_for(listed.wait(), 2)
+            refreshing.cancel()
+            await asyncio.gather(refreshing, return_exceptions=True)
+            assert not server._pending_refresh_tasks
+            assert not server._registered_tool_names
+            server.session = SimpleNamespace(list_tools=AsyncMock(
+                return_value=SimpleNamespace(tools=[_make_mcp_tool("live")])
+            ))
+            await asyncio.wait_for(server._refresh_tools(), 2)
+        assert server._registered_tool_names == ["mcp__cancel_srv__live"]
+        assert "dynamic tool refresh failed" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_shutdown_request_discards_inflight_and_rejects_new_refresh(self, mock_registry, caplog):
+        server = MCPServerTask("stopping_srv")
+        started, finish = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def list_tools():
+            calls.append(True)
+            started.set()
+            await finish.wait()
+            return SimpleNamespace(tools=[_make_mcp_tool("stale")])
+
+        session = server.session = SimpleNamespace(list_tools=list_tools)
+        with patch("tools.registry.registry", mock_registry), caplog.at_level(logging.ERROR):
+            task = server._schedule_tools_refresh()
+            await asyncio.wait_for(started.wait(), 2)
+            server._shutdown_event.set()  # owner has not finished the live RPC yet
+            assert server.session is session
+            finish.set()
+            await task
+            await server._schedule_tools_refresh()
+        assert len(calls) == 1
+        assert not server._registered_tool_names
+        assert "mcp__stopping_srv__stale" not in mock_registry.get_all_tool_names()
+        assert "dynamic tool refresh failed" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_superseded_refresh_is_discarded_before_later_refresh(self, mock_registry):
         """An old response must not publish; a subsequent live refresh can publish."""
         server = MCPServerTask("swap_srv")

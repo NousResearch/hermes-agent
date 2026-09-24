@@ -46,6 +46,26 @@ class TestAdvertisesTools:
 
 @pytest.mark.asyncio
 class TestDiscoverToolsGating:
+    async def test_shutdown_does_not_withdraw_session_before_queued_discovery(self):
+        task = MCPServerTask("test")
+        session = task.session = SimpleNamespace(
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[]))
+        )
+        owner_done = asyncio.Event()
+        task._task = asyncio.create_task(owner_done.wait())
+        await task._rpc_lock.acquire()
+        discovery = asyncio.create_task(task._discover_tools())
+        await asyncio.sleep(0)  # discovery passed the session check and awaits the lock
+        shutdown = asyncio.create_task(task.shutdown())
+        await asyncio.sleep(0)  # shutdown is waiting for the owner task
+        try:
+            task._rpc_lock.release()
+            await asyncio.wait_for(discovery, 2)
+            session.list_tools.assert_awaited_once()
+        finally:
+            owner_done.set()
+            await asyncio.wait_for(shutdown, 2)
+
     async def test_skips_list_tools_for_prompt_only_server(self):
         task = MCPServerTask("test")
         task.initialize_result = _caps(prompts=SimpleNamespace())
@@ -83,6 +103,33 @@ class TestRefreshToolsGating:
 
 @pytest.mark.asyncio
 class TestKeepaliveProbe:
+    async def test_shutdown_during_ping_preserves_fallback_session(self):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        ping_started, finish_ping, owner_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def unsupported_ping():
+            ping_started.set()
+            await finish_ping.wait()
+            raise _mcp_error(-32601)
+
+        session = task.session = SimpleNamespace(
+            send_ping=unsupported_ping,
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+        task._task = asyncio.create_task(owner_done.wait())
+        probe = asyncio.create_task(task._keepalive_probe())
+        await asyncio.wait_for(ping_started.wait(), 2)
+        shutdown = asyncio.create_task(task.shutdown())
+        await asyncio.sleep(0)  # shutdown is waiting for the owner task
+        try:
+            finish_ping.set()
+            await asyncio.wait_for(probe, 2)
+            session.list_tools.assert_awaited_once()
+        finally:
+            owner_done.set()
+            await asyncio.wait_for(shutdown, 2)
+
     async def _run_one_keepalive_cycle(self, task):
         """Drive _wait_for_lifecycle_event through exactly one keepalive
         timeout, then fire shutdown so it returns."""

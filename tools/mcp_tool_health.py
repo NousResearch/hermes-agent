@@ -21,6 +21,7 @@ class MCPServerHealthMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
     __slots__ = ()
+    _shutdown_event: asyncio.Event  # owned by MCPServerTask
 
     def _is_http(self) -> bool:
         return "url" in self._config
@@ -59,7 +60,7 @@ class MCPServerHealthMixin:
         self.session = None
 
     def _refresh_session_stale(self, session) -> bool:
-        return session is not self.session
+        return self._shutdown_event.is_set() or session is not self.session
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
         """Schedule a background tool refresh (failures logged) and keep it strongly referenced."""
@@ -144,8 +145,8 @@ class MCPServerHealthMixin:
                 # (#109824). Skipping is correct — the reconnect's own discovery re-lists tools
                 # and the next tools/list_changed re-arms this refresh against the live session.
                 session = self.session
-                if session is None:
-                    logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
+                if session is None or self._refresh_session_stale(session):
+                    logger.debug("MCP server '%s': skipping dynamic tool refresh; session unavailable", self.name)
                     return
                 if not self._advertises_tools():
                     return  # tools/list would raise MCPError(-32601); use this session's capabilities

@@ -6448,6 +6448,18 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
         return False
 
 
+def _configured_aux_string_list(key: str) -> list:
+    """Normalized (lowercased, stripped) list from ``auxiliary.<key>`` in config, or empty."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("auxiliary", {}).get(key)
+    except Exception:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(x).strip().lower() for x in raw if isinstance(x, str) and str(x).strip()]
+
+
 def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:
     """Whether an explicit max_tokens is forwarded on this route.
 
@@ -6456,6 +6468,9 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
     NVIDIA NIM (empty choices[] when omitted); MoA reference slots; Gemini native (fixed 65,535
     ceiling otherwise); OpenRouter (budgets the FULL window when omitted → 402 on low credit);
     managed local llama-server (uncapped decode with no EOS burns the GPU to the context window).
+    ``auxiliary.max_tokens_forward_providers`` additionally opts self-hosted OpenAI-wire providers
+    into forwarding (an unmatched server that ignores the field is unaffected; a server that honors
+    it but lacks a natural stop is exactly the case the summary cap needs it for).
     """
     return (
         _is_anthropic_compat_endpoint(provider, effective_base)
@@ -6467,7 +6482,40 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")
         or _is_managed_local_endpoint(effective_base)
+        or provider_norm in _configured_aux_string_list("max_tokens_forward_providers")
     )
+
+
+def _compression_route_max_tokens_ceiling() -> Optional[tuple[int, str]]:
+    """(cap, route provider label) for the compression summary on a configured local OpenAI-wire route,
+    else ``None``.
+
+    Some self-hosted OpenAI-wire servers honor ``max_tokens`` yet can otherwise decode unbounded
+    with no natural stop (no EOS), so a runaway summary burns the aux timeout. This is driven
+    entirely by config, never by vendor names in this code: ``auxiliary.max_tokens_forward_providers``
+    selects the compression route's provider names, ``auxiliary.summary_max_tokens_ceiling`` the cap.
+    A fallback chain disables the cap (the chain may land on a remote wire).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        aux_cfg = (load_config_readonly() or {}).get("auxiliary") or {}
+    except Exception:
+        return None
+    ceiling = aux_cfg.get("summary_max_tokens_ceiling")
+    if not isinstance(ceiling, int) or ceiling <= 0:
+        return None
+    providers = _configured_aux_string_list("max_tokens_forward_providers")
+    if not providers:
+        return None
+    try:
+        cfg = _get_auxiliary_task_config("compression")
+        provider = str(cfg.get("provider") or "").strip().lower()
+        chain = cfg.get("fallback_chain")
+    except Exception:
+        return None
+    if not provider or provider not in providers or chain:
+        return None
+    return (ceiling, provider)
 
 
 def _dedupe_tool_names(tools: list, provider: str, model: str) -> list:

@@ -19,6 +19,7 @@ from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _COMPRESSION_MA
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
+    _compression_route_max_tokens_ceiling,
     _is_connection_error,
     _message_field,
     aux_interrupt_protection,
@@ -3770,6 +3771,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             call_kwargs["model"] = self.summary_model
         # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
         call_kwargs.update(_pinned_summary_call_kwargs())
+        # Config-driven wire cap for self-hosted OpenAI-wire compression routes: a provider listed in
+        # auxiliary.max_tokens_forward_providers that honors max_tokens yet has no natural stop can
+        # otherwise decode unbounded and burn the aux timeout. This is opt-in and provider-neutral —
+        # nothing is wired here unless auxiliary.summary_max_tokens_ceiling is set on the ACTIVE
+        # compression route (no fallback chain), so the default path keeps the official no-cap policy.
+        _route_cap = _compression_route_max_tokens_ceiling()
+        if _route_cap is not None:
+            call_kwargs["max_tokens"] = _route_cap[0]
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
         # Without this, an incoming user message aborts the summary and compression falls back to a degraded
         # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary

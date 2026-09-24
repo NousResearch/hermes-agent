@@ -839,8 +839,8 @@ host.skills.list(profile?)                 // every skill for the scope (Capabil
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state
 host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
-host.profiles.list(scope?)                 // the profile list the profile rail reads
-host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions
+host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail reads
+host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -1064,7 +1064,10 @@ calling `window.hermesDesktop.api` raw.
 plugin flip another plugin's enable state — exactly "plugins messing with each
 other's functionality" — and `host` is a module singleton that cannot tell which
 plugin is calling to restrict a writer to the caller's own id. The object has no
-`set` at runtime, not just in the types. Enabling/disabling plugins stays in the
+`set` at runtime, not just in the types, and every value it hands out (`get()`,
+`.value`, the argument to `subscribe`/`listen` callbacks) is a **frozen copy** —
+assigning into it throws instead of leaking into the map the app reads and
+persists. Enabling/disabling plugins stays in the
 app's Plugins tab; link to it with `host.navigate('/capabilities?tab=plugins')`.
 
 Teardown: the verbs are discrete user-triggered actions that write the same

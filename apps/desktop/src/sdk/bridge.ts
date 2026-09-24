@@ -49,20 +49,25 @@ export const profiles = {
  *  the user never chose, so the plugin's own `defaultEnabled` applies).
  *  A hand-built view rather than a `computed`/type cast: both of those still
  *  carry `.set` at runtime, and the point is that a plugin cannot cast its way
- *  into another plugin's toggle. */
+ *  into another plugin's toggle. Every value handed out is a frozen copy: the
+ *  store's own object is what `pluginActive()` reads and `saveDecisions()`
+ *  spreads, so returning it live would make `get()['other'] = false` a `set()`
+ *  by another door. */
+const frozen = (v: Record<string, boolean>): Record<string, boolean> => Object.freeze({ ...v })
+
 export const pluginDecisions: ReadableAtom<Record<string, boolean>> = {
-  get: () => $pluginDecisions.get(),
+  get: () => frozen($pluginDecisions.get()),
   get init() {
     return $pluginDecisions.init
   },
   get lc() {
     return $pluginDecisions.lc
   },
-  listen: listener => $pluginDecisions.listen(listener),
+  listen: listener => $pluginDecisions.listen((value, oldValue) => listener(frozen(value), oldValue)),
   notify: oldValue => $pluginDecisions.notify(oldValue),
   off: () => $pluginDecisions.off(),
-  subscribe: listener => $pluginDecisions.subscribe(listener),
+  subscribe: listener => $pluginDecisions.subscribe((value, oldValue) => listener(frozen(value), oldValue)),
   get value() {
-    return $pluginDecisions.value
+    return frozen($pluginDecisions.value)
   }
 }

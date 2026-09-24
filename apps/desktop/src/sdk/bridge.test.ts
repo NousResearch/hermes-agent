@@ -38,7 +38,9 @@ describe('host capabilities bridge', () => {
   // Declined by design: a plugin must not flip another plugin's enable state,
   // and the singleton host cannot attribute the caller to restrict `set` to its
   // own id. The view is a live, subscribable mirror of the app's store with NO
-  // writer at runtime (a type-only `ReadableAtom` cast would still carry `.set`).
+  // writer at runtime (a type-only `ReadableAtom` cast would still carry `.set`),
+  // and the values it hands out are frozen copies — mutating one must not reach
+  // the object `pluginActive()` reads and `saveDecisions()` persists.
   it('pluginDecisions is a live read-only view of the decisions store', () => {
     const seen: Record<string, boolean>[] = []
     const unsubscribe = host.pluginDecisions.subscribe(value => seen.push(value))
@@ -48,6 +50,14 @@ describe('host capabilities bridge', () => {
     expect(host.pluginDecisions.get()).toEqual({ 'demo-plugin': false })
     expect(seen.at(-1)).toEqual({ 'demo-plugin': false })
     expect(typeof (host.pluginDecisions as unknown as { set?: unknown }).set).toBe('undefined')
+
+    for (const view of [host.pluginDecisions.get(), host.pluginDecisions.value!, seen.at(-1)!]) {
+      expect(() => {
+        view['other-plugin'] = false
+      }).toThrow(TypeError)
+    }
+
+    expect($pluginDecisions.get()).toEqual({ 'demo-plugin': false })
 
     unsubscribe()
   })

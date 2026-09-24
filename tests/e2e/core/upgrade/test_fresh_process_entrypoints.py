@@ -626,13 +626,6 @@ _ENTRIES = {
     "hermes-acp-help": Entry("hermes-acp", ("--help",), frozenset({0})),
     "hermes-agent-help": Entry("hermes-agent", ("--help",), frozenset({0})),
 }
-_XFAIL = {
-    "hermes-agent-help": "LIVE BUG #54648 (open): the hermes-agent console script calls run_agent.main() "
-                         "with no arguments, ignoring argv (fire only parses it under __main__), so "
-                         "`hermes-agent --help` runs a real model turn with a hard-coded query",
-}
-
-
 def _run_on_tty(argv: list[str], *, env: dict[str, str], cwd: Path, writable: list[Path],
                 timeout: float) -> subprocess.CompletedProcess:
     """Run ``argv`` on a pty; once it has drawn anything, send EOF every second until it exits.
@@ -688,10 +681,7 @@ def _db_rows(db: Path, sql: str) -> list[tuple]:
         conn.close()
 
 
-@pytest.mark.parametrize("case", [
-    pytest.param(k, marks=pytest.mark.xfail(strict=True, reason=_XFAIL[k])) if k in _XFAIL else k
-    for k in _ENTRIES
-])
+@pytest.mark.parametrize("case", list(_ENTRIES))
 def test_entrypoint_in_a_fresh_process(case, tmp_path):
     _sandbox_or_skip()
     entry = _ENTRIES[case]

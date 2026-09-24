@@ -22,8 +22,9 @@ A seeded property / matrix layer over every surface that writes ``config.yaml`` 
 Generators are ``random.Random(seed)`` over a fixed seed list (hypothesis is not a dependency);
 every assertion message carries the seed / case so a failure is reproducible with ``-k``.
 
-Known-red cells on the current base are ``xfail(strict=True)`` with the issue they reproduce, so
-the suite is green today and flips red the moment the bug is fixed (drop the marker then).
+Cells for a live gap are merge-order safe: they XFAIL only while they fail with that gap's own
+message (``tests/e2e/core/_pending_fixes.known_failure``), fail loudly on anything else, and pass as
+plain tests once the fix lands.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from typing import Any, Callable, Iterable
 import pytest
 import yaml
 
+from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade._helpers import WORKTREE, isolated_env
 
 import hermes_cli.config as C
@@ -411,11 +413,6 @@ class ReadFaults:
 
 P1_SEEDS = list(range(101, 113))
 P1_LONG_SEEDS = [201, 202, 203, 204]
-_XFAIL_119844 = pytest.mark.xfail(
-    strict=True,
-    reason="#119844 (open): ruamel round-trip writer has no `width`, so every save re-folds long "
-           "scalars (untouched keys change bytes) and a fold after a backslash inserts a space into "
-           "the stored value. Fix: `yaml_rt.width = 2**31 - 1` in utils._roundtrip_load.")
 
 
 def _noop_save_roundtrip(case: Case, monkeypatch) -> None:
@@ -435,26 +432,19 @@ def _noop_save_roundtrip(case: Case, monkeypatch) -> None:
         assert secret not in after, f"[seed={case.seed}] expanded ${{{name}}} leaked into config.yaml"
 
 
-_XFAIL_NULL_STRIP = pytest.mark.xfail(
-    strict=True,
-    reason="NEW: save_config's _strip_default_values uses None as its 'drop me' sentinel, so an explicit "
-           "`key: null` is deleted on every save even when preserved as user-set (display.skin: null "
-           "silently becomes 'default'), and a section emptied that way takes its comments with it.")
-
-
 @pytest.mark.parametrize("seed", P1_SEEDS)
 def test_p1_noop_save_is_byte_identical(seed, home, monkeypatch):
     _noop_save_roundtrip(gen_case(seed, null_leaves=False), monkeypatch)
 
 
-@pytest.mark.parametrize("seed", [pytest.param(s, marks=_XFAIL_NULL_STRIP) for s in (101, 102)])
+@pytest.mark.parametrize("seed", [101, 102])
 def test_p1_explicit_null_leaves_survive_a_noop_save(seed, home, monkeypatch):
     case = gen_case(seed)
     assert any(v is None for v in _leaves(case.tree).values()), f"seed {seed} generated no null leaf"
     _noop_save_roundtrip(case, monkeypatch)
 
 
-@pytest.mark.parametrize("seed", [pytest.param(s, marks=_XFAIL_119844) for s in P1_LONG_SEEDS])
+@pytest.mark.parametrize("seed", P1_LONG_SEEDS)
 def test_p1_long_scalars_survive_a_noop_save(seed, home, monkeypatch):
     _noop_save_roundtrip(gen_case(seed, long=True, null_leaves=False), monkeypatch)
 
@@ -632,14 +622,7 @@ def test_p2_real_cli_env_setting_changes_exactly_one_env_line_and_no_config_byte
     assert "TELEGRAM_HOME_CHANNEL=4242" in _read(env_file).splitlines()
 
 
-_XFAIL_119928 = pytest.mark.xfail(
-    strict=True,
-    reason="#119928 (open): when the managed-scope .env pins a key, `hermes config set` prints the "
-           "refusal, then '✓ Set', exits 0 — and the credential route still rewrites config.yaml.")
-
-
-@pytest.mark.parametrize("key", [pytest.param("DEEPSEEK_API_KEY", marks=_XFAIL_119928),
-                                 pytest.param("TELEGRAM_HOME_CHANNEL", marks=_XFAIL_119928)])
+@pytest.mark.parametrize("key", ["DEEPSEEK_API_KEY", "TELEGRAM_HOME_CHANNEL"])
 def test_p2_env_lock_refusal_is_not_reported_as_success(key, tmp_path):
     """exit 0 ⇔ the write happened; a refused key leaves .env AND config.yaml byte-identical."""
     managed = tmp_path / "managed"
@@ -653,10 +636,13 @@ def test_p2_env_lock_refusal_is_not_reported_as_success(key, tmp_path):
     env_before = _read(hh / ".env")
     r = _cli(env, "config", "set", key, "c18-new")
     wrote = _read(hh / ".env") != env_before
-    assert (r.returncode == 0) == wrote, (
-        f"`config set {key}` exit={r.returncode} but .env {'changed' if wrote else 'unchanged'}:\n{r.stdout}{r.stderr}")
-    if not wrote:
-        assert _read(hh / "config.yaml") == cfg_text, "a refused env write still rewrote config.yaml"
+    with known_failure(r"^`config set \w+` exit=0 but \.env unchanged|^a refused env write still rewrote config\.yaml",
+                       "#119928 (fix PR #119929): when the managed-scope .env pins a key, `hermes config set` "
+                       "prints the refusal, then '✓ Set', exits 0, and the credential route still rewrites config.yaml"):
+        assert (r.returncode == 0) == wrote, (
+            f"`config set {key}` exit={r.returncode} but .env {'changed' if wrote else 'unchanged'}:\n{r.stdout}{r.stderr}")
+        if not wrote:
+            assert _read(hh / "config.yaml") == cfg_text, "a refused env write still rewrote config.yaml"
 
 
 # ── real tui_gateway stdio JSON-RPC process ──────────────────────────────────
@@ -791,10 +777,6 @@ def test_p2_dashboard_get_put_roundtrip_and_partial_put(seed, web_app, home, mon
     _dashboard_roundtrip(gen_case(seed, null_leaves=False), web_app, monkeypatch)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "NEW: save_config -> _normalize_max_turns_config always sets config['agent'] (even to {}), so "
-    "any save of a sparse raw document lacking `agent:` (Desktop partial PUT, every migration "
-    "persist) appends a phantom `agent: {}` section to config.yaml."))
 def test_p2_dashboard_partial_put_adds_no_phantom_section(web_app, home, monkeypatch):
     case = gen_case(606, null_leaves=False, exclude_top={"agent", "display"})
     cfg = _install(case, monkeypatch)
@@ -805,7 +787,7 @@ def test_p2_dashboard_partial_put_adds_no_phantom_section(web_app, home, monkeyp
         f"PUT display.skin added sections {sorted(set(got) - set(case.tree) - {'display'})}:\n{_udiff(case.text, _read(cfg))}")
 
 
-@pytest.mark.parametrize("seed", [pytest.param(605, marks=_XFAIL_NULL_STRIP)])
+@pytest.mark.parametrize("seed", [607])
 def test_p2_dashboard_noop_put_keeps_explicit_nulls(seed, web_app, home, monkeypatch):
     case = gen_case(seed)
     assert any(v is None for v in _leaves(case.tree).values())
@@ -814,9 +796,6 @@ def test_p2_dashboard_noop_put_keeps_explicit_nulls(seed, web_app, home, monkeyp
 
 def _dashboard_roundtrip(case: Case, web_app, monkeypatch) -> None:
     seed = case.seed
-    if "agent" not in case.tree:  # see test_p2_dashboard_partial_put_adds_no_phantom_section
-        text = _before_version(case.text, "agent:\n  verify_on_stop: false\n")
-        case = Case(seed, text, yaml.safe_load(text), case.leaf_lines, case.env)
     cfg = _install(case, monkeypatch)
     client = _client(web_app)
     body = client.get("/api/config").json()
@@ -886,16 +865,6 @@ _P3_OPS: dict[str, tuple[Callable[[dict], None], set]] = {
     "migrate": (_op_migrate, {("_config_version",), ("delegation", "max_iterations")}),
 }
 
-_XFAIL_TRANSIENT = {
-    "tui_rpc": "NEW (#113301 class, TUI/Desktop surface): tui_gateway.server._load_cfg_raw swallows any "
-               "read exception into {} and _write_config_key saves that through the full-document "
-               "writer, which deletes every section the caller never saw.",
-    "dashboard_put": "NEW (#113301 class, dashboard/Desktop surface): PUT /api/config merges the body "
-                     "over read_raw_config(), whose swallowed-error path returns {}; Desktop PUTs "
-                     "single-key bodies, so one transient read error collapses config.yaml to that key.",
-}
-
-
 def _p3_case(seed: int) -> Case:
     case = gen_case(seed, null_leaves=False, exclude_top={"display", "delegation", "agent"})
     text = _before_version(case.text, "display:\n  skin: mono\n  compact: true\ndelegation:\n  max_iterations: 50\n"
@@ -934,15 +903,7 @@ def _p3_check(label: str, before_text: str, after_text: str, targets: set, outco
     return None
 
 
-def _p3_params():
-    out = []
-    for op in _P3_OPS:
-        marks = [pytest.mark.xfail(strict=True, reason=_XFAIL_TRANSIENT[op])] if op in _XFAIL_TRANSIENT else []
-        out.append(pytest.param(op, marks=marks, id=op))
-    return out
-
-
-@pytest.mark.parametrize("op_name", _p3_params())
+@pytest.mark.parametrize("op_name", list(_P3_OPS))
 def test_p3_a_transient_error_on_any_single_read_never_clobbers(op_name, web_app, home, monkeypatch):
     """Dry-run the operation to count its config reads R, then for k in 1..R fail exactly read k."""
     case = _p3_case(700)
@@ -1226,10 +1187,7 @@ _TOP_LEVEL = [k for k in DEFAULT_CONFIG if k != "_config_version"]
 def _p6_setup(section: str, monkeypatch) -> tuple[str, dict, Path, int]:
     case = gen_case(1000 + _TOP_LEVEL.index(section), n_sections=(3, 5), null_leaves=False,
                     exclude_top={section, "display", "agent"})
-    block = f"{section}: null\n"
-    if section != "agent":  # keep the separately-xfailed phantom `agent: {}` out of these cells
-        block = "agent:\n  verify_on_stop: false\n" + block
-    text = _before_version(case.text, block)
+    text = _before_version(case.text, f"{section}: null\n")
     for k, v in case.env.items():
         monkeypatch.setenv(k, v)
     cfg = _cfg_path()
@@ -1270,8 +1228,6 @@ def test_p6_null_section_survives_every_surface(section, web_app, home, monkeypa
     assert touched <= {null_line} and len(inserted) <= 1, f"[{ctx}] save touched other lines:\n{_udiff(text, after)}"
     _assert_no_duplicate_top_level(after, ctx)
 
-    # (section,) itself is allowed to change here: dropping `section: null` on a save is the
-    # separately-xfailed null-strip bug (test_p1_explicit_null_leaves_survive_a_noop_save).
     writers = {
         "cli_set": (lambda: C.set_config_value("terminal.timeout", "4242"), ("terminal", "timeout")),
         "tui_rpc": (lambda: server._methods["config.set"](1, {"key": "skin", "value": "ares"}), ("display", "skin")),
@@ -1288,6 +1244,7 @@ def test_p6_null_section_survives_every_surface(section, web_app, home, monkeypa
             assert res.status_code == 200, f"[{ctx}] PUT /api/config: {res.text}"
         got = yaml.safe_load(_read(cfg))
         assert _get(got, target) not in (_MISSING, None), f"[{ctx}] {name} did not write {target}"
+        # (section,) itself may change: a writer may normalise `section: null` to an empty mapping.
         stray = {p for p in _changed_paths(tree, got) if not _under(p, {target, (section,)})}
         assert not stray, f"[{ctx}] {name} changed untargeted paths {sorted(stray, key=str)}:\n{_udiff(text, _read(cfg))}"
 
@@ -1321,20 +1278,7 @@ def test_p6_all_sections_null_at_once_through_gateway_loader_and_migration(home,
     load_gateway_config()
 
 
-def _p6_effective_params():
-    out = []
-    for k in _TOP_LEVEL:
-        d = DEFAULT_CONFIG[k]
-        marks = []
-        if not isinstance(d, dict) and d is not None:
-            marks = [pytest.mark.xfail(strict=True, reason=(
-                "NEW (null-strip): `key: null` for a key with a non-null default loads as None but "
-                "save_config deletes it, so after any save the default silently takes effect."))]
-        out.append(pytest.param(k, marks=marks, id=k))
-    return out
-
-
-@pytest.mark.parametrize("section", _p6_effective_params())
+@pytest.mark.parametrize("section", _TOP_LEVEL)
 def test_p6_noop_save_keeps_the_effective_value_of_a_null_section(section, home, monkeypatch):
     _p6_setup(section, monkeypatch)
     effective = C.load_config()

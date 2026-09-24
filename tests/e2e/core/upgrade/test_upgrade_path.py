@@ -16,7 +16,8 @@ Class C6 (bricked installs, stale code, lost state after `hermes update`). Each 
 
 Legs: ``clean``; ``autostash`` (local edits + an orphan update autostash from an earlier run);
 ``kill_mid_pull`` (SIGKILL while the fast-forward holds ``index.lock``, then the user retries
-later; ``torn-tree`` variant: half the changed files already swapped, a strict xfail); ``kill_before_deps``
+later; ``torn-tree`` variant: half the changed files already swapped, merge-order-safe xfail for the
+live gap fixed by #120339); ``kill_before_deps``
 (SIGKILL after the code swap, when the dependency sync starts: new code on the old venv);
 ``offline`` (origin unreachable: must fail loudly and leave N-1 working).
 
@@ -28,7 +29,7 @@ pre-existing messages (also after HEAD's first real use of the DB); the cron job
 venv satisfies HEAD's dependency set; config.yaml of both profiles equals exactly what HEAD's own
 non-interactive ``migrate_config`` produces from the pre-update bytes (so the updater never
 rewrites anything beyond documented migrations), user values and comments survive independently
-of that oracle, and (strict xfail, #119844) long-value lines survive verbatim; no
+of that oracle, and long-value lines survive verbatim (#119844); no
 service-manager restart was attempted against anything outside the sandbox.
 
 The install's origin is the official URL rewritten (``url.<store>.insteadOf``) to the local
@@ -41,6 +42,7 @@ live gateway on the host.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import json
@@ -56,6 +58,7 @@ from typing import NamedTuple
 import pytest
 import yaml
 
+from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
@@ -224,12 +227,12 @@ def user_config(base_url: str, version: int) -> str:
     )
 
 
-def _base_config_version() -> int:
-    src = _git("show", f"{_refs().base}:hermes_cli/config_defaults.py", cwd=H.WORKTREE)
-    for line in src.splitlines():
-        if '"_config_version"' in line:
-            return int(line.split(":", 1)[1].split(",", 1)[0].strip())
-    raise AssertionError("could not read the N-1 _config_version")
+def _base_config_version(leg: Leg) -> int:
+    """The N-1 schema version, as N-1's own code reports it (imported in the N-1 install's venv)."""
+    cp = leg.run("-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG; print(DEFAULT_CONFIG['_config_version'])",
+                 argv0=leg.python)
+    assert cp.returncode == 0, "could not import the N-1 DEFAULT_CONFIG:\n" + H.describe(cp)
+    return int(cp.stdout.strip().splitlines()[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +525,7 @@ def provider():
 def template_home(tmp_path_factory, provider) -> Path:
     """HERMES_HOME populated by the N-1 CLI itself (sessions, profile, cron, config)."""
     seed = make_leg(tmp_path_factory.mktemp("seed"), None)
-    version = _base_config_version()
+    version = _base_config_version(seed)
     cfg = user_config(provider.base_url, version)
     (seed.hermes_home / "config.yaml").write_text(cfg, encoding="utf-8")
     (seed.hermes_home / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e\n", encoding="utf-8")
@@ -600,7 +603,6 @@ def test_clean_update(clean_leg, provider):
     assert _git("status", "--porcelain", "--untracked-files=no", cwd=leg.install) == "", "update left a dirty tree"
 
 
-@pytest.mark.xfail(strict=True, reason="#119844: ruamel re-folds long scalars when the updater's migration saves config.yaml")
 def test_clean_update_keeps_long_scalar_lines_verbatim(clean_leg):
     leg, final = clean_leg
     assert final.returncode == 0, H.describe(final)
@@ -642,10 +644,7 @@ def test_update_with_local_edits_and_orphan_autostash(leg, provider):
 
 @pytest.mark.parametrize("torn", [
     pytest.param(False, id="lock-only"),
-    pytest.param(True, id="torn-tree", marks=pytest.mark.xfail(strict=True, reason=(
-        "NEW: a fast-forward killed half-way leaves a prefix of the changed files at HEAD while HEAD "
-        "still names N-1; every entry point, including `hermes update`, then dies at import "
-        "(cannot import name ... from 'utils'), so nothing can heal the install without manual git"))),
+    pytest.param(True, id="torn-tree"),
 ])
 def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
     changed = sorted(_git("diff", "--name-only", "--no-renames", "--diff-filter=AM", _refs().base, _refs().head,
@@ -660,7 +659,14 @@ def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
     assert (leg.install / ".git" / "index.lock").exists()
     _age_git_locks(leg.install)
     final = _update(leg)
-    assert_healthy_at_head(leg, provider, final)
+    # Merge-order safe (see _pending_fixes.known_failure): only the import-time death excuses torn-tree.
+    gate = known_failure(
+        r"(?s)^final `hermes update` failed:.*cannot import name",
+        "#120339 (open fix PR): a fast-forward killed half-way leaves a prefix of the changed files at HEAD while "
+        "HEAD still names N-1; every entry point, including `hermes update`, then dies at import (cannot import "
+        "name ... from 'utils'), so nothing can heal the install without manual git") if torn else contextlib.nullcontext()
+    with gate:
+        assert_healthy_at_head(leg, provider, final)
 
 
 def test_kill_before_deps_then_retry_heals(leg, provider):

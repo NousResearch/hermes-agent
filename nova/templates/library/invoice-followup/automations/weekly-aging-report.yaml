@@ -1,0 +1,8 @@
+id: weekly-aging-report
+title: Monday aging report
+agent: finance-reporter
+schedule: "0 8 * * 1"
+objective: >-
+  Write the weekly aging report: unpaid invoices by age band with totals, and the five
+  largest overdue invoices.
+reason: The finance team starts each week knowing exactly who owes what.

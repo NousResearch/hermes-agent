@@ -1,0 +1,22 @@
+id: month-end-receivables
+title: Month-end receivables review
+owner: collections
+description: >-
+  Close the month with a clear picture of what is owed and what is at risk.
+acceptance: >-
+  A report with the month's invoiced, collected and outstanding totals, every invoice
+  over 60 days, and a recommended action for each.
+steps:
+  - id: reconcile
+    title: List what is still owed
+    assignee: collections
+    body: >-
+      From the invoices sheet, list every unpaid invoice with customer, amount, due date
+      and days overdue, and the reminders already sent for it.
+  - id: report
+    title: Write the month-end receivables report
+    assignee: finance-reporter
+    depends_on: [reconcile]
+    body: >-
+      Report the month's invoiced, collected and outstanding totals, every invoice over 60
+      days overdue, and a recommended next action for each.

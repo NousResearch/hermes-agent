@@ -1,0 +1,17 @@
+title: Real-estate lead qualification
+summary: >-
+  Answers property enquiries on chat, qualifies each lead (budget, area, timeline,
+  buying or renting), records it in HubSpot, and follows up every new lead each morning.
+for_whom: Estate and letting agents using HubSpot as their CRM.
+agents:
+  - id: lead-assistant
+    does: Talks to enquirers on Telegram; answers from the agency's guides; records qualified leads.
+  - id: follow-up
+    does: Reviews new leads each morning and prepares follow-ups; updates to existing CRM records need approval.
+needs:
+  - name: HUBSPOT_PRIVATE_APP_TOKEN
+    why: A HubSpot private app token with CRM read and create scopes (and update, if follow-up may change records).
+  - name: Telegram bot token
+    why: For the enquiry chat channel (Control Centre → Channels).
+  - name: Agency guides
+    why: Replace the sample documents in knowledge/guides with the agency's own.

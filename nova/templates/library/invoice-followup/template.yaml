@@ -1,0 +1,17 @@
+title: Invoice follow-up
+summary: >-
+  Watches the invoices sheet for anything overdue, drafts polite reminders for a person to
+  approve, and sends the finance team a weekly aging report — all inside the team's Slack.
+for_whom: Small businesses and agencies that track invoices in a Google Sheet.
+agents:
+  - id: collections
+    does: Finds overdue invoices and drafts reminders into the reminders sheet (each needs approval).
+  - id: finance-reporter
+    does: Writes the weekly aging report and answers the team's questions about who owes what.
+needs:
+  - name: GOOGLE_SHEETS_SERVICE_ACCOUNT_B64
+    why: A Google service account key (base64). Share the invoices and reminders sheets with it.
+  - name: Slack bot and app tokens
+    why: For the finance team's channel (Control Centre → Channels).
+  - name: Collections policy
+    why: Replace the sample in knowledge/finance with the business's own reminder rules.

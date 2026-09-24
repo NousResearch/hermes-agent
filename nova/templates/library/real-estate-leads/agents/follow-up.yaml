@@ -1,0 +1,24 @@
+id: follow-up
+name: Lead Follow-up
+role: operations
+description: Reviews new leads and prepares follow-ups for the agency's team.
+enabled: true
+instructions: prompts/follow-up.md
+model:
+  reasoning_effort: medium
+tools:
+  toolsets: [web]
+  deny: [terminal, execute_code]
+knowledge:
+  sources: [agency-guides]
+permissions: [read_leads, capture_leads, update_leads]
+extensions:
+  mcp: [hubspot]
+limits:
+  max_turns: 40
+  max_tool_calls_per_run: 80
+  max_concurrent_tasks: 2
+  max_task_runtime_seconds: 1200
+  soft_wrapup_after_seconds: 900
+  max_retries: 2
+  monthly_budget_usd: 50

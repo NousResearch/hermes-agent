@@ -1,0 +1,8 @@
+id: weekday-overdue-check
+title: Weekday overdue check
+agent: collections
+schedule: "0 9 * * 1-5"
+objective: >-
+  Check the invoices sheet for overdue invoices and draft the reminders the collections
+  policy calls for, each for approval.
+reason: Overdue invoices are caught the working day they become due for a reminder.

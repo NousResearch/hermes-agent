@@ -325,6 +325,24 @@ def _build_parser() -> argparse.ArgumentParser:
     deploy_show.add_argument("bundle", type=Path)
     deploy_show.add_argument("--json", action="store_true")
 
+    template = sub.add_parser("template", help="start a tenant from a ready-made business template")
+    template_sub = template.add_subparsers(dest="template_command", required=True)
+    template_sub.add_parser("list", help="the templates available")
+    template_show = template_sub.add_parser("show", help="what a template sets up and what it needs")
+    template_show.add_argument("template")
+    template_new = template_sub.add_parser(
+        "new", help="write a filled-in, validated bundle for a new client"
+    )
+    template_new.add_argument("template")
+    template_new.add_argument("destination", type=Path, help="a new, empty directory")
+    template_new.add_argument("--tenant", required=True, help="tenant id, e.g. acme-shop")
+    template_new.add_argument("--company", required=True, help='the business\'s name, e.g. "Acme Shop"')
+    template_new.add_argument("--email", required=True, help="where customers reach a person")
+    template_new.add_argument("--region", default="", help="AWS region (default eu-west-2)")
+    template_new.add_argument("--timezone", default="", help="IANA time zone (default Europe/London)")
+    template_new.add_argument("--model", default="", help="model id (default eu.anthropic.claude-sonnet-4-6)")
+    template_new.add_argument("--budget", default="", help="monthly budget in USD for the whole deployment (default 150)")
+
     token = sub.add_parser("token", help="manage control-plane access")
     token_sub = token.add_subparsers(dest="token_command", required=True)
     token_new = token_sub.add_parser("new", help="mint a token and print the entry to add")
@@ -759,6 +777,41 @@ def _index_knowledge(bundle, runtime, audit) -> None:
               f"Run `nova knowledge ingest` to retry.")
 
 
+def _template(args) -> int:
+    """``nova template ...`` — start a client from a ready-made business template."""
+    from nova import templates
+
+    if args.template_command == "list":
+        for template in templates.catalogue():
+            print(f"{template.id:22} {template.title}")
+            print(f"{'':22} {template.for_whom}")
+        return 0
+
+    if args.template_command == "show":
+        template = templates.get(args.template)
+        print(f"{template.title}\n\n{template.summary}\n\nFor: {template.for_whom}\n\nAgents:")
+        for agent in template.agents:
+            print(f"  {agent.get('id', ''):18} {agent.get('does', '')}")
+        print("\nThe client provides:")
+        for need in template.needs:
+            print(f"  {need.get('name', '')}\n      {need.get('why', '')}")
+        return 0
+
+    bundle = templates.new_bundle(args.template, args.destination, {
+        "tenant_id": args.tenant, "company": args.company, "support_email": args.email,
+        "region": args.region, "timezone": args.timezone, "model": args.model,
+        "monthly_budget": args.budget,
+    })
+    template = templates.get(args.template)
+    print(f"{args.destination}: {template.title} for {bundle.organization.legal_name} "
+          f"(tenant {bundle.tenant_id}) — {len(bundle.agents)} agents, validated")
+    print("\nBefore it goes live, the client provides:")
+    for need in template.needs:
+        print(f"  - {need.get('name', '')}: {need.get('why', '')}")
+    print(f"\nNext: review it, then `nova plan {args.destination}`.")
+    return 0
+
+
 def _knowledge(args) -> int:
     """``nova knowledge ...`` — ingest, inspect and rehearse retrieval."""
     from nova.knowledge import KnowledgeIndex, ingest
@@ -1131,6 +1184,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 owner = "nova" if agent.managed_by_nova else "not nova-managed"
                 print(f"  {agent.agent_id:22} {owner}")
             return 0
+
+        if args.command == "template":
+            return _template(args)
 
         if args.command == "knowledge":
             return _knowledge(args)

@@ -1,0 +1,42 @@
+# Every tool an agent may call is named here; anything unlisted is refused.
+actions:
+  record_refund:
+    description: Record a refund or return in the refunds sheet
+    tools:
+    - mcp__google_sheets__add_rows
+    - mcp__google_sheets__update_cells
+    - mcp__google_sheets__batch_update_cells
+    requires_approval: true
+  share_spreadsheet:
+    description: Share a Google Sheet with someone
+    tools:
+    - mcp__google_sheets__share_spreadsheet
+    requires_approval: true
+permissions:
+  read_orders:
+    description: Look orders up in the order sheet
+    tools:
+    - mcp__google_sheets__list_spreadsheets
+    - mcp__google_sheets__search_spreadsheets
+    - mcp__google_sheets__list_sheets
+    - mcp__google_sheets__get_sheet_data
+    - mcp__google_sheets__get_multiple_sheet_data
+    - mcp__google_sheets__get_multiple_spreadsheet_summary
+    - mcp__google_sheets__find_in_spreadsheet
+  record_refunds:
+    description: Write refunds and returns to the refunds sheet (each write needs approval)
+    tools:
+    - mcp__google_sheets__add_rows
+    - mcp__google_sheets__update_cells
+    - mcp__google_sheets__batch_update_cells
+baseline_tools:
+- kanban_complete
+- kanban_block
+- kanban_comment
+- kanban_heartbeat
+- kanban_request_review
+- kanban_show
+- clarify
+- todo_list
+defaults:
+  unlisted_tool: deny

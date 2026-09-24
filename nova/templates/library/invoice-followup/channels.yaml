@@ -1,0 +1,8 @@
+channels:
+  - id: finance-slack
+    provider: slack
+    display_name: "{{company}} finance (Slack)"
+    allowed_agents: [finance-reporter]
+    routes:
+      - name: everything
+        agent: finance-reporter

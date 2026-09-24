@@ -1,0 +1,44 @@
+# Every tool an agent may call is named here; anything unlisted is refused.
+actions:
+  update_crm_records:
+    description: Change or link existing CRM records
+    tools:
+    - mcp__hubspot__hubspot_batch_update_objects
+    - mcp__hubspot__hubspot_batch_create_associations
+    - mcp__hubspot__hubspot_update_engagement
+    requires_approval: true
+permissions:
+  read_leads:
+    description: Look up contacts, deals and notes in HubSpot
+    tools:
+    - mcp__hubspot__hubspot_get_user_details
+    - mcp__hubspot__hubspot_list_objects
+    - mcp__hubspot__hubspot_search_objects
+    - mcp__hubspot__hubspot_batch_read_objects
+    - mcp__hubspot__hubspot_list_associations
+    - mcp__hubspot__hubspot_get_association_definitions
+    - mcp__hubspot__hubspot_list_properties
+    - mcp__hubspot__hubspot_get_property
+    - mcp__hubspot__hubspot_get_engagement
+  capture_leads:
+    description: Create contacts and notes for new enquiries
+    tools:
+    - mcp__hubspot__hubspot_batch_create_objects
+    - mcp__hubspot__hubspot_create_engagement
+  update_leads:
+    description: Update existing leads (each change needs approval)
+    tools:
+    - mcp__hubspot__hubspot_batch_update_objects
+    - mcp__hubspot__hubspot_batch_create_associations
+    - mcp__hubspot__hubspot_update_engagement
+baseline_tools:
+- kanban_complete
+- kanban_block
+- kanban_comment
+- kanban_heartbeat
+- kanban_request_review
+- kanban_show
+- clarify
+- todo_list
+defaults:
+  unlisted_tool: deny

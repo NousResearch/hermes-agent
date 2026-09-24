@@ -1,0 +1,5 @@
+tenant_id: {{tenant_id}}
+legal_name: "{{company}}"
+region: {{region}}
+timezone: {{timezone}}
+contact_email: {{support_email}}

@@ -1,0 +1,25 @@
+id: shop-assistant
+name: Shop Assistant
+role: customer_support
+description: Answers customers about orders, delivery and returns, and looks orders up.
+enabled: true
+instructions: prompts/shop-assistant.md
+model:
+  reasoning_effort: low
+tools:
+  toolsets: [web]
+  deny: [terminal, execute_code]
+knowledge:
+  sources: [store-policies]
+permissions: [read_orders]
+extensions:
+  mcp: [google-sheets]
+delegation:
+  may_assign_to: [store-ops]
+limits:
+  max_turns: 30
+  max_tool_calls_per_run: 60
+  max_concurrent_tasks: 5
+  max_task_runtime_seconds: 600
+  soft_wrapup_after_seconds: 480
+  monthly_budget_usd: 80

@@ -1,0 +1,8 @@
+channels:
+  - id: shop-telegram
+    provider: telegram
+    display_name: "{{company}} (Telegram)"
+    allowed_agents: [shop-assistant]
+    routes:
+      - name: everything
+        agent: shop-assistant

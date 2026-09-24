@@ -1,0 +1,8 @@
+channels:
+  - id: enquiries-telegram
+    provider: telegram
+    display_name: "{{company}} enquiries (Telegram)"
+    allowed_agents: [lead-assistant]
+    routes:
+      - name: everything
+        agent: lead-assistant

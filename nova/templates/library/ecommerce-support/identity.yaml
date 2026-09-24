@@ -1,0 +1,15 @@
+product_name: "{{company}} Assistant"
+company_name: "{{company}}"
+theme:
+  accent: "#0f766e"
+  surface: "#f6f7f8"
+  on_accent: "#ffffff"
+support:
+  email: {{support_email}}
+messages:
+  welcome: "Hello — you are talking to {{company}}. How can we help?"
+agents:
+  shop-assistant:
+    display_name: "{{company}} Assistant"
+  store-ops:
+    display_name: "{{company}} Store Operations"

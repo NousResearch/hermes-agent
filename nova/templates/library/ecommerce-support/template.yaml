@@ -1,0 +1,18 @@
+title: E-commerce customer support
+summary: >-
+  Answers shoppers on chat about orders, delivery and returns, looks orders up in a
+  Google Sheet, and hands refunds to a store-operations agent that records them only
+  after a person approves.
+for_whom: Online shops with an order sheet (or an export of one) and a returns policy.
+agents:
+  - id: shop-assistant
+    does: Talks to customers on Telegram; answers from the store's policies; looks up orders.
+  - id: store-ops
+    does: Handles returns and refunds; writes them to the refunds sheet after approval.
+needs:
+  - name: GOOGLE_SHEETS_SERVICE_ACCOUNT_B64
+    why: A Google service account key (base64). Share the orders and refunds sheets with it.
+  - name: Telegram bot token
+    why: For the customer chat channel (Control Centre → Channels).
+  - name: Store policies
+    why: Replace the sample documents in knowledge/policies with the shop's own.

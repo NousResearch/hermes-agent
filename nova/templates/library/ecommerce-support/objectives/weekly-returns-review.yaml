@@ -1,0 +1,22 @@
+id: weekly-returns-review
+title: Weekly returns review
+owner: store-ops
+description: >-
+  Look at the week's returns and refunds for patterns worth acting on.
+acceptance: >-
+  A short report with the week's return count and value, the three most common reasons,
+  and any product with an unusual number of returns.
+steps:
+  - id: collect
+    title: Collect the week's returns
+    assignee: store-ops
+    body: >-
+      From the refunds sheet, list every return and refund recorded in the last 7 days
+      with amount, product and reason.
+  - id: report
+    title: Write the returns report
+    assignee: store-ops
+    depends_on: [collect]
+    body: >-
+      Summarise: total count and value, the three most common reasons, and any product
+      returned unusually often. Suggest one concrete action if there is one.

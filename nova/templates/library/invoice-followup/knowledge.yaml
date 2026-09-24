@@ -1,0 +1,7 @@
+sources:
+  - id: finance-policy
+    title: Collections policy
+    description: When and how overdue invoices are chased, and who is never chased automatically.
+    root: knowledge/finance
+    include: ["**/*.md"]
+    classification: internal

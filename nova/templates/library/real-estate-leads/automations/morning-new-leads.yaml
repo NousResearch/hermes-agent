@@ -1,0 +1,8 @@
+id: morning-new-leads
+title: Follow up yesterday's new leads
+agent: follow-up
+schedule: "0 9 * * 1-6"
+objective: >-
+  Find every lead created in HubSpot since the previous run and add a prepared follow-up
+  note to each: who should call, when, and what to say.
+reason: Every new lead gets a planned follow-up the next morning.

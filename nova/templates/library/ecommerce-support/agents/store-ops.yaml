@@ -1,0 +1,24 @@
+id: store-ops
+name: Store Operations
+role: operations
+description: Handles returns and refunds and keeps the refunds sheet up to date.
+enabled: true
+instructions: prompts/store-ops.md
+model:
+  reasoning_effort: medium
+tools:
+  toolsets: [web]
+  deny: [terminal, execute_code]
+knowledge:
+  sources: [store-policies]
+permissions: [read_orders, record_refunds]
+extensions:
+  mcp: [google-sheets]
+limits:
+  max_turns: 40
+  max_tool_calls_per_run: 80
+  max_concurrent_tasks: 2
+  max_task_runtime_seconds: 1200
+  soft_wrapup_after_seconds: 900
+  max_retries: 2
+  monthly_budget_usd: 50

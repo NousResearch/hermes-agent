@@ -1,0 +1,10 @@
+# The model and the whole deployment's monthly budget. Infrastructure (VPC, subnet,
+# image) is added for an AWS deployment with `nova deploy render`.
+provider:
+  provider: bedrock
+  model: {{model}}
+  context_window: 200000
+budget:
+  # Month-to-date spend (the runtime's estimate, USD) at which every agent stops
+  # taking new work and calling tools.
+  monthly_usd: {{monthly_budget}}

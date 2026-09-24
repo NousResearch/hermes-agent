@@ -1,0 +1,8 @@
+id: daily-open-issues
+title: Morning summary of open customer issues
+agent: store-ops
+schedule: "0 8 * * 1-5"
+objective: >-
+  Review returns and refund requests still open from the previous day and post a short
+  summary: what is waiting, what is waiting on approval, and anything older than two days.
+reason: A person sees every open request each morning, so nothing waits unnoticed.

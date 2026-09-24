@@ -1,0 +1,7 @@
+sources:
+  - id: agency-guides
+    title: Agency guides
+    description: How buying, renting and viewings work with the agency — what the assistants answer from.
+    root: knowledge/guides
+    include: ["**/*.md"]
+    classification: public

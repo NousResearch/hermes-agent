@@ -1,0 +1,26 @@
+id: collections
+name: Collections
+role: operations
+description: Finds overdue invoices and drafts payment reminders for approval.
+enabled: true
+instructions: prompts/collections.md
+model:
+  reasoning_effort: medium
+tools:
+  toolsets: [web]
+  deny: [terminal, execute_code]
+knowledge:
+  sources: [finance-policy]
+permissions: [read_invoices, draft_reminders]
+extensions:
+  mcp: [google-sheets]
+delegation:
+  may_assign_to: [finance-reporter]
+limits:
+  max_turns: 40
+  max_tool_calls_per_run: 80
+  max_concurrent_tasks: 2
+  max_task_runtime_seconds: 1200
+  soft_wrapup_after_seconds: 900
+  max_retries: 2
+  monthly_budget_usd: 50

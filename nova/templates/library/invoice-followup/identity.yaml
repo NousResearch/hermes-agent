@@ -1,0 +1,15 @@
+product_name: "{{company}} Finance Assistant"
+company_name: "{{company}}"
+theme:
+  accent: "#7c3aed"
+  surface: "#f6f7f8"
+  on_accent: "#ffffff"
+support:
+  email: {{support_email}}
+messages:
+  welcome: "Hello — you are talking to {{company}}. How can we help?"
+agents:
+  collections:
+    display_name: "{{company}} Collections"
+  finance-reporter:
+    display_name: "{{company}} Finance Reports"

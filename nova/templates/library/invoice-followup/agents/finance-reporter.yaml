@@ -1,0 +1,23 @@
+id: finance-reporter
+name: Finance Reports
+role: operations
+description: Answers the finance team's questions and writes the weekly aging report.
+enabled: true
+instructions: prompts/finance-reporter.md
+model:
+  reasoning_effort: medium
+tools:
+  toolsets: [web]
+  deny: [terminal, execute_code]
+knowledge:
+  sources: [finance-policy]
+permissions: [read_invoices]
+extensions:
+  mcp: [google-sheets]
+limits:
+  max_turns: 40
+  max_tool_calls_per_run: 80
+  max_concurrent_tasks: 2
+  max_task_runtime_seconds: 1200
+  soft_wrapup_after_seconds: 900
+  monthly_budget_usd: 40

@@ -1,0 +1,22 @@
+id: weekly-pipeline-review
+title: Weekly lead pipeline review
+owner: follow-up
+description: >-
+  See where the week's leads came from and which are going cold.
+acceptance: >-
+  A short report with the week's new leads by area and budget band, and every lead
+  without contact for more than five days.
+steps:
+  - id: gather
+    title: Gather the week's leads
+    assignee: follow-up
+    body: >-
+      From HubSpot, list the leads created in the last 7 days with area, budget, timeline
+      and the last contact date.
+  - id: report
+    title: Write the pipeline report
+    assignee: follow-up
+    depends_on: [gather]
+    body: >-
+      Summarise by area and budget band, and list every lead with no contact for more
+      than five days, with a suggested next step for each.

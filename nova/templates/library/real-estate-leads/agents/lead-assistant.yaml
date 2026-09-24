@@ -1,0 +1,25 @@
+id: lead-assistant
+name: Property Assistant
+role: customer_support
+description: Answers property enquiries, qualifies leads and records them in HubSpot.
+enabled: true
+instructions: prompts/lead-assistant.md
+model:
+  reasoning_effort: low
+tools:
+  toolsets: [web]
+  deny: [terminal, execute_code]
+knowledge:
+  sources: [agency-guides]
+permissions: [read_leads, capture_leads]
+extensions:
+  mcp: [hubspot]
+delegation:
+  may_assign_to: [follow-up]
+limits:
+  max_turns: 30
+  max_tool_calls_per_run: 60
+  max_concurrent_tasks: 5
+  max_task_runtime_seconds: 600
+  soft_wrapup_after_seconds: 480
+  monthly_budget_usd: 80

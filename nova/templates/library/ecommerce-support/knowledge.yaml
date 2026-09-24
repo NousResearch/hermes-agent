@@ -1,0 +1,7 @@
+sources:
+  - id: store-policies
+    title: Store policies
+    description: Returns, refunds, delivery and common questions — the rules the assistants follow.
+    root: knowledge/policies
+    include: ["**/*.md"]
+    classification: public

@@ -327,3 +327,15 @@ class TestDetection:
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+
+
+class TestWorkspaceBlockStatusFailure:
+    """A failed git status must never be reported as a clean tree (false-Done)."""
+
+    def test_failed_status_is_not_reported_clean(self, tmp_path):
+        _git_init(tmp_path)
+        (tmp_path / "untracked.txt").write_text("dirty")
+        (tmp_path / ".git" / "index").write_bytes(b"not an index")
+        assert subprocess.run(["git", "-C", str(tmp_path), "status"], capture_output=True).returncode != 0
+        line = cc.build_coding_workspace_block(tmp_path).split("Status:")[1].splitlines()[0]
+        assert "clean" not in line and "unknown" in line

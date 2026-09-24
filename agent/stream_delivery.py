@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from agent.memory_manager import sanitize_context
 from agent.message_content import flatten_message_text
-from agent.redact import redact_sensitive_text
+from agent.history_commentary import visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -52,6 +52,8 @@ class StreamDeliveryMixin:
         """
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+        # Next stream re-reads plugins.stream_reasoning_deltas (config edits land per request).
+        self._stream_reasoning_hooks_enabled = None
 
         def deliver(tail: str) -> None:
             if tail:
@@ -133,8 +135,7 @@ class StreamDeliveryMixin:
 
     def _visible_commentary(self, text: str) -> str:
         """Think-stripped, redacted commentary text ("" when nothing visible remains)."""
-        visible = self._strip_think_blocks(text).strip()
-        return redact_sensitive_text(visible) if visible else visible
+        return visible_commentary(text, strip_thinking=getattr(self, "_strip_think_blocks"))
 
     def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
         """All visible Codex commentary joined, for comparison/fallback."""
@@ -323,13 +324,18 @@ class StreamDeliveryMixin:
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
         self._call_quietly(self.reasoning_callback, text)
-        try:
-            from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
+        # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and
+        # serialized every streaming thread in the process behind a config cache hit.
+        enabled = getattr(self, "_stream_reasoning_hooks_enabled", None)
+        if enabled is None:
+            try:
+                from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
 
-            enabled = stream_reasoning_deltas_enabled()
-        except Exception:
-            logger.debug("reasoning on_stream_delta plugin hook enqueue failed", exc_info=True)
-            return
+                enabled = stream_reasoning_deltas_enabled()
+            except Exception:
+                logger.debug("reasoning on_stream_delta plugin hook enqueue failed", exc_info=True)
+                return
+            self._stream_reasoning_hooks_enabled = enabled
         if enabled:
             self._enqueue_stream_hook("on_stream_delta", label="reasoning on_stream_delta", delta=text, kind="reasoning")
 

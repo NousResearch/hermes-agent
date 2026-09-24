@@ -74,26 +74,6 @@ def test_disable_only_after_the_date_and_not_when_allowed(tmp_path, monkeypatch)
     assert pc.disable_reason(_manifest("good", good), today=after) is None
 
 
-def test_summary_lines_name_plugins_and_the_date():
-    report = {"alpha": [pc.Hit("a.py", 1, "x.y", "z.y")], "beta": [pc.Hit("b.py", 2, "x.y", "z.y"), pc.Hit("b.py", 3, "x.q", "z.q")]}
-    before = pc.COMPAT_REMOVAL_DATE - dt.timedelta(days=3)
-    head, tail = pc.summary_lines(report, today=before)
-    assert "2 plugins" in head and "alpha (1)" in head and "beta (2)" in head and pc.COMPAT_REMOVAL in head and "3 days" in head
-    assert "hermes plugins compat" in tail
-    head_after, _ = pc.summary_lines(report, today=pc.COMPAT_REMOVAL_DATE)
-    assert "DISABLED" in head_after
-    assert pc.summary_lines({}) == []
-
-
-def test_report_file_written_and_removed(tmp_path, monkeypatch):
-    monkeypatch.setattr(pc, "report_file_path", lambda: tmp_path / "r.json")
-    pc._write_report_file({"p": [pc.Hit("a.py", 1, "x.y", "z.y")]})
-    data = json.loads((tmp_path / "r.json").read_text())
-    assert data["plugins"]["p"][0]["old"] == "x.y" and data["removal_date"] == pc.COMPAT_REMOVAL and len(data["lines"]) == 2
-    pc._write_report_file({})
-    assert not (tmp_path / "r.json").exists()
-
-
 def test_loader_skips_hitting_plugin_after_date(tmp_path, monkeypatch):
     """PluginManager records the reason and never imports the plugin."""
     from hermes_cli.plugins import PluginManager

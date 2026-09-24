@@ -1598,8 +1598,12 @@ _ensure_ssl_certs()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home, get_hermes_home_override
-_hermes_home = get_hermes_home()
+from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
+# The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)
+# first imports this module lazily from a session's agent build, under that session's routed profile
+# override, and the import-time config bridge below would then latch the secondary's terminal.* and
+# settings into the launch process env for every later launch-profile turn.
+_hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -1813,25 +1817,28 @@ def _profile_runtime_scope(
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import set_secret_scope, reset_secret_scope
 
-    home_token = set_hermes_home_override(str(profile_home))
-    if prepared_secret_scope is not None:
-        secrets = prepared_secret_scope
-    elif hydrate_secrets:
-        secrets = _load_profile_secret_scope(Path(profile_home))
-    else:
-        from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-        secrets = build_profile_secret_scope(Path(profile_home))
-    secret_token = set_secret_scope(secrets)
-    # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-    # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-    # pinned (first-writer-wins backend leak; #68559).
-    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+    home_token = secret_token = None
+    try:
+        home_token = set_hermes_home_override(str(profile_home))
+        if prepared_secret_scope is not None:
+            secrets = prepared_secret_scope
+        elif hydrate_secrets:
+            secrets = _load_profile_secret_scope(Path(profile_home))
+        else:
+            from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
+            secrets = build_profile_secret_scope(Path(profile_home))
+        secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
+        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
+        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
+        # pinned (first-writer-wins backend leak; #68559).
+        from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-    with install_and_reset_profile_terminal_scope(Path(profile_home)):
-        try:
+        with install_and_reset_profile_terminal_scope(Path(profile_home)):
             yield
-        finally:
+    finally:
+        if secret_token is not None:
             reset_secret_scope(secret_token)
+        if home_token is not None:
             reset_hermes_home_override(home_token)
 
 
@@ -2196,6 +2203,7 @@ from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+from gateway.run_plugin_rewire import GatewayPluginRewireMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
@@ -3057,7 +3065,7 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
-    if evt_type == "async_delegation":
+    if evt_type in ("async_delegation", "heartbeat"):
         from tools.process_registry_notifications import format_process_notification
         return format_process_notification(evt)
 
@@ -3076,7 +3084,8 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
             break
         evt_type = evt.get("type", "completion")
         if evt_type in {
-            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released"}:
+            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
+            "heartbeat"}:
             watch_events.append(evt)
         elif evt_type == "async_delegation":
             requeue.append(evt)
@@ -3385,7 +3394,7 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin, GatewayProfileReconcileMixin):
+    GatewayAgentCacheMixin, GatewayProfileReconcileMixin, GatewayPluginRewireMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
@@ -3480,9 +3489,14 @@ class GatewayRunner(
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.
-        # An injected config (tests, ``gateway run --config``) is taken verbatim: an unset flag there
-        # stays None (= standalone); only the loaded path runs the boot-time default-on guard.
+        # Injected configs keep their mode (including None), except the launching profile's
+        # standalone opt-out: --config must not turn that profile into a host multiplexer.
         self.config = config if config is not None else load_gateway_config_for_runner()
+        if config is not None:
+            from hermes_cli.gateway_multiplex_mode import standalone_launcher_decision, log_multiplex_decision
+            decision = standalone_launcher_decision(self.config)
+            if decision is not None:
+                log_multiplex_decision(decision)
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
         try:
@@ -4037,8 +4051,9 @@ class GatewayRunner(
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
-    # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by suspend_recently_active()
-    # on crash recovery (no .clean_shutdown marker). All mean "killed mid-turn" -> startup auto-resume.
+    # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by recover_interrupted_turns()
+    # for a crash-left turn marker (no .clean_shutdown marker). All mean "killed mid-turn" -> startup
+    # auto-resume.
     _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted"})
 
     _MAX_SUPERVISED_RESTARTS = 5
@@ -4279,6 +4294,17 @@ class GatewayRunner(
         """Restore session context variables to their pre-handler values."""
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
+
+    @_contextmanager
+    def _session_env_scope(self, context: SessionContext):
+        """Bind session context variables for the duration of the block, e.g. a plugin command
+        handler invoked outside the normal agent-turn path (``_set_session_env`` is otherwise only
+        reached there). Always cleared on exit, including on exception."""
+        tokens = self._set_session_env(context)
+        try:
+            yield
+        finally:
+            self._clear_session_env(tokens)
 
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""
@@ -4895,8 +4921,9 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
     the trailing wildcard pass — the only one that stops the shared loop — never ran.
 
     The worker runs in a FRESH context, not ``copy_context()``: the caller may sit inside a served
-    profile's scope, and ``launch_profile_scope_if_multiplexed`` documents "no HERMES_HOME override"
-    — inheriting one made the wildcard pass resolve the live home to that profile.
+    profile's scope, and the trailing wildcard pass must run under the launch profile's own scope
+    (``launch_profile_scope_if_multiplexed`` binds the launch home) — inheriting the caller's made it
+    resolve the live home to that profile.
 
     See #82874.
     """
@@ -5245,6 +5272,8 @@ def _start_gateway_make_restart_signal_handler(runner):
 
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
+    planned_stop_seen = [False]
+
     def shutdown_signal_handler(received_signal=None):
         # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
         def _takeover() -> bool:
@@ -5264,6 +5293,12 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
         planned_takeover = bool(_best_effort(_takeover, "Takeover marker check failed: %s"))
         planned_stop = received_signal == signal.SIGINT or (
             not planned_takeover and bool(_best_effort(_planned_stop, "Planned stop marker check failed: %s")))
+        # `hermes gateway stop` writes the marker, THEN signals: the planned-stop watcher can consume
+        # the marker in between, and the CLI's own SIGTERM must not then read as an external kill.
+        if planned_stop:
+            planned_stop_seen[0] = True
+        elif planned_stop_seen[0] and not planned_takeover:
+            planned_stop = True
         _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
@@ -5347,6 +5382,15 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     """
     from gateway import host_rendezvous as hr
 
+    # The host lock can be free after a standalone owner exits while a coexisting
+    # multiplexer remains live. Its per-home channel still governs our opt-out.
+    if not force:
+        from gateway.host_attach import REFUSE, standalone_attach_decision
+        decision = standalone_attach_decision(get_hermes_home(), None)
+        if decision is not None and decision.outcome == REFUSE:
+            from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+            print(decision.message)
+            raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
     try:
         outcome, error = hr.claim_host_lock(hr.ROLE_GATEWAY)
         if outcome is hr.HostLockOutcome.ACQUIRED:
@@ -5380,6 +5424,22 @@ def _claim_host_gateway_role(force: bool = False) -> None:
         logger.warning("--force: starting a second gateway although %s owns this host.",
                        hr.describe(owner) if owner else "another process")
         return
+    from gateway.host_attach import (
+        ATTACH_CHANNEL_WAIT_S, START, host_gateway, standalone_attach_decision,
+    )
+    from hermes_cli.profiles import profile_is_standalone
+    if profile_is_standalone(get_hermes_home()):
+        # Recheck after losing the atomic lock: the pre-lock served set may be stale.
+        live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
+        if live_owner is not None:
+            decision = standalone_attach_decision(get_hermes_home(), live_owner)
+            if decision is not None:
+                if decision.outcome == START:
+                    return
+                from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+                print(decision.message)
+                raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+        _refuse_second_host_gateway(owner)
     if _owner_is_standalone():
         # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because
         # the owner is another profile's STANDALONE gateway and will never serve us. Refusing now
@@ -5422,22 +5482,46 @@ def _owner_is_standalone() -> bool:
 
 
 def _refuse_second_host_gateway(owner) -> None:
-    """Print the named refusal and exit 75 so a supervisor retries instead of parking the unit."""
+    """Print the named refusal and exit 75 so a supervisor retries instead of parking the unit.
+
+    Reached only after losing the host lock, so ``--replace`` is not offered: an owner that serves
+    this profile was already handled before the claim, and ``--replace`` does not skip the lock.
+    """
     from gateway import host_rendezvous as hr
     from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
 
     who = hr.describe(owner) if owner else "owner unknown (its record is gone)"
     message = (
         f"❌ Another gateway already owns this host: {who}\n"
         f"   Exactly one gateway per host serves every profile, so this process will not start a\n"
         f"   second one (it would double-bind this profile's platforms).\n"
-        f"   Fold every profile onto the owner:  {MIGRATE_COMMAND}\n"
-        f"   Or take the host over:              hermes gateway run --replace\n"
-        f"   Or start one anyway:                hermes gateway run --force")
+        f"   Fold every profile onto the owner:  {_migrate_command()}\n"
+        f"   Or stop the other gateway first, then start this one.\n"
+        f"   Or start one anyway (skips the host-lock check):  hermes gateway run --force\n"
+        f"   (--replace does not skip this check; it only replaces an owner that serves this profile.)")
     logger.error("Refusing to start a second gateway on this host: %s", who)
     print(message)
     raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
+
+def _log_standalone_profiles_at_boot(runner) -> None:
+    """One INFO line per standalone profile when the MULTIPLEXER takes its served set at boot.
+
+    The host gateway silently omits an opted-out profile from its served set; without this line an
+    operator reading the boot log cannot tell "not created yet" from "excluded by config".
+    """
+    try:
+        if not getattr(runner.config, "multiplex_profiles", False):
+            return
+        from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
+        from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+        served = set(runner.served_profile_names())
+        for name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
+            if name != "default" and name not in served and profile_is_standalone(home):
+                logger.warning("profile '%s' is standalone (gateway.standalone: true); not served by "
+                               "this gateway. %s", name, STANDALONE_DEPRECATION_NOTICE)
+    except Exception:
+        logger.warning("standalone-profile boot notice failed", exc_info=True)
 
 
 def _refresh_host_gateway_record(runner) -> None:
@@ -5493,7 +5577,7 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
         print(decision.message)
         return False
     if decision.outcome == REPLACE_HOST and decision.owner is not None:
-        # --replace names the HOST process, whichever home launched it.
+        # decide() only targets an owner that serves this profile or has not published its served set.
         if not await _start_gateway_replace_existing_instance(decision.owner.pid, True):
             return False
     return None
@@ -5510,7 +5594,11 @@ async def _start_gateway_start_control_socket(runner):
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
         from gateway.control_socket import GatewayControlServer
-        from gateway.run_profile_reconcile import migrate_profile_identity_verb, purge_profile_identity_verb
+        from gateway.run_profile_reconcile import (
+            migrate_profile_identity_verb, purge_profile_identity_verb,
+            unserve_profile_verb, serve_profile_verb,
+        )
+        from gateway.run_plugin_rewire import reload_plugins_verb
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5559,8 +5647,13 @@ async def _start_gateway_start_control_socket(runner):
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
+                           "unserve-profile": unserve_profile_verb(runner),
+                           "serve-profile": serve_profile_verb(runner),
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
-                           "purge-profile-identity": purge_profile_identity_verb(runner)})
+                           "purge-profile-identity": purge_profile_identity_verb(runner),
+                           # A plugin installed/enabled by another process loads now and re-wires the
+                           # live adapters' handlers (#87770); tools/prompt still wait for the next session.
+                           "reload-plugins": reload_plugins_verb(runner, _main_loop)})
         if not await _control_server.start():
             _control_server = None
         else:
@@ -5785,13 +5878,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _planned_stop_watcher_thread.start()
 
     # PID file BEFORE adapters: of two concurrent `run --replace`, only the O_EXCL winner opens sockets.
-    if not _start_gateway_claim_pid_file(force=force or replace):
+    # Only --force skips the host-lock refusal. Every generated unit carries --replace, so reading it as
+    # --force there disabled the one arbiter of the two-units-at-once race; a replace that took the
+    # owner over already freed the lock with that process. Consequence: a live holder this process
+    # cannot interrogate (its record never published, or it speaks another HOST_PROTOCOL_VERSION
+    # mid-upgrade) blocks every other unit with exit 75 until it exits; only --force gets past it.
+    if not _start_gateway_claim_pid_file(force=force):
         return False
 
     # Right after the PID claim (which makes us authoritative); non-fatal — consumers fall back to scan.
     _control_server = await _start_gateway_start_control_socket(runner)
     # Now the attach channel answers: republish the host record with the settled served set.
     _refresh_host_gateway_record(runner)
+    _log_standalone_profiles_at_boot(runner)
 
     def _lifecycle_record_startup() -> None:
         # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the

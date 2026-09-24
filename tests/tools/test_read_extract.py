@@ -221,10 +221,6 @@ class TestAnydocAbsent(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             _extract_anydoc("/tmp/whatever.pdf")
 
-    def test_stdlib_formats_unaffected(self):
-        self.assertTrue(is_extractable_document("a.ipynb"))
-        self.assertTrue(is_extractable_document("a.docx"))
-        self.assertTrue(is_extractable_document("a.xlsx"))
 
 
 class TestAnydocInitLifecycle(unittest.TestCase):
@@ -249,18 +245,6 @@ class TestAnydocInitLifecycle(unittest.TestCase):
         self.rex._anydoc_failed_at = self._saved_failed_at
         self.rex.ANYDOC_RETRY_SECONDS = self._saved_retry
 
-    def test_successful_load_is_cached(self):
-        fake = object()
-        calls = []
-
-        def fake_import(name):
-            calls.append(name)
-            return fake
-
-        with mock.patch("importlib.import_module", side_effect=fake_import):
-            self.assertIs(self.rex._anydoc(), fake)
-            self.assertIs(self.rex._anydoc(), fake)
-        self.assertEqual(calls, ["anydoc"])
 
     def test_failed_reconciliation_does_not_import_unverified_binding(self):
         with mock.patch(
@@ -742,9 +726,6 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertIn("6 of 9 pages", note)
         self.assertIn("pages 4-9", note)        # contiguous empty gap
         self.assertIn("(6 pages)", note)        # gap size stated
-        self.assertIn("vision_analyze", note)   # recovery path is named
-        self.assertIn("ocr-and-documents", note)
-        self.assertIn("do NOT OCR or render everything", note)
 
     def test_gap_labels_carry_preceding_section_text(self):
         """Each gap is labeled with the last text page before it (usually

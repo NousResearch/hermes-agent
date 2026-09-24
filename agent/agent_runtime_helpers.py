@@ -82,7 +82,8 @@ def _ra():
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview",
-    "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour",
+    "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "manage_catalog", "setup_mcp",
+    "gui_tour",
     "delegate_task",
 })
 
@@ -1474,7 +1475,8 @@ def prompt_caching_disabled_from_config() -> bool:
 
 def configured_cache_ttl() -> Optional[str]:
     """Configured ``prompt_caching.cache_ttl`` tier (``5m``/``1h``), else None; mirrors
-    ``agent_init`` so stub paths don't regress a configured ``1h`` to 5m."""
+    ``agent_init`` so stub paths don't regress a configured ``1h`` to 5m. ``auto`` is None here
+    on purpose: stub/auxiliary calls are machine-paced, so they take the 5m tier ``None`` resolves to."""
     ttl = _raw_cache_ttl_from_config(None)
     return ttl if ttl in VALID_CACHE_TTLS else None
 
@@ -1860,8 +1862,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
-    # pinned by tests/agent/test_create_openai_client_reuse.py and
-    # test_sequential_chats_live.py. What IS shared across those per-client wrappers is the
+    # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the
     # connection pool: ``build_keepalive_http_client`` mounts a process-shared ``HTTPTransport``
     # behind a per-client view whose ``close()`` is a no-op for the pool, so a closed wrapper
     # never takes a sibling's (or the successor's) connections with it
@@ -2369,7 +2370,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
     from agent.inline_tool_executors import (
-        InlineToolContext, emit_terminal_post_tool_call, resolve_invoke_tool_executor, tool_hook_ids
+        InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
+        resolve_invoke_tool_executor, tool_hook_ids
     )
     if not isinstance(function_args, dict):
         function_args = {}
@@ -2406,14 +2408,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
         def _execute(next_args: dict) -> Any:
             result = inline_executor(agent, next_args, inline_ctx)
+            call_args = next_args if isinstance(next_args, dict) else function_args
+            duration_ms = int((time.monotonic() - tool_start_time) * 1000)
             emit_terminal_post_tool_call(
-                agent, function_name=function_name,
-                function_args=next_args if isinstance(next_args, dict) else function_args,
+                agent, function_name=function_name, function_args=call_args,
                 result=result, effective_task_id=effective_task_id, tool_call_id=tool_call_id,
-                duration_ms=int((time.monotonic() - tool_start_time) * 1000),
-                middleware_trace=_tool_middleware_trace,
+                duration_ms=duration_ms, middleware_trace=_tool_middleware_trace,
             )
-            return result
+            return apply_transform_tool_result(
+                agent, function_name=function_name, function_args=call_args, result=result,
+                effective_task_id=effective_task_id, tool_call_id=tool_call_id, duration_ms=duration_ms,
+            )
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(
@@ -2687,10 +2692,10 @@ def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
     ]
     result_call_ids: set[str] = set().union(*(v for _, v in result_entries))
     orphaned_results = [msg for msg, v in result_entries if v and not (v & surviving_call_ids)]
-    orphaned_ids = {id(msg) for msg in orphaned_results}
-    surviving_result_variants = [v for msg, v in result_entries if v and id(msg) not in orphaned_ids]
+    # Orphan result variants are disjoint from every declared call, so they
+    # cannot contribute a match. Reuse the union instead of scanning each result.
     missing_tool_calls = [
-        tc for tc, v in assistant_call_variants if not any(v & rv for rv in surviving_result_variants)
+        tc for tc, v in assistant_call_variants if not (v & result_call_ids)
     ]
     return surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls
 

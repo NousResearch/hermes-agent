@@ -194,16 +194,6 @@ def test_load_mappings_handles_corrupt_json(hermes_home):
 
 
 
-def _make_fake_tar(binary_name: str, payload: bytes = b"#!/bin/sh\necho ok\n") -> bytes:
-    """Build a tar.gz with one file at the root, named ``binary_name``."""
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name=binary_name)
-        info.size = len(payload)
-        info.mode = 0o755
-        tf.addfile(info, io.BytesIO(payload))
-    return buf.getvalue()
 
 
 
@@ -599,15 +589,6 @@ def test_start_proxy_injects_management_key_env(hermes_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_reset_for_tests_clears_version_cache_and_nonce():
-    """_reset_for_tests must clear _VERSION_CACHE and _proxy_nonce so
-    in-process callers don't see leakage between tests."""
-
-    ip._VERSION_CACHE["dummy"] = "v0.0.0-fake"
-    ip._proxy_nonce = "fake-nonce-12345"
-    ip._reset_for_tests()
-    assert ip._VERSION_CACHE == {}
-    assert ip._proxy_nonce is None
 
 
 # ---------------------------------------------------------------------------

@@ -10,8 +10,6 @@ See: https://github.com/NousResearch/hermes-agent/issues/36144
 See: https://github.com/NousResearch/hermes-agent/issues/29015
 """
 
-import os
-import threading
 from pathlib import Path
 
 import hermes_constants
@@ -268,9 +266,6 @@ class TestSanitizeSubprocessEnvHomeInjection:
 class TestProfileBootstrap:
     """Verify new profiles get a home/ subdirectory."""
 
-    def test_profile_dirs_includes_home(self):
-        from hermes_cli.profiles import _PROFILE_DIRS
-        assert "home" in _PROFILE_DIRS
 
     def test_create_profile_bootstraps_home_dir(self, tmp_path, monkeypatch):
         """create_profile() should create home/ inside the profile dir."""

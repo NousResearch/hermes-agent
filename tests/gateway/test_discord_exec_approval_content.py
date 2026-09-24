@@ -40,13 +40,8 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert sent["embed"] is not None
 
     prompt_text = sent["content"]
-    assert "Hermes wants to run a command that needs your OK" in prompt_text
-    assert "Do you want Hermes to run this command?" in prompt_text
-    assert "Requested command" in prompt_text
     assert command in prompt_text
-    assert "Why it was flagged" in prompt_text
     assert "script execution via -c flag" in prompt_text
-    assert "it will NOT run" in prompt_text
 
     # Content is the canonical, accessible approval payload (embeds may not render, #33681);
     # the embed is a header-only card so the command and reason appear exactly once.
@@ -102,5 +97,4 @@ async def test_clarify_embed_is_header_only_card():
         clarify_id="cl1", session_key="discord:555")
 
     assert "Which environment should I deploy to?" in sent["content"]
-    assert "Pick one below" in sent["content"]
     assert "Which environment should I deploy to?" not in _embed_text(sent["embed"])

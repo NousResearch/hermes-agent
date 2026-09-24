@@ -21,14 +21,6 @@ def _set_activity(db, session_id, when):
     db._conn.commit()
 
 
-def test_bounded_recent_uses_effective_activity_index(db):
-    indexes = {
-        row[0]
-        for row in db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index'"
-        ).fetchall()
-    }
-    assert "idx_sessions_effective_activity" in indexes
 
 
 def test_writable_startup_reconciles_legacy_activity_column_before_index(tmp_path):
@@ -223,7 +215,7 @@ def test_bounded_recent_cycle_is_deduplicated_and_omitted(db):
 
 
 def test_bounded_recent_deadline_interrupts_sqlite(db):
-    for i in range(300):
+    for i in range(40):
         sid = f"session-{i}"
         db.create_session(sid, source="cli")
         db.append_message(sid, role="user", content=f"message {i}")

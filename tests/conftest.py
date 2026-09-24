@@ -112,6 +112,13 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
 # env instead of stripping markers.
 os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 
+# Lazy-install kill-switch, set before any test module is imported. The per-test
+# fixture below sets it too, but collection runs first: agent/bedrock_adapter.py
+# calls lazy_deps.ensure() at import time, so collecting a file that imports it
+# ran a real `uv pip install boto3` into the shared venv while other files raced
+# on whether botocore was importable yet.
+os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+
 #: HERMES_HOME as it stood when conftest was imported - i.e. before any test
 #: module could import code that configures logging. Recorded so the guard in
 #: tests/test_log_isolation.py can assert the sandbox existed AT THAT MOMENT.
@@ -531,6 +538,13 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # A test that pins the process home (hermes_constants.pin_process_hermes_home) must not
+    # leak that module-global into the next test's routed-profile decisions.
+    try:
+        import hermes_constants as _hc
+        monkeypatch.setattr(_hc, "_PINNED_PROCESS_HERMES_HOME", None, raising=False)
+    except Exception:
+        pass
     # Per-TEST host-rendezvous dir (see the session-level block at the top): the
     # host gateway/serve record is shared per OS user by design, so without this
     # one test's published owner makes the next test's lifecycle code attach to it.
@@ -565,6 +579,8 @@ def _hermetic_environment(tmp_path, monkeypatch):
     secret_scope_mod = sys.modules.get("agent.secret_scope")
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_MULTIPLEX_ACTIVE"):
         monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
+    if secret_scope_mod is not None and hasattr(secret_scope_mod, "_AUTO_PINNED_HOME"):
+        monkeypatch.setattr(secret_scope_mod, "_AUTO_PINNED_HOME", None)
     launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
     if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
         monkeypatch.setattr(launch_policy_mod, "_snapshot", None)
@@ -634,6 +650,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+@pytest.fixture(autouse=True)
+def _reset_foreground_exit_fence():
+    """A test that drives a hard-exit path raises the one-way foreground-spawn fence; lower it after."""
+    yield
+    if (base := sys.modules.get("tools.environments.base")) is not None:
+        base._exit_fenced = False
 
 
 @pytest.fixture(autouse=True)
@@ -1317,16 +1341,41 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
         return
     # The system temp dir may itself be inside the home (Windows TEMP under the
     # Hermes home). The repo is no escape either: the default install checks it
-    # out *inside* the home (~/.hermes/hermes-agent). A sibling of the native
-    # home is outside it by construction.
-    safe_root = None if not Path(tempfile.gettempdir()).resolve().is_relative_to(native) else native.parent
-    safe = Path(tempfile.mkdtemp(prefix="hermes-pytest-basetemp-", dir=safe_root))
+    # out *inside* the home (~/.hermes/hermes-agent). The relocated basetemp goes
+    # into ONE prunable root outside the home, never loose into the operator's
+    # $HOME (123 ``hermes-pytest-basetemp-*`` dirs piled up there in a day, one per
+    # test file the per-file runner spawned). It is removed when this pytest exits
+    # and, for runs that were killed before that, swept once it is 24h idle.
+    safe = Path(tempfile.mkdtemp(prefix="b-", dir=_pytest_disk_temp_root(native)))
     assert not safe.resolve().is_relative_to(native), (
         f"pytest basetemp {safe} still resolves inside the operator's Hermes home {native}; "
         "refusing to run the suite against the live install (pass --basetemp outside it)"
     )
     factory._given_basetemp = safe
     config.option.basetemp = str(safe)
+    config._hermes_relocated_basetemp = safe
+
+
+def _pytest_disk_temp_root(native: Path) -> Path:
+    """The root for relocated basetemps: the disk-backed runner root when the host has
+    one (``scripts/run_tests_parallel.py::_runner_scratch_root``), else a plain (not
+    dot-prefixed — hidden-dir search tests would see every fixture as hidden) sibling of
+    the native home. Entries idle for a day are swept on the way in."""
+    from hermes_constants_scratch import prune_idle_entries
+
+    if os.name != "nt" and os.path.isdir("/var/tmp"):  # no-tmp: ok — disk-backed FHS root
+        root = Path("/var/tmp/hermes-pytest")  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
+    else:
+        root = native.parent / "hermes-pytest"
+    root.mkdir(parents=True, exist_ok=True)
+    prune_idle_entries(root, 24, frozenset())
+    return root
+
+
+def _remove_relocated_basetemp(config) -> None:
+    safe = getattr(config, "_hermes_relocated_basetemp", None)
+    if safe is not None:
+        shutil.rmtree(safe, ignore_errors=True)
 
 
 def _pinned_mcp_sdk_version() -> str:
@@ -1361,6 +1410,10 @@ def require_mcp_2_sdk():
         pytest.skip(f"requires mcp=={pinned} (not installed); install the [mcp] extra")
     if Version(found) < Version(pinned):
         pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
+
+
+def pytest_unconfigure(config):  # noqa: D401 — pytest hook
+    _remove_relocated_basetemp(config)
 
 
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
@@ -1448,6 +1501,23 @@ def _check_symlink_support() -> bool:
     except OSError:
         _symlink_supported_cache = False
         return False
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtest_call(item):
+    """Join the turn's auto-title threads INSIDE capture, before pytest snaps it.
+
+    A title thread that prints its failure warning while capture's
+    ``readouterr`` swaps the fd crashed the interpreter (SIGSEGV in
+    ``_pytest/capture.py::snap``). The teardown join in
+    ``_close_leaked_session_dbs`` runs after that snap, too late for this race.
+    """
+    try:
+        return (yield)
+    finally:
+        wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+        if wait is not None:
+            wait()
 
 
 def pytest_runtest_setup(item):

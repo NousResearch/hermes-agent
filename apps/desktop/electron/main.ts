@@ -42,7 +42,7 @@ import {
   readStatusCode,
   withRetry
 } from './api-transport'
-import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
 import {
   stopBackendChild as stopBackendChildImpl,
@@ -64,7 +64,12 @@ import {
 import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
-import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
+import {
+  buildDesktopBackendEnv,
+  hermesManagedNodePathEntries,
+  normalizeHermesHomeRoot,
+  profileBackendParentEnv
+} from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
@@ -203,6 +208,7 @@ import {
   terminalScriptExtension,
   tuiResumeArgs
 } from './external-terminal'
+import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
 import { type FaviconIo, resolveFavicon } from './favicon'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import {
@@ -225,7 +231,7 @@ import {
   writeBufferToFile
 } from './gateway-file-download'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
-import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import {
   describeGitHubCredentialSource,
@@ -280,6 +286,7 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -320,7 +327,8 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { registerPetOverlayIpc } from './pet-overlay-ipc'
+import { petOverlayClickThrough } from './pet-overlay'
+import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
   recordDismissed as recordPluginCompatDismissed
@@ -371,6 +379,7 @@ import {
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
 import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
+  assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
@@ -383,7 +392,7 @@ import {
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
-import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { type ActiveWork, backendOwnedByApp, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -404,7 +413,7 @@ import {
   oauthLoginLoadUrlOptions,
   resolveRemoteRequestHeaders
 } from './remote-ws-headers'
-import { missingRendererAssets } from './renderer-bundle'
+import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle'
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
@@ -416,6 +425,7 @@ import {
   type SecretStoragePolicy,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
+import { selectPathsDialogProperties } from './select-paths-dialog'
 import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
 import {
   buildInstanceWindowUrl,
@@ -486,6 +496,7 @@ import {
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
 import {
@@ -1816,6 +1827,7 @@ const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const previewWatchers = new Map()
 let previewShortcutActive = false
+const f12ShortcutActiveWindows = new Set<number>()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {
@@ -2769,8 +2781,10 @@ function looksLikeDesktopAppBinary(commandPath) {
 
   const resourcesDir = path.join(path.dirname(resolved), 'resources')
 
+  // existsSync for the archive: Electron's asar shim stats app.asar itself as a directory (so
+  // fileExists was always false) and constructs the deprecated fs.Stats doing it (#96857).
   return (
-    fileExists(path.join(resourcesDir, 'app.asar')) || directoryExists(path.join(resourcesDir, 'app.asar.unpacked'))
+    fs.existsSync(path.join(resourcesDir, 'app.asar')) || directoryExists(path.join(resourcesDir, 'app.asar.unpacked'))
   )
 }
 
@@ -5002,7 +5016,8 @@ function resolveWebDist() {
   // so the cause isn't silent.
   const fallback = path.join(APP_ROOT, 'dist')
 
-  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !directoryExists(fallback)) {
+  // existsSync, not directoryExists: a stat inside app.asar constructs the deprecated fs.Stats (#96857).
+  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !fs.existsSync(fallback)) {
     rememberLog(
       `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
         `is not a real directory: ${fallback}. Static routes will 404. ` +
@@ -5036,7 +5051,7 @@ function resolveRendererIndexWithMissing(): { index: string; missing: string[] }
   // unpackedPathFor is a no-op outside an asar, so both candidates collapse
   // to APP_ROOT/dist and the original order is preserved.
   const candidates = IS_PACKAGED ? [webDistIndex, asarIndex] : [asarIndex, webDistIndex]
-  const present = [...new Set(candidates)].filter(fileExists)
+  const present = presentRendererIndexes(candidates)
 
   // index.html and the hashed chunks it names are one generation. An update
   // that replaces only one of the two shipped copies (app.asar vs
@@ -7415,11 +7430,26 @@ function installDevToolsShortcut(window) {
   // Only Ctrl+Shift+I (or Cmd+Opt+I on Mac) opens DevTools.
   // F12 is explicitly blocked so Chromium's built-in handler doesn't open it.
   window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') {
+      return
+    }
+
     const key = input.key.toLowerCase()
 
-    // F12 opens DevTools by default; block only when the user disabled it.
+    // A renderer binding gets first refusal. Chromium otherwise claims F12
+    // before the renderer can capture or dispatch it.
     if (input.key === 'F12') {
-      if (f12Blocked) {
+      const decision = f12ShortcutDecision(input, f12ShortcutActiveWindows.has(window.webContents.id), f12Blocked)
+
+      if (decision === 'forward') {
+        event.preventDefault()
+
+        window.webContents.send('hermes:f12-shortcut', toF12KeyboardEventPayload(input))
+
+        return
+      }
+
+      if (decision === 'block') {
         event.preventDefault()
 
         return
@@ -7443,14 +7473,14 @@ function installDevToolsShortcut(window) {
 
 function installPreviewShortcut(window) {
   window.webContents.on('before-input-event', (event, input) => {
-    const key = String(input.key || '').toLowerCase()
-    const accel = (IS_MAC ? input.meta : input.control) && !input.alt
-    const isCloseTabShortcut = key === 'w' && accel && !input.shift
+    const action = windowAcceleratorAction(input, IS_MAC)
 
     // Always claim ⌘W here (the File>Close item deliberately has no
     // accelerator, so nothing else does). The renderer decides tab-vs-window
     // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    if (isCloseTabShortcut) {
+    // keyUp is not a claim: a chord that started in another app can deliver
+    // its leftover keyup when this window inherits focus (#105498).
+    if (action === 'close-tab') {
       event.preventDefault()
 
       // ⌘W in the HUD is "leave HUD mode", not "close a tab in the app
@@ -7473,7 +7503,7 @@ function installPreviewShortcut(window) {
     // see #77845), so a menu accelerator would leave Windows and Linux with no
     // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
     // the unconditional whole-window escape hatch.
-    if (key === 'r' && accel && !input.shift) {
+    if (action === 'reload') {
       event.preventDefault()
       sendPreviewNavCommand('reload')
     }
@@ -7575,33 +7605,19 @@ function installZoomShortcuts(window) {
   // Chromium's default handler would use the full 0.2 step, so we intercept
   // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL, not Chromium 0.
   window.webContents.on('before-input-event', (event, input) => {
-    const mod = IS_MAC ? input.meta : input.control
+    const action = windowAcceleratorAction(input, IS_MAC)
 
-    if (!mod || input.alt) {
-      return
-    }
-
-    const key = input.key
-
-    if (key === '0') {
-      if (input.shift) {
-        return // Ctrl/Cmd+Shift+0 is not a zoom chord — leave it alone
-      }
-
+    if (action === 'zoom-reset') {
       event.preventDefault()
       setAndPersistZoomLevel(window, DEFAULT_ZOOM_LEVEL)
-    } else if (key === '=' || key === '+') {
+    } else if (action === 'zoom-in') {
       // Zoom-in must accept the shift modifier: on US layouts Plus is
       // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
       // depending on platform). The old blanket shift guard silently
       // dropped keyboard zoom-in on macOS (#43517).
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
-    } else if (key === '-') {
-      if (input.shift) {
-        return // Shift+'-' is '_' territory on most layouts, not zoom-out
-      }
-
+    } else if (action === 'zoom-out') {
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }
@@ -12703,7 +12719,8 @@ async function runPoolBackendStart(
       cwd: hermesCwd,
       env: desktopBackendSpawnEnv(
         {
-          ...process.env,
+          // Never another profile's dotenv credentials from the Desktop env (#68367).
+          ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile }),
           HERMES_HOME,
           ...backend.env,
           // Pin the gateway's tool/terminal cwd to the same directory we chose for
@@ -12802,8 +12819,10 @@ async function runPoolBackendStart(
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
   ready = true
 
+  const childAlive = () => child.exitCode === null && !child.killed
+
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
-    childAlive: () => child.exitCode === null && !child.killed,
+    childAlive,
     label: `Hermes backend for profile "${profile}"`,
     rememberLog
   })
@@ -12815,7 +12834,13 @@ async function runPoolBackendStart(
   // Verify the WebSocket session token before declaring backend ready.
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
   const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-  const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+  // Our own child: a cold start can stall its loop past the base budget (#96177).
+  const wsProbe = await probeGatewayWebSocket(wsUrl, {
+    WebSocketImpl: globalThis.WebSocket,
+    ...spawnedBackendProbeOptions(childAlive)
+  })
+
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   if (!wsProbe.ok) {
@@ -13135,19 +13160,76 @@ function releaseHostSpawnReservation() {
   hostSpawnReservation = null
 }
 
-function startHermes() {
+function startHermes({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}) {
   primaryRecoverySuppressed = false
   primaryStartsInFlight += 1
 
-  const start = localBackendLifecycle.start(runHermesStart)
+  const start = localBackendLifecycle.start(() => runHermesStart({ supervisorRecovery }))
 
   const releaseStart = () => {
     primaryStartsInFlight -= 1
   }
 
+  // Ordering contract: this reaction is registered on the SAME promise the
+  // caller receives, before any caller `.catch`, so releaseStart has already
+  // run (primaryStartsInFlight back to 0) when runPrimaryRecoverySpawn's
+  // `.catch` evaluates primaryRecoveryState(). Returning a derived promise
+  // (start.then(...)) or wrapping `start` would invert that order: every
+  // pre-ready retry would see hasPendingStart:true, be refused, and leave the
+  // recovery claim stuck with no retry and no UI.
   void start.then(releaseStart, releaseStart)
 
   return start
+}
+
+function primaryRecoveryState() {
+  return {
+    hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
+    hasPendingStart: primaryStartsInFlight > 0,
+    intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
+  }
+}
+
+function reportPrimaryRecoveryCrashLoop(code: number | null, signal: string | null): boolean {
+  if (!primaryExitRecovery.isCrashLooping()) {
+    return false
+  }
+
+  const message =
+    'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
+  rememberLog(`[supervisor] ${message}`)
+  sendBackendExit({ code, signal, error: message })
+
+  return true
+}
+
+function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
+  startHermes({ supervisorRecovery: true }).catch(respawnError => {
+    rememberLog(`[supervisor] backend respawn failed: ${firstLine(respawnError.message)}`)
+
+    // Terminal boot failures still own their existing recovery UI. Only a
+    // supervisor-owned respawn that failed transiently before ready may spend
+    // another bounded recovery slot.
+    const latched = latchedBootFailure()
+
+    if (latched) {
+      rememberLog(`[supervisor] respawn refused: boot failure latched: ${firstLine(latched.message)}`)
+
+      return
+    }
+
+    // releaseStart (startHermes) already ran: same-promise reaction order, so
+    // hasPendingStart is false here. See the ordering contract in startHermes.
+    if (primaryExitRecovery.retryAfterFailedStart(primaryRecoveryState())) {
+      rememberLog('[supervisor] backend respawn failed before ready; retrying within crash-loop budget')
+      runPrimaryRecoverySpawn(code, signal)
+
+      return
+    }
+
+    reportPrimaryRecoveryCrashLoop(code, signal)
+  })
 }
 
 // A ready primary child died. When its exit leaves the primary slot with no
@@ -13166,34 +13248,31 @@ function scheduleUnexpectedPrimaryRecovery({
     return false
   }
 
-  const claimed = primaryExitRecovery.claim({
-    hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
-    hasPendingStart: primaryStartsInFlight > 0,
-    intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
-  })
+  const claimed = primaryExitRecovery.claim(primaryRecoveryState())
 
   if (!claimed) {
-    if (primaryExitRecovery.isCrashLooping()) {
-      const message =
-        'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
-
-      rememberLog(`[supervisor] ${message}`)
-      sendBackendExit({ code, signal, error: message })
-
-      return true
-    }
-
-    return false
+    return reportPrimaryRecoveryCrashLoop(code, signal)
   }
 
   rememberLog('[supervisor] backend exit left no primary owner and no start in flight; respawning')
   sendBackendExit({ code, signal, ...(error ? { error } : {}) })
-  startHermes().catch(respawnError => rememberLog(`[supervisor] backend respawn failed: ${respawnError.message}`))
+  runPrimaryRecoverySpawn(code, signal)
 
   return true
 }
 
-async function runHermesStart() {
+/**
+ * The terminal boot failure currently latched in this process, if any. These
+ * latches are cleared only by an explicit recovery path (reset, repair,
+ * apply-config, confirmed sign-in, or the child 'exit' handler), never by a
+ * retry, so both the per-request short-circuit in runHermesStart and the
+ * supervisor's respawn refusal must consult the same trio in the same order.
+ */
+function latchedBootFailure(): Error | null {
+  return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
+}
+
+async function runHermesStart({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -13214,19 +13293,19 @@ async function runHermesStart() {
   // ensureGatewayOpen retries (and any other getConnection callers) from
   // restarting a 5-10 minute install loop while the user is still reading
   // the failure overlay.
-  if (bootstrapFailure) {
-    throw bootstrapFailure
-  }
+  //
+  // A confirmed remote reauth rejection is likewise terminal until the user
+  // signs in. Short-circuiting here keeps the boot-failure overlay latched and
+  // its "Sign in" button clickable, instead of re-driving boot on every retry.
+  //
+  // Deliberately silent: this runs on every proxied request while a failure is
+  // latched (ensureBackend -> startHermes), so a log line here would flood the
+  // bounded rememberLog ring and evict the lines that explain the original
+  // failure. The supervisor logs the refusal once in runPrimaryRecoverySpawn.
+  const latched = latchedBootFailure()
 
-  if (backendStartFailure) {
-    throw backendStartFailure
-  }
-
-  // A confirmed remote reauth rejection is terminal until the user signs in.
-  // Short-circuiting here keeps the boot-failure overlay latched and its
-  // "Sign in" button clickable, instead of re-driving boot on every retry.
-  if (remoteReauthFailure) {
-    throw remoteReauthFailure
+  if (latched) {
+    throw latched
   }
 
   // E2E: simulate a boot failure without breaking the real backend. The boot
@@ -13425,7 +13504,8 @@ async function runHermesStart() {
         cwd: hermesCwd,
         env: desktopBackendSpawnEnv(
           {
-            ...process.env,
+            // Never another profile's dotenv credentials from the Desktop env (#68367).
+            ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: activeProfile }),
             // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
             // resolves to the SAME location our resolveHermesHome() picked. Without
             // this pin, Python falls back to ~/.hermes on every platform — fine on
@@ -13591,8 +13671,10 @@ async function runHermesStart() {
     primaryExitRecovery.reset()
     backendStartFailure = null
 
+    const childAlive = () => hermesProcess.exitCode === null && !hermesProcess.killed
+
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
-      childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
+      childAlive,
       rememberLog
     })
 
@@ -13600,7 +13682,13 @@ async function runHermesStart() {
 
     // Verify the WebSocket session token before declaring backend ready.
     const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-    const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+    // Same policy as the pool path: our own child may still be cold-starting (#96177).
+    const wsProbe = await probeGatewayWebSocket(wsUrl, {
+      WebSocketImpl: globalThis.WebSocket,
+      ...spawnedBackendProbeOptions(childAlive)
+    })
+
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     if (!wsProbe.ok) {
@@ -13671,7 +13759,8 @@ async function runHermesStart() {
     // child 'exit' handler to clear the cache — latching it would wedge the app
     // on "session expired" until a full restart, defeating reconnect, the
     // "Sign out & sign in" reload, and the wake-recovery revalidate path.
-    if (shouldLatchBackendStartFailure({ attemptedRemote })) {
+    // A supervisor-owned respawn never latches (see the predicate).
+    if (shouldLatchBackendStartFailure({ attemptedRemote, supervisorRecovery })) {
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 
@@ -13918,6 +14007,13 @@ function spawnSecondaryWindow({
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
+  // The preload asks for its skin before it can publish its own active route.
+  // Register the profile carried in the window URL before loading the renderer.
+  recordWindowConnectionRoute(win.webContents, {
+    connectionId: null,
+    profile: localSkinProfileKey(profile ?? primaryProfileKey()),
+    registryScoped: false
+  })
 
   // Renderer lifecycle diagnostics + recovery (#81290): a dead session-window
   // renderer used to log nothing and stay black; now it logs with its window
@@ -14184,6 +14280,12 @@ registerChatOnboardingWindow({
 // pushes pet state over IPC (hermes:pet-overlay:state); the overlay just renders
 // it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
 let petOverlayWindow = null
+// Set while a close is in flight: Electron's close() is async and can be
+// aborted on macOS, so the window may still be alive after closePetOverlay().
+// openPetOverlay must never reuse (or leave) a closing window — otherwise two
+// overlays can coexist and the orphaned one, rendering nothing, becomes an
+// invisible mouse-enabled transparent region that eats desktop clicks.
+let petOverlayClosing = false
 
 function petOverlayUrl() {
   if (DEV_SERVER) {
@@ -14246,6 +14348,20 @@ function spawnPetOverlayWindow(bounds) {
   win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
   win.setHiddenInMissionControl?.(true)
 
+  // The overlay is a transparent rectangle; only the sprite pixels should be
+  // interactive. The renderer toggles click-through as the cursor enters/
+  // leaves the sprite (hermes:pet-overlay:ignore-mouse), but the window MUST
+  // start click-through from the main process: if the overlay page is slow to
+  // load, blank, or its renderer has died, a mouse-enabled transparent window
+  // sits over the desktop eating clicks (the invisible "dead zone" bug). The
+  // wake indicator already uses this spawn-time ignore pattern. forward:true
+  // keeps mousemove flowing to the page so the renderer can re-arm
+  // interactivity the moment the cursor touches a solid sprite pixel. Linux
+  // has no forward, so there the overlay stays a solid window instead.
+  if (petOverlayClickThrough()) {
+    win.setIgnoreMouseEvents(true, { forward: true })
+  }
+
   try {
     // Electron docs: macOS may transform process type on each
     // setVisibleOnAllWorkspaces() call unless skipTransformProcessType=true,
@@ -14271,9 +14387,13 @@ function spawnPetOverlayWindow(bounds) {
   installWindowRendererLifecycle(win, { kind: 'overlay', callbacks: { log: rememberLog } })
 
   win.on('closed', () => {
-    if (petOverlayWindow === win) {
-      petOverlayWindow = null
+    // A stale window openPetOverlay replaced must not touch its replacement.
+    if (petOverlayWindow !== win) {
+      return
     }
+
+    petOverlayWindow = null
+    petOverlayClosing = false
 
     // If the overlay went away on its own (e.g. ⌘W), tell the main renderer to
     // pop the pet back in so it doesn't stay hidden. Harmless echo when we're
@@ -14290,7 +14410,7 @@ function spawnPetOverlayWindow(bounds) {
 }
 
 function openPetOverlay(bounds) {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+  if (petOverlayWindow && !petOverlayWindow.isDestroyed() && !petOverlayClosing) {
     if (bounds) {
       petOverlayWindow.setBounds({
         x: Math.round(bounds.x),
@@ -14305,6 +14425,17 @@ function openPetOverlay(bounds) {
     return petOverlayWindow
   }
 
+  // A previous close was requested but never finished (close() can be aborted
+  // on macOS) — force the stale window down before spawning a replacement so
+  // two overlays can never coexist. Detach it first so its 'closed' handler
+  // (sync or not) can't pop the pet back in over the replacement.
+  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+    const stale = petOverlayWindow
+    petOverlayWindow = null
+    stale.destroy()
+  }
+
+  petOverlayClosing = false
   petOverlayWindow = spawnPetOverlayWindow(bounds)
 
   return petOverlayWindow
@@ -14312,10 +14443,47 @@ function openPetOverlay(bounds) {
 
 function closePetOverlay() {
   if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+    petOverlayClosing = true
     petOverlayWindow.close()
   }
 
-  petOverlayWindow = null
+  // The 'closed' handler nulls petOverlayWindow and clears the flag — do NOT
+  // null here: an open() racing a slow/aborted close would otherwise spawn a
+  // second overlay while the first is still on screen (see petOverlayClosing).
+}
+
+// Re-home the popped-out pet after a display change: an overlay that still
+// fits its display stays put, one pushed past a work-area edge is clamped back
+// in, and one on no display is re-centered on the main window's display (see
+// resolvePetOverlayBounds). The corrected spot is pushed
+// back to the renderer via the existing 'bounds' control channel, which it
+// persists for the next pop-out/restart.
+function rehomePetOverlay() {
+  if (!petOverlayWindow || petOverlayWindow.isDestroyed() || petOverlayClosing) {
+    return
+  }
+
+  const current = petOverlayWindow.getBounds()
+  const resolved = placePetOverlay(current, mainWindow)
+
+  if (!resolved) {
+    return
+  }
+
+  if (
+    resolved.x === current.x &&
+    resolved.y === current.y &&
+    resolved.width === current.width &&
+    resolved.height === current.height
+  ) {
+    return
+  }
+
+  petOverlayWindow.setBounds(resolved)
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'bounds', bounds: resolved })
+  }
 }
 
 // ── HUD mode ────────────────────────────────────────────────────────────────
@@ -14746,6 +14914,13 @@ function spawnHudWindow(sessionId, profile) {
   // Log-only lifecycle (#81290): the HUD is a compact auxiliary surface the
   // user can re-toggle; a dead renderer should be diagnosable, not resurrected.
   installWindowRendererLifecycle(win, { kind: 'hud', callbacks: { log: rememberLog } })
+  // Same timing as a session window: the profile query is known now, while the
+  // renderer cannot announce its route until after preload has already run.
+  recordWindowConnectionRoute(win.webContents, {
+    connectionId: null,
+    profile: localSkinProfileKey(profile ?? primaryProfileKey()),
+    registryScoped: false
+  })
   loadWindowUrl(win, hudUrl(sessionId, profile), 'HUD')
 
   return win
@@ -15090,7 +15265,7 @@ function createWindow() {
   })
 
   const createdMainWindow = mainWindow
-  minimizeToTray.registerWindow(createdMainWindow)
+  minimizeToTray.registerWindow(createdMainWindow, { closeToTray: true })
   const defaultRoute = desktopProfilePreferences.getDefault()
 
   if (defaultRoute) {
@@ -15106,7 +15281,8 @@ function createWindow() {
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
 
-    if (icon) {
+    // Packaged builds keep the bundle icon so macOS can style it (#73195).
+    if (icon && shouldOverrideDockIcon({ platform: process.platform, isPackaged: app.isPackaged })) {
       app.dock?.setIcon(icon)
     }
   }
@@ -16754,6 +16930,18 @@ ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
 })
 
+ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
+  if (active) {
+    f12ShortcutActiveWindows.add(event.sender.id)
+  } else {
+    f12ShortcutActiveWindows.delete(event.sender.id)
+  }
+})
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.once('destroyed', () => f12ShortcutActiveWindows.delete(contents.id))
+})
+
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
   if (!IS_MAC || typeof systemPreferences.askForMediaAccess !== 'function') {
     return true
@@ -16846,19 +17034,7 @@ async function interceptSessionRequestForRemote(request) {
       fetchProfilesSessionSlice(messagingSp, remoteProfiles)
     ])
 
-    return {
-      recents: {
-        sessions: rowsOf(recents),
-        total: Number(recents?.total) || 0,
-        profile_totals: recents?.profile_totals || {}
-      },
-      cron: { sessions: rowsOf(cron) },
-      messaging: {
-        sessions: rowsOf(messaging),
-        total: Number(messaging?.total) || rowsOf(messaging).length
-      },
-      errors: []
-    }
+    return assembleSidebarSessionSlices(recents, cron, messaging)
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
@@ -17414,11 +17590,7 @@ ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unkn
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
-  const properties = options?.directories ? ['openDirectory'] : ['openFile']
-
-  if (options?.multiple !== false) {
-    properties.push('multiSelections')
-  }
+  const properties = selectPathsDialogProperties(options || {})
 
   let resolvedDefaultPath
 
@@ -18022,6 +18194,19 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
   const { label, boundary, message, componentStack } = report && typeof report === 'object' ? report : {}
   rememberLog(formatRendererBoundaryReport(label, boundary, message, componentStack))
   flushDesktopLogBufferSync()
+})
+
+// The preload reads this small, sanitized payload synchronously so the renderer
+// can register the local skin before its first theme paint. It stays independent
+// of the selected gateway, which can be an offline remote primary.
+ipcMain.on('hermes:skin:local', event => {
+  // The window route is more specific than the global next-launch preference:
+  // a peer can be booting another profile while that preference changes.
+  event.returnValue = readLocalSkinPayload(
+    HERMES_HOME,
+    windowConnectionRoutes.get(event.sender.id)?.profile,
+    primaryProfileKey()
+  )
 })
 
 // Local filesystem + plugin-root IPC (readDir/reveal/rename/trash/…) — see fs-ipc.ts.
@@ -18701,6 +18886,18 @@ app.whenReady().then(() => {
     screen.on('display-removed', reposition)
   }
 
+  // The popped-out pet must never be stranded on a disconnected display: when
+  // the topology changes, pull an off-screen overlay back onto the display
+  // that holds the main window (and persist the corrected spot). Unlike the
+  // wake indicator this applies on every platform — the pet overlay exists
+  // everywhere, and rehomePetOverlay is a cheap no-op while the pet is in the
+  // window or still on-screen.
+  screen.on('display-added', rehomePetOverlay)
+
+  screen.on('display-metrics-changed', rehomePetOverlay)
+
+  screen.on('display-removed', rehomePetOverlay)
+
   // A hard crash can interrupt the in-memory restore loop after exact remote
   // serves were drained. The owner-only recovery journal survives that crash;
   // its worker waits for the install marker to clear, then reopens every scope
@@ -18755,8 +18952,39 @@ function configureSpellChecker() {
   }
 }
 
+// Does quitting take the agent down with the app? Reads the primary profile's
+// route through the same resolver resolveRemoteBackend uses, plus every backend
+// the quit teardown below will stop (spawned children, SSH-managed servers).
+// A route we can't resolve counts as owned: the lost-work warning is the safe
+// side to be wrong on.
+function quitStopsBackendWork(): boolean {
+  let primaryRouteKind: 'cloud' | 'remote' | 'ssh' | null
+
+  try {
+    primaryRouteKind =
+      resolveDesktopRemoteRoute({
+        config: readDesktopConnectionConfig(),
+        env: {
+          token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
+          url: process.env.HERMES_DESKTOP_REMOTE_URL
+        },
+        profile: primaryProfileKey(),
+        registry: readDesktopConnectionsRegistry()
+      })?.kind ?? null
+  } catch {
+    return true
+  }
+
+  const ownedBackendCount =
+    (backendConnectionState.getProcess() ? 1 : 0) +
+    [...backendPool.values()].filter(entry => entry?.process).length +
+    sshConnections.size
+
+  return backendOwnedByApp({ ownedBackendCount, primaryRouteKind })
+}
+
 // Ask before a quit kills a turn in flight. True when the quit was intercepted
-// and the confirmation is on screen; "Quit Anyway" re-enters before-quit with
+// and the confirmation is on screen; the confirm button re-enters before-quit with
 // the latch set and falls straight through to the teardown below.
 function heldQuitForActiveWork(event: Electron.Event): boolean {
   if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || isQuittingForHandoff) {
@@ -18769,7 +18997,11 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
     return true
   }
 
-  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
+  const prompt = quitPromptFor(
+    mergeActiveWork(activeWorkByWebContents.values()),
+    isQuittingForHandoff,
+    quitStopsBackendWork()
+  )
 
   // A tray quit with live work still needs the ordinary visible confirmation.
   if (prompt && minimizeToTray.status().available) {
@@ -18789,7 +19021,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 
   void dialog
     .showMessageBox(parent, {
-      buttons: ['Keep Running', 'Quit Anyway'],
+      buttons: [...prompt.buttons],
       cancelId: 0,
       defaultId: 0,
       detail: prompt.detail,

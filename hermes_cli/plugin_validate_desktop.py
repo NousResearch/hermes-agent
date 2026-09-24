@@ -25,6 +25,12 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
      re.compile(r"(?<![\w$.])eval\(|\bnew\s+Function\(")),
     ("dynamic import outside the SDK",
      re.compile(r"\bimport\(\s*(?!['\"](?:@hermes/plugin-sdk|react)(?:/[\w/-]*)?['\"]\s*\))")),
+    # A static `import 'https://…'` / `import x from 'file:…'` is the same second stage as the
+    # dynamic form above (the renderer would fetch and evaluate it); the loader refuses every
+    # URL-scheme specifier too (runtime-loader.ts::unsupportedImports) — this keeps admission and
+    # the loader in agreement instead of letting review wave through what the app rejects.
+    ("remote import outside the SDK",
+     re.compile(r"\bimport\s+(?:[^;'\"]*?\bfrom\s*)?['\"][a-zA-Z][\w+.-]*:")),
     ("script injection",
      re.compile(r"createElement\(\s*['\"]script['\"]\s*\)|<script\b")),
 )
@@ -35,13 +41,23 @@ _COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
 # feed sanitiser that STRIPS script tags is the opposite of the move the rule refuses. Regex
 # literals are masked for the markup-shaped rules only; a ``<script`` inside a string literal is
 # still the payload of an ``innerHTML`` write and keeps firing. The lookbehind keeps division
-# (``a / b / c``) from reading as a literal.
+# (``a / b / c``) from reading as a literal. The pattern string handed straight to ``new RegExp(``
+# is the same sanitiser spelled for a dynamic flag (rss-reader split it into ``"<scr"+"ipt"`` to
+# dodge this rule) — but only where the constructor is USED as a matcher: the argument of a string
+# method (``html.replace(new RegExp("<script…", flags), '')``) or the receiver of ``.test``/``.exec``.
+# Anywhere else (``el.innerHTML = new RegExp("<script src=x></script>").source``) the constructor is
+# a string-builder and its literal keeps firing.
 _REGEX_LITERAL = re.compile(r"(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[a-z]*")
+_JS_STRING = r"(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*')"
+_REGEXP_CTOR_MATCHER = re.compile(
+    r"\.(?:replace|replaceAll|split|match|matchAll|search)\(\s*new\s+RegExp\(\s*" + _JS_STRING
+    + r"|\bnew\s+RegExp\(\s*" + _JS_STRING + r"(?=[^()\n]*\)\s*\.\s*(?:test|exec)\()")
 _MARKUP_RULES = frozenset({"script injection"})
 
 
 def _mask_regex_literals(source: str) -> str:
-    return _REGEX_LITERAL.sub(lambda m: " " * len(m.group(0)), source)
+    masked = _REGEX_LITERAL.sub(lambda m: " " * len(m.group(0)), source)
+    return _REGEXP_CTOR_MATCHER.sub(lambda m: " " * len(m.group(0)), masked)
 
 
 def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:

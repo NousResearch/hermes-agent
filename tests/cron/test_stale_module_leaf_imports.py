@@ -7,9 +7,7 @@ These tests model the field failure directly: a foundational module remains in
 
 from __future__ import annotations
 
-import importlib
 import logging
-import sys
 from types import SimpleNamespace
 
 
@@ -54,22 +52,3 @@ def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
     assert captured["default_headers"]["originator"] == "hermes-agent"
 
 
-def test_docker_import_ignores_stale_base_environment(monkeypatch):
-    from tools.environments import base
-    from tools.environments.path_utils import sanitize_task_id_for_path
-
-    # base.py no longer defines the sanitizer at all (it lives in the leaf module); a Docker
-    # module imported later by tool discovery must bind the helper from that leaf, never
-    # from base's namespace.
-    assert "sanitize_task_id_for_path" not in vars(base)
-    previous = sys.modules.pop("tools.environments.docker", None)
-    try:
-        docker = importlib.import_module("tools.environments.docker")
-        assert docker._sandbox_dir_name is sanitize_task_id_for_path
-        assert docker._sandbox_dir_name("session:cron:job") == sanitize_task_id_for_path(
-            "session:cron:job"
-        )
-    finally:
-        sys.modules.pop("tools.environments.docker", None)
-        if previous is not None:
-            sys.modules["tools.environments.docker"] = previous

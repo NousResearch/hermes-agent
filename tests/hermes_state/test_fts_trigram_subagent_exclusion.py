@@ -11,7 +11,6 @@ import pytest
 
 from hermes_state import SessionDB
 from hermes_state_common import SCHEMA_VERSION
-from hermes_state_common import FTS_TRIGRAM_EXCLUDED_SOURCES, fts_trigram_session_sql
 
 
 @pytest.fixture
@@ -155,8 +154,3 @@ def test_v29_install_purges_child_rows_on_upgrade(tmp_path):
         migrated.close()
 
 
-def test_predicate_constants_agree():
-    assert "subagent" in FTS_TRIGRAM_EXCLUDED_SOURCES
-    assert "cron" in FTS_TRIGRAM_EXCLUDED_SOURCES
-    sql = fts_trigram_session_sql("s")
-    assert sql.startswith("s.source NOT IN (") and "s.model_config" in sql

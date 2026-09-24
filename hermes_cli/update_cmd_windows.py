@@ -794,7 +794,8 @@ def _windows_cold_start_plan() -> dict | None:
     gateway that died without a clean exit. The Desktop hand-off exits the app before the updater starts
     and can kill the running gateway in those same seconds, so discovery finds no live PID to pause
     (#109538) — the dead attestation is the only surviving "a gateway was up" evidence, and the Desktop
-    does not restart the messaging gateway itself. Keep the plan, and record the attestation
+    only restarts gateways it stopped itself (its hand-off script, after the update verifies; #119809).
+    Keep the plan, and record the attestation
     *generation* that authorized it on the token: the marker is a mutable one-shot that any concurrent
     ``hermes gateway status``/``start`` consumes, so execution authorizes the spawn from the token and
     consumes only that generation (#110020 review)."""
@@ -990,7 +991,8 @@ def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> 
         from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
         active = get_active_profile_name() or "default"
         cold: dict[str, str] = {}
-        for name, home in profiles_to_serve(multiplex=True):
+        # An activation list, not inventory: parked profiles stay offline.
+        for name, home in profiles_to_serve(multiplex=True, include_standalone=True):
             if name in running_profiles or (name == active and token.get("cold_start_if_installed")):
                 continue
             generation = gateway_windows.attested_death_generation([], home=Path(home))

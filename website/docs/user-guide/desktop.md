@@ -128,11 +128,26 @@ The app is built for working on several things at once:
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
 
+#### Interface mode
+
+The layout editor (titlebar button, or **Cmd/Ctrl+Shift+\\**) opens with an **Interface mode** choice — also under **Settings → Appearance → Window & layout** and as *Simple mode* in the command palette. It changes what is shown, not what Hermes can do.
+
+- **Advanced** (default) is the app as you have set it up. Users who have not explicitly selected Simple stay in Advanced.
+- **Simple** is chat-first: the statusbar, profile rail, terminal, file browser and review panes, the technical tool-call view, inline code diffs, and the Artifacts / Scheduled jobs rows rest out of the way (Capabilities and Messaging stay — they are how you set Hermes up); thinking starts collapsed; session rows show the title, a preview and when they were last active. The titlebar keeps Settings and the layout editor. Simple's layout picker offers *Sidebar left* or *Sidebar right*. The templates and saved layouts are Advanced.
+
+A layout says what is on screen, not just where things sit: applying one opens every pane it places and closes the ones it leaves *resting*, so **Ctrl+`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** always agree with what you see. *Basic* is sessions and chat with the terminal resting as a collapsed rail under the chat and the file browser and review resting in a right column — **Ctrl+`** opens the terminal under the chat, **Cmd/Ctrl+J** opens the tree on the right. *Focus* keeps files and review as tabs behind the chat, with the same terminal rail. *Default*, *Terminal deck* and *Quad* open everything they place. A layout you save remembers which of its panes were closed.
+
+Each mode remembers its own arrangement: pane positions, sizes, active tabs, hidden tabs, dismissals, collapsed sides and floating-card positions. Returning to a mode restores that arrangement rather than reapplying a preset. Simple starts with the sidebar on the left; moving it to the right does not change Advanced. Conversations, drafts, previews and running work stay shared.
+
+Existing layouts are retained on upgrade. Advanced continues using the original storage keys. If you already explicitly selected Simple, its current layout is copied into Simple's separate storage without deleting the originals. An older arrangement that was overwritten before this separation cannot be reconstructed.
+
+Simple shadows your display preferences instead of overwriting them. Every keybind still works in Simple — **Ctrl+`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** open the terminal, file browser and review for the current session, and the next launch is quiet again. With more than one profile the profile rail stays, since it is then the only way to switch. First-run onboarding sets the mode from the layout you pick: *Basic* starts in Simple, *Elite* in Advanced; skipping leaves it on Advanced.
+
 #### Minimize to tray
 
 Enable **Settings → Appearance → Window layout → Minimize to tray** to hide minimized windows from the taskbar or Dock while their sessions keep running. The setting is off by default and applies only to this device.
 
-Use **Show Hermes** in the system tray (the menu bar on macOS) to restore the windows. **Quit Hermes** still uses the normal active-work confirmation. Closing a window, **Alt+F4**, and **Cmd+Q** keep their existing behavior; this setting does not turn Close into hide-to-tray.
+With the setting enabled and a tray available, closing the main window with **X** or **Alt+F4** hides it without stopping Hermes or destroying its session. Closing secondary windows still closes those windows. Use **Show Hermes** in the system tray (the menu bar on macOS) to restore hidden windows. **Quit Hermes** from the tray menu and **Cmd+Q** still quit, including the normal active-work confirmation. If the tray is unavailable, closing the main window behaves normally.
 
 On macOS, the Dock icon hides only when no ordinary Hermes window remains visible. On Linux, a registered StatusNotifier tray host is required; desktops without one keep normal minimize behavior. If the host disappears, hidden windows are restored.
 
@@ -513,6 +528,15 @@ hot-reloads every save. Manage installed plugins live in **Capabilities → Plug
 See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
+A desktop plugin is **not sandboxed**: it runs inside the app with the app's own
+authority (gateway RPC, the native bridge, other plugins' storage). Only load
+files you wrote or reviewed; for catalog installs the protection is the
+[catalog trust model](./features/plugin-catalog.md#trust-model) (human-reviewed,
+SHA-pinned) plus an import allowlist — not isolation. A plugin whose
+`register()` throws is rolled back and shown as **Failed** with the error on its
+row; **⌘K → Reload desktop plugins** re-reads every installed `plugin.js`,
+including one an installer replaced in place.
+
 **Capabilities → Plugins** is the one place for everything that extends
 Hermes: **one row per plugin**, with two switch columns.
 
@@ -533,7 +557,10 @@ Hermes: **one row per plugin**, with two switch columns.
   profile selector lives in this column's header because it governs only
   this column; with a single profile there is no selector at all.
   Repo-bundled built-ins (platform adapters, provider plugins) are not
-  listed: they ship enabled and are configured from their own surfaces.
+  listed: they ship enabled and are configured from their own surfaces. The
+  exceptions are the bundled lifecycle plugins with no surface of their own
+  (`disk-cleanup`, `security-guidance`), which appear here so they can be
+  toggled like any other agent plugin.
 - A half the plugin does not ship shows a dash. A desktop half whose agent
   half is **not** installed in the selected profile shows **Install here**,
   which pre-fills the install dialog from the package's origin (catalog entry
@@ -705,7 +732,7 @@ npm run pack         # unpacked app under release/ (no installer)
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 
-The optional HUD modifier-tap helper is built with the Electron bundle and packaged outside ASAR. macOS uses the existing Xcode command-line tools prerequisite. Linux builds need a C compiler and X11/XInput development headers (`libx11-dev` and `libxi-dev` on Debian/Ubuntu); Windows builds need Clang and the Windows SDK. Build on the target OS and architecture. If those optional Windows/Linux prerequisites are absent, packaging continues without modifier-tap support and Settings reports it unavailable. Installed users do not need a compiler.
+The opt-in HUD modifier-tap helper is built with the Electron bundle and packaged outside ASAR. macOS uses the existing Xcode command-line tools prerequisite. Windows builds use the C# compiler included with the operating system's .NET Framework; no Clang or developer SDK is required. Windows packaging fails rather than silently omitting the helper. Linux builds need a C compiler and X11/XInput development headers (`libx11-dev` and `libxi-dev` on Debian/Ubuntu); without those optional Linux prerequisites, packaging continues without modifier-tap support. Build on the target OS; Linux also requires the target architecture. Installed users do not need a developer toolchain. Settings distinguishes a missing helper from startup failure and an unsupported desktop session; the X11/Wayland warning is not shown for a missing or failed Windows helper.
 
 ### macOS permissions and local rebuilds (TCC)
 

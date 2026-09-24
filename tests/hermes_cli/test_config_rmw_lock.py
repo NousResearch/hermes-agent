@@ -15,7 +15,6 @@ Both tests force exactly that interleaving and assert both writes land.
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
 import yaml
@@ -38,7 +37,7 @@ def client(monkeypatch, _isolate_hermes_home):
     return client
 
 
-def _race_second_writer_into_first_writers_save(monkeypatch, first, second, timeout: float = 5.0):
+def _race_second_writer_into_first_writers_save(monkeypatch, first, second, timeout: float = 1.5):
     """Deterministic lost-write interleaving: ``first`` runs until it reaches ``save_config``,
     then ``second`` is started and ``first`` waits (up to ``timeout``) for ``second`` to
     ``load_config`` before saving. Unlocked, ``second`` loads the stale document and its save

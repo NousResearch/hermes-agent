@@ -311,6 +311,7 @@ export const ar = defineLocale({
       'composer.focus': 'التركيز على المحرّر',
       'composer.modelPicker': 'فتح منتقي النموذج',
       'composer.voice': 'بدء / إيقاف المحادثة الصوتية',
+      'composer.dictate': 'بدء / إيقاف الإملاء',
       'view.toggleSidebar': 'تبديل الشريط الجانبي للجلسات',
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
@@ -437,6 +438,7 @@ export const ar = defineLocale({
       keysSettings: 'الإعدادات',
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
+      sessions: 'الجلسات',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -521,14 +523,20 @@ export const ar = defineLocale({
       blurb:
         'امتدادات واجهة تُحمّل داخل هذا التطبيق — إما مضمّنة مع البناء، أو موضوعة في مجلد desktop-plugins (بما فيها التي يكتبها Hermes). تعطيل الإضافة يفرغها مباشرة ويبقى بعد إعادة التشغيل.',
       count: n => `${n} مثبتة`,
-      openFolder: 'فتح مجلد الإضافات',
+      openFolder: 'فتح مجلد إضافات سطح المكتب',
       rescan: 'إعادة الفحص',
       reveal: 'إظهار في مدير الملفات',
       enable: 'تفعيل',
       disable: 'تعطيل',
       failed: 'فشل',
       empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
-      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' }
+      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
+      installModal: {
+        toolsConnected: n => `تم توصيل ${n} من الأدوات`,
+        skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
+        nextChat: 'أدوات أخرى متاحة في دردشتك التالية',
+        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`
+      }
     },
     notifications: {
       title: 'الإشعارات',
@@ -636,6 +644,10 @@ export const ar = defineLocale({
       backdropDesc: 'اختيار مقدار مزج خلفية سطح المكتب مع سطح Hermes.',
       userBubbleTitle: 'فقاعة الرسالة',
       userBubbleDesc: 'مدى شفافية رسائلك. معتمة عند 0؛ يبقى الإطار فقط عند 100.',
+      textDirectionTitle: 'اتجاه النص',
+      textDirectionDesc:
+        'كيف تحدد رسائل المحادثة وحقل الكتابة اتجاهها. «تلقائي» يتبع أول حرف في كل فقرة؛ اختر اتجاهًا عندما يظهر النص المختلط بترتيب خاطئ. تبقى الشيفرة دائمًا من اليسار إلى اليمين.',
+      textDirection: { auto: 'تلقائي', rtl: 'من اليمين إلى اليسار', ltr: 'من اليسار إلى اليمين' },
       introSplashTitle: 'شاشة المقدمة',
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
       reactionsTitle: 'تفاعلات الرسائل',
@@ -682,8 +694,6 @@ export const ar = defineLocale({
           'تبنَّ تعويذة petdex متحركة تطفو فوق التطبيق وتتفاعل مع ما يفعله Hermes — تجري أثناء تنفيذ الأدوات، وتحتفل عند النجاح، وتعبس عند الأخطاء.',
         restartHint:
           'تحتاج الحيوانات الأليفة إلى إعادة تشغيل سريعة — بدأ التطبيق العامل قبل إضافة هذه الميزة. أغلق Hermes وأعد فتحه، ثم ارجع إلى هنا.',
-        on: 'تشغيل',
-        off: 'إيقاف',
         scaleTitle: 'الحجم',
         scaleDesc: 'غيّر حجم التعويذة الطافية. يُطبّق في كل مكان فورا.',
         chooseTitle: 'اختر حيوانا أليفا',
@@ -752,7 +762,6 @@ export const ar = defineLocale({
       'browser.autoLocalForPrivateUrls': 'متصفح محلي للروابط الخاصة',
       'checkpoints.enabled': 'نقاط حفظ الملفات',
       'checkpoints.maxSnapshots': 'حد نقاط الحفظ',
-      'voice.recordKey': 'اختصار الصوت',
       'voice.maxRecordingSeconds': 'أقصى مدة للتسجيل',
       'voice.autoTts': 'قراءة الردود صوتياً',
       'stt.enabled': 'تحويل الكلام إلى نص',
@@ -882,7 +891,7 @@ export const ar = defineLocale({
     config: {
       minimizeToTrayTitle: 'التصغير إلى علبة النظام',
       minimizeToTrayDesc:
-        'إخفاء النوافذ المصغّرة في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. يظل سلوك الإغلاق وAlt+F4 وCmd+Q كما هو. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
+        'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
       minimizeToTrayUnavailable:
         'علبة النظام غير متاحة. ستُصغّر النوافذ وتُغلق كالمعتاد. أوقف هذا الخيار ثم فعّله لإعادة المحاولة.',
       none: 'لا شيء',
@@ -898,7 +907,10 @@ export const ar = defineLocale({
       failedLoad: 'فشل تحميل الإعدادات',
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
-      invalidJson: 'JSON غير صالح'
+      invalidJson: 'JSON غير صالح',
+      voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
+      voiceShortcutHintDesc:
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -907,7 +919,10 @@ export const ar = defineLocale({
       permission:
         'اسمح لـ Hermes في إعدادات النظام ← الخصوصية والأمان ← مراقبة الإدخال، ثم أعد المحاولة. لا تسجّل هذه الإيماءة ضغطات المفاتيح ولا تلتقط الشاشة.',
       unavailable:
-        'هذه الإيماءة غير متاحة هنا. يتطلب Linux جلسة X11؛ لا يتيح Wayland رصد ضغطات مفاتيح التعديل على مستوى النظام. يظل اختصار HUD الحالي يعمل داخل Hermes.'
+        'تعذّر تشغيل مساعد إيماءة HUD أو توقف بشكل غير متوقع. أعد المحاولة أو أعد تشغيل Hermes. يظل اختصار HUD الحالي يعمل داخل Hermes.',
+      missingHelper: 'مساعد إيماءة HUD غير موجود في تثبيت Hermes هذا. حدّث Hermes أو أعد تثبيته، ثم أعد المحاولة.',
+      unsupportedSession:
+        'جلسة سطح المكتب هذه لا تدعم ضغطات مفاتيح التعديل على مستوى النظام. يتطلب Linux جلسة X11؛ Wayland غير مدعوم.'
     },
     screenshot: {
       enabledTitle: 'اختصار لقطة الشاشة',
@@ -1035,31 +1050,16 @@ export const ar = defineLocale({
     },
     mcp: {
       loading: 'جار تحميل خوادم MCP...',
-      failedLoad: 'فشل تحميل إعدادات MCP',
-      nameRequiredTitle: 'الاسم مطلوب',
-      nameRequiredMessage: 'أعط هذا الخادم مفتاح إعداد.',
-      objectRequired: 'يجب أن تكون إعدادات الخادم كائن JSON',
       invalidJson: 'JSON الخاص بـ MCP غير صالح',
       saveFailed: 'فشل الحفظ',
       removeFailed: 'فشلت الإزالة',
-      gatewayUnavailableTitle: 'البوابة غير متاحة',
-      gatewayUnavailableMessage: 'أعد الاتصال بالبوابة قبل إعادة تحميل MCP.',
-      reloadedTitle: 'تمت إعادة تحميل أدوات MCP',
-      reloadedMessage: 'مخططات الأدوات الجديدة تطبق على الأدوار الجديدة.',
       reloadFailed: 'فشلت إعادة تحميل MCP',
       savedTitle: 'تم حفظ خادم MCP',
       savedMessage: name => `سيطبق ${name} بعد إعادة تحميل MCP.`,
-      newServer: 'خادم جديد',
-      reload: 'إعادة تحميل MCP',
-      reloading: 'جار إعادة التحميل...',
-      emptyTitle: 'لا توجد خوادم MCP',
-      emptyDesc: 'أضف خادم stdio أو HTTP لإتاحة أدوات MCP.',
       disabled: 'معطل',
-      editServer: 'تحرير الخادم',
       name: 'الاسم',
       serverJson: 'JSON الخادم',
       remove: 'إزالة',
-      saveServer: 'حفظ الخادم',
       deepLinkTitle: 'إضافة خادم MCP؟',
       deepLinkDescription:
         'طلب رابط إضافة خادم MCP هذا إلى Hermes. راجع الإعدادات الكاملة أدناه — فهي قادمة من الرابط وليست من Hermes.',
@@ -1076,6 +1076,29 @@ export const ar = defineLocale({
       deepLinkErrorTooLarge: 'حجم الإعدادات يتجاوز الحد الأقصى 32KB.'
     },
     model: {
+      moaTitle: 'مزيج الوكلاء (Mixture of Agents)',
+      moaPreset: 'إعداد مسبق',
+      moaDescription:
+        'اضبط إعدادات مسبقة مسماة تظهر كنماذج ضمن موفّر Mixture of Agents. نموذج التجميع هو المنفّذ؛ ينفّذ كل خطوة في حلقة الأدوات وتُحتسب غالبية تكلفة التشغيل على موفّره. تقدّم النماذج المرجعية المشورة مرة واحدة لكل رسالة مستخدم افتراضياً.',
+      moaAggregator: 'نموذج التجميع',
+      moaAggregatorBilled: 'النموذج المنفّذ · تُحتسب عليه تكلفة التشغيل',
+      moaReferenceHint: 'يقدّم المشورة مرة واحدة لكل رسالة افتراضياً',
+      setupProviderFallback: 'الموفّر',
+      setUpProvider: name => `إعداد ${name}`,
+      staleAuxBefore: (count, names) => `المهام المساعدة (${count}: ${names}) ما زالت تعمل لدى `,
+      staleAuxAfter: '، وليس على النموذج الرئيسي.',
+      staleAuxOtherProviders: 'موفّرين آخرين',
+      moaEnabled: 'مُفعّل',
+      moaSetDefault: 'تعيين الافتراضي',
+      moaNewPresetPlaceholder: 'إعداد جديد',
+      moaAddPreset: 'إضافة إعداد',
+      customModel: 'نموذج مخصص…',
+      customModelPlaceholder: 'معرّف النموذج',
+      chooseFromList: 'اختر من القائمة',
+      moaDefault: 'الافتراضي:',
+      moaReferenceToggle: (enabled, index) => `${enabled ? 'تعطيل' : 'تفعيل'} المرجع ${index}`,
+      moaReferenceTitle: index => `المرجع ${index}`,
+      moaAddReference: 'إضافة نموذج مرجعي',
       loading: 'جار تحميل إعدادات النموذج...',
       appliesDesc: 'ينطبق على الجلسات الجديدة. استخدم منتقي النموذج في صندوق الإنشاء لتبديل المحادثة النشطة فورا.',
       provider: 'المزوّد',
@@ -1177,7 +1200,7 @@ export const ar = defineLocale({
       loading: 'جار تحميل الجلسات المؤرشفة...',
       archivedTitle: 'الجلسات المؤرشفة',
       archivedIntro:
-        'تُخفى المحادثات المؤرشفة من الشريط الجانبي مع الاحتفاظ بكل رسائلها. اضغط Ctrl/⌘ مع النقر على محادثة في الشريط الجانبي لأرشفتها.',
+        'تُخفى المحادثات المؤرشفة من الشريط الجانبي مع الاحتفاظ بكل رسائلها. اضغط Alt/⌥+Shift مع النقر على محادثة في الشريط الجانبي لأرشفتها.',
       emptyArchivedTitle: 'لا توجد محادثات مؤرشفة',
       emptyArchivedDesc: 'أرشف محادثة لإخفائها هنا.',
       unarchive: 'إلغاء الأرشفة',
@@ -1233,6 +1256,9 @@ export const ar = defineLocale({
     }
   },
   skills: {
+    plugins: {
+      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
+    },
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
     all: 'الكل',
@@ -1969,6 +1995,39 @@ export const ar = defineLocale({
     missingBody: 'لم يعد هذا الناتج موجودًا في السجل المحلي.'
   },
   sidebar: {
+    profileRail: 'شريط الملفات الشخصية',
+    markAllRead: 'وضع علامة مقروء على الكل',
+    filter: {
+      grouping: 'تجميع',
+      ordering: 'ترتيب',
+      show: 'إظهار',
+      filters: 'تصفية',
+      status: 'الحالة',
+      pullRequest: 'طلب سحب',
+      profile: 'الملف الشخصي',
+      project: 'المشروع',
+      archived: 'مؤرشف',
+      resetToDefaults: 'إعادة تعيين إلى الافتراضي',
+      expandAll: 'توسيع الكل',
+      collapseAll: 'طي الكل',
+      inboxStyle: 'نمط البريد الوارد',
+      updated: 'محدّث',
+      created: 'أُنشئ',
+      tokens: 'الرموز',
+      cost: 'التكلفة',
+      manual: 'يدوي',
+      preview: 'معاينة',
+      pr: 'PR',
+      needsInput: 'يحتاج إدخالاً',
+      working: 'يعمل',
+      unread: 'غير مقروء',
+      draft: 'مسودة',
+      idle: 'خامل',
+      open: 'مفتوح',
+      merged: 'مدمج',
+      closed: 'مغلق',
+      noPR: 'لا يوجد PR'
+    },
     gatewayGroups: {
       grouping: 'البوابة والملف الشخصي',
       rename: 'إعادة تسمية المجموعة',
@@ -2168,12 +2227,77 @@ export const ar = defineLocale({
     hotkeys: 'الاختصارات',
     helpFooter: 'استخدم الأسهم للتنقل و Enter للاختيار.',
     commandDescs: {
-      '/help': 'قائمة كاملة بالأوامر + اختصارات لوحة المفاتيح',
+      '/help': 'عرض أوامر الشرطة المائلة لسطح المكتب',
       '/clear': 'بدء جلسة جديدة',
-      '/resume': 'استئناف جلسة سابقة',
+      '/resume': 'استئناف جلسة محفوظة',
       '/details': 'التحكم في مستوى تفاصيل النص',
       '/copy': 'نسخ التحديد أو آخر رسالة من المساعد',
-      '/quit': 'الخروج من hermes'
+      '/quit': 'الخروج من hermes',
+      '/start': 'تأكيد طلب بدء المنصة دون إرسال رد',
+      '/new': 'بدء محادثة جديدة في تطبيق سطح المكتب',
+      '/topic': 'تفعيل مواضيع الرسائل الخاصة في Telegram أو عرضها',
+      '/save': 'حفظ المحادثة الحالية بصيغة JSON',
+      '/retry': 'إعادة إرسال آخر رسالة إلى الوكيل',
+      '/prompt': 'كتابة الطلب التالي بتنسيق Markdown في $EDITOR ثم إرساله',
+      '/undo': 'الرجوع بعدد محدد من أدوار المستخدم وإعادة الطلب (الافتراضي 1)',
+      '/title': 'إعادة تسمية الجلسة الحالية',
+      '/handoff': 'نقل هذه الجلسة إلى منصة مراسلة',
+      '/branch': 'إنشاء فرع من آخر رسالة في محادثة جديدة',
+      '/worktree': 'عرض أشجار عمل Git المعزولة أو سردها أو إنشاؤها أو تنظيفها',
+      '/compress': 'ضغط سياق المحادثة الحالية',
+      '/rollback': 'عرض نقاط استعادة الملفات أو استعادتها مع الحفاظ على تعديلاتك اليدوية',
+      '/export': 'تصدير الملف الشخصي بإعداداته ومهاراته وسمته إلى أرشيف قابل للمشاركة',
+      '/import': 'استيراد أرشيف مشترك كملف شخصي جديد',
+      '/stop': 'إيقاف الدور الجاري والعمليات الخلفية',
+      '/pause': 'إيقاف العمل الجديد مؤقتًا للجميع؛ الاستئناف باستخدام /pause off',
+      '/bg': 'تشغيل طلب في جلسة خلفية منفصلة',
+      '/btw': 'طرح سؤال جانبي عن المحادثة دون مقاطعتها',
+      '/agents': 'عرض الوكلاء النشطين والمهام الجارية',
+      '/journey': 'فتح رسم الذاكرة لعرض المهارات والذكريات عبر الزمن',
+      '/queue': 'إضافة طلبات للدور التالي أو عرضها أو تعديلها أو حذفها أو نقلها أو مسحها',
+      '/steer': 'إدراج رسالة بعد استدعاء الأداة التالي دون مقاطعة العمل',
+      '/goal': 'تحديد هدف مستمر يعمل عليه Hermes حتى إنجازه',
+      '/heartbeat': 'تحديد طلب متكرر يعود إلى هذه الجلسة عندما تكون خاملة',
+      '/refine': 'مراجعة هذه المحادثة وحفظ الدروس في الذاكرة أو المهارات',
+      '/review': 'تشغيل وكيل فرعي مستقل لمراجعة العمل الذي نوقش',
+      '/loop': 'تكرار طلب على فترات منتظمة في هذه الجلسة',
+      '/plan': 'كتابة خطة تنفيذ بتنسيق Markdown في .hermes/plans/ دون تنفيذها',
+      '/moa': 'تشغيل طلب باستخدام Mixture of Agents ثم استعادة النموذج',
+      '/subgoal': 'إضافة معايير للهدف النشط أو إدارتها',
+      '/status': 'عرض حالة الجلسة الحالية',
+      '/egress': 'عرض حالة وكيل الاتصالات الصادرة في Docker',
+      '/context': 'عرض استخدام السياق وتفاصيله وإحصاءات الضغط ومعدل المعالجة',
+      '/whoami': 'عرض صلاحية الوصول إلى أوامر الشرطة المائلة',
+      '/profile': 'تبديل ملف Hermes الشخصي النشط',
+      '/codex-runtime': 'تبديل بيئة Codex app-server لنماذج OpenAI/Codex',
+      '/personality': 'اختيار شخصية محددة مسبقًا',
+      '/battery': 'تبديل عرض مؤشر البطارية الملون في شريط الحالة',
+      '/timestamps': 'تبديل الطوابع الزمنية في الرسائل و /history',
+      '/diff': 'عرض تغييرات Git في مجلد العمل',
+      '/focus': 'تبديل عرض التركيز الذي يعرض الطلب والرد النهائي فقط',
+      '/yolo': 'تبديل YOLO — الموافقة التلقائية على الأوامر الخطرة',
+      '/approvals': 'عرض وضع الموافقة على الأوامر الخطرة أو ضبطه',
+      '/reasoning': 'إدارة مستوى الاستدلال وطريقة عرضه',
+      '/skin': 'تبديل سمة سطح المكتب أو الانتقال إلى التالية',
+      '/wake': 'التحكم في مستمع كلمة التنبيه [on|off|status]',
+      '/tools': 'إدارة الأدوات المتاحة للوكيل',
+      '/memory': 'مراجعة عمليات كتابة الذاكرة المعلقة أو تبديل طلب الموافقة',
+      '/bundles': 'عرض حزم المهارات',
+      '/pet': 'تبديل تميمة petdex أو تبني واحدة',
+      '/hatch': 'إنشاء حيوان أليف جديد',
+      '/learn': 'تعلم مهارة قابلة لإعادة الاستخدام من المجلدات أو الروابط أو المحادثة أو الملاحظات',
+      '/init': 'فحص المستودع لإنشاء تعليمات AGENTS.md أو تحديثها',
+      '/suggestions': 'مراجعة عمليات الأتمتة المقترحة وقبولها أو رفضها',
+      '/blueprint': 'إعداد أتمتة من قالب مخطط',
+      '/browser': 'إدارة اتصال المتصفح عبر CDP [connect|disconnect|status] (بوابة محلية فقط)',
+      '/palette': 'فتح لوحة الأوامر',
+      '/usage': 'عرض استخدام الرموز وحدود الطلبات؛ reset يسترد إعادة ضبط محفوظة لحدود Codex',
+      '/subscription': 'عرض خطة Nous وتغييرها في المتصفح',
+      '/topup': 'عرض رصيد Nous وإدارة الفواتير',
+      '/platform': 'إيقاف منصة بوابة متعثرة مؤقتًا أو استئنافها أو عرضها',
+      '/version': 'عرض إصدار Hermes Agent',
+      '/debug': 'رفع تقرير تصحيح يتضمن معلومات النظام والسجلات للحصول على رابط قابل للمشاركة',
+      '/model': 'تبديل نموذج هذه الجلسة'
     },
     hotkeyDescs: {
       'composer.mention': 'الإشارة إلى الملفات والمجلدات والروابط وgit',
@@ -2469,6 +2593,13 @@ export const ar = defineLocale({
     everythingSkipped: 'تم التخطي',
     everythingRowFailed: 'فشل التحديث',
     everythingFanoutFailedTitle: 'تعذر تحديث المثيلات الأخرى',
+    changeLogNew: 'جديد',
+    changeLogFixed: 'إصلاحات',
+    changeLogFaster: 'أسرع',
+    changeLogImproved: 'تحسينات',
+    changeLogOther: 'تحسينات أخرى',
+    changeLogFallbackLabel: 'في هذا التحديث',
+    changeLogFallbackItem: 'تحسينات وإصلاحات',
     applyStatus: {
       preparing: 'جار تحديث الواجهة الخلفية...',
       pulling: 'جار تحديث الواجهة الخلفية...',
@@ -2617,13 +2748,18 @@ export const ar = defineLocale({
     proNeedsSubscription: 'يتطلب اشتراكا',
     free: 'مجاني',
     freeTier: 'طبقة مجانية',
-    priceTitle: 'السعر'
+    priceTitle: 'السعر',
+    customModel: 'نموذج مخصص',
+    addCustomModelAction: 'إضافة نموذج مخصص…',
+    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5'
   },
   modelVisibility: {
     title: 'النماذج',
     search: 'بحث في النماذج',
     noAuthenticatedProviders: 'لا يوجد مزوّدون مصادق عليهم.',
-    addProvider: 'إضافة مزوّد…'
+    addProvider: 'إضافة مزوّد…',
+    addCustomModel: 'إضافة نموذج مخصص',
+    removeCustomModel: 'إزالة النموذج المخصص'
   },
   shell: {
     windowControls: 'تحكم النافذة',
@@ -2724,6 +2860,11 @@ export const ar = defineLocale({
     remotePickerTitle: 'اختر مجلدا بعيدا',
     remotePickerDescription: 'استعرض المجلدات على الخادم الخلفي المتصل.',
     remotePickerSelect: 'تحديد المجلد',
+    remotePickerNewFolder: 'مجلد جديد',
+    remotePickerFolderName: 'اسم المجلد',
+    remotePickerCreateFolder: 'إنشاء المجلد',
+    remotePickerInvalidFolderName: 'أدخل اسم مجلد واحد بدون شرطات مائلة.',
+    remotePickerCreateFolderFailed: error => `تعذر إنشاء المجلد: ${error}`,
     folderTip: cwd => cwd,
     openFolder: 'فتح مجلد',
     refreshTree: 'تحديث الشجرة',
@@ -2847,6 +2988,19 @@ export const ar = defineLocale({
       fallbackTitle: 'معاينة'
     }
   },
+  interfaceMode: {
+    title: 'وضع الواجهة',
+    hint: 'يغيّر ما يظهر، وليس ما يستطيع Hermes فعله.',
+    sessionNote: 'يحدده الوضع البسيط. التغيير هنا يستمر لهذه الجلسة فقط؛ بدّل إلى المتقدم لجعله خيارك.',
+    simple: {
+      label: 'بسيط',
+      description: 'للتحدث مع Hermes. الشريط الجانبي والدردشة؛ بلا طرفية أو لوحات ملفات أو فروقات.'
+    },
+    advanced: {
+      label: 'متقدم',
+      description: 'للمطورين. الطرفية والملفات والفروقات وشريط الحالة والتخطيطات، كما أعددتها.'
+    }
+  },
   zones: {
     showTabStrip: 'إظهار علامات التبويب',
     hideTabStrip: 'إخفاء علامات التبويب',
@@ -2918,6 +3072,29 @@ export const ar = defineLocale({
     }
   },
   assistant: {
+    catalogInstall: {
+      preparing: 'جارٍ تجهيز التثبيت…',
+      install: 'تثبيت',
+      advanced: 'خيارات متقدمة',
+      skip: 'تخطٍّ',
+      installing: 'جارٍ التثبيت…',
+      installed: 'مثبّت',
+      notInstalled: 'غير مثبّت',
+      failed: 'فشل',
+      showNames: 'إظهار الأسماء',
+      hideNames: 'إخفاء الأسماء',
+      skill: name => `المهارة ${name}`,
+      kind: { plugin: 'إضافة', skill: 'مهارة' },
+      tier: { official: 'رسمي', community: 'مجتمعي' },
+      targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
+      sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
+      commitLabel: 'الإيداع',
+      subdirLabel: 'المجلد',
+      securityHeading: 'الأمان',
+      scan: { passed: 'نجح الفحص', warnings: 'وجد الفحص تحذيرات', failed: 'فشل الفحص' },
+      requirementsLabel: 'المتطلبات',
+      credentialsHeading: 'بيانات الاعتماد'
+    },
     thread: {
       loadingSession: 'جار تحميل الجلسة...',
       showEarlier: 'عرض الرسائل الأقدم',
@@ -3199,6 +3376,8 @@ export const ar = defineLocale({
     sudoDesc:
       'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
     sudoCommandUnavailable: 'لم يقدّم هذا الوكيل الأمر. ألغِ الطلب إذا لم تتمكن من التحقق منه في المحادثة.',
+    sudoInstallDesc:
+      'يحتاج Hermes إلى كلمة مرور sudo لتثبيت حزم Bot Screen (TigerVNC + Xfce) على مضيف البوابة. تُرسل إلى ذلك المضيف فقط.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',

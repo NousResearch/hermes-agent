@@ -356,6 +356,44 @@ def test_posix_path_identity_remains_case_sensitive():
     ]
 
 
+def test_unicode_normalization_forms_share_one_project_identity():
+    # The same on-disk folder can reach the tree as different byte strings:
+    # macOS file pickers emit NFD ("a" + U+030A) while typed paths and
+    # os.getcwd() are usually NFC (U+00E5). Identity comparison must treat
+    # them as one path or the project renders empty (#65014).
+    import unicodedata
+
+    nfc = unicodedata.normalize("NFC", "/projects/sv/bist\u00e5nd")
+    nfd = unicodedata.normalize("NFD", nfc)
+    assert nfc != nfd  # premise: distinct byte strings for the same folder
+
+    explicit = _project("p_bistand", "Bist\u00e5nd", [nfc])
+    session = _session(nfd)
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    project = next(p for p in tree["projects"] if p["id"] == "p_bistand")
+    assert project["sessionCount"] == 1
+    # No stray auto-project for the NFD spelling of the same folder.
+    assert not any(p.get("isAuto") and "bist" in str(p["id"]) for p in tree["projects"])
+
+
+def test_windows_unicode_normalization_and_case_share_one_identity():
+    import unicodedata
+
+    folder_nfc = unicodedata.normalize("NFC", "D:/Projects/SV/Bist\u00e5nd")
+    cwd_nfd = unicodedata.normalize("NFD", "d:/projects/sv/bist\u00e5nd")
+    assert folder_nfc != cwd_nfd
+
+    explicit = _project("p_sv", "SV", [folder_nfc])
+    session = _session(cwd_nfd)
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    project = next(p for p in tree["projects"] if p["id"] == "p_sv")
+    assert project["sessionCount"] == 1
+
+
 def test_explicit_project_claims_sessions_and_beats_auto():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(
@@ -659,3 +697,19 @@ def test_equivalent_windows_spellings_derive_one_lane_key():
     b = pt._place_by_heuristic("C:\\work\\notes\\")
     assert a is not None and b is not None
     assert pt._lane_key(a["lane_key"]) == pt._lane_key(b["lane_key"])
+
+
+def test_cwdless_session_with_repo_root_stays_in_its_explicit_project():
+    """A row with an empty cwd but a persisted git_repo_root belongs to the project owning
+    that root, not Home (#77591). Home keeps only rows with neither anchor, matching the
+    renderer's ``isDetachedSession``."""
+    project = _project("p_app", "App", ["/www/app"])
+    owned = _session(None, repo_root="/www/app", branch="main")
+    detached = _session(None)
+
+    tree = pt.build_tree([project], [owned, detached], [], resolve=lambda _cwd: None, hydrate=True)
+
+    explicit = next(p for p in tree["projects"] if p["id"] == "p_app")
+    assert owned["id"] in explicit["sessionIds"]
+    assert owned["id"] in [s["id"] for s in _sessions_of(explicit)]
+    assert _home_session_ids(tree) == [detached["id"]]

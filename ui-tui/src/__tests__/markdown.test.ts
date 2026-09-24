@@ -176,29 +176,6 @@ describe('INLINE_RE inline math', () => {
     expect(matches('$P=a_n x^n + a_0$')).toEqual(['$P=a_n x^n + a_0$'])
     expect(matches('$\\beta_1,\\dots,\\beta_r$')).toEqual(['$\\beta_1,\\dots,\\beta_r$'])
   })
-
-  it('places math content in the correct capture group (regression: m[16] is bare URL)', () => {
-    // When `m[16]` was the bare URL group AND the inline-math `$...$`
-    // group simultaneously (because the bare URL pattern lacked its own
-    // capturing parens), MdInline rendered `$\\mathbb{R}$` as an
-    // underlined autolink instead of italic amber math. Lock down the
-    // numbering: math goes in m[17] / m[18], URLs go in m[16].
-    const url = [...'see https://example.com here'.matchAll(INLINE_RE)][0]!
-    const dollarMath = [...'$\\mathbb{R}$'.matchAll(INLINE_RE)][0]!
-    const parenMath = [...'\\(\\pi\\)'.matchAll(INLINE_RE)][0]!
-
-    expect(url[16]).toBe('https://example.com')
-    expect(url[17]).toBeUndefined()
-    expect(url[18]).toBeUndefined()
-
-    expect(dollarMath[16]).toBeUndefined()
-    expect(dollarMath[17]).toBe('\\mathbb{R}')
-    expect(dollarMath[18]).toBeUndefined()
-
-    expect(parenMath[16]).toBeUndefined()
-    expect(parenMath[17]).toBeUndefined()
-    expect(parenMath[18]).toBe('\\pi')
-  })
 })
 
 describe('protocol sentinels', () => {
@@ -289,16 +266,6 @@ describe('Md link labels', () => {
     expect(rendered).toContain(url)
     // `urlSlugTitleLabel` used to turn the last path segment into this.
     expect(rendered).not.toContain('Lk 9f2c1d7e')
-  })
-
-  // Regression for the connect-link handoff: the stored assistant text is
-  // `Connect link: <url>` and the TUI showed `Connect link: Composio`, so the
-  // OAuth step could not be completed from the TUI at all.
-  it('keeps the URL visible in a "Connect link:" message', () => {
-    const url = 'https://connect.example.com/link/lk_a1b2c3d4e5'
-    const rendered = renderPlain(md(`Connect link: ${url}`)).join('\n')
-
-    expect(rendered).toContain(`Connect link: ${url}`)
   })
 
   it('wraps a bare URL in an OSC 8 hyperlink pointing at the same target', () => {

@@ -85,7 +85,7 @@ class Rig:
                               text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 
     def stop(self) -> None:
-        kill_tagged(self.tag)
+        reap_adopted(kill_tagged(self.tag))
         self.proxy.stop()
         self.srv.stop()
 
@@ -124,7 +124,8 @@ def become_subreaper() -> None:
 
     A Hermes child that daemonises a helper leaves it reparented to init, outside the test's
     process tree, so teardown could neither reap it nor (under the local live-system guard)
-    signal it. As subreaper the orphans stay our children and ``kill_tagged`` stays in-tree."""
+    signal it. As subreaper the orphans stay our children: ``kill_tagged`` stays in-tree and
+    ``reap_adopted`` (``Rig.stop``) collects them instead of leaving zombies."""
     try:
         ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
     except (OSError, AttributeError):
@@ -157,10 +158,10 @@ def start_rig(root: Path, script: list[Response] | Responder, *, config: dict[st
     return rig
 
 
-def kill_tagged(tag: str) -> None:
-    """SIGKILL every live process carrying ``ANTHROPIC_E2E_TAG=<tag>`` (this test's tree only)."""
+def _tagged_pids(tag: str) -> list[int]:
+    """Live (non-zombie) PIDs carrying ``ANTHROPIC_E2E_TAG=<tag>``, i.e. this test's tree only."""
     needle = f"{TAG_VAR}={tag}".encode()
-    me = os.getpid()
+    me, out = os.getpid(), []
     for entry in os.listdir("/proc"):
         if not entry.isdigit() or int(entry) == me:
             continue
@@ -170,10 +171,45 @@ def kill_tagged(tag: str) -> None:
         except OSError:
             continue
         if needle in env.split(b"\0"):
+            out.append(int(entry))
+    return out
+
+
+def kill_tagged(tag: str) -> list[int]:
+    """SIGKILL every live process of this test's tree; returns the PIDs signalled."""
+    killed = []
+    for pid in _tagged_pids(tag):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+        except OSError:
+            pass
+    return killed
+
+
+def reap_adopted(pids: list[int], timeout: float = 10.0) -> None:
+    """Collect the exit status of killed children, including orphans adopted as subreaper.
+
+    A killed orphan reparented to this process stays a zombie until waited for. Each PID that is
+    our child is waited for (bounded), then any other exited child is drained. Never raises: it
+    runs in fixture teardown."""
+    deadline = time.monotonic() + timeout
+    for pid in pids:
+        while time.monotonic() < deadline:
             try:
-                os.kill(int(entry), signal.SIGKILL)
-            except OSError:
-                pass
+                done, _status = os.waitpid(pid, os.WNOHANG)  # windows-footgun: ok — Linux-gated suite
+            except OSError:  # ChildProcessError: not our child (a grandchild or already reaped)
+                break
+            if done:
+                break
+            time.sleep(0.02)
+    while True:
+        try:
+            done, _status = os.waitpid(-1, os.WNOHANG)  # windows-footgun: ok — Linux-gated suite
+        except OSError:
+            return
+        if not done:
+            return
 
 
 def wait_until(pred: Callable[[], Any], timeout: float, what: str, interval: float = 0.05) -> Any:

@@ -117,7 +117,7 @@ def kill_tagged(tag: str) -> None:
             continue
         if needle in env.split(b"\0"):
             try:
-                os.kill(int(entry), signal.SIGKILL)
+                os.kill(int(entry), signal.SIGKILL)  # windows-footgun: ok — Linux-gated suite (/proc scan)
             except OSError:
                 pass
 

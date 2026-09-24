@@ -41,7 +41,8 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
-from hermes_time import now as _hermes_now, safe_strftime
+from hermes_time import now as _hermes_now
+from hermes_time_format import safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
@@ -985,13 +986,26 @@ def _record_stale_release(job: dict, job_id: str, age: float, allowance: float, 
         logger.warning("Could not record forced release for job %s: %s", job_id, e)
 
 
+def _terminalise_claim_if_open(job_id: str, claim_started: float) -> None:
+    """Write the terminal outcome an abandoned claim's owner never wrote, before it is released.
+
+    Best-effort by contract: ``sweep_stale_inflight`` calls this ahead of the WARNING/JSONL/
+    ``last_error`` record and treats any raise as "do not release the claim yet"."""
+    from cron.executions import mark_claim_unknown
+
+    mark_claim_unknown(job_id, claimed_after=claim_started)
+
+
 def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     """Force-release in-flight claims that can no longer be making progress; returns released ids.
 
     Stale = older than ``max(2 * interval, floor)`` AND (no live future — submit path hung before
     ``pool.submit`` returned — or finished without discarding the id) — or the claim's OWN ledger
-    row is terminal regardless of age. Each release logs WARNING ``event=forced_release``, bumps
-    the probe counter, mirrors JSONL, and writes ``last_error``.
+    row is terminal regardless of age. The durable outcome is written BEFORE the claim is released
+    (for an age release the still-open ledger row is terminalised first), so a released claim always
+    has an answer on disk for "did side effects run?"; a claim whose record cannot be written stays
+    held. Each release logs WARNING ``event=forced_release``, bumps the probe counter, mirrors JSONL,
+    and writes ``last_error``.
     """
     global _forced_release_count
 
@@ -1006,6 +1020,10 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     # Compute intervals OUTSIDE _running_lock so croniter doesn't block try_register/release.
     _intervals = {jid: _job_interval_minutes(j) for jid, j in by_id.items()}
 
+    # Phase 1 — classify only, no mutation. The durable outcome of each release is written in
+    # phase 2 BEFORE the claim is dropped: after the release nobody can inspect the run any more,
+    # so "did side effects run?" must already be answerable from disk (#115692).
+    candidates: list = []
     with _running_lock:
         for key in [k for k in _running_job_ids if k[0] == _local_home]:
             job_id = key[1]
@@ -1039,15 +1057,32 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 reason = "age"
             else:
                 continue
+            candidates.append((key, started, job_id, age, allowance, fut, reason))
+
+    stale: list = []
+    for key, started, job_id, age, allowance, fut, reason in candidates:
+        # Durable terminal state FIRST, claim release second. This ordering is also fail-closed: a
+        # claim whose outcome could not be written stays held (retried next sweep) instead of being
+        # dropped with no record of how it ended.
+        try:
+            if reason == "age":
+                _terminalise_claim_if_open(job_id, started)
+            _record_stale_release(by_id.get(job_id) or {}, job_id, age, allowance, fut, reason)
+        except Exception:
+            logger.exception(
+                "cron.inflight.forced_release.record_failed job_id=%s — claim retained", job_id)
+            continue
+        with _running_lock:
+            # Release only the claim that was classified: a fresh fire that registered while the
+            # record was being written must survive, so re-check its start stamp under the lock.
+            if _running_since.get(key) != started:
+                continue
             _running_job_ids.discard(key)
             _running_since.pop(key, None)
             _running_allowance_s.pop(key, None)
             _running_futures.pop(key, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
-
-    for job_id, age, allowance, fut, _reason in stale:
-        _record_stale_release(by_id.get(job_id) or {}, job_id, age, allowance, fut, _reason)
     return [s[0] for s in stale]
 
 

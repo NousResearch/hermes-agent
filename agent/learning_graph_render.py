@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
-from hermes_time import safe_strftime
+from hermes_time_format import safe_strftime
 
 LEAD_IN = 0.06  # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
 # constants.ts AGE_GRADIENT — old quiet, recent bright.

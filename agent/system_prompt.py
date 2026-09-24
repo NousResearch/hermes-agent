@@ -474,7 +474,7 @@ def _zone_bits(now: Any, tz: Any) -> List[str]:
     """IANA key, abbreviation (if different) and UTC offset — all constant for
     the day, so the byte-stable date line stays cacheable."""
     _iana = getattr(tz, "key", None)
-    from hermes_time import safe_strftime
+    from hermes_time_format import safe_strftime
     _abbrev = safe_strftime(now, "%Z")
     _offset = safe_strftime(now, "%z")  # '-0400' -> 'UTC-04:00'
     bits = [_iana] if _iana else []
@@ -489,7 +489,8 @@ def _timestamp_line(agent: Any) -> str:
     """Date-only so the prompt is byte-stable for the day; zone + offset so
     tools needn't guess EST vs EDT. Long-lived sessions get an "as of" line on
     rebuild days (the cache prefix is already invalidated at that boundary)."""
-    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now, safe_strftime
+    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now
+    from hermes_time_format import safe_strftime
     now = _hermes_now()
     _bits = _zone_bits(now, _hermes_tz())
     _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""

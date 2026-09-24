@@ -115,12 +115,34 @@ def update_agent(root: Path, agent_id: str, fields: Mapping[str, Any]):
         for key, value in fields.items():
             if value is None:
                 document.pop(key, None)
+            elif isinstance(value, Mapping) and isinstance(document.get(key), Mapping):
+                # Merged, not replaced. A section is sent with the keys being changed; the
+                # rest of it is not being deleted. Replacing lost data: saving
+                # limits: {max_turns: 30} wiped max_task_runtime_seconds, max_retries and
+                # the wrap-up nudge, leaving an agent with no time cap at all.
+                document[key] = _merged(document[key], value)
             else:
                 document[key] = copy.deepcopy(value)
         document["id"] = agent_id  # never renameable through an edit; see duplicate_agent
         e.write_yaml(agent_file(agent_id), document)
 
     return edit(root, mutate)
+
+
+def _merged(current: Mapping[str, Any], change: Mapping[str, Any]) -> dict[str, Any]:
+    """``change`` laid over ``current``, recursively; a ``None`` in ``change`` removes the key.
+
+    Lists are values, not collections to merge: ``deny: [terminal]`` means exactly that list.
+    """
+    out = copy.deepcopy(dict(current))
+    for key, value in change.items():
+        if value is None:
+            out.pop(key, None)
+        elif isinstance(value, Mapping) and isinstance(out.get(key), Mapping):
+            out[key] = _merged(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
 
 
 def _as_markdown(text: str) -> str:

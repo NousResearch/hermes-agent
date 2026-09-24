@@ -907,7 +907,11 @@ class ControlAPI:
                     "enabled": spec.enabled,
                     "model": spec.model.to_dict(),
                     "materialized": live is not None,
-                    "in_sync": bool(live and live.digest == declared_digest),
+                    # None for a disabled agent: apply deliberately leaves its profile as it
+                    # was, so a digest comparison can only ever say "drifted" — and the UI's
+                    # "re-apply to reconcile" advice would be a loop. "Not in service" is the
+                    # whole truth about it.
+                    "in_sync": (bool(live and live.digest == declared_digest) if spec.enabled else None),
                     "declared_digest": declared_digest,
                     "applied_digest": live.digest if live else "",
                     "limits": spec.limits.to_dict(),
@@ -1536,6 +1540,31 @@ class ControlAPI:
 
         return _error(404, f"no such settings route: {what!r}")
 
+    def _unknown_toolsets(self, fields: Mapping[str, Any]) -> str:
+        """A refusal sentence when ``fields`` names toolsets this runtime does not have.
+
+        Toolsets are runtime vocabulary, so the bundle cannot check them the way it checks a
+        knowledge source; the compiler only warns that an unknown one "grants nothing". An
+        agent created that way looks equipped and is not — refuse it where it is entered.
+        """
+        tools = fields.get("tools")
+        named = tools.get("toolsets") if isinstance(tools, Mapping) else None
+        if not isinstance(named, (list, tuple)) or not named:
+            return ""
+        try:
+            known = {str(t["id"]) for t in self.runtime.toolsets()}
+        except Exception:  # noqa: BLE001 — a runtime that cannot list them is not a reason to refuse
+            return ""
+        if not known:  # a runtime that publishes no registry cannot be checked against
+            return ""
+        unknown = sorted({str(n) for n in named} - known)
+        if not unknown:
+            return ""
+        return (
+            f"tools.toolsets: this runtime has no toolset named {', '.join(unknown)}. "
+            "Pick from the toolsets listed in the agent editor"
+        )
+
     def _create_agent(self, principal, payload: Mapping[str, Any]) -> Response:
         from nova import agents as agent_ops
 
@@ -1544,6 +1573,9 @@ class ControlAPI:
         if not isinstance(fields, Mapping):
             fields = {k: v for k, v in payload.items() if k not in ("id", "instructions")}
         instructions = str(payload.get("instructions") or "")
+        unknown = self._unknown_toolsets(fields)
+        if unknown:
+            return _error(400, unknown)
 
         return self._agent_write(
             principal,
@@ -1662,6 +1694,9 @@ class ControlAPI:
             fields = payload.get("fields")
             if not isinstance(fields, Mapping):
                 return _error(400, "send the changes as an object under 'fields'")
+            unknown = self._unknown_toolsets(fields)
+            if unknown:
+                return _error(400, unknown)
             return self._agent_write(
                 principal, kind="agent.updated", subject=agent_id,
                 detail={"fields": sorted(fields)},

@@ -283,3 +283,48 @@ def test_the_settings_read_says_what_is_settable_and_what_is_not(live):
     assert "theme" in body["settable"]["identity"]
     assert body["organization"]["tenant_id"] == "acme"
     assert body["logo"] == {"logo": False, "favicon": False}
+
+
+# -- values that would be wrong everywhere they are used are refused -------------------
+
+
+@pytest.mark.parametrize("path, fields, words", [
+    ("/settings/identity", {"support": {"url": "javascript:alert(1)"}}, "https://"),
+    ("/settings/identity", {"support": {"url": "data:text/html,<script>1</script>"}}, "https://"),
+    ("/settings/identity", {"support": {"email": "not-an-email"}}, "email address"),
+    ("/settings/organization", {"timezone": "Mars/Olympus"}, "time zone"),
+    ("/settings/organization", {"contact_email": "platform at acme"}, "email address"),
+])
+def test_a_value_that_is_wrong_everywhere_is_refused_by_name(live, path, fields, words):
+    """Found sweeping the Settings screen: each of these saved, and a javascript: support
+    link would run code the day anything renders it as a link."""
+    before = _settings(live["api"])
+    response = _write(live["api"], path, ADMIN, {"fields": fields})
+    assert response.status == 400, response.body
+    assert words in response.body["error"]["message"]
+    assert _settings(live["api"]) == before, "a refused edit must change nothing"
+
+
+@pytest.mark.parametrize("path, fields", [
+    ("/settings/identity", {"support": {"url": "https://help.northwind.example/support"}}),
+    ("/settings/identity", {"support": {"url": "mailto:help@northwind.example"}}),
+    ("/settings/organization", {"timezone": "America/New_York", "contact_email": "ops@northwind.example"}),
+])
+def test_ordinary_contact_details_still_save(live, path, fields):
+    assert _write(live["api"], path, ADMIN, {"fields": fields}).status == 200
+
+
+def test_a_blank_product_name_falls_back_to_the_default_rather_than_an_empty_title(live):
+    from nova.spec.identity import DEFAULT_PRODUCT_NAME
+
+    assert _write(live["api"], "/settings/identity", ADMIN, {"fields": {"product_name": "  "}}).status == 200
+    assert live["api"].handle("/platform/v1/identity").body["product_name"] == DEFAULT_PRODUCT_NAME
+
+
+def test_a_bundle_already_holding_such_a_value_still_loads(live):
+    """The checks guard the form, not the file. A tenant whose bundle predates them must not
+    find the control plane refusing to start after an upgrade — found when a local control
+    plane, restarted on the new code, would not load a bundle an earlier test had written."""
+    org = live["root"] / "organization.yaml"
+    org.write_text(org.read_text().replace("Europe/London", "Mars/Olympus"))
+    assert load_bundle(live["root"]).organization.timezone == "Mars/Olympus"

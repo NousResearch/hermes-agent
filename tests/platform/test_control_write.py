@@ -423,3 +423,71 @@ def test_a_refused_objective_says_why_in_the_field_the_dashboard_reads(tmp_path,
     assert response.status == 409
     message = response.body["error"]["message"]
     assert message.startswith("Nothing was started") and "may_assign_to" in message
+
+
+# -- agent edits: partial sections, and toolsets the runtime has ------------------
+
+
+def _agent_api(tmp_path, runtime, audit):
+    import shutil
+
+    from nova.control import ControlAPI
+    from nova.spec import load_bundle
+
+    from .conftest import EXAMPLE_BUNDLE
+
+    root = tmp_path / "bundle"
+    shutil.copytree(EXAMPLE_BUNDLE, root)
+    return ControlAPI(load_bundle(root), runtime, audit=audit), root
+
+
+def test_saving_one_limit_keeps_the_others(tmp_path, runtime, audit):
+    """Found sweeping the agent editor: saving limits: {max_turns: 30} replaced the whole
+    limits block, and the agent lost its task time cap, retries and wrap-up nudge."""
+    from nova.spec import load_bundle
+
+    api, root = _agent_api(tmp_path, runtime, audit)
+    before = load_bundle(root).agent("customer-support").limits
+    assert before.max_task_runtime_seconds is not None
+    response = api.write("/platform/v1/agents/customer-support/update", ADMIN,
+                         {"fields": {"limits": {"max_turns": 30}}})
+    assert response.status == 200, response.body
+    after = load_bundle(root).agent("customer-support").limits
+    assert after.max_turns == 30
+    assert after.max_task_runtime_seconds == before.max_task_runtime_seconds
+    assert after.max_retries == before.max_retries
+    assert after.delegation == before.delegation, "nested sections merge too"
+
+
+def test_a_null_removes_one_key_and_a_list_is_replaced_whole(tmp_path, runtime, audit):
+    from nova.spec import load_bundle
+
+    api, root = _agent_api(tmp_path, runtime, audit)
+    api.write("/platform/v1/agents/customer-support/update", ADMIN,
+              {"fields": {"limits": {"max_retries": None}, "tools": {"deny": ["terminal"]}}})
+    agent = load_bundle(root).agent("customer-support")
+    assert agent.limits.max_retries is None
+    assert list(agent.tools.deny) == ["terminal"]
+    assert list(agent.tools.toolsets), "the toolsets beside the changed deny list survive"
+
+
+def test_a_toolset_the_runtime_does_not_have_is_refused(tmp_path, runtime, audit):
+    """It used to be accepted and only warned about at compile time: an agent that looked
+    equipped and had nothing."""
+    api, _ = _agent_api(tmp_path, runtime, audit)
+    for path, body in (
+        ("/platform/v1/agents", {"id": "qa", "fields": {"name": "QA", "tools": {"toolsets": ["no-such"]}}}),
+        ("/platform/v1/agents/customer-support/update", {"fields": {"tools": {"toolsets": ["web", "no-such"]}}}),
+    ):
+        response = api.write(path, ADMIN, body)
+        assert response.status == 400 and "no-such" in response.body["error"]["message"]
+
+
+def test_a_disabled_agent_is_not_reported_as_drifted(tmp_path, runtime, audit):
+    """Apply leaves a disabled agent's profile as it was, so the digest check could only say
+    "drifted" — and the dashboard's advice, "re-apply to reconcile", could never clear it."""
+    api, _ = _agent_api(tmp_path, runtime, audit)
+    api.write("/platform/v1/agents/customer-support/update", ADMIN, {"fields": {"enabled": False}})
+    rows = {row["id"]: row for row in api.handle("/platform/v1/agents").body["agents"]}
+    assert rows["customer-support"]["enabled"] is False
+    assert rows["customer-support"]["in_sync"] is None

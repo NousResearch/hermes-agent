@@ -25,6 +25,7 @@ import binascii
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from nova._contact import check_email, check_link, check_timezone
 from nova.errors import SpecError
 from nova.spec.writer import BundleEdit, edit, safe_relative
 
@@ -80,6 +81,9 @@ def _check(fields: Mapping[str, Any], allowed: tuple[str, ...], what: str) -> No
 def update_organization(root: Path, fields: Mapping[str, Any]):
     """Change who this deployment serves."""
     _check(fields, ORGANIZATION_FIELDS, "the organization")
+    source = root / ORGANIZATION_FILE
+    check_timezone(str(fields.get("timezone") or ""), field="timezone", source=source)
+    check_email(str(fields.get("contact_email") or ""), field="contact_email", source=source)
 
     def mutate(e: BundleEdit) -> None:
         document = e.read_yaml(ORGANIZATION_FILE)
@@ -98,6 +102,11 @@ def update_organization(root: Path, fields: Mapping[str, Any]):
 def update_identity(root: Path, fields: Mapping[str, Any]):
     """Change the customer-facing surface: name, colours, support links, messages."""
     _check(fields, IDENTITY_FIELDS, "the identity")
+    support = fields.get("support")
+    if isinstance(support, Mapping):
+        source = root / IDENTITY_FILE
+        check_email(str(support.get("email") or ""), field="support.email", source=source)
+        check_link(str(support.get("url") or ""), field="support.url", source=source)
 
     def mutate(e: BundleEdit) -> None:
         document = e.read_yaml(IDENTITY_FILE)

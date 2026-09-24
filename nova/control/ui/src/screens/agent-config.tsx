@@ -12,7 +12,7 @@
  */
 
 import * as React from "react";
-import { ShieldCheck, SlidersHorizontal, User, Wrench } from "lucide-react";
+import { ShieldCheck, SlidersHorizontal, User, Users, Wrench } from "lucide-react";
 
 import { GlassPanel, SectionHeader } from "@/components/glass";
 import { ChipSelect, TextArea, TextInput, Toggle } from "@/components/form";
@@ -234,6 +234,12 @@ function CapabilitySection({
   const tools = useSection<typeof serverTools>(agentId, serverTools, "tools", onSaved);
   const perms = useSection<string[]>(agentId, serverPerms, "permissions", onSaved);
   const knowledge = useSection<typeof serverKnowledge>(agentId, serverKnowledge, "knowledge", onSaved);
+  const serverDelegation = React.useMemo(
+    () => ({ may_assign_to: [...(config.fields.delegation?.may_assign_to ?? [])] }),
+    [config],
+  );
+  const delegation = useSection<typeof serverDelegation>(agentId, serverDelegation, "delegation", onSaved);
+  const teammates = config.choices.agents.filter((id) => id !== agentId);
 
   const toolsetIds = config.choices.toolsets.map((t) => t.id);
   const describe = (id: string) => {
@@ -267,12 +273,14 @@ function CapabilitySection({
           <ChipSelect
             label="Denied tools" options={denyOptions} selected={tools.value?.deny ?? []}
             onChange={(deny) => tools.edit((c) => ({ ...c, deny }))}
-            hint="Removed even when a selected toolset would grant them. This is the half the runtime enforces."
+            hint="Removed even when a selected toolset or a permission would grant them."
             emptyNote="Select a toolset first; its tools become deniable."
           />
         </div>
-        <p className="text-waiting mt-4 text-[11.5px] leading-relaxed">
-          Positive scoping is recorded but not enforced by the Hermes adapter — denials are.
+        <p className="text-ink-faint mt-4 text-[11.5px] leading-relaxed">
+          Enforced on every tool call: the agent may use the tools these groups and its
+          permissions grant, minus the denied ones. File tools are further held to the task's
+          own workspace.
         </p>
         <SaveBar dirty={tools.dirty} busy={tools.busy} state={tools.state}
                  onSave={tools.submit} onDiscard={tools.discard} label="Save tools" />
@@ -303,6 +311,22 @@ function CapabilitySection({
         />
         <SaveBar dirty={knowledge.dirty} busy={knowledge.busy} state={knowledge.state}
                  onSave={knowledge.submit} onDiscard={knowledge.discard} label="Save knowledge" />
+      </GlassPanel>
+
+      <GlassPanel className="p-5">
+        <SectionHeader
+          icon={Users} title="Hand-offs"
+          detail="Agents this one may give work to. Enforced both when it creates the work and when the other agent picks it up."
+        />
+        <ChipSelect
+          label="May hand work to" options={teammates}
+          selected={delegation.value?.may_assign_to ?? []}
+          onChange={(may_assign_to) => delegation.edit((c) => ({ ...c, may_assign_to }))}
+          hint="Work it routes anywhere else is refused and shown on the board with the reason."
+          emptyNote="This tenant has no other agents."
+        />
+        <SaveBar dirty={delegation.dirty} busy={delegation.busy} state={delegation.state}
+                 onSave={delegation.submit} onDiscard={delegation.discard} label="Save hand-offs" />
       </GlassPanel>
     </div>
   );

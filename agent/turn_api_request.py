@@ -39,6 +39,39 @@ def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
     api_kwargs["extra_headers"] = _xh
 
 
+# The only request fields a ``pre_api_request`` plugin may rewrite. Deliberately excludes anything
+# that forms the prompt (``messages``/``input``/``system``/``tools``/``stream``): the prompt prefix
+# must stay byte-stable for provider caching, and a mid-conversation rewrite would silently break the
+# cache (see agent/AGENTS.md "Prompt caching must not break"). These four are pure sampling knobs —
+# they change how the model answers, never what it is answering about.
+_MUTABLE_REQUEST_KEYS = frozenset({"reasoning_effort", "max_tokens", "temperature", "top_p"})
+
+
+def _apply_request_mutations(api_kwargs: Any, results: Any, *, api_call_count: Any, session_id: Any) -> None:
+    """Merge whitelisted keys a ``pre_api_request`` plugin returned into *api_kwargs*.
+
+    Last writer wins. Non-dict results and non-whitelisted keys are ignored (debug-logged), so a
+    plugin that returns correlation data — the pre-existing contract — keeps working unchanged.
+    """
+    for result in results or []:
+        if not isinstance(result, dict):
+            continue
+        for key, value in result.items():
+            if key not in _MUTABLE_REQUEST_KEYS:
+                logger.debug(
+                    "pre_api_request hook returned non-mutable key %r; ignored (call #%s)",
+                    key, api_call_count,
+                )
+                continue
+            if api_kwargs.get(key) == value:
+                continue
+            api_kwargs[key] = value
+            logger.info(
+                "pre_api_request hook set %s=%r (call #%s session=%s)",
+                key, value, api_call_count, session_id,
+            )
+
+
 def _fire_pre_api_request_hook(
     agent: Any, api_kwargs: Any, api_messages: Any, _llm_middleware_trace: Any, *, messages: Any,
     original_user_message: Any, approx_tokens: Any, total_chars: Any, retry_count: Any,
@@ -59,7 +92,7 @@ def _fire_pre_api_request_hook(
             # ``request_messages``/``conversation_history`` are raw langfuse passthroughs.
             # Anthropic (``system``) and Responses/Codex (``instructions``) move the system
             # prompt out of messages; pass it for observability.
-            _invoke_hook(
+            _results = _invoke_hook(
                 "pre_api_request",
                 task_id=effective_task_id,
                 turn_id=turn_id,
@@ -84,6 +117,11 @@ def _fire_pre_api_request_hook(
                 started_at=api_start_time,
                 middleware_trace=list(_llm_middleware_trace),
                 request=agent._api_request_payload_for_hook(api_kwargs),
+            )
+            _apply_request_mutations(
+                api_kwargs, _results,
+                api_call_count=api_call_count,
+                session_id=getattr(agent, "session_id", "") or "",
             )
     except Exception:
         pass

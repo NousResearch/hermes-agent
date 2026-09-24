@@ -231,9 +231,12 @@ class Chat:
     def prompts(self) -> int:
         return sum("/approve" in t and "/deny" in t for t in self.texts())
 
-    def wait_prompts(self, n: int) -> None:
-        wait_until(lambda: self.prompts() >= n, f"approval prompt #{n} in {self.chat_id}", timeout=60,
+    def await_pending(self, victim: Path, command: str) -> None:
+        """Wait for this chat's approval prompt (or an early settle, which ``_pending`` reports)."""
+        wait_until(lambda: self.prompts() >= 1 or command in self.model.results,
+                   f"approval prompt for {command!r} in {self.chat_id}", timeout=60,
                    proc=self.gw.proc, log=self.gw.log)
+        _pending(self, victim, command)
 
     def wait_result(self, command: str) -> Dict[str, Any]:
         wait_until(lambda: command in self.model.results, f"tool result for {command!r}", timeout=60,
@@ -255,19 +258,23 @@ def _pending(chat: Chat, victim: Path, command: str) -> None:
     if not (victim / "keep.txt").exists():
         raise BoundaryBreach(f"{chat.chat_id}: {command!r} ran without an approval in its own chat")
     if command in chat.model.results:
-        raise BoundaryBreach(f"{chat.chat_id}: {command!r} was settled by another chat's answer: "
+        raise BoundaryBreach(f"{chat.chat_id}: {command!r} was settled without an answer in its own chat: "
                              f"{chat.model.results[command]}")
     assert chat.blocked_on_approval(), f"{chat.chat_id} is no longer waiting on its approval: {chat.texts()}"
+
+
+def _denied(victim: Path, result: Dict[str, Any]) -> None:
+    if not (victim / "keep.txt").exists() or result.get("exit_code") == 0:
+        raise BoundaryBreach(f"denied command ran: {result}")
+    assert "BLOCKED" in str(result.get("error")), result
 
 
 def test_gateway_approve_once_settles_only_its_own_chat(gateway):
     a, b, c = _chats(gateway, "once-a", "once-b", "once-c")
     va, vb = a.victim("x"), b.victim("x")
     cmd_a, cmd_b = a.run(f"rm -rf {va}"), b.run(f"bash -c 'rm -rf {vb}'")
-    a.wait_prompts(1)
-    b.wait_prompts(1)
-    _pending(a, va, cmd_a)
-    _pending(b, vb, cmd_b)
+    a.await_pending(va, cmd_a)
+    b.await_pending(vb, cmd_b)
 
     c.say("/approve")  # a chat with nothing pending must not answer anyone else's prompt
     wait_until(lambda: c.texts(), "reply to /approve in the idle chat", timeout=30)
@@ -280,24 +287,18 @@ def test_gateway_approve_once_settles_only_its_own_chat(gateway):
     _pending(b, vb, cmd_b)
 
     b.say("/deny")
-    result_b = b.wait_result(cmd_b)
-    if not (vb / "keep.txt").exists() or result_b.get("exit_code") == 0:
-        raise BoundaryBreach(f"denied command ran: {result_b}")
-    assert "BLOCKED" in str(result_b.get("error")), result_b
+    _denied(vb, b.wait_result(cmd_b))
 
 
 def test_gateway_deny_settles_only_its_own_chat(gateway):
     a, b = _chats(gateway, "deny-a", "deny-b")
     va, vb = a.victim("x"), b.victim("x")
     cmd_a, cmd_b = a.run(f'sh -c "rm -rf {va}"'), b.run(f"rm -rf {vb}")
-    a.wait_prompts(1)
-    b.wait_prompts(1)
+    a.await_pending(va, cmd_a)
+    b.await_pending(vb, cmd_b)
 
     a.say("/deny not now")
-    result_a = a.wait_result(cmd_a)
-    if not (va / "keep.txt").exists() or result_a.get("exit_code") == 0:
-        raise BoundaryBreach(f"denied command ran: {result_a}")
-    assert "BLOCKED" in str(result_a.get("error")), result_a
+    _denied(va, a.wait_result(cmd_a))
     _pending(b, vb, cmd_b)
 
     b.say("/approve")
@@ -310,20 +311,19 @@ def test_gateway_session_scope_does_not_leak_to_other_chat(gateway):
     va1, va2, vb = a.victim("1"), a.victim("2"), b.victim("1")
 
     cmd_a1 = a.run(f"rm -rf {va1}")
-    a.wait_prompts(1)
+    a.await_pending(va1, cmd_a1)
     a.say("/approve session")
     assert a.wait_result(cmd_a1).get("exit_code") == 0 and not va1.exists()
 
     # Control: the session grant is real — the same pattern in the SAME chat runs unprompted.
     cmd_a2 = a.run(f"rm -rf {va2}")
+    wait_until(lambda: a.prompts() >= 2 or cmd_a2 in a.model.results, f"{cmd_a2!r} to run or prompt again",
+               timeout=60, proc=a.gw.proc, log=a.gw.log)
+    assert a.prompts() == 1, f"/approve session did not stick in its own chat: {a.texts()}"
     result_a2 = a.wait_result(cmd_a2)
     assert result_a2.get("exit_code") == 0 and not va2.exists(), result_a2
-    assert a.prompts() == 1, f"session approval did not stick in its own chat: {a.texts()}"
 
     cmd_b = b.run(f"rm -rf {vb}")
-    wait_until(lambda: b.prompts() >= 1 or cmd_b in b.model.results, "chat B prompt or result",
-               timeout=60, proc=b.gw.proc, log=b.gw.log)
-    _pending(b, vb, cmd_b)
+    b.await_pending(vb, cmd_b)  # chat A's session grant must not pre-approve chat B
     b.say("/deny")
-    result_b = b.wait_result(cmd_b)
-    assert (vb / "keep.txt").exists() and result_b.get("exit_code") != 0, result_b
+    _denied(vb, b.wait_result(cmd_b))

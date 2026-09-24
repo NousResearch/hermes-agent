@@ -14,7 +14,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
-import { estimateTokensRough } from '../lib/text.js'
+import { estimateTokensRough, toolTrailLabel } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
 // Mock the external-URL opener so the billing.step_up.verification test can
@@ -1664,6 +1664,24 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { duration_s: 4.2, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+  })
+
+  it('does not append a second clarify trail after an answered clarify was persisted', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    turnController.recordToolStart('clar-answered', 'clarify', 'Which colour?')
+    // answerClarify() has already committed the question/answer pair before
+    // the backend sends the matching tool.complete event.
+    turnController.persistedToolLabels.add(toolTrailLabel('clarify'))
+
+    onEvent({
+      payload: { name: 'clarify', summary: 'answered', tool_id: 'clar-answered' },
+      type: 'tool.complete'
+    } as any)
+
+    expect(getTurnState().streamPendingTools).toEqual([])
+    expect(getTurnState().tools).toEqual([])
+    expect(turnController.persistedToolLabels.has(toolTrailLabel('clarify'))).toBe(false)
   })
 
   it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {

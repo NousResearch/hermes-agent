@@ -822,7 +822,7 @@ class TestSwitchModelRequestOverridesSnapshot:
             )
 
     def test_switch_snapshot_carries_request_overrides(self):
-        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        overrides = {"temperature": 0.2}
         agent = _make_agent(request_overrides=overrides)
         self._switch(agent)
         rt = agent._primary_runtime
@@ -832,7 +832,7 @@ class TestSwitchModelRequestOverridesSnapshot:
     def test_switch_then_recover_restores_current_overrides(self):
         """After /model switch, a transport recovery must reinstate the
         overrides that were live at switch time — not drop them."""
-        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        overrides = {"temperature": 0.2}
         agent = _make_agent(provider="custom", request_overrides=overrides)
         self._switch(
             agent,
@@ -853,7 +853,7 @@ class TestSwitchModelRequestOverridesSnapshot:
         assert agent.request_overrides == overrides
 
     def test_switch_then_restore_restores_current_overrides(self):
-        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        overrides = {"temperature": 0.2}
         agent = _make_agent(provider="custom", request_overrides=overrides)
         self._switch(
             agent,

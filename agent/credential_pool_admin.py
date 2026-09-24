@@ -114,19 +114,27 @@ class CredentialPoolAdminMixin:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        from agent.credential_pool import _next_priority, write_credential_pool
+        from agent.credential_pool import (
+            SINGLE_USE_REFRESH_POOL_PROVIDERS,
+            _next_priority,
+            write_credential_pool,
+        )
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
             borrowed_ids = getattr(self, "_borrowed_root_ids", None)
-            if borrowed_ids:
+            if borrowed_ids or self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
                 # ``hermes -p <profile> auth add <single-use provider>``: the
                 # profile claims its OWN credential. Persist only profile-owned
                 # rows — copying the borrowed root grant alongside would fork
                 # its single-use refresh token (#100339). Once the profile owns
                 # rows, the root fallback for this provider is shadowed.
-                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
+                # ``borrowed_ids`` is empty (not just absent) on the FIRST add
+                # when neither the profile nor the root has rows: _persist()
+                # would route to the root update-only path and drop the new
+                # credential silently (#120177).
+                self._entries = [e for e in self._entries if e.id not in (borrowed_ids or ())]
                 write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
                 self._borrowed_root_ids = set()
             else:

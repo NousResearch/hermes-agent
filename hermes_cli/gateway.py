@@ -2145,7 +2145,7 @@ def _bare_unit_pinned_home() -> Path | None:
         return None
 
 
-def _profile_suffix() -> str:
+def _profile_suffix(home: str | Path | None = None) -> str:
     """Service-name suffix for HERMES_HOME: "" for a home that owns the bare name, the profile name for
     ``<root>/profiles/<name>``, else a short hash of the path.
 
@@ -2166,7 +2166,7 @@ def _profile_suffix() -> str:
     """
     import hashlib
     from hermes_constants import get_default_hermes_root
-    home = get_hermes_home().resolve()
+    home = Path(home).resolve() if home is not None else get_hermes_home().resolve()
     if home in _native_service_homes() or home == _bare_unit_pinned_home():
         return ""
     name = _profile_name_from_home(home, get_default_hermes_root().resolve())

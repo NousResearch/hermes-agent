@@ -576,7 +576,14 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     launcher = script_path.with_suffix(".vbs")
     template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
     calls: list[list[str]] = []
-    registered = {"xml": _PRE_HARDENING_TASK_XML}
+    # The old task may omit current flags/hardening, but its executed launcher
+    # must still be the launcher for this target. A task from another home is
+    # user-owned from this target's perspective and is deliberately not repaired.
+    registered = {
+        "xml": _PRE_HARDENING_TASK_XML.replace(
+            r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs", str(launcher)
+        )
+    }
 
     def fake_schtasks(args):
         calls.append(list(args))

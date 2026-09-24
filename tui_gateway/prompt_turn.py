@@ -100,6 +100,7 @@ def _plan_goal_compression_recovery(
             attempts = int(recovery_state.get("attempts", 0) or 0)
     continuation_prompt = goal_mgr.next_continuation_prompt()
     if attempts < _GOAL_COMPRESSION_RECOVERY_LIMIT and continuation_prompt:
+        session["_goal_continuation_token"] = goal_mgr.continuation_token()
         session[_GOAL_COMPRESSION_RECOVERY_ATTEMPTS] = {
             "goal_created_at": goal_created_at, "goal": goal_text, "attempts": attempts + 1}
         return (
@@ -353,6 +354,7 @@ def _goal_followup_after_turn(
         return goal_followup
     try:
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
+            from hermes_cli.goals import extract_turn_evidence as _extract_evidence
             _active_deleg = 0
             try:
                 from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
@@ -363,11 +365,17 @@ def _goal_followup_after_turn(
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+                raw, user_initiated=True, background_processes=_bg_procs,
+                active_delegations=_active_deleg,
+                evidence=_extract_evidence(result),
+            )
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (
                 cont_prompt := decision.get("continuation_prompt") or ""):
+                # Admission runs after this hook releases `running`; a user can pause/clear/edit
+                # in that gap. Carry the exact fresh Goal state, not only its formatted prompt.
+                session["_goal_continuation_token"] = goal_mgr.continuation_token()
                 goal_followup = cont_prompt
     except Exception as _goal_exc:
         _hook_failure("goal continuation hook", _goal_exc)
@@ -442,11 +450,28 @@ def _run_post_turn_followups(
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:
-        with _session_turn_admission(session) as admitted:
-            if not admitted or session.get("running"):
-                return  # user already sent something — their turn wins
-            session["running"] = True
-        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+        continuation_token = session.pop("_goal_continuation_token", None)
+        admitted = False
+        from hermes_cli.goals import goal_admission_lock
+        # Take history before goal admission so goal mutations stay responsive while a
+        # turn owns history. `_session_turn_admission` also records retirement admission,
+        # so a retiring backend cannot claim a new continuation.
+        with _session_turn_admission(session) as retirement_admitted:
+            with goal_admission_lock(session.get("session_key") or sid):
+                # GoalManager snapshots persistent state in __init__, so load it only after
+                # admission to validate against the state that won the race.
+                goal_mgr = _active_goal_manager(session)
+                if (
+                    retirement_admitted
+                    and goal_mgr is not None
+                    and goal_mgr.continuation_is_current(continuation_token)
+                ):
+                    if session.get("running"):
+                        return  # user already sent something — their turn wins
+                    session["running"] = True
+                    admitted = True
+        if admitted:
+            _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.

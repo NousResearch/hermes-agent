@@ -198,11 +198,27 @@ def resolve_manifest_winners(manifests: List[PluginManifest]) -> Dict[str, Plugi
     ``~/.hermes/plugins/<name>`` is the documented way to override a bundled plugin, and is logged. A flat
     user/project manifest that claims a bundled key from a *differently named* directory is an impostor, not
     an override (``impostor_dir/plugin.yaml`` with ``name: kanban``): it is skipped with a warning so
-    ``hermes plugins enable kanban`` never activates unrelated code under the bundled name."""
+    ``hermes plugins enable kanban`` never activates unrelated code under the bundled name. Same-source
+    collisions keep the canonical directory (or the first discovered non-canonical directory) and warn."""
     winners: Dict[str, PluginManifest] = {}
     for manifest in manifests:
         key = manifest_key(manifest)
         shadowed = winners.get(key)
+        if shadowed is not None and shadowed.source == manifest.source:
+            expected_dir = key.rsplit("/", 1)[-1]
+            shadowed_is_canonical = bool(shadowed.path) and Path(shadowed.path).name == expected_dir
+            manifest_is_canonical = bool(manifest.path) and Path(manifest.path).name == expected_dir
+            winner, ignored = (
+                (manifest, shadowed)
+                if manifest_is_canonical and not shadowed_is_canonical
+                else (shadowed, manifest)
+            )
+            logger.warning(
+                "Ignoring %s plugin at %s: same-source manifest collision for '%s' with %s; keeping %s",
+                ignored.source, ignored.path, key, winner.path, winner.path,
+            )
+            winners[key] = winner
+            continue
         if shadowed is not None and shadowed.source == "bundled" and manifest.source in {"user", "project"}:
             own_dir = Path(manifest.path).name if manifest.path else ""
             bundled_dir = Path(shadowed.path).name if shadowed.path else ""

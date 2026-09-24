@@ -1664,15 +1664,9 @@ class AIAgent:
         if 0 <= idx < len(messages):
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
-                # Text-only call paths may pass a synthetic API-facing prompt
-                # and a cleaner transcript string separately. Before the API
-                # call, a plain-text override must not replace native image/audio
-                # blocks. A list override, however, is the original clean
-                # multimodal payload (for example before a queued /model note)
-                # and must replace the API-local list once the turn is final.
-                if override is not None and (
-                    not isinstance(msg.get("content"), list) or isinstance(override, list)
-                ):
+                # The override is the complete durable representation of the
+                # current turn, including a marker replacing multimodal input.
+                if override is not None:
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
@@ -1891,8 +1885,8 @@ class AIAgent:
                 # Apply the persist override to THIS row's written values only
                 # (never to the live dict). A multimodal override is a complete
                 # clean replacement for an API-local noted payload. Preserve the
-                # historical text-only guard for a list payload, though: a plain
-                # text override must not erase its image/audio transcript summary.
+                # String markers replace multimodal payloads completely so no
+                # caption or screenshot marker leaks into durable history.
                 # The close safety-net may flush a shortened snapshot while
                 # turn setup still owns its staged CLI dict. In that shape the
                 # normal turn index refers to the full history, not this list;
@@ -1902,9 +1896,7 @@ class AIAgent:
                     _ov_idx == _msg_idx or msg is pending_cli_message
                 )
                 if is_current_turn_user and msg.get("role") == "user":
-                    if _ov_content is not None and (
-                        not isinstance(content, list) or isinstance(_ov_content, list)
-                    ):
+                    if _ov_content is not None:
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp

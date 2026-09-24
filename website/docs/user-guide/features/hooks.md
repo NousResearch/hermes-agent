@@ -1012,15 +1012,18 @@ def my_callback(event, gateway, session_store, **kwargs):
 | `gateway` | `GatewayRunner` | The active gateway runner, so plugins can call `gateway.adapters[platform].send(...)` for side-channel replies (owner notifications, etc.). |
 | `session_store` | `SessionStore` | For silent transcript ingestion via `session_store.append_to_transcript(...)`. |
 
-**Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
+**Fires:** In `gateway/run.py`, immediately after `is_internal` is computed for a directly dispatched event. Events queued behind an active turn run through the same gate before interrupt or recursive follow-up processing. **Internal events skip the hook entirely** because they are system-generated and must not be gate-kept by user-facing policy.
 
-**Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
+**Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged. The gateway falls through for optional plugins, while a configured required plugin fails closed.
 
 | Return | Effect |
 |--------|--------|
 | `{"action": "skip", "reason": "..."}` | Drop the message — no agent reply, no pairing flow, no auth. Plugin is assumed to have handled it (e.g. silent-ingested into the transcript). |
 | `{"action": "rewrite", "text": "new text"}` | Replace `event.text`, then continue normal dispatch with the modified event. Useful for collapsing buffered ambient messages into a single prompt. |
+| `{"action": "rewrite", "text": "private model input", "delivery_mode": "suppress", "persist_user_message": "[private event]"}` | Run the agent and tools with the rewritten text, persist only the marker, and suppress all delivery for this turn. This includes typing, progress, interim and streamed content, edits, attachments, STT echo, final and fallback messages, and post-delivery callbacks. |
 | `{"action": "allow"}` / `None` | Normal dispatch — runs the full auth / pairing / agent-loop chain. |
+
+`delivery_mode` currently accepts only `"suppress"`. `persist_user_message` must be a non-empty string of at most 512 characters. Unknown delivery modes, non-string values, empty persistence markers, and oversized markers fail closed and do not run the agent. Omitting both fields preserves the original rewrite behavior and compatibility with existing plugins. Suppression is scoped to one event, including its queued or recursive execution; a later normal event delivers normally.
 
 **Use cases:** Listen-only group chats (only respond when tagged; buffer ambient messages into context); human handover (silent-ingest customer messages while owner handles the chat manually); per-profile rate limiting; policy-driven routing.
 
@@ -1054,6 +1057,23 @@ def buffer_or_rewrite(event, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
+
+**Example: run private automation without exposing its payload or result:**
+
+```python
+def private_automation(event, **kwargs):
+    if not _is_private_automation(event):
+        return None
+    return {
+        "action": "rewrite",
+        "text": _build_full_agent_input(event),
+        "delivery_mode": "suppress",
+        "persist_user_message": "[private automation event]",
+    }
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", private_automation)
 ```
 
 ---

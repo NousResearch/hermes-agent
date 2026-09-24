@@ -109,6 +109,97 @@ async def test_hook_rewrite_replaces_event_text(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_hook_rewrite_sets_suppression_and_persistence_override(monkeypatch):
+    """The extended rewrite contract reaches the agent as per-turn event state."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    seen = {}
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{
+                "action": "rewrite",
+                "text": "FULL MODEL INPUT",
+                "delivery_mode": "suppress",
+                "persist_user_message": "[private inbound event]",
+            }]
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        seen["event"] = event
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    await runner._handle_message(_make_event("raw secret"))
+
+    assert seen["event"].text == "FULL MODEL INPUT"
+    assert seen["event"].delivery_mode == "suppress"
+    assert seen["event"].persist_user_message == "[private inbound event]"
+    assert seen["event"].gateway_dispatch_applied is True
+
+
+def test_queued_event_gate_is_applied_only_once(monkeypatch):
+    """Interrupt and recursive drain paths may share one rewritten event."""
+    calls = []
+
+    def _fake_hook(name, **kwargs):
+        calls.append((name, kwargs["event"].text))
+        return [{
+            "action": "rewrite",
+            "text": "PRIVATE QUEUED MODEL INPUT",
+            "delivery_mode": "suppress",
+            "persist_user_message": "[private queued event]",
+        }]
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    queued = _make_event("raw queued secret")
+
+    rewritten = runner._apply_pre_gateway_dispatch(queued)
+    same_turn = runner._apply_pre_gateway_dispatch(rewritten)
+
+    assert same_turn is rewritten
+    assert rewritten.text == "PRIVATE QUEUED MODEL INPUT"
+    assert rewritten.delivery_mode == "suppress"
+    assert rewritten.persist_user_message == "[private queued event]"
+    assert calls == [("pre_gateway_dispatch", "raw queued secret")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"delivery_mode": "unknown"},
+        {"delivery_mode": False},
+        {"persist_user_message": 123},
+        {"persist_user_message": ""},
+        {"persist_user_message": "x" * 513},
+    ],
+)
+async def test_invalid_extended_rewrite_contract_fails_closed(monkeypatch, extra):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{"action": "rewrite", "text": "MODEL INPUT", **extra}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = AsyncMock(return_value="should not run")
+
+    result = await runner._handle_message(_make_event("raw"))
+
+    assert result is None
+    runner._handle_message_with_agent.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_hook_allow_falls_through_to_auth(monkeypatch):
     """A plugin returning {'action': 'allow'} continues to normal dispatch."""
     _clear_auth_env(monkeypatch)

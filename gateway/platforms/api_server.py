@@ -2288,6 +2288,19 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # A proxy may send richer API-only content while asking this remote
+        # agent to persist only a bounded marker for the user turn.
+        persist_user_message = request.headers.get("X-Hermes-Persist-User-Message")
+        if persist_user_message is not None and (
+            not persist_user_message.strip()
+            or len(persist_user_message) > 512
+            or re.search(r"[\r\n\x00]", persist_user_message)
+        ):
+            return web.json_response(
+                _openai_error("Invalid persisted user-message override"),
+                status=400,
+            )
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -2438,6 +2451,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                persist_user_message=persist_user_message,
                 route=route,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -2458,6 +2472,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                persist_user_message=persist_user_message,
                 route=route,
             )
 
@@ -4205,6 +4220,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        persist_user_message: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
@@ -4246,11 +4262,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 if agent_ref is not None:
                     agent_ref[0] = agent
                 effective_task_id = session_id or str(uuid.uuid4())
-                result = agent.run_conversation(
-                    user_message=user_message,
-                    conversation_history=conversation_history,
-                    task_id=effective_task_id,
-                )
+                if persist_user_message is None:
+                    result = agent.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=effective_task_id,
+                    )
+                else:
+                    result = agent.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=effective_task_id,
+                        persist_user_message=persist_user_message,
+                    )
                 usage = {
                     "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                     "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

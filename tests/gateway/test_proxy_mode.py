@@ -228,6 +228,36 @@ class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
 
     @pytest.mark.asyncio
+    async def test_suppressed_proxy_forwards_persistence_marker_without_typing(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        adapter = MagicMock()
+        adapter.send_typing = AsyncMock()
+        runner.adapters[_make_source().platform] = adapter
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=['data: {"choices":[{"delta":{"content":"done"}}]}\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session), patch("aiohttp.ClientTimeout"):
+                result = await runner._run_agent_via_proxy(
+                    message="full private model input",
+                    context_prompt="",
+                    history=[],
+                    source=_make_source(),
+                    session_id="session-private",
+                    persist_user_message="[private inbound]",
+                    delivery_suppressed=True,
+                )
+
+        assert session.captured_json["messages"][-1]["content"] == "full private model input"
+        assert session.captured_headers["X-Hermes-Persist-User-Message"] == "[private inbound]"
+        assert result["messages"][0]["content"] == "[private inbound]"
+        adapter.send_typing.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_builds_correct_request(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
         monkeypatch.setenv("GATEWAY_PROXY_KEY", "test-key-123")

@@ -99,6 +99,38 @@ class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
     @pytest.mark.asyncio
+    async def test_suppressed_busy_message_is_rewritten_before_auth_and_has_no_ack(self, monkeypatch):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        runner.session_store = MagicMock()
+        adapter = _make_adapter()
+        event = _make_event(text="raw private text")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        agent = MagicMock()
+        agent.steer.return_value = True
+        runner._running_agents[sk] = agent
+        seen_at_auth = []
+        runner._is_user_authorized = lambda _source: seen_at_auth.append(event.text) or True
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda name, **_kwargs: [{
+                "action": "rewrite",
+                "text": "rewritten private text",
+                "delivery_mode": "suppress",
+                "persist_user_message": "[private inbound]",
+            }] if name == "pre_gateway_dispatch" else [],
+        )
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+        assert seen_at_auth == ["rewritten private text"]
+        agent.steer.assert_called_once_with("rewritten private text")
+        adapter._send_with_retry.assert_not_awaited()
+        assert event.gateway_dispatch_applied is True
+        assert event.persist_user_message == "[private inbound]"
+
+    @pytest.mark.asyncio
     async def test_handle_message_queue_mode_queues_without_interrupt(self):
         """Runner queue mode must not interrupt an active agent for text follow-ups."""
         from gateway.run import GatewayRunner

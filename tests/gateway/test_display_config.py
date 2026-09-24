@@ -162,6 +162,63 @@ class TestYAMLNormalisation:
                     platform, key)
 
 
+class TestInstallerSeededConfigThroughGatewayResolver:
+    """Regression for #121230: a fresh install copies cli-config.yaml.example to config.yaml, and the
+    gateway then rendered reasoning into QQBot/Telegram/... because the template pinned a global
+    ``display.show_reasoning: true`` over every platform's ``False`` default.
+
+    Goes through the resolver the gateway turn actually calls (``gateway/run.py``), with the same
+    arguments as ``gateway/run_turn.py``, not only ``resolve_display_setting``.
+    """
+
+    @staticmethod
+    def _seed_like_installer(home):
+        import shutil
+        from pathlib import Path
+
+        template = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+        home.mkdir(parents=True, exist_ok=True)
+        shutil.copy(template, home / "config.yaml")
+        return home / "config.yaml"
+
+    def test_template_seeded_home_keeps_qqbot_reasoning_off(self, tmp_path, monkeypatch):
+        from gateway.config import Platform
+        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
+
+        home = tmp_path / "hermes-home"
+        self._seed_like_installer(home)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr("gateway.run._gateway_config_home", lambda: home, raising=False)
+
+        seeded = _load_gateway_config()
+        assert "display" in seeded  # loader fails open to {}, which would make the assertion below vacuous
+
+        for platform in (Platform.QQBOT, Platform.TELEGRAM, Platform.DISCORD):
+            assert _resolve_gateway_display_bool(
+                seeded, platform.value, "show_reasoning", default=False, platform=platform,
+                require_platform_override_for={Platform.MATTERMOST},
+            ) is False, platform
+
+    def test_explicit_global_opt_in_still_reaches_gateway_platforms(self, tmp_path):
+        """Control: an operator who deliberately writes ``display.show_reasoning: true`` still gets it (#7148)."""
+        from gateway.config import Platform
+        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
+
+        (tmp_path / "config.yaml").write_text("display:\n  show_reasoning: true\n")
+        cfg = _load_gateway_config(tmp_path / "config.yaml")
+        assert _resolve_gateway_display_bool(
+            cfg, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
+
+    def test_show_reasoning_stays_a_known_config_key(self):
+        """Control: the fix must not delete the key from DEFAULT_CONFIG, or
+        ``hermes config set display.show_reasoning false`` gets rejected as unknown."""
+        from hermes_cli.config import _validate_config_key
+
+        assert _validate_config_key("display.show_reasoning") == (True, None)
+
+
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
 # ---------------------------------------------------------------------------

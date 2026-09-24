@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import zipfile
+import zlib
 from contextlib import closing, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -981,7 +982,7 @@ def _import_members(
                             raise
                 restored += 1
                 restored_external += external
-            except (PermissionError, OSError) as exc:
+            except (PermissionError, OSError, zipfile.BadZipFile, zlib.error) as exc:
                 errors.append(f"{label}: {exc}")
 
         if restored % 500 == 0:

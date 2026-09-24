@@ -54,6 +54,27 @@ _ROOM_SAFETY_TRIGGERS = frozenset({
 })
 
 
+def _quarantine_unsafe_authorities_locked(conn: sqlite3.Connection) -> None:
+    """Derive missing fences after historical replay; retain original quarantine evidence."""
+    conn.execute(
+        """INSERT OR IGNORE INTO hosted_room_quarantine
+           (room_id, reason, detected_at)
+           SELECT room_id, 'unsafe_replica_promotion', MIN(created_at)
+             FROM hosted_room_events
+            WHERE kind='authority.claimed'
+              AND payload_json LIKE '%"promoted_from_replica":true%'
+            GROUP BY room_id"""
+    )
+    conn.execute(
+        """INSERT OR IGNORE INTO hosted_room_quarantine
+           (room_id, reason, detected_at)
+           SELECT room_id, 'unsafe_authority_demotion', MIN(created_at)
+             FROM hosted_room_events
+            WHERE kind='authority.lost'
+            GROUP BY room_id"""
+    )
+
+
 def initialize_safety_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS hosted_room_quarantine (
@@ -132,23 +153,7 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
             reserved_at REAL NOT NULL
         )"""
     )
-    conn.execute(
-        """INSERT OR IGNORE INTO hosted_room_quarantine
-           (room_id, reason, detected_at)
-           SELECT room_id, 'unsafe_replica_promotion', MIN(created_at)
-             FROM hosted_room_events
-            WHERE kind='authority.claimed'
-              AND payload_json LIKE '%"promoted_from_replica":true%'
-            GROUP BY room_id"""
-    )
-    conn.execute(
-        """INSERT OR IGNORE INTO hosted_room_quarantine
-           (room_id, reason, detected_at)
-           SELECT room_id, 'unsafe_authority_demotion', MIN(created_at)
-             FROM hosted_room_events
-            WHERE kind='authority.lost'
-            GROUP BY room_id"""
-    )
+    _quarantine_unsafe_authorities_locked(conn)
     conn.execute(
         """INSERT OR IGNORE INTO hosted_room_quarantine
            (room_id, reason, detected_at)
@@ -393,6 +398,11 @@ def _compact_over_budget_replicas_locked(conn: sqlite3.Connection) -> int:
     """Bound legacy replica payload without dropping quarantined evidence."""
     if not table_exists(conn, "hosted_room_replicas"):
         return 0
+    from gateway.hosted_room_replicas import _audit_existing_replicas_locked
+
+    # Classification and deletion share the caller's write transaction. An
+    # absent flag is not proof of safe lineage, including on the first open.
+    _audit_existing_replicas_locked(conn)
     rows = conn.execute(
         """SELECT replicas.room_id, replicas.updated_at,
                   replicas.quarantine_reason,
@@ -510,6 +520,11 @@ def _prune_disbanded_replicas_locked(
 ) -> int:
     """Reclaim terminal replica payload while its room-ID reservation remains."""
     from gateway import hosted_rooms as limits
+    from gateway.hosted_room_replicas import _audit_existing_replicas_locked
+
+    # Re-audit even if an earlier observation/ingest audited then rolled back,
+    # or an old writer committed new history since the last replica read.
+    _audit_existing_replicas_locked(conn)
     candidates: set[str] = set()
     if now is not None:
         cutoff = now - limits.DISBANDED_REPLICA_RETENTION_SECONDS

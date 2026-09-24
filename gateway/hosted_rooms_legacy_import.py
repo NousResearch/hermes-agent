@@ -140,7 +140,28 @@ def import_legacy_rooms(conn: sqlite3.Connection, db_path: Path) -> None:
         return
     conn.execute("SAVEPOINT legacy_import")
     try:
-        copied = _copy_rows(conn, source) if source.is_file() else 0
+        copied = 0
+        if source.is_file():
+            from gateway.hosted_room_safety import _quarantine_unsafe_authorities_locked
+
+            # Historical replay is not a live append. Suspend only the two
+            # quarantine event triggers inside this write-locked savepoint;
+            # reservation and byte-accounting guards remain active. SQLite DDL
+            # is transactional: rollback restores the triggers on any failure,
+            # and no other writer can enter before they are restored on success.
+            triggers = conn.execute(
+                """SELECT name, sql FROM sqlite_master WHERE type='trigger'
+                   AND name IN ('trg_hosted_events_reject_quarantined_insert',
+                                'trg_hosted_events_quarantine_unsafe_lineage')"""
+            ).fetchall()
+            for name, _ in triggers:
+                conn.execute(f'DROP TRIGGER "{name}"')
+            copied = _copy_rows(conn, source)
+            # Copy source quarantine rows without ignoring conflicts, then
+            # derive only missing classifications from the complete history.
+            _quarantine_unsafe_authorities_locked(conn)
+            for _, ddl in triggers:
+                conn.execute(ddl)
     except (OSError, sqlite3.Error) as exc:
         # A locked, unreadable or incompatible legacy store must not take hosted rooms down with
         # it: drop the partial copy, leave the marker unset, retry on the next process start.

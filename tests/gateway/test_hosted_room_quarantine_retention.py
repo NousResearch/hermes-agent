@@ -5,8 +5,12 @@ read-only safety helpers run; this does not certify live takeover or recovery.
 """
 
 from contextlib import closing
+import sqlite3
 
 import pytest
+
+from gateway import hosted_room_replicas as replicas
+from gateway import hosted_rooms_legacy_import as legacy_import
 
 from gateway import hosted_room_safety as safety
 from gateway import hosted_rooms as rooms
@@ -89,6 +93,20 @@ def test_legacy_import_refuses_conflicting_reservation_owner(tmp_path):
     with closing(rooms._read_connection(target)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM hosted_rooms").fetchone()[0] == 0
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='hosted_room_legacy_imports'").fetchone() is None
+        assert rooms._schema_is_current(conn)
+    # A failed import must restore both triggers, not just roll back its rows.
+    with rooms._transaction(target, immediate=True) as conn:
+        _seed(conn, "authority", "after-failure", ended=None)
+        conn.execute(
+            """INSERT INTO hosted_room_events VALUES
+               ('after-failure', 2, 'loss', 'authority.lost', '{}', 1, '{}', 2)"""
+        )
+        assert safety._quarantine_reason_locked(conn, "after-failure") == "unsafe_authority_demotion"
+        with pytest.raises(sqlite3.IntegrityError, match="quarantined"):
+            conn.execute(
+                """INSERT INTO hosted_room_events VALUES
+                   ('after-failure', 3, 'new', 'message.user', '{}', 1, '{}', 3)"""
+            )
 
 
 @pytest.mark.parametrize("owner", ["authority", "replica"])
@@ -265,3 +283,177 @@ def test_mixed_append_rolls_back_when_protected_history_cannot_fit(tmp_path, mon
         assert {owner: _snapshot(conn, owner) for owner in _TABLES} == before
         assert conn.execute("SELECT COUNT(*) FROM hosted_room_retired_ids").fetchone()[0] == 0
         assert rooms._gateway_event_bytes(conn) == before["authority"]["bytes"]
+
+
+def _history(conn, table):
+    return [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY room_id, seq")]
+
+
+@pytest.mark.parametrize("lineage", ["demotion", "promotion"])
+def test_first_open_import_preserves_quarantined_history_and_live_fence(tmp_path, lineage):
+    source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
+    with rooms._transaction(source, immediate=True) as conn:
+        _seed(conn, "authority", "healthy", ended=None)
+        _seed(conn, "authority", "unsafe", ended=None)
+        # Model the pre-fence source schema, not permission to append live data.
+        conn.execute("DROP TRIGGER trg_hosted_events_reject_quarantined_insert")
+        conn.execute("DROP TRIGGER trg_hosted_events_quarantine_unsafe_lineage")
+        kind = "authority.lost" if lineage == "demotion" else "authority.claimed"
+        payload = '{}' if lineage == "demotion" else '{"promoted_from_replica":true}'
+        conn.execute(
+            "INSERT INTO hosted_room_events VALUES ('unsafe', 2, 'transition', ?, ?, 1, ?, 2)",
+            (kind, '{"kind":"system","id":"legacy"}', payload),
+        )
+        if lineage == "promotion":
+            conn.execute(
+                """INSERT INTO hosted_room_events VALUES
+                   ('unsafe', 3, 'late', 'message.user', '{"kind":"user","id":"legacy"}', 1, '{}', 3)"""
+            )
+        conn.execute("UPDATE hosted_rooms SET next_seq=? WHERE room_id='unsafe'", (3 if lineage == "demotion" else 4,))
+        conn.execute(rooms._EVENT_BYTES_BACKFILL.format(where="1"))
+        if lineage == "demotion":
+            conn.execute("INSERT INTO hosted_room_quarantine VALUES ('unsafe', 'original_demotion_evidence', 0)")
+        before = _history(conn, "hosted_room_events")
+        budget = rooms._gateway_event_bytes(conn)
+        reservations = [tuple(row) for row in conn.execute(
+            "SELECT * FROM hosted_room_id_reservations ORDER BY room_id"
+        )]
+    with sqlite3.connect(source) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    source_bytes = source.read_bytes()
+    assert {room["room_id"] for room in rooms.list_rooms(target)} == {"healthy", "unsafe"}
+    reason = "original_demotion_evidence" if lineage == "demotion" else "unsafe_replica_promotion"
+    with closing(rooms._read_connection(target)) as conn:
+        assert _history(conn, "hosted_room_events") == before
+        assert tuple(conn.execute("SELECT * FROM hosted_room_quarantine").fetchone()) == (
+            "unsafe", reason, 0 if lineage == "demotion" else 2,
+        )
+        assert [tuple(row) for row in conn.execute(
+            "SELECT * FROM hosted_room_id_reservations ORDER BY room_id"
+        )] == reservations
+        assert conn.execute("SELECT rooms FROM hosted_room_legacy_imports").fetchone()[0] == 2
+        assert conn.execute("SELECT event_bytes FROM hosted_room_event_budget").fetchone()[0] == budget
+    assert source not in legacy_import._failed_sources
+    with pytest.raises(rooms.RoomQuarantinedError):
+        rooms.append_event(
+            target, room_id="unsafe", event_id="new", kind="message.user",
+            actor={"kind": "user", "id": "legacy"}, payload={},
+            authority_gateway_id="imported-owner", authority_epoch=1,
+        )
+    with rooms._transaction(target, immediate=True) as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="quarantined"):
+            conn.execute(
+                """INSERT INTO hosted_room_events VALUES
+                   ('unsafe', 4, 'raw-live', 'message.user', '{}', 1, '{}', 4)"""
+            )
+        # The automatic classifier is restored as well as its live-write fence.
+        conn.execute(
+            """INSERT INTO hosted_room_events VALUES
+               ('healthy', 2, 'new-loss', 'authority.lost', '{}', 1, '{}', 4)"""
+        )
+        assert safety._quarantine_reason_locked(conn, "healthy") == "unsafe_authority_demotion"
+    assert source.read_bytes() == source_bytes
+
+
+def _terminal_replica(conn, room_id, *, defect=None):
+    _seed(conn, "replica", room_id, ended=2)
+    conn.execute(
+        """INSERT INTO hosted_room_replica_events VALUES
+           (?, 2, ?, 'room.disbanded', '{"kind":"system","id":"legacy"}', 1, '{}', 2)""",
+        (room_id, f"end:{room_id}"),
+    )
+    last = 2
+    if defect:
+        last = 3
+        conn.execute(
+            """INSERT INTO hosted_room_replica_events VALUES
+               (?, 3, ?, 'message.user', '{"kind":"user","id":"legacy"}', 1, '{}', 3)""",
+            (room_id, f"event:{room_id}" if defect == "duplicate_event_id" else f"late:{room_id}"),
+        )
+    size = sum(sum(len(str(row[key]).encode()) for key in (
+        "event_id", "kind", "actor_json", "payload_json"
+    )) for row in conn.execute("SELECT * FROM hosted_room_replica_events WHERE room_id=?", (room_id,)))
+    conn.execute(
+        "UPDATE hosted_room_replicas SET last_seq=?, latest_seq=?, event_bytes=? WHERE room_id=?",
+        (last, last, size, room_id),
+    )
+    return size
+
+
+@pytest.mark.parametrize("defect", ["events_after_disband", "duplicate_event_id"])
+def test_first_open_classifies_replica_lineage_before_compacting(tmp_path, monkeypatch, defect):
+    db = tmp_path / "replicas.db"
+    with rooms._transaction(db, immediate=True) as conn:
+        protected = _terminal_replica(conn, "unsafe", defect=defect)
+        _terminal_replica(conn, "valid")
+        before = _history(conn, "hosted_room_replica_events")
+        reservations = [tuple(row) for row in conn.execute("SELECT * FROM hosted_room_id_reservations ORDER BY room_id")]
+        conn.execute("DROP INDEX idx_hosted_room_events_cursor")
+    monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", 0)
+    with closing(rooms._connect(db)) as conn:
+        assert rooms._schema_is_current(conn)
+    with closing(rooms._read_connection(db)) as conn:
+        assert _history(conn, "hosted_room_replica_events") == [row for row in before if row[0] == "unsafe"]
+        row = conn.execute("SELECT quarantine_reason, event_bytes FROM hosted_room_replicas WHERE room_id='unsafe'").fetchone()
+        assert tuple(row) == (defect, protected)
+        assert safety._quarantine_reason_locked(conn, "unsafe") is None
+        assert conn.execute("SELECT event_bytes FROM hosted_room_event_budget").fetchone()[0] == protected
+        assert [tuple(row) for row in conn.execute("SELECT * FROM hosted_room_id_reservations ORDER BY room_id")] == reservations
+
+
+@pytest.mark.parametrize("entry", ["age", "count", "bytes", "append", "refused_append", "refused_ingest"])
+def test_late_replica_history_is_audited_at_each_reclamation_boundary(tmp_path, monkeypatch, entry):
+    db = tmp_path / "late.db"
+    with rooms._transaction(db, immediate=True) as conn:
+        _seed(conn, "authority", "active", ended=None)
+        protected = _terminal_replica(conn, "unsafe", defect="events_after_disband")
+        reclaimable = _terminal_replica(conn, "valid")
+        before = _history(conn, "hosted_room_replica_events")
+        budget = conn.execute("SELECT event_bytes FROM hosted_room_event_budget").fetchone()[0]
+    # No replica observation between the old writer's commit and reclamation.
+    if entry == "refused_ingest":
+        with pytest.raises(replicas.ReplicaError, match="quarantined"):
+            replicas.ingest_page(
+                db, room_id="unsafe", room_name="unsafe", members=[], now=4,
+                page={"events": [], "authority": {"gateway_id": "imported-owner", "epoch": 1},
+                      "cursor": 3, "latest_seq": 3, "has_more": False},
+            )
+        with closing(rooms._read_connection(db)) as conn:
+            # Its transaction rolled back the first audit. Retention must re-audit.
+            assert conn.execute("SELECT quarantine_reason FROM hosted_room_replicas WHERE room_id='unsafe'").fetchone()[0] is None
+            assert _history(conn, "hosted_room_replica_events") == before
+    added = 0
+    if entry in {"append", "refused_append"}:
+        actor, payload = {"kind": "user", "id": "import"}, {"text": "new"}
+        added = rooms.utf8_len("new", "message.user", rooms._validate_actor(actor, kind="message.user")[1], rooms._payload_json(payload))
+        limit = budget + added - reclaimable - (1 if entry == "refused_append" else 0)
+        monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", limit)
+        def append():
+            return rooms.append_event(
+                db, room_id="active", event_id="new", kind="message.user", actor=actor,
+                payload=payload, authority_gateway_id="imported-owner", authority_epoch=1, now=4,
+            )
+        if entry == "refused_append":
+            with pytest.raises(rooms.HostedRoomError, match="storage is full"):
+                append()
+            with closing(rooms._read_connection(db)) as conn:
+                assert _history(conn, "hosted_room_replica_events") == before
+                assert conn.execute("SELECT event_bytes FROM hosted_room_event_budget").fetchone()[0] == budget
+            added = 0
+        else:
+            assert append()["seq"] == 2
+    if entry != "append":
+        with rooms._transaction(db, immediate=True) as conn:
+            assert safety._prune_disbanded_replicas_locked(
+                conn, now=rooms.DISBANDED_REPLICA_RETENTION_SECONDS + 3 if entry == "age" else None,
+                max_replica_event_bytes=None if entry in {"age", "count"} else 0,
+                max_replica_rooms=0 if entry == "count" else None,
+            ) == 1
+    with closing(rooms._read_connection(db)) as conn:
+        assert _history(conn, "hosted_room_replica_events") == [row for row in before if row[0] == "unsafe"]
+        row = conn.execute("SELECT quarantine_reason, quarantined_at, event_bytes FROM hosted_room_replicas WHERE room_id='unsafe'").fetchone()
+        assert row["quarantine_reason"] == "events_after_disband"
+        assert row["quarantined_at"] is not None
+        assert row["event_bytes"] == protected
+        assert conn.execute("SELECT event_bytes FROM hosted_room_event_budget").fetchone()[0] == budget - reclaimable + added
+        assert {row[0] for row in conn.execute("SELECT room_id FROM hosted_room_id_reservations")} == {"active", "unsafe", "valid"}

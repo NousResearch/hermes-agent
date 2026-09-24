@@ -700,10 +700,37 @@ Migrations for the plugins that motivated this slot:
 Use the SDK's `<SandboxedFrame src title />` for any external web content
 (reader views, dashboards, docs). It renders a sandboxed iframe with the app's
 guest-content posture: opaque origin, `allow-scripts` by default, `no-referrer`,
-lazy loading. Realm-escaping tokens (`allow-same-origin`, top-navigation,
-popups, modals) are stripped even if passed — the opaque origin IS the
-containment. Never mount a raw Electron `<webview>`: it lands on the app's
+lazy loading. Never mount a raw Electron `<webview>`: it lands on the app's
 `persist:` preview partition, sharing the app's cookies and storage.
+
+```ts
+interface SandboxedFrameProps extends Omit<ComponentProps<'iframe'>, 'src'> {
+  src: string     // http(s): or data: URL to embed
+  title: string   // required — an untitled frame is unlabelled in the a11y tree
+  sandbox?: string // extra tokens; filtered through sanitizeFrameSandbox
+}
+SANDBOXED_FRAME_DEFAULT_SANDBOX = 'allow-scripts'
+sanitizeFrameSandbox(sandbox?: string): string
+```
+
+*Arbitration (allowlist, not blocklist):* the only tokens a caller may add are
+`allow-scripts`, `allow-forms`, `allow-downloads`, `allow-pointer-lock`,
+`allow-orientation-lock`, `allow-presentation`. Everything else —
+`allow-same-origin`, `allow-top-navigation*`, `allow-popups*`, `allow-modals`,
+`allow-storage-access-by-user-activation`, and any token the primitive does not
+know — is dropped case-insensitively even if passed; an emptied set falls back
+to the default posture, because a frame with **no** `sandbox` attribute is
+fully privileged. `loading="lazy"` and `referrerPolicy="no-referrer"` cannot be
+overridden through props. The opaque origin IS the containment: guest content
+cannot reach the app, its storage, or the preload bridge.
+
+*Teardown:* it is a plain React element — unmounting your pane/page removes the
+frame and its realm; nothing is registered app-side.
+
+Migration for **rss-reader** (#115972): replace the stubbed `/preview` → 501 →
+`host.openWorkspace('rss-browser')` → empty `RssBrowserFrame` → `ctx.os.openExternal`
+chain with `<SandboxedFrame src={article.url} title={article.title} />` inside
+the workspace page; drop the leftover `.rss-browser-frame-host webview` CSS.
 
 ### Transcript directives — inline components the model addresses
 
@@ -1472,7 +1499,7 @@ pipeline as a trust boundary.
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
-| UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |
+| UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.

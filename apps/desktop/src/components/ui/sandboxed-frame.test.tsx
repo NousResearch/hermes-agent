@@ -7,44 +7,30 @@ import { SANDBOXED_FRAME_DEFAULT_SANDBOX, SandboxedFrame, sanitizeFrameSandbox }
 afterEach(cleanup)
 
 describe('sanitizeFrameSandbox', () => {
-  it('defaults to the opaque-origin posture for an empty or missing sandbox', () => {
-    expect(sanitizeFrameSandbox(undefined)).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
-    expect(sanitizeFrameSandbox('')).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
-    expect(sanitizeFrameSandbox('   ')).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
-  })
-
-  it('keeps safe tokens and dedupes them', () => {
-    expect(sanitizeFrameSandbox('allow-scripts allow-forms')).toBe('allow-scripts allow-forms')
-    expect(sanitizeFrameSandbox('allow-scripts allow-scripts allow-forms')).toBe('allow-scripts allow-forms')
-  })
-
-  it('is case-insensitive, because the attribute is (a mixed-case escape used to pass)', () => {
-    // HTML: "an unordered set of unique space-separated tokens that are ASCII
-    // case-insensitive", and Chromium lower-cases each token before matching.
-    expect(sanitizeFrameSandbox('ALLOW-SAME-ORIGIN allow-scripts')).toBe('allow-scripts')
-    expect(sanitizeFrameSandbox('Allow-Top-Navigation allow-forms')).toBe('allow-forms')
-    expect(sanitizeFrameSandbox('ALLOW-SCRIPTS Allow-Forms')).toBe('allow-scripts allow-forms')
-  })
-
-  it('drops a token it does not know instead of forwarding it', () => {
-    // An allowlist, not a blocklist: a token nobody has heard of (or a future
-    // one) must not reach the attribute on the strength of being unlisted.
+  it('strips every realm-escaping or unknown token, case-insensitively, and never emits an empty attribute', () => {
+    // HTML: sandbox is "an unordered set of unique space-separated tokens that
+    // are ASCII case-insensitive"; Chromium lower-cases each token before
+    // matching, so `ALLOW-SAME-ORIGIN` once sailed past a case-sensitive check.
+    expect(sanitizeFrameSandbox('allow-scripts allow-same-origin')).toBe('allow-scripts')
+    expect(sanitizeFrameSandbox('ALLOW-SAME-ORIGIN Allow-Top-Navigation allow-scripts')).toBe('allow-scripts')
     expect(sanitizeFrameSandbox('allow-scripts allow-invented-thing')).toBe('allow-scripts')
-    expect(sanitizeFrameSandbox('allow-invented-thing')).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
+    // A frame with NO sandbox attribute is fully privileged — an emptied set
+    // must fall back to the default posture, not to nothing.
+    for (const escape of [
+      undefined,
+      '   ',
+      'allow-same-origin',
+      'allow-top-navigation allow-top-navigation-by-user-activation allow-popups allow-popups-to-escape-sandbox',
+      'allow-modals allow-storage-access-by-user-activation'
+    ]) {
+      expect(sanitizeFrameSandbox(escape)).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
+    }
   })
 
-  it('allows the safe tokens a real embed asks for', () => {
+  it('keeps the allowlisted tokens a real embed asks for, deduped', () => {
+    expect(sanitizeFrameSandbox('allow-scripts allow-scripts allow-forms')).toBe('allow-scripts allow-forms')
     expect(sanitizeFrameSandbox('allow-downloads allow-forms allow-presentation')).toBe(
       'allow-downloads allow-forms allow-presentation'
-    )
-  })
-
-  it('strips every realm-escaping token, falling back to the default when nothing is left', () => {
-    expect(sanitizeFrameSandbox('allow-scripts allow-same-origin')).toBe('allow-scripts')
-    expect(sanitizeFrameSandbox('allow-top-navigation allow-popups')).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
-    expect(sanitizeFrameSandbox('allow-same-origin')).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
-    expect(sanitizeFrameSandbox('allow-modals allow-storage-access-by-user-activation')).toBe(
-      SANDBOXED_FRAME_DEFAULT_SANDBOX
     )
   })
 })
@@ -61,22 +47,20 @@ describe('SandboxedFrame', () => {
     expect(frame.getAttribute('title')).toBe('Feed')
   })
 
-  it('keeps its no-referrer / lazy posture when a caller tries to override it', () => {
+  it('keeps its posture when a caller tries to re-open it through props', () => {
     const { container } = render(
-      <SandboxedFrame loading="eager" referrerPolicy="unsafe-url" src="https://example.com" title="Feed" />
+      <SandboxedFrame
+        loading="eager"
+        referrerPolicy="unsafe-url"
+        sandbox="allow-scripts allow-same-origin allow-popups"
+        src="https://example.com"
+        title="Feed"
+      />
     )
-
     const frame = container.querySelector('iframe')!
 
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
     expect(frame.getAttribute('loading')).toBe('lazy')
-  })
-
-  it('refuses an allow-same-origin / popup escape even when asked for one', () => {
-    const { container } = render(
-      <SandboxedFrame sandbox="allow-scripts allow-same-origin allow-popups" src="https://example.com" title="Feed" />
-    )
-
-    expect(container.querySelector('iframe')!.getAttribute('sandbox')).toBe('allow-scripts')
   })
 })

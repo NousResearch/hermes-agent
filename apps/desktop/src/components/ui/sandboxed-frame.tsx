@@ -46,7 +46,7 @@ export function sanitizeFrameSandbox(sandbox: string | undefined): string {
 }
 
 export interface SandboxedFrameProps extends Omit<React.ComponentProps<'iframe'>, 'src'> {
-  /** Absolute `http(s):` URL to embed. */
+  /** Absolute `http(s):` (or `data:`) URL to embed. */
   src: string
   /** Accessible title (required — an untitled frame is unlabelled in the a11y tree). */
   title: string

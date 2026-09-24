@@ -67,6 +67,51 @@ function registerPlugin(name: string, component: React.ComponentType) {
   _notify();
 }
 
+// A removed script can still execute. Retain tombstones so its name never
+// regains unmanaged registration authority after removal.
+const activeScripts = new Map<string, HTMLScriptElement | null>();
+const retiredNames = new Set<string>();
+export function activatePluginScript(name: string, script: HTMLScriptElement): void {
+  activeScripts.set(name, script);
+}
+export function isPluginScriptActive(name: string, script: HTMLScriptElement): boolean {
+  return activeScripts.get(name) === script;
+}
+export function deactivatePluginScript(name: string, script: HTMLScriptElement): boolean {
+  if (!isPluginScriptActive(name, script)) return false;
+  retiredNames.add(name);
+  activeScripts.set(name, null);
+  return true;
+}
+
+type RegistryFacade = NonNullable<Window["__HERMES_PLUGINS__"]>;
+function registrationFacade(script: HTMLScriptElement | null): RegistryFacade {
+  const owner = script?.getAttribute("data-hermes-plugin");
+  const accepts = (name: string) => owner
+    ? owner === name && isPluginScriptActive(name, script!)
+    // Preserve existing deferred global lookup on an initial load only.
+    // After turnover an unattributed callback cannot distinguish old/new code.
+    : !activeScripts.has(name) || (Boolean(activeScripts.get(name)) && !retiredNames.has(name));
+  return {
+    register(name, component) {
+      if (accepts(name)) registerPlugin(name, component);
+    },
+    registerSlot(name, slot, component, metadata) {
+      if (!accepts(name)) return;
+      const clearedError = _loadErrors.delete(name);
+      registerSlot(name, slot, component, metadata);
+      if (clearedError) _notify();
+    },
+  };
+}
+
+/** Clear a removed plugin's component and load error. Slots are owned separately. */
+export function unregisterPlugin(name: string): void {
+  const component = _registered.delete(name);
+  const error = _loadErrors.delete(name);
+  if (component || error) _notify();
+}
+
 /** Get a registered component by plugin name. */
 export function getPluginComponent(name: string): React.ComponentType | undefined {
   return _registered.get(name);
@@ -110,10 +155,19 @@ export const SDK_CONTRACT_VERSION = "1.1.0";
 // here (duplicate ambient declarations with differing modifiers conflict).
 
 export function exposePluginSDK() {
-  window.__HERMES_PLUGINS__ = {
-    register: registerPlugin,
-    registerSlot,
-  };
+  // Bundles (including Buzz) capture this object during classic-script
+  // execution. Bind that capture to the exact script, never to a name alone.
+  Object.defineProperty(window, "__HERMES_PLUGINS__", {
+    configurable: true,
+    enumerable: true,
+    get: () => registrationFacade(document.currentScript as HTMLScriptElement | null),
+    // Preserve the previously writable global for host teardown/SDK restoration.
+    set(value: RegistryFacade | undefined) {
+      Object.defineProperty(window, "__HERMES_PLUGINS__", {
+        configurable: true, enumerable: true, writable: true, value,
+      });
+    },
+  });
 
   window.__HERMES_PLUGIN_SDK__ = {
     // Contract version of the plugin SDK surface (see plugins/sdk.d.ts).

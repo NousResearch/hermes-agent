@@ -3,6 +3,7 @@ import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
 import { api } from "@/lib/api";
+import { notifyDashboardPluginsChanged } from "@/plugins/usePlugins";
 import type {
   CatalogEntry,
   CatalogRemovedEntry,
@@ -400,6 +401,7 @@ export default function PluginsPage() {
       if ((r.missing_env?.length ?? 0) > 0)
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       setInstallId("");
+      notifyDashboardPluginsChanged();
       await loadHub();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Install failed", "error");
@@ -433,6 +435,7 @@ export default function PluginsPage() {
     setRescanBusy(true);
     try {
       const rc = await api.rescanPlugins();
+      notifyDashboardPluginsChanged();
       showToast(
         `${t.pluginsPage.refreshDashboard} (${rc.count})`,
         "success",
@@ -534,6 +537,7 @@ export default function PluginsPage() {
     setRowBusy(name);
     try {
       await fn();
+      notifyDashboardPluginsChanged();
       await loadHub();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Failed", "error");
@@ -1201,7 +1205,7 @@ function PluginRowCard(props: PluginRowCardProps) {
               </Button>
             ) : null}
 
-            {row.has_dashboard_manifest ? (
+            {row.has_dashboard_manifest && (!dm?.tab?.hidden || row.user_hidden) ? (
               <Button
                 disabled={busy}
                 ghost

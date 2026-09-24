@@ -97,9 +97,36 @@ export type KnownSlotName = (typeof KNOWN_SLOT_NAMES)[number];
 
 type SlotListener = () => void;
 
-interface SlotEntry {
+export interface SlotMetadata {
+  icon?: React.ComponentType<{ className?: string }>;
+  optionCount?: number;
+}
+
+interface SlotEntry extends SlotMetadata {
   plugin: string;
   component: React.ComponentType;
+}
+
+/** Config sections are discovered only from currently registered slots. */
+function getConfigSections() {
+  return Array.from(_slotRegistry.entries())
+    .filter(([name, entries]) => name.startsWith("config:section:") && name.slice("config:section:".length) && entries.length)
+    .map(([slot, entries]) => ({
+      key: slot.slice("config:section:".length), slot,
+      icon: entries.find(entry => entry.icon)?.icon,
+      optionCount: entries.reduce((count, entry) => count + (entry.optionCount ?? 0), 0),
+    }));
+}
+
+export function useConfigSections() {
+  const [sections, setSections] = useState(getConfigSections);
+  useEffect(() => {
+    const refresh = () => setSections(getConfigSections());
+    const unsubscribe = onSlotRegistered(refresh);
+    refresh();
+    return unsubscribe;
+  }, []);
+  return sections;
 }
 
 /** Map<slotName, SlotEntry[]>. Entries are appended in registration order. */
@@ -126,10 +153,11 @@ export function registerSlot(
   plugin: string,
   slot: string,
   component: React.ComponentType,
+  metadata: SlotMetadata = {},
 ): void {
   const existing = _slotRegistry.get(slot) ?? [];
   const filtered = existing.filter((e) => e.plugin !== plugin);
-  filtered.push({ plugin, component });
+  filtered.push({ plugin, component, ...metadata });
   _slotRegistry.set(slot, filtered);
   _notifySlots();
 }

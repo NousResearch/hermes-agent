@@ -52,6 +52,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { useConfigSections } from "@/plugins/slots";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -234,6 +235,33 @@ export default function ConfigPage() {
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
   }, [schema, categoryOrder]);
+
+  const registeredSections = useConfigSections();
+  const pluginSections = useMemo(() => {
+    const shadowed = registeredSections.filter(section => categories.includes(section.key));
+    for (const section of shadowed) {
+      console.warn(`[plugins] config section "${section.key}" collides with a core category and is not shown`);
+    }
+    return registeredSections.filter(section => !categories.includes(section.key));
+  }, [registeredSections, categories]);
+  const sectionKeys = useMemo(() => {
+    // Plugin sections share core ordering, rather than disappearing below every
+    // schema category on installations with a large configuration inventory.
+    const allKeys = [...categories, ...pluginSections.map(section => section.key)];
+    return [
+      ...categoryOrder.filter(key => allKeys.includes(key)),
+      ...allKeys.filter(key => !categoryOrder.includes(key)).sort(),
+    ];
+  }, [categories, pluginSections, categoryOrder]);
+  const pluginSection = !searchQuery.trim()
+    ? pluginSections.find(section => section.key === activeCategory)
+    : undefined;
+
+  useEffect(() => {
+    if (schema && !sectionKeys.includes(activeCategory)) {
+      setActiveCategory(categories[0] ?? pluginSections[0]?.key ?? "");
+    }
+  }, [schema, activeCategory, categories, pluginSections, sectionKeys]);
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
@@ -469,7 +497,7 @@ export default function ConfigPage() {
             className="hidden"
             onChange={handleImport}
           />
-          {!yamlMode &&
+          {!yamlMode && !pluginSection &&
             (() => {
               const resetScopeLabel = isSearching
                 ? t.config.searchResults
@@ -511,7 +539,7 @@ export default function ConfigPage() {
             >
               {yamlSaving ? t.common.saving : t.common.save}
             </Button>
-          ) : (
+          ) : !pluginSection ? (
             <Button
               size="sm"
               className="uppercase"
@@ -520,7 +548,7 @@ export default function ConfigPage() {
             >
               {saving ? t.common.saving : t.common.save}
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -564,7 +592,9 @@ export default function ConfigPage() {
                 </div>
 
                 <div className="flex sm:flex-col gap-1 sm:gap-px p-2 sm:pt-1 overflow-x-auto sm:overflow-x-visible scrollbar-none sm:max-h-[calc(100vh-260px)] sm:overflow-y-auto">
-                  {categories.map((cat) => {
+                  {sectionKeys.map((cat) => {
+                    const section = pluginSections.find(section => section.key === cat);
+                    const Icon = section?.icon;
                     const isActive = !isSearching && activeCategory === cat;
 
                     return (
@@ -577,10 +607,10 @@ export default function ConfigPage() {
                         }}
                         className="rounded-none whitespace-nowrap px-2 py-1 text-xs"
                       >
-                        <CategoryIcon
+                        {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" /> : <CategoryIcon
                           category={cat}
                           className="h-3.5 w-3.5 shrink-0"
-                        />
+                        />}
                         <span className="flex-1 truncate">
                           {prettyCategoryName(cat)}
                         </span>
@@ -591,7 +621,7 @@ export default function ConfigPage() {
                               : "text-text-tertiary"
                           }`}
                         >
-                          {categoryCounts[cat] || 0}
+                          {section ? section.optionCount : categoryCounts[cat] || 0}
                         </span>
                       </ListItem>
                     );
@@ -629,6 +659,8 @@ export default function ConfigPage() {
                   )}
                 </CardContent>
               </Card>
+            ) : pluginSection ? (
+              <PluginSlot key={pluginSection.slot} name={pluginSection.slot} />
             ) : (
               /* Active category */
               <Card>

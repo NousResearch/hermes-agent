@@ -7,6 +7,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
+import { GUEST_SELECTION_CHANNEL, sendSelectionQuote } from '@/app/chat/composer/selection-quote'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
@@ -1066,6 +1067,16 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       }
     }
 
+    const onGuestSelection = (event: Event) => {
+      const detail = event as Event & { args?: unknown[]; channel?: string }
+
+      if (detail.channel !== GUEST_SELECTION_CHANNEL) {
+        return
+      }
+
+      sendSelectionQuote(String(detail.args?.[0] ?? ''), guestPage(webview, target.url).title || previewLabel || 'Preview')
+    }
+
     const onConsole = (event: Event) => {
       const detail = event as Event & {
         level?: number
@@ -1247,6 +1258,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('ipc-message', onGuestExternal)
+    webview.addEventListener('ipc-message', onGuestSelection)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1265,6 +1277,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('ipc-message', onGuestExternal)
+      webview.removeEventListener('ipc-message', onGuestSelection)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
@@ -1277,7 +1290,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, previewLabel, tabId, target.kind, target.url])
 
   return (
     <aside

@@ -5,6 +5,7 @@
 // Mirrored by `PREVIEW_EXTERNAL_CHANNEL` in src/lib/preview-external.ts — the
 // renderer tsconfig cannot import from electron/.
 export const GUEST_EXTERNAL_CHANNEL = 'preview-open-external'
+export const GUEST_SELECTION_CHANNEL = 'preview-selection-to-composer'
 
 interface GuestEventTarget {
   closest(selector: string): { href: string } | null
@@ -16,8 +17,17 @@ export interface GuestClickEvent {
   target?: unknown
 }
 
+export interface GuestKeyEvent {
+  ctrlKey: boolean
+  key: string
+  metaKey: boolean
+  shiftKey: boolean
+  preventDefault(): void
+  stopPropagation(): void
+}
+
 export interface GuestHandoffHost {
-  addEventListener(type: 'click', listener: (event: GuestClickEvent) => void, capture?: boolean): void
+  addEventListener(type: 'click' | 'keydown', listener: (event: GuestClickEvent | GuestKeyEvent) => void, capture?: boolean): void
   sendToHost(channel: string, ...args: unknown[]): void
 }
 
@@ -36,11 +46,13 @@ export function installGuestExternalHandoff(host: GuestHandoffHost): void {
   host.addEventListener(
     'click',
     event => {
-      if (event.isTrusted !== true || (event.button ?? 0) !== 0) {
+      const click = event as GuestClickEvent
+
+      if (click.isTrusted !== true || (click.button ?? 0) !== 0) {
         return
       }
 
-      const target = event.target as GuestEventTarget | null
+      const target = click.target as GuestEventTarget | null
 
       if (!target || typeof target.closest !== 'function') {
         return
@@ -63,4 +75,25 @@ export function installGuestExternalHandoff(host: GuestHandoffHost): void {
     },
     true
   )
+
+  host.addEventListener('keydown', event => {
+    const key = event as GuestKeyEvent
+    const modifier = navigator.platform.toLowerCase().includes('mac') ? key.metaKey : key.ctrlKey
+
+    if (!modifier || key.shiftKey || key.key.toLowerCase() !== 'l') {
+      return
+    }
+
+    const active = document.activeElement
+    const editable = active instanceof HTMLElement && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))
+    const text = document.getSelection()?.toString().trim() || ''
+
+    if (!text || editable) {
+      return
+    }
+
+    key.preventDefault()
+    key.stopPropagation()
+    host.sendToHost(GUEST_SELECTION_CHANNEL, text)
+  }, true)
 }

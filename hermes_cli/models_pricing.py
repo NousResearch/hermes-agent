@@ -412,6 +412,47 @@ def _fetch_fireworks_pricing_for_provider(*, force_refresh: bool = False) -> dic
     return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
 
 
+_NVIDIA_PRICING_KEY = "models.dev/nvidia"
+
+
+def _nvidia_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[str, dict[str, str]]:
+    """NVIDIA NIM picker pricing from the models.dev registry cache (same shape as fireworks —
+    shared in-memory + disk cache, 1h TTL; a pure dict transform, no per-render network call).
+    NIM serves its catalog free via NIM credits/subscription while NOTHING is labeled :free —
+    models.dev marks ~101/105 entries zero-cost, and the pricing pipeline reads ``cost``, so
+    without this fetcher ``get_pricing_for_provider('nvidia')`` returned {} forever and the
+    picker could never show free/pricing for NIM models."""
+    if not force_refresh:
+        cached = _cached_catalog(_NVIDIA_PRICING_KEY)
+        if cached is not None:
+            return cached
+
+    result: dict[str, dict[str, str]] = {}
+    try:
+        from agent.models_dev import _get_provider_models
+
+        for mid, entry in (_get_provider_models("nvidia") or {}).items():
+            cost = entry.get("cost") if isinstance(entry, dict) else None
+            if not isinstance(cost, dict):
+                continue
+            inp, out = cost.get("input"), cost.get("output")
+            if inp is None and out is None:
+                continue
+            row = {"prompt": _per_token(inp or 0), "completion": _per_token(out or 0)}
+            if cost.get("cache_read"):
+                row["input_cache_read"] = _per_token(cost["cache_read"])
+            result[str(mid)] = row
+    except Exception:
+        result = {}
+
+    return _cache_catalog(_NVIDIA_PRICING_KEY, result)
+
+
+def _fetch_nvidia_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    _remember_provider_cache_key("nvidia", _NVIDIA_PRICING_KEY)
+    return _nvidia_pricing_from_models_dev(force_refresh=force_refresh)
+
+
 def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     api_key, base_url = _resolve_nous_pricing_credentials()
     if not base_url:
@@ -603,5 +644,6 @@ _PRICING_FETCHERS = {
     "novita": _fetch_novita_pricing_for_provider,
     "deepinfra": _fetch_deepinfra_pricing,
     "fireworks": _fetch_fireworks_pricing_for_provider,
+    "nvidia": _fetch_nvidia_pricing_for_provider,
     "nous": _fetch_nous_pricing_for_provider,
 }

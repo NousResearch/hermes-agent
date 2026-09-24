@@ -59,11 +59,11 @@ export function activitySignature(content: readonly ActivityPart[]): string {
  * only card tools are left on screen to narrate.
  */
 export function toolNarratesWait(content: readonly ActivityPart[], runsHidden = false): boolean {
-  return content.some(
-    part =>
-      part.type === 'tool-call' &&
-      !settled(part) &&
-      !isSilentTool(part.toolName ?? '') &&
-      (!runsHidden || isCardTool(part.toolName ?? ''))
-  )
+  return content.some(part => {
+    const toolName = part.toolName ?? ''
+
+    return (
+      part.type === 'tool-call' && !settled(part) && !isSilentTool(toolName) && (!runsHidden || isCardTool(toolName))
+    )
+  })
 }

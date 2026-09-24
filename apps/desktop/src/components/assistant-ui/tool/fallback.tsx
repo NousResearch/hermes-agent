@@ -1054,7 +1054,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
       .map(part =>
-        part.type === 'tool-call' && !(hideRuns && toolPreviewOutcome(part as ToolPart).status === 'error')
+        part.type === 'tool-call' && !(hideRuns && toolPreviewOutcome(part).status === 'error')
           ? (isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length) ||
             mcpTargets(part.toolName, part.args).length
             ? CONNECTION_CARD_KEY
@@ -1065,22 +1065,20 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   )
 
   const items = useMemo(() => splitRunItems(toolNameKey.split('\u0000')), [toolNameKey])
+  const visibleItems = hideRuns ? items.filter(item => item.kind === 'card') : items
   const rows = Children.toArray(children)
 
   return (
     <ToolEmbedContext.Provider value={false}>
-      {/* Cards survive Hide: diffs, questions, consent controls and failures need the user. */}
-      {items
-        .filter(item => item.kind === 'card' || !hideRuns)
-        .map(item =>
-          item.kind === 'card' ? (
-            <Fragment key={`card:${item.index}`}>{rows[item.index]}</Fragment>
-          ) : (
-            <ToolRun endIndex={startIndex + item.end} key={`run:${item.start}`} startIndex={startIndex + item.start}>
-              {rows.slice(item.start, item.end + 1)}
-            </ToolRun>
-          )
-        )}
+      {visibleItems.map(item =>
+        item.kind === 'card' ? (
+          <Fragment key={`card:${item.index}`}>{rows[item.index]}</Fragment>
+        ) : (
+          <ToolRun endIndex={startIndex + item.end} key={`run:${item.start}`} startIndex={startIndex + item.start}>
+            {rows.slice(item.start, item.end + 1)}
+          </ToolRun>
+        )
+      )}
     </ToolEmbedContext.Provider>
   )
 }

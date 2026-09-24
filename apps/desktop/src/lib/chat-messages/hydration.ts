@@ -253,8 +253,16 @@ function nativeReasoningParts(value: unknown, expected: string, timestamp?: numb
   const groups: string[] = []
   const seen = new Set<string>()
   for (const item of value) {
-    if (!item || item.type !== 'reasoning' || typeof item.id !== 'string' || !item.id ||
-        seen.has(item.id) || !Array.isArray(item.summary) || !item.summary.length) return []
+    if (
+      !item ||
+      item.type !== 'reasoning' ||
+      typeof item.id !== 'string' ||
+      !item.id ||
+      seen.has(item.id) ||
+      !Array.isArray(item.summary) ||
+      !item.summary.length
+    )
+      return []
     seen.add(item.id)
     const texts: string[] = []
     for (const [index, part] of item.summary.entries()) {

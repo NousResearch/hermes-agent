@@ -1033,3 +1033,90 @@ class TestScheduledTaskActionOwnershipRecovery:
         assert update_cmd_windows._recover_windows_gateway_via_schtasks(gateway_windows) == [777]
         assert query_calls == []
         assert runs == []
+
+    @staticmethod
+    def _with_extra_action(template: str, action: str, *, before: bool) -> str:
+        first_exec = template.index("<Exec>")
+        first_exec_end = template.index("</Exec>", first_exec) + len("</Exec>")
+        if before:
+            return template[:first_exec] + action + template[first_exec:]
+        return template[:first_exec_end] + action + template[first_exec_end:]
+
+    def test_custom_exec_before_managed_exec_fails_closed_without_run(self, monkeypatch, tmp_path):
+        home = tmp_path / "target"
+        template = self._managed_template(monkeypatch, home)
+        registered_xml = self._with_extra_action(
+            template,
+            '<Exec><Command>wscript.exe</Command><Arguments>//B //Nologo "C:\\Custom\\custom.vbs"</Arguments></Exec>',
+            before=True,
+        )
+        runs: list[object] = []
+
+        assert not gateway_windows._task_action_is_hermes_managed(
+            registered_xml, template, task_name=_TASK
+        )
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [])
+        monkeypatch.setattr(gateway_windows, "_query_scheduled_task_xml", lambda _task: registered_xml)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_run_scheduled_task_once",
+            lambda **_kw: runs.append(True) or (0, "", ""),
+        )
+
+        assert update_cmd_windows._recover_windows_gateway_via_schtasks(
+            gateway_windows, home=home
+        ) == []
+        assert runs == []
+
+    def test_managed_exec_before_custom_exec_is_not_owned(self, monkeypatch, tmp_path):
+        template = self._managed_template(monkeypatch, tmp_path / "target")
+        registered_xml = self._with_extra_action(
+            template,
+            '<Exec><Command>wscript.exe</Command><Arguments>//B //Nologo "C:\\Custom\\custom.vbs"</Arguments></Exec>',
+            before=False,
+        )
+
+        assert not gateway_windows._task_action_is_hermes_managed(
+            registered_xml, template, task_name=_TASK
+        )
+
+    def test_managed_exec_with_another_action_type_is_not_owned(self, monkeypatch, tmp_path):
+        template = self._managed_template(monkeypatch, tmp_path / "target")
+        registered_xml = self._with_extra_action(
+            template,
+            "<ComHandler><ClassId>{00000000-0000-0000-0000-000000000000}</ClassId></ComHandler>",
+            before=False,
+        )
+
+        assert not gateway_windows._task_action_is_hermes_managed(
+            registered_xml, template, task_name=_TASK
+        )
+
+
+class TestUnmappedStartAttestation:
+    @staticmethod
+    def _write_attestation(monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+        gateway_windows._write_unmapped_start_attestation([777], "post-update recovery")
+
+    def test_unrelated_live_profile_does_not_suppress_dead_unmapped_warning(self, monkeypatch, tmp_path):
+        self._write_attestation(monkeypatch, tmp_path)
+
+        warning = gateway_windows.check_unmapped_start_attestation(current_pids=[101])
+
+        assert warning is not None
+        assert "PID 777" in warning
+
+    def test_live_attested_pid_suppresses_unmapped_warning(self, monkeypatch, tmp_path):
+        self._write_attestation(monkeypatch, tmp_path)
+
+        assert gateway_windows.check_unmapped_start_attestation(current_pids=[777, 101]) is None
+
+    def test_all_dead_pids_return_unmapped_warning(self, monkeypatch, tmp_path):
+        self._write_attestation(monkeypatch, tmp_path)
+
+        warning = gateway_windows.check_unmapped_start_attestation(current_pids=[])
+
+        assert warning is not None
+        assert "PID 777" in warning

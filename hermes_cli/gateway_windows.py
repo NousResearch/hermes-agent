@@ -1238,7 +1238,7 @@ def check_unmapped_start_attestation(current_pids: list[int] | None = None) -> s
         except Exception:
             return None
     _clear_unmapped_start_attestation()
-    if current_pids:
+    if set(attested) & set(current_pids):
         return None
     via = data.get("via") or "post-update recovery"
     ts = data.get("ts") or "unknown time"
@@ -1475,6 +1475,19 @@ def _task_action_is_hermes_managed(
     Drift repair may update Hermes' own template settings, but an action that
     points somewhere else is user-owned and must not be overwritten by update.
     """
+    try:
+        registered_root = ElementTree.fromstring(registered_xml)
+    except ElementTree.ParseError:
+        return False
+    actions_nodes = [
+        child for child in registered_root
+        if child.tag.rsplit("}", 1)[-1] == "Actions"
+    ]
+    if len(actions_nodes) != 1:
+        return False
+    actions = list(actions_nodes[0])
+    if len(actions) != 1 or actions[0].tag.rsplit("}", 1)[-1] != "Exec":
+        return False
     registered = _task_xml_leaf_values(registered_xml)
     template = _task_xml_leaf_values(template_xml)
     if registered is None or template is None:

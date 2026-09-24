@@ -107,6 +107,7 @@ Text strings used throughout the CLI interface.
 | `tool_emojis` | dict | Per-tool emoji overrides for spinners and progress (`{tool_name: emoji}`) | `{}` |
 | `banner_logo` | string | Rich-markup ASCII art logo (replaces the default HERMES_AGENT banner) | `""` |
 | `banner_hero` | string | Rich-markup hero art (replaces the default caduceus art) | `""` |
+| `input_rule_art` | string | One-line Rich markup using color/bgcolor/bold/italic/underline/strike/reverse/blink; tiled and clipped to terminal columns; dim/overline/conceal are omitted; empty uses the plain `input_rule`-coloured line | `""` |
 
 ## Custom skins
 
@@ -185,6 +186,8 @@ tool_emojis:
 #   [bold #FFD700] MY AGENT [/]
 # banner_hero: |
 #   [#FFD700]  Custom art here  [/]
+# input_rule_art: "[bold #FFD700]━[/]"
+# The input_rule_art value is one-line Rich markup, tiled and clipped to terminal columns.
 ```
 
 ### Minimal custom skin example

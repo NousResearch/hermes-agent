@@ -565,6 +565,10 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     failure on the same card still counts."""
     import tools.process_registry as process_registry
 
+    # Exercise the Linux/systemd branch even when this contract test runs on
+    # macOS; without it the real boundary correctly returns ``in_process`` and
+    # the synthetic "unreachable" assertion is misclassified as a card failure.
+    monkeypatch.setattr(process_registry, "_IS_LINUX", True)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)

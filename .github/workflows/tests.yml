@@ -48,7 +48,14 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: "0.9.28"
+          #
+          # The uv pin also fixes which CPython `uv python install 3.11`
+          # resolves, and with it the linked SQLite. uv 0.9.28 resolved
+          # 3.11.14 / SQLite 3.50.4, which has the WAL-reset bug, so Hermes
+          # ran every state.db in DELETE mode here and the WAL path went
+          # untested. 0.12.13 resolves 3.11.16 / SQLite 3.53.1. The
+          # "Check SQLite runs WAL" step fails the job if a bump regresses it.
+          version: "0.12.13"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every
@@ -73,19 +80,28 @@ jobs:
         # The trailing extras beyond all/dev are the lazy-install features
         # (tools/lazy_deps.py) that tests exercise for real: provider.anthropic,
         # stt/tts.mistral, image.fal, terminal.modal, terminal.daytona,
-        # memory.hindsight, search.parallel. The hermetic test env forbids
+        # search.parallel, provider.bedrock. The hermetic test env forbids
         # mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
         # tests/conftest.py), so the SDKs those tests need must be in the
         # venv up front — resolved from uv.lock like everything else, which
         # also honors the exact supply-chain pins these extras carry.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web --extra bedrock
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
+
+      - name: Check SQLite runs WAL
+        # Hermes picks DELETE journal mode on a SQLite with the WAL-reset
+        # bug. If this interpreter links one, every WAL test silently runs
+        # DELETE (or skips), so fail loudly instead. Tests that need DELETE
+        # select it explicitly (journal_mode config, a pinned vulnerable
+        # version), so they run on any interpreter.
+        run: |
+          .venv/bin/python -c "import sqlite3, sys, hermes_state_wal as w; v = w.is_sqlite_wal_reset_vulnerable(); print(f'Python {sys.version.split()[0]}, SQLite {sqlite3.sqlite_version}, WAL-reset vulnerable: {v}'); sys.exit(1 if v else 0)"
 
       - name: Restore per-file duration cache
         # scripts/run_tests_parallel.py raises a file's timeout to
@@ -151,11 +167,20 @@ jobs:
           key: test-durations-${{ github.run_id }}
 
   e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
+    # writer processes per test; a 4-vCPU runner serialises them into timeouts.
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node
+        # The boot-contract suite feeds serve's stdout through Desktop's own
+        # backend-ready.ts (native TS stripping needs Node >= 22.18).
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -178,19 +203,25 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: "0.9.28"
+          # Newer than the unit job's pin on purpose: 0.9.28 only knows CPython
+          # 3.11.14, whose bundled SQLite has the WAL-reset bug, so Hermes runs
+          # state.db in DELETE mode and the WAL torture chamber would skip.
+          version: "0.12.13"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every
           # time, but resolves from the warm cache instead of re-downloading
           # and re-building wheels.
           enable-cache: true
+          # Own cache entry: the unit job's older uv would otherwise share and
+          # overwrite this key with a cache this uv version did not write.
+          cache-suffix: e2e
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
 
       - name: Set up Python 3.11
-        run: uv python install 3.11
+        run: uv python install 3.11.15
 
       - name: Install dependencies
         # `uv sync --locked` installs the exact pinned set from uv.lock (and
@@ -204,18 +235,36 @@ jobs:
         # in the venv up front.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.11.15 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web --extra bedrock
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
-      - name: Run e2e tests
+      - name: Require a WAL-capable SQLite
+        # The state.db suites skip on a WAL-reset-vulnerable SQLite; fail
+        # instead of reporting green over zero coverage.
         run: |
           source .venv/bin/activate
-          python -m pytest tests/e2e/ -v --tb=short
+          python -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
+
+      - name: Run e2e tests
+        # One subprocess per file, in parallel: the core suites spawn real
+        # processes (serve, gateway, tui_gateway, MCP servers, SQLite writers)
+        # and must not share interpreter state.
+        run: |
+          source .venv/bin/activate
+          scripts/run_tests.sh --include-integration tests/e2e
         env:
+          # Multi-process episodes (torture chamber, compaction kill -9,
+          # gateway liveness, delivery exactly-once through a real gateway,
+          # the cron virtual-clock soak) legitimately run past the 300 s default.
+          HERMES_TEST_FILE_TIMEOUT: "900"
+          # No automatic re-run of a failed file: the torture chamber and the
+          # exactly-once/compaction suites are race detectors, and a rare
+          # corruption that passes on retry is still a corruption.
+          HERMES_TEST_FILE_RETRIES: "0"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""

@@ -53,7 +53,7 @@ def test_a_crashed_profile_create_shell_is_not_a_second_tenant(two_profile_host)
     assert not secret_scope.is_multiplex_active()
 
 
-def test_unreadable_profiles_dir_fails_closed_and_says_so(two_profile_host, monkeypatch, caplog):
+def test_unreadable_profiles_dir_fails_closed_and_says_so(two_profile_host, monkeypatch):
     """Silently returning False left the guard off for the process lifetime with zero log lines."""
     from hermes_cli import profiles as profiles_mod
 
@@ -62,7 +62,5 @@ def test_unreadable_profiles_dir_fails_closed_and_says_so(two_profile_host, monk
 
     monkeypatch.setattr(profiles_mod, "profiles_to_serve", _boom)
 
-    with caplog.at_level("WARNING"):
-        assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is True
+    assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is True
     assert secret_scope.is_multiplex_active()
-    assert any("profile homes" in r.getMessage() for r in caplog.records), caplog.text

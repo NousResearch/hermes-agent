@@ -1,71 +1,45 @@
-"""Tests for tui_gateway/entry.py sys.path hardening (issues #15989, #51286).
+"""Regression test for tui_gateway/entry.py sys.path hardening (#15989, #51286).
 
-When the TUI backend is spawned by Node.js, the launch directory may shadow
-Hermes's own top-level modules (``utils``, ``proxy``, ``ui``).  entry.py must
-neutralize this before any non-stdlib import is resolved, by delegating to the
-shared ``hermes_bootstrap.harden_import_path`` guard.
-
-These tests assert the entry point wires up the real guard (rather than
-re-implementing it inline) and that the guard's behavior covers both the
-relative-cwd form and the absolute-cwd-path form that was the actual #51286
-failure.
+The TUI backend is spawned by Node with the user's launch directory as CWD. A
+local package there (e.g. ``utils/``, ``proxy/``, ``ui/`` in tg-ws-proxy) shadowed
+Hermes's own top-level modules and crashed the backend on import
+(``ImportError: cannot import name ... from 'utils'``). entry.py must run
+``hermes_bootstrap.harden_import_path()`` before its first non-stdlib import.
+Sibling guard for the slash worker: test_slash_worker_sys_path.py.
 """
 
-import ast
-import pathlib
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-import hermes_bootstrap
-
-
-def _entry_source() -> str:
-    here = pathlib.Path(__file__).resolve()
-    repo_root = here.parent.parent.parent  # tests/tui_gateway/ -> repo root
-    return (repo_root / "tui_gateway" / "entry.py").read_text(encoding="utf-8")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_entry_calls_shared_harden_guard_before_heavy_imports():
-    """entry.py must call hermes_bootstrap.harden_import_path() before it
-    imports tui_gateway.server (which pulls ``from utils import ...``)."""
-    source = _entry_source()
-    tree = ast.parse(source)
+def test_entry_imports_from_cwd_with_colliding_packages(tmp_path):
+    """Importing the TUI entry point from a CWD that ships its own ``utils/``
+    (and friends) must succeed — the guard strips CWD so Hermes's modules win."""
+    for pkg in ("utils", "proxy", "ui"):
+        (tmp_path / pkg).mkdir()
+        (tmp_path / pkg / "__init__.py").write_text("", encoding="utf-8")
 
-    harden_call_line = None
-    server_import_line = None
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "harden_import_path"
-        ):
-            harden_call_line = node.lineno
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-            "tui_gateway"
-        ):
-            if server_import_line is None:
-                server_import_line = node.lineno
+    env = {k: v for k, v in os.environ.items() if k != "HERMES_PYTHON_SRC_ROOT"}
+    # Source importable via PYTHONPATH; CWD ('') still precedes it on sys.path
+    # for ``-c``, so the shadow (and thus the guard) is exercised.
+    env["PYTHONPATH"] = str(PROJECT_ROOT)
+    env["HERMES_HOME"] = str(tmp_path / "hermes_home")
 
-    assert harden_call_line is not None, (
-        "entry.py must call hermes_bootstrap.harden_import_path()"
+    result = subprocess.run(
+        [sys.executable, "-c", "import tui_gateway.entry"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
     )
-    assert server_import_line is not None, "entry.py must import from tui_gateway"
-    assert harden_call_line < server_import_line, (
-        "harden_import_path() must run before tui_gateway.server is imported"
+    assert result.returncode == 0, (
+        "tui_gateway.entry failed to import from a CWD with a colliding utils/ "
+        f"package (#51286):\n{result.stderr[-2000:]}"
     )
-
-
-def test_guard_handles_absolute_cwd_path():
-    """The #51286 case: the launch dir is on sys.path as its own absolute
-    path, ahead of the Hermes root.  harden_import_path must relocate the
-    Hermes root to the front so ``from utils import ...`` resolves to Hermes."""
-    import sys
-
-    original = sys.path[:]
-    try:
-        sys.path[:] = ["/home/user/tg-ws-proxy", "/opt/hermes", "/usr/lib"]
-        hermes_bootstrap.harden_import_path(src_root="/opt/hermes")
-        assert sys.path[0] == "/opt/hermes"
-        assert sys.path.index("/opt/hermes") < sys.path.index(
-            "/home/user/tg-ws-proxy"
-        )
-    finally:
-        sys.path[:] = original

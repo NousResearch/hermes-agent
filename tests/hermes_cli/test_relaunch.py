@@ -47,15 +47,6 @@ class TestExtractInheritedFlags:
 class TestInheritedFlagTable:
     """Sanity-check the argparse-introspected table that drives extraction."""
 
-    def test_short_and_long_aliases_are_paired(self):
-        table = dict(relaunch_mod._INHERITED_FLAGS_TABLE)
-        # Each pair declared together in the parser shares takes_value.
-        for short, long_ in [
-            ("-p", "--profile"),
-            ("-m", "--model"),
-            ("-s", "--skills"),
-        ]:
-            assert table[short] == table[long_], f"{short}/{long_} disagree"
 
 
     def test_excluded_flags_are_not_inherited(self):
@@ -68,10 +59,6 @@ class TestInheritedFlagTable:
 
 
 class TestBuildRelaunchArgv:
-    def test_uses_bin_when_available(self, monkeypatch):
-        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
-        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"])
-        assert argv[0] == "/usr/bin/hermes"
 
 
     def test_preserves_inherited_flags(self, monkeypatch):

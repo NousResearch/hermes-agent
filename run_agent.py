@@ -289,7 +289,7 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
-        side_agent: bool = False,
+        side_agent: bool = False, memory_manager=None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -1557,8 +1557,9 @@ def main(
 
 
 if __name__ == "__main__":
-    import fire
-    fire.Fire(main)
+    from agent.legacy_cli import main as _legacy_cli_main
+
+    raise SystemExit(_legacy_cli_main(run=main))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

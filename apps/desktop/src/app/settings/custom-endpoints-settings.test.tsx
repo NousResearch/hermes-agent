@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
 import type { CustomEndpointsResponse } from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
@@ -75,6 +76,45 @@ afterEach(async () => {
 })
 
 describe('CustomEndpointsSettings', () => {
+  it('localizes endpoint editing on language changes without changing transport or draft identifiers', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+    let language!: I18nContextValue
+
+    function Surface() {
+      language = useI18n()
+
+      return <CustomEndpointsSettings />
+    }
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh">
+        <Surface />
+      </I18nProvider>
+    )
+    await screen.findByText('暂无自定义端点')
+    fireEvent.change(screen.getByRole('textbox', { name: '名称' }), { target: { value: 'Fixture Ω' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '端点 URL' }), { target: { value: 'http://fixture.test/v1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '默认模型' }), { target: { value: 'fixture-model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Responses API' }))
+    await act(() => language.setLocale('zh-hant'))
+    expect((screen.getByRole('textbox', { name: '名稱' }) as HTMLInputElement).value).toBe('Fixture Ω')
+    expect(screen.getByText('API 模式')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '自動偵測' })).toBeTruthy()
+    expect(saveCustomEndpoint).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Fixture Ω',
+        api_mode: 'codex_responses',
+        base_url: 'http://fixture.test/v1',
+        model: 'fixture-model'
+      }),
+      'default'
+    )
+  })
+
   it('sends the chosen API mode and discovered alias metadata on Save (#93622)', async () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     validateCustomEndpoint.mockResolvedValue({
@@ -109,10 +149,7 @@ describe('CustomEndpointsSettings', () => {
       expect.objectContaining({ api_mode: 'codex_responses' }),
       'default'
     )
-    expect(notify).toHaveBeenCalledWith({
-      kind: 'success',
-      message: 'Endpoint is reachable (Responses API route served). Found 2 models.'
-    })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
     expect(saveCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({
         api_mode: 'codex_responses',

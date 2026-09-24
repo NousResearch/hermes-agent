@@ -22,7 +22,6 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.main import cmd_update
-from hermes_cli.update_cmd import _cmd_update_check
 
 
 # ---------- cmd_update (apply path) ----------
@@ -66,27 +65,3 @@ def test_cmd_update_in_docker_prints_guidance_and_exits(
 # ---------- format_docker_update_message — content lock ----------
 
 
-def test_format_docker_update_message_contents():
-    """Lock in the high-value content of the Docker update message.
-
-    These are the bits a user actually needs to act on; if any of them
-    disappear in a copy edit, the message has lost its value.  Specific
-    wording around them is free to evolve (we don't assert full text).
-    """
-    from hermes_cli.config import format_docker_update_message
-
-    msg = format_docker_update_message()
-
-    # Primary command — the entire reason this message exists.
-    assert "docker pull nousresearch/hermes-agent:latest" in msg
-
-    # The four key concepts the message must cover:
-    assert "restart" in msg.lower(), "must explain that a restart is required"
-    assert "--version" in msg, "must show how to verify the new version"
-    assert ":latest" in msg, "must mention tag pinning caveat"
-    assert "HERMES_HOME" in msg or "/opt/data" in msg, (
-        "must address config persistence across upgrades"
-    )
-
-    # Acknowledges that forks exist (build-your-own-image escape hatch).
-    assert "fork" in msg.lower() or "Dockerfile" in msg

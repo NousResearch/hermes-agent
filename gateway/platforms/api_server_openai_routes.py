@@ -206,6 +206,8 @@ class _ResponsesStream:
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
         self.user_message, self.instructions = user_message, instructions
         self.conversation, self.store, self.session_id = conversation, store, session_id
+        # Resolved in the request's profile scope: a snapshot written after it (disconnect) must not follow another.
+        self.response_store = adapter._current_response_store()
         self.final_text_parts: List[str] = []
         self.pending_tool_calls: List[Dict[str, Any]] = []  # open function_call items, in order
         self.emitted_items: List[Dict[str, Any]] = []  # output items so far (terminal payload)
@@ -250,13 +252,13 @@ class _ResponsesStream:
     def persist_snapshot(self, response_env: Dict[str, Any], *, history=None, session_id=None):
         if not self.store:
             return
-        self.adapter._response_store.put(self.response_id, {
+        self.response_store.put(self.response_id, {
             "response": response_env,
             "conversation_history": self._history_with_user() if history is None else history,
             "instructions": self.instructions,
             "session_id": session_id or self.session_id})
         if self.conversation:
-            self.adapter._response_store.set_conversation(self.conversation, self.response_id)
+            self.response_store.set_conversation(self.conversation, self.response_id)
 
     def persist_incomplete_if_needed(self) -> None:
         """Persist an ``incomplete`` snapshot when no terminal one was written (disconnect /
@@ -973,7 +975,7 @@ class OpenAICompatRoutesMixin:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
         if conversation:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
-            previous_response_id = self._response_store.get_conversation(conversation)
+            previous_response_id = self._current_response_store().get_conversation(conversation)
 
         input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
@@ -1013,7 +1015,7 @@ class OpenAICompatRoutesMixin:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
         stored_session_id = None
         if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
+            stored = self._current_response_store().get(previous_response_id)
             if stored is None:
                 return _error_response(f"Previous response not found: {previous_response_id}", 404)
             conversation_history = list(stored.get("conversation_history", []))
@@ -1113,11 +1115,12 @@ class OpenAICompatRoutesMixin:
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
         if store:
-            self._response_store.put(response_id, {
+            response_store = self._current_response_store()
+            response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
                 "instructions": instructions, "session_id": _effective_session_id})
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                response_store.set_conversation(conversation, response_id)
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
@@ -1130,7 +1133,7 @@ class OpenAICompatRoutesMixin:
         if auth_err:
             return auth_err
         response_id = request.match_info["response_id"]
-        stored = self._response_store.get(response_id)
+        stored = self._current_response_store().get(response_id)
         if stored is None:
             return _error_response(f"Response not found: {response_id}", 404)
         return web.json_response(stored["response"])
@@ -1142,7 +1145,7 @@ class OpenAICompatRoutesMixin:
         if auth_err:
             return auth_err
         response_id = request.match_info["response_id"]
-        if not self._response_store.delete(response_id):
+        if not self._current_response_store().delete(response_id):
             return _error_response(f"Response not found: {response_id}", 404)
         return web.json_response({"id": response_id, "object": "response", "deleted": True})
 

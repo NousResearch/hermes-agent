@@ -4,13 +4,24 @@ import json
 
 import pytest
 
-from hermes_cli import process_identity, update_cmd_fleet as fleet, update_receipt
+from hermes_cli import process_identity, update_cmd_fleet as fleet, update_inventory, update_receipt
+from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 from hermes_constants import get_hermes_home
 import hermes_cli.update_host_obligation as host_obligation
 
 MANUAL = {"kind": "serve", "profile": "work", "pid": 900, "supervisor": "manual-serve", "restart_via": "respawn-argv", "code_sha": "old", "detail": {"create_time": 1000.0}}
 CURRENT = {"profile": "alpha", "state": "current", "code_sha": "new"}
 GATEWAY = {"kind": "gateway", "profile": "alpha", "code_sha": "old"}
+DEAD_PID = 2**22 - 7
+
+
+def write_gateway_state(home, state):
+    """``gateway_state.json`` for a gateway whose pid is gone; ``state=None`` omits the field."""
+    record = {"pid": DEAD_PID, "code_sha": "old"}
+    if state is not None:
+        record["gateway_state"] = state
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "gateway_state.json").write_text(json.dumps(record))
 
 CASES = [
     ("receipt-successor", {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}, None, [CURRENT], False),
@@ -37,6 +48,11 @@ def seed(monkeypatch, old, marker, live, alive=True):
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "new")
     monkeypatch.setattr("hermes_cli.update_cmd._current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: live)
+    # Hold the host constant at one that still owes a gateway (the update stopped it and nothing
+    # replaced it), so an empty live fleet stays unproven and only the receipt varies. Hosts that run
+    # no gateway settle on host evidence: test_gatewayless_host_settles_on_host_evidence.
+    write_gateway_state(get_hermes_home(), "running")
+    monkeypatch.setattr(update_inventory, "collect_runtime_inventory", UpdatePlan)
     if marker is not None:
         fleet._write_fleet_restart_pending_marker(expected_sha=marker)
     return target
@@ -77,6 +93,62 @@ def test_empty_marker_never_inherits_receipt_ownership(monkeypatch, capsys, aliv
     assert ("serve [work] pid 900" in warning) is (alive is not False)
     assert host_obligation.host_obligation_path().exists()
     assert target.read_bytes() == before
+
+
+DESKTOP = RuntimeRecord(kind="serve", profile="default", pid=901, supervisor="desktop", restart_via="desktop-respawn")
+DESKTOP_RECEIPT = {"outcome": "failed", "plan": {"runtimes": [{"kind": "serve", "profile": "default", "supervisor": "desktop"}]}}
+
+# (name, receipt, live runtimes, gateway_state per profile, checkout, pending)
+GATEWAYLESS_CASES = [
+    # #118742: Desktop app only, no gateway was ever installed.
+    ("desktop-only", {}, [DESKTOP], {}, "new", False),
+    ("nothing-running", {}, [], {}, "new", False),
+    ("gateway-stopped-cleanly", {}, [DESKTOP], {"default": "stopped"}, "new", False),
+    ("gateway-startup-failed", {}, [], {"default": "startup_failed"}, "new", False),
+    # HEAD carries a local commit on top of the pulled SHA (#119367).
+    ("carried-local-commit", {}, [DESKTOP], {}, "hotfix", False),
+    # Receipts neither discharge nor block: the old manual row is history, not the live host.
+    ("manual-receipt-gatewayless-host", {"outcome": "success", "plan": {"runtimes": [MANUAL]}}, [], {}, "new", False),
+    ("desktop-receipt-stopped-gateway", DESKTOP_RECEIPT, [DESKTOP], {"default": "running"}, "new", True),
+    ("named-profile-gateway-gone", {}, [DESKTOP], {"work": "running"}, "new", True),
+    ("state-record-without-state", {}, [], {"default": None}, "new", True),
+    ("unclassified-serve", {}, [RuntimeRecord(kind="serve", profile="default", pid=902, supervisor="manual")], {}, "new", True),
+    ("manual-serve-without-identity", {}, [RuntimeRecord(kind="serve", profile="work", pid=903, supervisor="manual-serve", restart_via="respawn-argv")], {}, "new", True),
+    ("gateway-runtime-without-fleet-row", {}, [RuntimeRecord(kind="gateway", profile="default", pid=904, supervisor="manual")], {}, "new", True),
+    ("checkout-diverged", {}, [DESKTOP], {}, "elsewhere", True),
+]
+
+
+@pytest.mark.parametrize("name,receipt,runtimes,states,checkout,pending", GATEWAYLESS_CASES, ids=[case[0] for case in GATEWAYLESS_CASES])
+def test_gatewayless_host_settles_on_host_evidence(monkeypatch, capsys, name, receipt, runtimes, states, checkout, pending):
+    """An inventory-less marker with no live gateway settles on what the host runs now (#118742)."""
+    from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root
+
+    seed(monkeypatch, receipt, "new", [])
+    (get_hermes_home() / "gateway_state.json").unlink()
+    for profile, state in states.items():
+        write_gateway_state(_get_default_hermes_home() if profile == "default" else _get_profiles_root() / profile, state)
+    monkeypatch.setattr(update_inventory, "collect_runtime_inventory", lambda: UpdatePlan(runtimes=list(runtimes)))
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: checkout)
+    monkeypatch.setattr("hermes_cli.update_cmd._current_checkout_sha", lambda: checkout)
+    monkeypatch.setattr("hermes_cli.update_cmd_fleet_checkout.checkout_contains", lambda sha: checkout == "hotfix")
+
+    assert fleet._pending_fleet_restart_needed() is pending
+    assert host_obligation.host_obligation_path().exists() is pending
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert ("hermes gateway restart" in capsys.readouterr().err) is pending
+
+
+def test_gatewayless_probe_failure_keeps_marker(monkeypatch):
+    seed(monkeypatch, {}, "new", [])
+    (get_hermes_home() / "gateway_state.json").unlink()
+
+    def unavailable():
+        raise OSError("process table unreadable")
+
+    monkeypatch.setattr(update_inventory, "collect_runtime_inventory", unavailable)
+    assert fleet._pending_fleet_restart_needed()
+    assert host_obligation.host_obligation_path().exists()
 
 
 @pytest.mark.parametrize("consumer", ["predicate", "startup"])

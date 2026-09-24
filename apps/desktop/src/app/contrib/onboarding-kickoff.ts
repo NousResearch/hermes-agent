@@ -11,11 +11,13 @@ import {
 } from '@/components/onboarding-chat/assembly'
 import { $setupSession, guideSourceConnectionId, SETUP_CHAT_TITLE } from '@/components/onboarding-chat/setup-profile'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { prefetchConnectorCatalog } from '@/store/connector-catalog'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
 import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { skipGuide } from '@/store/onboarding-gate'
+import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
   $activeGatewayProfile,
@@ -27,6 +29,14 @@ import {
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
+
+/** The connectors card is two turns after the guide opens; its two reads are slow cold, so they start now. */
+function prefetchGuideCatalogs(storedId: null | string, runtimeId: string): void {
+  if (storedId) {
+    prefetchConnectorCatalog(storedId, runtimeId)
+    prefetchOnboardingPlugins(storedId)
+  }
+}
 
 export interface OnboardingKickoffOptions extends Pick<
   ReturnType<typeof useSessionActions>,
@@ -64,6 +74,7 @@ async function adoptGuideSession(
     runtimeId: adoptedRuntimeId ?? canonical.id,
     storedId: canonical.id
   })
+  prefetchGuideCatalogs(canonical.id, adoptedRuntimeId ?? canonical.id)
 
   if (freeTier) {
     await guideRequest('config.set', {
@@ -165,6 +176,7 @@ export function useOnboardingKickoff({
 
       const storedId = $selectedStoredSessionId.get()
       $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
+      prefetchGuideCatalogs(storedId, runtimeId)
       $setupSession.set({
         connectionId: guideSourceConnectionId(storedId),
         profile: setupProfile,

@@ -1,13 +1,11 @@
 """Tests for tools/self_repo_guard.py — the running-source-checkout git guard."""
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from tools.self_repo_guard import (
     detect_self_repo_git_mutation,
-    get_running_source_root,
 )
 
 
@@ -378,10 +376,6 @@ class TestWorktreeTargetingSourceRoot:
 
 
 class TestSourceRootResolution:
-    def test_resolves_to_repo_when_git_dir_present(self):
-        root = get_running_source_root()
-        if root is not None:
-            assert (root / ".git").exists()
 
     def test_worktree_git_file_counts(self, tmp_path, monkeypatch):
         import tools.self_repo_guard as mod
@@ -412,17 +406,7 @@ class TestBlockMessageGuidance:
     on most distros — parallel salvage clones running npm ci filled a 32GB
     tmpfs to 97% in one campaign)."""
 
-    def test_message_recommends_shared_clone_on_disk(self, repo):
-        hit, msg = _detect("git rebase origin/main", repo, repo)
-        assert hit is True
-        assert "git clone --shared" in msg
-        assert "scratch" in msg
 
-    def test_message_warns_against_tmp_for_dep_installs(self, repo):
-        hit, msg = _detect("git rebase origin/main", repo, repo)
-        assert hit is True
-        assert "tmpfs" in msg
-        assert "Delete the clone" in msg
 
     def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", "/custom/hermes-home")

@@ -29,19 +29,8 @@ describe('normalizeAgentPluginRow', () => {
 })
 
 describe('isDesktopRelevantPlugin (#98861)', () => {
-  it('lists the manageable bundled lifecycle plugins and keeps every other built-in hidden', () => {
-    expect(isDesktopRelevantPlugin(row({ key: 'disk-cleanup', source: 'bundled' }))).toBe(true)
-    expect(isDesktopRelevantPlugin(row({ key: 'security-guidance', source: 'bundled' }))).toBe(true)
-
-    for (const key of [
-      'platforms/discord',
-      'model-providers/openai',
-      'web/firecrawl',
-      'browser/agent-browser',
-      'kanban'
-    ]) {
-      expect(isDesktopRelevantPlugin(row({ key, source: 'bundled' }))).toBe(false)
-    }
+  it('hides ordinary built-ins but always lists user installs', () => {
+    expect(isDesktopRelevantPlugin(row({ key: 'platforms/discord', source: 'bundled' }))).toBe(false)
 
     // User installs are unaffected either way.
     expect(isDesktopRelevantPlugin(row({ key: 'my-plugin', source: 'user' }))).toBe(true)

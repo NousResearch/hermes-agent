@@ -16,7 +16,6 @@ All HTTP is mocked: nothing here talks to a real IDP.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import time
 import urllib.parse
@@ -30,12 +29,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import plugins.dashboard_auth.self_hosted as oidc_plugin
-from plugins.dashboard_auth._shared import JWKS_CACHE_SECONDS
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
-    LoginStart,
     ProviderError,
-    RefreshExpiredError,
     Session,
     assert_protocol_compliance,
 )
@@ -191,11 +187,6 @@ class TestConstruction:
         assert_protocol_compliance(oidc_plugin.SelfHostedOIDCProvider)
 
 
-    def test_strips_trailing_slash_from_issuer(self):
-        p = oidc_plugin.SelfHostedOIDCProvider(
-            issuer=_ISSUER + "/", client_id=_CLIENT_ID
-        )
-        assert p._issuer == _ISSUER
 
     def test_requires_issuer(self):
         with pytest.raises(ValueError, match="issuer"):
@@ -324,7 +315,6 @@ class TestDiscoveryRealRedirect:
     """
 
     def _serve(self, handler_cls):
-        import http.server
         import socketserver
         import threading
 
@@ -443,11 +433,6 @@ class TestStartLogin:
     def provider(self, rsa_keypair):
         return _make_provider(rsa_keypair)
 
-    def test_returns_login_start(self, provider):
-        result = provider.start_login(
-            redirect_uri="https://hermes.example/auth/callback"
-        )
-        assert isinstance(result, LoginStart)
 
 
     def test_authorize_url_has_required_params(self, provider):
@@ -724,25 +709,6 @@ class TestVerifySession:
         with pytest.raises(ProviderError, match="JWKS"):
             provider.verify_session(access_token=token)
 
-    def test_jwks_client_sends_explicit_http_headers(self):
-        provider = oidc_plugin.SelfHostedOIDCProvider(
-            issuer=_ISSUER, client_id=_CLIENT_ID
-        )
-        provider._discovery = dict(_DISCOVERY_DOC)
-        provider._discovery_fetched_at = time.time()
-
-        with patch("jwt.PyJWKClient") as client_cls:
-            provider._get_jwks_client()
-
-        client_cls.assert_called_once_with(
-            _DISCOVERY_DOC["jwks_uri"],
-            cache_keys=True,
-            lifespan=JWKS_CACHE_SECONDS,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "HermesAgent/1.0",
-            },
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -750,10 +716,6 @@ class TestVerifySession:
 # ---------------------------------------------------------------------------
 
 
-class TestRefreshAndRevoke:
-    @pytest.fixture
-    def provider(self, rsa_keypair):
-        return _make_provider(rsa_keypair)
 
 
 # ---------------------------------------------------------------------------

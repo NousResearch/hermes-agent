@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 # up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-6-sol",
-    "gpt-6-terra",
     "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -42,7 +41,6 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
-    ("gpt-6-terra", ("gpt-5.6-terra", "gpt-5.5")),
     ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),

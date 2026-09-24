@@ -314,7 +314,7 @@ class MemoryStore:
                     f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
-                return replaced, "Entry removed."
+                return replaced, "Entry removed.", {"removed_entry": entries[idx]}
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
                 return self._failure_with_entries(target, (
@@ -327,10 +327,10 @@ class MemoryStore:
     @staticmethod
     def _apply_batch_op(working: List[str], act: str, content: str, old_text: str,
                         pos: str) -> Tuple[Optional[str], Optional[str]]:
-        """Apply one batch op to *working* in place; return ``(error message, replaced
-        entry text)``. The first element is None on every success path; the second is
-        the full entry a 'replace' overwrote (None on non-replace paths and on every
-        error path), surfaced so the caller can show what was lost (#117952)."""
+        """Apply one batch op to *working*; return ``(error message, previous content)``.
+        Previous content is captured before each replace/remove, under the store lock.
+        It is published only after the entire batch has been validated and persisted.
+        """
         if act == "add":
             if not content:
                 return f"{pos}: content is required.", None
@@ -348,9 +348,9 @@ class MemoryStore:
             return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None
         if idx is None:
             return f"{pos}: no entry matched '{old_text}'.", None
-        replaced_text = working[idx] if act == "replace" else None
+        previous_content = working[idx]
         working[idx:idx + 1] = [content] if act == "replace" else []
-        return None, replaced_text
+        return None, previous_content
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
@@ -369,17 +369,18 @@ class MemoryStore:
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
             replaced = {}  # op index -> full entry text its replace overwrote (#117952)
+            removed = {}
             for i, op in enumerate(ops):
                 act = op.get("action")
-                msg, replaced_text = self._apply_batch_op(
+                msg, previous_content = self._apply_batch_op(
                     working, act, (op.get("content") or op.get("new_text") or "").strip(),
                     (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._batch_failure(target, msg)
-                if replaced_text is not None:
+                if previous_content is not None:
                     # 1-based op position, matching the "Operation N" error numbering the
                     # model sees for failed ops in the same batch.
-                    replaced[i + 1] = replaced_text
+                    (replaced if act == "replace" else removed)[i + 1] = previous_content
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
@@ -397,6 +398,8 @@ class MemoryStore:
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch, then retry."))
             replaced_fields = {"replaced_entries": replaced} if replaced else {}
+            if removed:
+                replaced_fields["removed_entries"] = removed
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
         return self._mutate(target, _apply)
 

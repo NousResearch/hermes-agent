@@ -35,6 +35,7 @@ import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
@@ -383,6 +384,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  // Workspace a FRESH chat starts in (`/api/pty?cwd=`), persisted per
+  // management profile (a phone remembers the repo it drives). The connect
+  // effect reads storage directly, so changing the picker never respawns the
+  // live PTY: it applies on the next "New chat".
+  const [workspaceCwd, setWorkspaceCwdState] = useState(() =>
+    readStoredWorkspace(scopedProfile),
+  );
+  const setWorkspaceCwd = useCallback(
+    (next: string) => {
+      writeStoredWorkspace(scopedProfile, next);
+      setWorkspaceCwdState(next);
+    },
+    [scopedProfile],
+  );
+  // Profile switch: show that profile's remembered workspace (state, not an
+  // effect, so no cascading render).
+  const [workspaceProfile, setWorkspaceProfile] = useState(scopedProfile);
+  if (workspaceProfile !== scopedProfile) {
+    setWorkspaceProfile(scopedProfile);
+    setWorkspaceCwdState(readStoredWorkspace(scopedProfile));
+  }
   const channel = useMemo(
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
@@ -1228,6 +1250,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const params: Record<string, string> = { channel };
       if (resumeParam) params.resume = resumeParam;
       if (forceFresh) params.fresh = "1";
+      // Picked workspace: only meaningful for a fresh chat (a resumed session
+      // keeps its own cwd); the server validates the directory exists.
+      const pickedWorkspace = resumeParam ? "" : readStoredWorkspace(scopedProfile);
+      if (pickedWorkspace) params.cwd = pickedWorkspace;
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
@@ -1868,6 +1894,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               profile={scopedProfile}
               onPicked={closeMobilePanel}
               onNewChat={startFreshDashboardChat}
+              workspaceCwd={workspaceCwd}
+              onWorkspaceChange={setWorkspaceCwd}
             />
           </div>
         </div>
@@ -2077,6 +2105,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 activeSessionId={resumeParam}
                 profile={scopedProfile}
                 onNewChat={startFreshDashboardChat}
+                workspaceCwd={workspaceCwd}
+                onWorkspaceChange={setWorkspaceCwd}
               />
             </div>
           </div>

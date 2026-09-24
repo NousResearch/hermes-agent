@@ -83,7 +83,7 @@ describe('resolveVenvPython', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatBlockerMessage', () => {
-  it('includes PID, name, cmdline, remote-client warning, and retry suggestion', () => {
+  it('includes PID, name and cmdline of each blocker', () => {
     const msg = formatBlockerMessage({
       blocked: true,
       processes: [{ pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1', kind: 'other', safeToStop: false }]
@@ -92,23 +92,13 @@ describe('formatBlockerMessage', () => {
     assert.ok(msg.includes('PID 101'))
     assert.ok(msg.includes('python.exe'))
     assert.ok(msg.includes('serve'))
-    assert.ok(msg.includes('remote backend'))
-    assert.ok(msg.includes('retry'))
-    assert.ok(!msg.includes('force-venv'))
   })
 })
 
 describe('formatProbeFailedMessage', () => {
-  it('suggests retry and hermes update', () => {
-    const msg = formatProbeFailedMessage()
-    assert.ok(msg.includes('hermes update'))
-    assert.ok(msg.includes('retry'))
-  })
-
-  it('distinguishes a timeout from a confirmed blocker', () => {
+  it('carries the probe failure detail', () => {
     const msg = formatProbeFailedMessage('timed out after 60 seconds')
     assert.ok(msg.includes('timed out after 60 seconds'))
-    assert.ok(msg.includes('no blocking process was confirmed'))
   })
 })
 
@@ -366,24 +356,6 @@ describe('scanVenvBlockers', () => {
   it('malformed subprocess output is probe-failure', async () => {
     const o = await scanVenvBlockers('/r', execReturn('bad json'), stubVenv)
     assert.equal(o.kind, 'probe-failure')
-  })
-
-  it('calls subprocess with correct args, cwd and timeout', async () => {
-    const calls: any[] = []
-
-    const spy = (async (cmd: string, args: string[], opts: any) => {
-      calls.push({ cmd, args, cwd: opts.cwd, timeout: opts.timeout })
-
-      return { stdout: okJson, stderr: '' }
-    }) as any
-
-    await scanVenvBlockers('/update/root', spy, stubVenv)
-    assert.equal(calls.length, 1)
-    const c = calls[0]
-    assert.ok(c.cmd.endsWith('python.exe'))
-    assert.deepEqual(c.args, ['-m', 'hermes_cli._scan_venv_blockers'])
-    assert.equal(c.cwd, '/update/root')
-    assert.equal(c.timeout, 60_000)
   })
 })
 

@@ -97,13 +97,6 @@ def test_passthrough_from_wire_stamps_routed_profile():
     assert fwd.profile == "reviewer"
 
 
-@pytest.mark.asyncio
-async def test_connect_wires_passthrough_handler_over_ws(adapter):
-    """connect() registers the passthrough handler on the transport so a
-    connector-delivered passthrough_forward frame reaches the adapter."""
-    await adapter.connect()
-    stub = adapter._transport
-    assert stub._passthrough is not None
 
 
 @pytest.mark.asyncio

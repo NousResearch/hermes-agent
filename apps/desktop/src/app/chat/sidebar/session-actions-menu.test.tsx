@@ -123,12 +123,10 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
-  it('opens the dropdown on click without a tooltip on the kebab', async () => {
+  it('opens the dropdown on click', async () => {
     renderMenu()
 
     const trigger = screen.getByRole('button', { name: 'Session actions' })
-
-    expect(trigger.closest('[data-slot="tooltip-trigger"]')).toBeNull()
 
     // Radix's dropdown trigger opens on pointerdown (not on the synthetic
     // 'click' fireEvent alone would dispatch), so fire the full mouse

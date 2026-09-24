@@ -371,6 +371,13 @@ def _install_single_query_signal_handlers(cli):
     from cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
     import signal as _signal
 
+    def _kill_foreground_and_exit(*_):
+        # The worker's command runs in its own process group: SIGKILL it or it outlives os._exit.
+        with suppress(Exception):
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes(now=True)
+        os._exit(0)
+
     def _signal_handler_q(signum, frame):
         logger.debug("Received signal %s in single-query mode", signum)
         _arm_exit_watchdog_on_shutdown_signal()  # covers wedges in the unwind below
@@ -390,7 +397,7 @@ def _install_single_query_signal_handlers(cli):
         if os.environ.get("HERMES_KANBAN_TASK"):
             with suppress(Exception):
                 if hasattr(_signal, "SIGALRM"):
-                    _signal.signal(_signal.SIGALRM, lambda *_: os._exit(0))
+                    _signal.signal(_signal.SIGALRM, _kill_foreground_and_exit)
                     _signal.alarm(5)
             with suppress(Exception):
                 # Durable flush FIRST: memory-provider shutdown inside _run_cleanup can issue aux-LLM calls,
@@ -400,7 +407,7 @@ def _install_single_query_signal_handlers(cli):
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
             _flush_logging_and_stdio()
-            os._exit(0)
+            _kill_foreground_and_exit()
         raise KeyboardInterrupt()
     with suppress(Exception):  # restricted environments
         for _name in ("SIGINT", "SIGTERM", "SIGHUP"):

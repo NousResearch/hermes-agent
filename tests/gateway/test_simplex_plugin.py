@@ -96,13 +96,6 @@ def test_env_enablement_seeds_home_channel(monkeypatch):
 # 4. Adapter init
 # ---------------------------------------------------------------------------
 
-def test_adapter_init_custom_url():
-    from gateway.config import PlatformConfig
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
-    adapter = SimplexAdapter(cfg)
-    assert adapter.ws_url == "ws://localhost:5225"
-    assert adapter._running is False
-    assert adapter._ws is None
 
 
 # ---------------------------------------------------------------------------

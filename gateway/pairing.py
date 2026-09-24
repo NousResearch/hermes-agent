@@ -20,7 +20,7 @@ from typing import Optional
 
 from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
-from utils import atomic_json_write
+from utils import atomic_json_write, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -128,20 +128,18 @@ def _matching_ids(platform: str, approved: dict, user_id: str) -> list:
 def _read_allowlist_env(env_var: str) -> str:
     """Read a platform allowlist env var through the profile secret scope.
 
-    Under multiplexing the process env may hold ANOTHER profile's allowlist, so a scoped
-    miss must return empty rather than borrow it; unscoped callers keep the legacy
-    ``os.getenv`` read. Writes (``save_env_value``/``remove_env_value``) target the
-    active profile's ``.env`` / installed scope, not ``os.environ``.
+    Under multiplexing the process env may hold ANOTHER profile's allowlist, so a
+    scoped miss must return empty rather than borrow it. The shared reader owns the
+    contract: a bound-scope failure propagates (never silently borrows the env),
+    while the unscoped default-profile path keeps the legacy ``os.getenv`` read.
+    Writes (``save_env_value``/``remove_env_value``) target the active profile's
+    ``.env`` / installed scope, not ``os.environ``.
 
     See #88441.
     """
-    with contextlib.suppress(Exception):
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        try:
-            return (get_secret(env_var) or "").strip()
-        except UnscopedSecretError:
-            pass
-    return (os.getenv(env_var) or "").strip()
+    from gateway.platforms._shared import get_scoped_secret
+
+    return (get_scoped_secret(env_var, "") or "").strip()
 
 
 def _configured_allowlist(platform: str):
@@ -335,6 +333,7 @@ class PairingStore:
         _migrate_split_pairing_dirs(home=profile_home, active=self._dir)
         self._lock = threading.RLock()  # adapters run concurrently in threads sharing one store
         self._profile = profile  # for diagnostics / log lines
+        self._approved_cache: dict = {}
 
     @property
     def profile(self) -> Optional[str]:
@@ -373,9 +372,30 @@ class PairingStore:
 
     # ----- Approved users -----
 
+    def _load_approved(self, platform: str) -> dict:
+        path = self._approved_path(platform)
+        try:
+            # Opening first preserves fail-closed authorization if permissions change.
+            # fstat identifies the actual opened file even during atomic replacement.
+            with path.open("rb") as stream:
+                st = os.fstat(stream.fileno())
+                key = (st.st_dev, *file_signature(st))
+                cached = self._approved_cache.get(platform)
+                if cached is not None and cached[0] == key:
+                    return cached[1]
+                data = json.load(stream)
+                data = data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            self._approved_cache.pop(platform, None)
+            # Keep the existing diagnostics for unreadable pairing files.
+            return self._load_json(path)
+        self._approved_cache[platform] = (key, data)
+        return data
+
     def is_approved(self, platform: str, user_id: str) -> bool:
         """Check if a user is approved (paired) on a platform."""
-        return bool(_matching_ids(platform, self._load_json(self._approved_path(platform)), user_id))
+        with self._lock:
+            return bool(_matching_ids(platform, self._load_approved(platform), user_id))
 
     def list_approved(self, platform: str = None) -> list:
         """List approved users, optionally filtered by platform."""

@@ -329,6 +329,9 @@ def _query_ro_sqlite(path: Path, fn):
         _close_quietly(conn)
 
 
+_LARGE_SQLITE_BACKUP_THRESHOLD_BYTES = 2 << 30  # 2 GiB
+
+
 def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
@@ -366,7 +369,14 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             else:
                 busy_deadline = now + max(0.0, timeout_seconds)
 
-        conn.backup(backup_conn, pages=256, progress=_check_backup_progress, sleep=0.1)
+        # Chunked backup can starve indefinitely on a large, write-heavy WAL
+        # database because every source write forces SQLite to revisit pages.
+        # A single backup step pins one read snapshot and completed a live 11 GiB
+        # state.db in minutes rather than making no progress for hours. Keep
+        # chunks for ordinary databases so busy/locked sources retain the
+        # bounded progress-callback behavior above.
+        pages = -1 if src.stat().st_size > _LARGE_SQLITE_BACKUP_THRESHOLD_BYTES else 256
+        conn.backup(backup_conn, pages=pages, progress=_check_backup_progress, sleep=0.1)
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)

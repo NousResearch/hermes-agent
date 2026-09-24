@@ -1339,11 +1339,6 @@ class GatewayNotificationsMixin:
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
             )
-            # Relay egress priming: post-restart routing caches are cold (they warm only on inbound), so
-            # replies would egress without tenant discriminators and be declined by the connector.
-            _prime = getattr(adapter, "prime_routing_cache", None)
-            if callable(_prime):
-                _prime(synth_event)
             await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted:

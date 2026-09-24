@@ -83,6 +83,11 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
     event._gateway_accepted = False
+    # Synthetic wakes bypass inbound routing-cache capture. Prime before dispatch
+    # so replies retain the origin's tenant discriminators even after a restart.
+    prime = getattr(adapter, "prime_routing_cache", None)
+    if callable(prime):
+        prime(event)
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
         raise WakeNotAccepted("internal wake not accepted by adapter")

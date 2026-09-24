@@ -1,0 +1,17 @@
+name: drag-to-pin-session
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: a10fb2b55ed38e6cdb0cf2faff1056443db57c5f
+subdir: public/drag-to-pin-session
+description: "Pin, unpin, and reorder sessions by dragging rows to their slots."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/drag-to-pin-session
+version: "1.1.0"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/a10fb2b55ed38e6cdb0cf2faff1056443db57c5f/public/drag-to-pin-session/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

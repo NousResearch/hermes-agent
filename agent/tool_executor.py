@@ -719,19 +719,14 @@ def _dispatch_authorized_once(
     block_message, block_error_type = scope_block, "tool_scope_block"
     block_payload = None
     if block_message is None:
-        block_payload = _pruned_tool_arguments_block(ref.name, ref.args)
-        if block_payload is not None:
-            block_message = block_payload["message"]
-            block_error_type = _PRUNED_TOOL_ARGUMENTS_ERROR
-
-    if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
 
-    # Plugin modify hooks are allowed to replace arguments, so enforce the same
-    # provenance boundary on their output before guardrails or real dispatch.
+    # Checked once, after plugin modify hooks (which may replace arguments) and
+    # before guardrails or real dispatch: a copied compression marker in an
+    # effect-capable argument must never reach the tool.
     if block_message is None:
         block_payload = _pruned_tool_arguments_block(ref.name, ref.args)
         if block_payload is not None:

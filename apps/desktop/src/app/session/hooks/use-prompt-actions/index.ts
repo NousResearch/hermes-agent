@@ -12,6 +12,7 @@ import { pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import { normalize } from '@/lib/text'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { clearClarifyRequest } from '@/store/clarify'
@@ -89,7 +90,6 @@ interface HandoffResult {
   error?: string
 }
 
-const WINDOWS_ABSOLUTE_PATH_RE = /^(?:[A-Za-z]:[\\/]|\\\\)/
 const POSIX_ABSOLUTE_PATH_RE = /^\/(?!\/)/
 
 // Terminal backends whose execution environment has its own filesystem
@@ -109,7 +109,7 @@ function attachmentPathNeedsUpload(path: string, backendCwd?: null | string, ter
     return true
   }
 
-  return WINDOWS_ABSOLUTE_PATH_RE.test(path.trim()) && POSIX_ABSOLUTE_PATH_RE.test(backendCwd?.trim() || '')
+  return isWindowsAbsolutePath(path.trim()) && POSIX_ABSOLUTE_PATH_RE.test(backendCwd?.trim() || '')
 }
 
 /**

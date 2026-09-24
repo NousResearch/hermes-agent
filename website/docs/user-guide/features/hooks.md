@@ -451,6 +451,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
+| [`transform_compaction_input`](#transform_compaction_input) | Transform | After the built-in compressor selects its middle window and before that window reaches the summary model; the first valid decision object controls each block. | `blocks`, `task_text`, `task_source`, `tool_names`, `task_id`, `session_id` | Exposes the full compacted window and current user task; both may contain secrets. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
@@ -1494,6 +1495,30 @@ def register(ctx):
 ```
 
 Not every backend accepts a prompt. `local` maps it to faster-whisper's `initial_prompt`; `openai`, `groq`, `mistral`, and `deepinfra` send it as `prompt`; `xai`, `elevenlabs`, `local_command`, and `type: command` providers log at DEBUG and transcribe without it. See the [provider support table](../configuration.md#transcription-prompt-vocabulary-hints) for the full matrix and the privacy boundary. Hook-plumbing errors are fail-open: the dispatch continues with the unmodified request.
+
+---
+
+### `transform_compaction_input`
+
+Fires after the built-in compressor selects and cleans the middle window, immediately before it builds the auxiliary summary-model prompt. Native provider compaction and custom context engines do not use this built-in window and therefore do not fire the hook.
+
+`blocks` is an ordered list. Each item contains `block_index`, `role`, `content`, `tool_names`, `tool_call_id`, and a deep-copied `message`. `task_text` is the exact text of the newest real user turn, including a protected-tail turn outside the compacted window. `task_source` identifies that turn with `message_index`, `content`, and `task_id`; `tool_names` is the de-duplicated set of tools represented in the window.
+
+Return a dictionary with a `decisions` list. Each decision names one `block_index` and an `action`: `keep`, `drop`, or `shorten`. A `shorten` decision must also contain replacement string `content`. Unmentioned blocks default to `keep`. The first structurally valid return wins; invalid returns and hook failures are fail-open.
+
+```python
+def compact_for_task(blocks, task_text, **kwargs):
+    decisions = []
+    for block in blocks:
+        if "release checklist" not in task_text.lower() and "terminal" in block["tool_names"]:
+            decisions.append({"block_index": block["block_index"], "action": "shorten", "content": "[terminal output omitted]"})
+    return {"decisions": decisions}
+
+def register(ctx):
+    ctx.register_hook("transform_compaction_input", compact_for_task)
+```
+
+Applied decisions are persisted on the resulting summary carrier under `display_metadata.compaction_hook_provenance`. Hermes supplies the durable `task_source` and records each action, tool names, and before/after character counts; plugin-provided provenance is not trusted. This metadata is not sent to the model.
 
 ---
 

@@ -378,6 +378,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     without display hooks. Every callback is guarded so a buggy display hook cannot tear down the turn loop."""
     # item_id -> (tool_name, args, started_monotonic); duration even when codex omits durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
+    active_reasoning_item_id: str | None = None
 
     def agent_cb(attr: str, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None) -> None:
         _call_guarded(getattr(agent, attr, None), fail_msg, *fail_args, args=args, kwargs=kwargs)
@@ -417,6 +418,35 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if text:
             agent_cb(attr, f"{attr} raised", args=(text,))
 
+    def _fire_reasoning_delta(params: dict) -> None:
+        text = params.get("delta") or params.get("text") or ""
+        item_id = params.get("itemId") or params.get("item_id") or active_reasoning_item_id
+        callback = getattr(agent, "reasoning_event_callback", None)
+        if isinstance(text, str) and text and isinstance(item_id, str) and item_id and callback is not None:
+            try:
+                delivery = getattr(agent, "_fire_reasoning_event", None) or callback
+                delivery("delta", item_id, text)
+                return
+            except Exception:
+                logger.debug("reasoning_event_callback raised", exc_info=True)
+        _fire_delta(params, "_fire_reasoning_delta")
+
+    def _fire_reasoning_item_event(event: str, item: dict) -> None:
+        nonlocal active_reasoning_item_id
+        item_id = item.get("id")
+        callback = getattr(agent, "reasoning_event_callback", None)
+        if not isinstance(item_id, str) or not item_id or callback is None:
+            return
+        try:
+            delivery = getattr(agent, "_fire_reasoning_event", None) or callback
+            delivery(event, item_id, "")
+            if event == "start":
+                active_reasoning_item_id = item_id
+            elif event == "end" and active_reasoning_item_id == item_id:
+                active_reasoning_item_id = None
+        except Exception:
+            logger.debug("reasoning_event_callback raised", exc_info=True)
+
     def _fire_agent_message_completed(item: dict) -> None:
         text = item.get("text") or ""
         # display.show_commentary=false keeps mid-turn narration off the interim path too (codex_responses contract).
@@ -434,12 +464,14 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if not isinstance(item, dict):
             return
         item_type = item.get("type") or ""
-        if item_type in _CODEX_TOOL_ITEM_TYPES:
+        if item_type == "reasoning":
+            _fire_reasoning_item_event("end" if completed else "start", item)
+        elif item_type in _CODEX_TOOL_ITEM_TYPES:
             (_fire_tool_completed if completed else _fire_tool_started)(item)
         elif completed and item_type == "agentMessage":
             _fire_agent_message_completed(item)
     handlers: dict[str, Callable[[dict], None]] = {
-        method: functools.partial(_fire_delta, attr=attr) for method, attr in _CODEX_TEXT_DELTA_METHODS
+        method: (_fire_reasoning_delta if attr == "_fire_reasoning_delta" else functools.partial(_fire_delta, attr=attr)) for method, attr in _CODEX_TEXT_DELTA_METHODS
     }
     handlers["item/started"] = lambda p: _on_item(p, completed=False)
     handlers["item/completed"] = lambda p: _on_item(p, completed=True)
@@ -793,8 +825,10 @@ class _CodexResponseAssembler:
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
 
-    def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
+    def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_reasoning_event,
+                 on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
+        self.on_reasoning_event = on_reasoning_event
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
         self.output_items: List[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
@@ -876,14 +910,36 @@ class _CodexResponseAssembler:
 
     def _on_reasoning_delta(self, event: Any, event_type: str) -> None:
         reasoning_text = _event_field(event, "delta", "")
-        if not reasoning_text or self.on_reasoning_delta is None:
+        if not reasoning_text:
             return
         summary_index = _event_field(event, "summary_index")
+        item_id = _event_field(event, "item_id")
+        structured = (
+            self.on_reasoning_event is not None and isinstance(item_id, str) and item_id
+            and isinstance(summary_index, int) and not isinstance(summary_index, bool) and summary_index >= 0
+        )
+        if structured:
+            self._safe(
+                self.on_reasoning_event, "on_reasoning_event",
+                "delta", f"{item_id}:summary:{summary_index}", reasoning_text,
+            )
+            return
+        if self.on_reasoning_delta is None:
+            return
         if summary_index is not None:
             if self.active_summary_index is not None and summary_index != self.active_summary_index:
                 reasoning_text = f"\n\n{reasoning_text}"
             self.active_summary_index = summary_index
         self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
+
+    def _on_reasoning_part(self, event: Any, event_type: str) -> None:
+        item_id = _event_field(event, "item_id")
+        summary_index = _event_field(event, "summary_index")
+        if (self.on_reasoning_event is None or not isinstance(item_id, str) or not item_id
+                or not isinstance(summary_index, int) or isinstance(summary_index, bool) or summary_index < 0):
+            return
+        phase = "start" if event_type.endswith(".added") else "end"
+        self._safe(self.on_reasoning_event, "on_reasoning_event", phase, f"{item_id}:summary:{summary_index}", "")
 
     def _on_item_done(self, event: Any, event_type: str) -> None:
         done_item = _event_field(event, "item")
@@ -927,6 +983,8 @@ class _CodexResponseAssembler:
     _EXACT_HANDLERS = {
         "error": lambda self, event, event_type: _raise_stream_error(event),
         "response.output_item.added": _on_item_added, "response.output_item.done": _on_item_done,
+        "response.reasoning_summary_part.added": _on_reasoning_part,
+        "response.reasoning_summary_part.done": _on_reasoning_part,
         "response.completed": _on_terminal, "response.incomplete": _on_terminal, "response.failed": _on_terminal,
         "response.refusal.delta": _on_refusal_delta,
     }
@@ -982,7 +1040,8 @@ class _CodexResponseAssembler:
 
 
 def _consume_codex_event_stream(
-    event_iter: Any, *, model: str, on_text_delta=None, on_reasoning_delta=None, on_commentary_message=None,
+    event_iter: Any, *, model: str, on_text_delta=None, on_reasoning_delta=None, on_reasoning_event=None,
+    on_commentary_message=None,
     on_first_delta=None, on_event=None, interrupt_check=None,
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE stream into a Response-shaped ``SimpleNamespace`` (see
@@ -996,6 +1055,7 @@ def _consume_codex_event_stream(
     True breaks the loop and may raise ``TimeoutError`` / ``InterruptedError`` for request retirement that
     must not become a partial final response."""
     assembler = _CodexResponseAssembler(model=model, on_text_delta=on_text_delta, on_reasoning_delta=on_reasoning_delta,
+                                        on_reasoning_event=on_reasoning_event,
                                         on_commentary_message=on_commentary_message, on_first_delta=on_first_delta)
     for event in event_iter:
         if on_event is not None:
@@ -1238,7 +1298,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 final = _consume_codex_event_stream(
                     event_stream, model=model, on_text_delta=_fenced(_on_text_delta),
-                    on_reasoning_delta=_live(agent._fire_reasoning_delta), on_commentary_message=on_commentary_message,
+                    on_reasoning_delta=_live(agent._fire_reasoning_delta),
+                    on_reasoning_event=(
+                        _live(agent._fire_reasoning_event)
+                        if callable(getattr(agent, "reasoning_event_callback", None)) else None
+                    ),
+                    on_commentary_message=on_commentary_message,
                     on_first_delta=_live(on_first_delta) if on_first_delta is not None else None,
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
                 )

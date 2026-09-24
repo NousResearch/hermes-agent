@@ -46,6 +46,20 @@ export function desktopPackageName(record: PluginRecord): null | string {
   return record.packageName ?? legacyPackageName(record.file)
 }
 
+/** Folder under the app-level root (`<HERMES_HOME>/desktop-plugins/<name>/plugin.js`).
+ *  Install-from-git writes that folder with no `.hermes-package.json`. The
+ *  marker join then misses it, so the agent row stays on "copying…" while this
+ *  copy is already loaded and enabled. */
+function appRootPackageFolder(file?: string): null | string {
+  if (!file) {
+    return null
+  }
+
+  const match = /[\\/]desktop-plugins[\\/]([^\\/]+)[\\/]plugin\.js$/.exec(file)
+
+  return match ? match[1] : null
+}
+
 const KIND_RANK: Record<PackageKind, number> = { both: 0, agent: 1, desktop: 2 }
 const DESKTOP_KIND_RANK: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
 
@@ -70,7 +84,19 @@ export function mergePluginPackages(
   }
 
   for (const record of desktopRecords) {
-    const pkg = desktopPackageName(record)
+    let pkg = desktopPackageName(record)
+
+    if (!pkg) {
+      const folder = appRootPackageFolder(record.file)
+      const waiting = folder ? byKey.get(folder) : undefined
+
+      // Only claim the folder when an agent package of that name is still
+      // waiting for its desktop half. A hand-made plugin that merely shares a
+      // folder name with an agent-only package stays its own row.
+      if (waiting?.desktopMissing) {
+        pkg = folder
+      }
+    }
 
     if (pkg) {
       const existing = byKey.get(pkg)

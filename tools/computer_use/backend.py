@@ -163,6 +163,15 @@ class ComputerUseBackend(ABC):
         predate window discovery stay instantiable and report none."""
         return []
 
+    def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
+                   path: Optional[str] = None, aumid: Optional[str] = None,
+                   launch_path: Optional[str] = None, urls: Optional[List[str]] = None,
+                   additional_arguments: Optional[List[str]] = None,
+                   creates_new_application_instance: bool = False,
+                   start_minimized: bool = False) -> ActionResult:
+        """Launch an app through the backend without activating it."""
+        raise NotImplementedError("launch_app is not supported by this backend")
+
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...  # route input to `app` (name / bundle ID)
 

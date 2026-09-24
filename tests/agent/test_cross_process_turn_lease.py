@@ -117,6 +117,36 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
     assert any(kind == "lifecycle" and text for kind, text in status_events)
 
 
+def test_lease_wait_marks_known_activity_for_gateway_watchdogs(monkeypatch):
+    """A bounded durable-lease wait is queued work, never idle agent time."""
+    from agent.session_activity import ActivityProvenance
+
+    db = _DB()
+    agent = _agent_with_db(db)
+    observed = {}
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        kwargs["on_wait"](0.0)
+        observed["description"] = getattr(agent, "_last_activity_desc", None)
+        observed["provenance"] = getattr(agent, "_last_activity_provenance", None)
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        lambda _agent, _message, _system, history, *_args, **_kwargs: {
+            "final_response": "ok", "messages": history, "failed": False,
+        },
+    )
+
+    AIAgent.run_conversation(
+        agent, "new message", conversation_history=[{"role": "user", "content": "stale"}]
+    )
+
+    assert observed["description"] == "waiting for session turn lease"
+    assert observed["provenance"] is ActivityProvenance.AGENT_SESSION_TURN_LEASE
+
+
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     """A locked / non-WAL get_session must not skip the durable lease."""
     db = _DB()

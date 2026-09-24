@@ -1554,7 +1554,15 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    # A terminal handoff is a later successful run.  ``request_review`` keeps
+    # the prior rate-limit diagnostic for history, so treating that stale text
+    # as a current auth/quota failure would prevent the reviewer from ever
+    # claiming the card.
+    if (
+        err
+        and latest_outcome not in {"crashed", "completed", "review_requested"}
+        and _RESPAWN_BLOCKER_RE.search(err)
+    ):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

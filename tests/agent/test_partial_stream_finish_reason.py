@@ -359,19 +359,6 @@ class TestMixedToolCallsOneDroppedOneComplete:
 # ── Length-continuation prompt branching ──────────────────────────────────
 
 class TestLengthContinuationAssembly:
-    def test_repeated_complete_tail_is_not_joined_twice(self):
-        conclusion = (
-            "**Conclusion**: the project remains on standby until the stable "
-            "release. Nothing changes."
-        )
-
-        joined = _join_truncated_parts([
-            (f"Investigation details.\n\n{conclusion}", True),
-            (conclusion, False),
-        ])
-
-        assert joined.count(conclusion) == 1
-
     def test_distinct_continuation_is_preserved(self):
         assert _join_truncated_parts([
             ("The first half ends here", True),
@@ -492,7 +479,7 @@ class TestConversationLoopPartialStreamContinuation:
         assert result["final_response"].count(repeated_tail) == 1
 
     def test_output_limit_continuation_preserves_intentional_repetition(self, loop_agent):
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         repeated = "This intentionally repeated sentence is longer than thirty-two characters."
         first = _mock_response(

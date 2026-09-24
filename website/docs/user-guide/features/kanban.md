@@ -61,26 +61,45 @@ dashboard completion. It reads classic branch protection and active ruleset
 required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
-neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
-the repository's checks and rules; no remote writes are performed by this gate.
+neutral **required** evidence cannot complete the card. Unreadable policy or GitHub
+API failures also fail closed. `gh` must be authenticated with read access to the
+repository's checks and rules; no remote writes are performed by this gate.
 
-Rejection retains the active card and workspace. Durable `pr_acceptance` events
-store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
-instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
-infrastructure checks or wait, then retry completion. Use `kanban_block` when
-human action is needed. Generic GitHub `failure` cannot establish whether a test
-or artifact upload failed; inspect its retained URL. Explicit infrastructure
-conclusions and API failures are classified separately. No extra worker is spawned.
+For a GitHub issue-intake task whose immutable key is
+`github:OWNER/REPO:issue:N:intake` and whose contract is non-local, acceptance is
+two-stage but terminal completion is delivery-level: the exact published PR must
+be merged into the repository's freshly resolved default branch, GitHub must link
+that PR to issue `N` (structured closing reference first; exact same-repo closing
+keyword only as a legacy fallback), and the issue must be `CLOSED`. `delivery_acceptance`
+records this read-only check. An open PR, a merge to another branch, a manually
+closed/unlinked issue, or GitHub API uncertainty leaves the task nonterminal.
+The acceptance store binds the first matching PR URL and rechecks task/run ownership
+before writing receipts and terminal state.
 
-Receipt persistence and the terminal write recheck run/status/contract ownership
-under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
-the new run. The final GitHub read is a completion-time snapshot, not a distributed
-transaction or a continuous post-completion monitor. This is a single-user lifecycle
-guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
-is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
-verification and publication alone are not remote acceptance.
+A coordinator-owned issue root may use `metadata.local_gate` only when the hosted
+policy has no required checks or GitHub proves that the declared failed Actions
+checks never allocated a runner (`runner_id` absent/zero and no steps). The receipt
+must bind the exact PR head SHA, contain named passing gate steps, state
+`private_database: true`, include an approved independent reviewer different from
+the root assignee whose review is bound to that same head SHA, and identify
+the assignee as approver. For pre-run failures,
+list the exact check-run IDs; the gate reads each Actions job record itself.
+Pending checks, actual runner/step failures, missing required contexts, a mismatched
+receipt, or incomplete GitHub evidence still block completion. Do not include
+connection strings, credentials, or raw test output. This coordinator receipt is
+an auditable attestation, not a cryptographic proof that the commands ran.
+
+Decomposition keeps the issue root as the integration/delivery owner. Children
+are explicitly `local-only`: they hand back local artifacts and evidence and do
+not publish, merge, or close issues. Read-only investigation cards remain
+`local-only` even when they need a repository worktree.
+
+Rejection retains the active card and workspace. Durable `pr_acceptance` and
+`delivery_acceptance` events store classifications and recovery instructions;
+`last_failure_error` surfaces the next step. Fix repository failures, rerun
+infrastructure checks or wait for merge, then retry completion. Use `kanban_block`
+when human action is needed. The final GitHub read is a completion-time snapshot,
+not a distributed transaction or continuous post-completion monitor.
 
 ## Kanban vs. `delegate_task`
 

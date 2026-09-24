@@ -25,6 +25,7 @@ from typing import Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli.kanban_delivery_acceptance import is_source_issue_intake
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
@@ -42,6 +43,8 @@ matching profile from the available roster.
 
 You will be given:
   - The original task title and body
+  - The immutable source idempotency key, if this is a GitHub issue intake
+  - The completion contract, if one is present
   - The list of available profiles (each with name + description)
   - The fallback "default_assignee" used when no profile fits
 
@@ -62,6 +65,15 @@ Output a single JSON object with this exact shape:
   }
 
 Rules:
+  - If the task has a GitHub issue idempotency key and a non-local completion contract,
+    it is the issue's integration/delivery root. Preserve that responsibility on the
+    root and keep the configured orchestrator as its assignee; do not delegate PR
+    creation, merge, or issue closure to leaf workers.
+  - Every child created by decomposition is a local-only artifact task. Children
+    return commits and test evidence; they never publish a PR, merge code, close an
+    issue, or claim delivery. The database enforces this completion contract.
+  - For read-only investigation/intake tasks, preserve a local-only contract; do
+    not invent PR publication requirements.
   - "parents" is a list of INDICES (0-based) into this same "tasks" list,
     expressing actual data dependencies. Tasks with no parents run in
     PARALLEL. Tasks with parents wait until every parent completes.
@@ -98,6 +110,8 @@ _USER_TEMPLATE = """Task id: {task_id}
 Title: {title}
 Body:
 {body}
+Source idempotency key: {idempotency_key}
+Completion contract: {completion_contract}
 
 Available profiles (assignees you may pick from):
 {roster}
@@ -221,8 +235,17 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
+    is_delivery_root = (
+        isinstance(task.idempotency_key, str)
+        and task.idempotency_key.casefold().startswith("github:")
+        and bool(task.completion_contract)
+        and task.completion_contract != "local-only"
+    )
     assignee_val = None
-    if not task.assignee:
+    if is_delivery_root:
+        assignee_val = routing.orchestrator
+        body_val = _delivery_root_instructions(task, body_val)
+    elif not task.assignee:
         assignee_val = _normalize_assignee_choice(
             parsed.get("assignee"), default_assignee=routing.default_assignee, valid_names=routing.valid_names,
         )
@@ -235,6 +258,27 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     if not ok:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
+
+
+def _delivery_root_instructions(task: kb.Task, body: Optional[str]) -> str:
+    body = body or task.body or ""
+    if "Integration and delivery ownership" in body:
+        return body
+    issue_number = None
+    source_key = task.idempotency_key
+    if isinstance(source_key, str) and is_source_issue_intake(source_key):
+        issue_number = source_key.split(":")[3]
+    close_instruction = (
+        f"Include `Closes #{issue_number}` in the PR description."
+        if issue_number else "Link the exact source issue in the PR description."
+    )
+    return (
+        f"{body.rstrip()}\n\nIntegration and delivery ownership:\n"
+        "- The issue-root coordinator owns final integration and publishes the single PR.\n"
+        "- Obtain independent review, resolve feedback, and merge when repository policy and all acceptance criteria pass.\n"
+        f"- {close_instruction} Verify the exact PR is merged to the current default branch and the source issue is closed.\n"
+        "- Implementation children are local-only and must not publish separate PRs."
+    )
 
 
 def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
@@ -318,6 +362,8 @@ def decompose_task(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(
             **_task_prompt_fields(task),
+            idempotency_key=task.idempotency_key or "(none)",
+            completion_contract=task.completion_contract or "(none)",
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
         ),

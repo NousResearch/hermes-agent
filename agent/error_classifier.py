@@ -843,6 +843,22 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
         return _v(_R.thinking_signature)
+    # Strict Anthropic/OpenAI-compat proxies (Palantir Foundry LLM
+    # proxy, Mistral, ...) reject the ``reasoning_details`` field Hermes echoes
+    # back for multi-turn reasoning continuity: HTTP 400 with
+    # ``{unrecognizedProperty=reasoning_details}`` / "unrecognized field".
+    # Unlike the signature case above this carries no "thinking" token, so it
+    # fell through to a non-retryable format_error and the turn hard-aborted
+    # (observed on opus subagents doing many tool-call steps: the prior step's
+    # reasoning_details rides into the next request and the strict proxy rejects
+    # the whole call). Same recovery applies — strip all reasoning_details and
+    # retry — so route it to the thinking_signature handler too.
+    if (
+        status == 400
+        and "reasoning_details" in msg
+        and ("unrecognized" in msg or "unknown" in msg or "invalid" in msg)
+    ):
+        return _v(_R.thinking_signature, should_compress=False)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:
         return _v(_R.long_context_tier, should_compress=True)

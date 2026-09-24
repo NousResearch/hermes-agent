@@ -605,6 +605,68 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
         assert kb.parent_ids(conn, foreign_child) == []
 
 
+def test_unlink_removes_existing_edge(worker_env):
+    """A worker that created a wrong-direction link recovers in-band via
+    kanban_unlink (regression for issue #121424: link had no unlink counterpart)."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="wrong-direction parent")
+        child = kb.create_task(conn, title="wrong-direction child")
+
+    linked = json.loads(kt._handle_link({"parent_id": parent, "child_id": child}))
+    assert linked["ok"] is True
+    with kbc.connect() as conn:
+        assert kb.parent_ids(conn, child) == [parent]
+
+    out = json.loads(kt._handle_unlink({"parent_id": parent, "child_id": child}))
+    assert out["ok"] is True
+    assert out["parent_id"] == parent
+    assert out["child_id"] == child
+    with kbc.connect() as conn:
+        assert kb.parent_ids(conn, child) == []
+
+
+def test_unlink_absent_edge_is_error(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        b = kb.create_task(conn, title="b")
+
+    out = json.loads(kt._handle_unlink({"parent_id": a, "child_id": b}))
+    assert out.get("ok") is not True
+    assert "no dependency" in out.get("error", "")
+
+    # Second unlink of a now-removed edge fails the same way.
+    linked = json.loads(kt._handle_link({"parent_id": a, "child_id": b}))
+    assert linked["ok"] is True
+    assert json.loads(kt._handle_unlink({"parent_id": a, "child_id": b}))["ok"] is True
+    out2 = json.loads(kt._handle_unlink({"parent_id": a, "child_id": b}))
+    assert out2.get("ok") is not True
+    assert "no dependency" in out2.get("error", "")
+
+
+def test_unlink_requires_both_ids(worker_env):
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_unlink({"parent_id": "t1"}))
+    assert out.get("ok") is not True
+    assert "child_id" in out.get("error", "")
+
+
+def test_kanban_toolset_exposes_unlink_alongside_link():
+    """Relationship contract: wherever the kanban toolset exposes the link tool,
+    the unlink counterpart must be present too (issue #121424)."""
+    from toolsets import TOOLSETS
+    tools = set(TOOLSETS["kanban"]["tools"])
+    assert "kanban_link" in tools
+    assert "kanban_unlink" in tools
+
+
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb

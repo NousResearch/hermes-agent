@@ -1003,6 +1003,49 @@ _CHAT_REPLY = ({"final_response": "ok"}, {"input_tokens": 0, "output_tokens": 0,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+async def test_session_chat_preserves_long_plain_string_messages(adapter, session_db, suffix):
+    """Regression for #120937: session chat must not truncate plain-string input."""
+    session_id = session_db.create_session("long-message-session", "api_server")
+    message = "x" * 65_537
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}{suffix}", json={"message": message})
+            assert resp.status == 200, await resp.text()
+            if suffix.endswith("/stream"):
+                await resp.text()
+    assert mock_run.call_args.kwargs["user_message"] == message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("hello", "hello"),
+        (
+            [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": "https://example.com/image.png"},
+            ],
+            [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}},
+            ],
+        ),
+    ],
+)
+async def test_session_chat_keeps_short_and_multimodal_message_handling(adapter, session_db, message, expected):
+    session_id = session_db.create_session("message-shape-session", "api_server")
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": message})
+            assert resp.status == 200, await resp.text()
+    assert mock_run.call_args.kwargs["user_message"] == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("body, expected", [
     ({"message": "hello", "author": {"id": " bot:dixie ", "name": "dixie", "is_bot": 1, "role": "admin"}},
      {"id": "bot:dixie", "name": "dixie", "is_bot": True}),

@@ -649,6 +649,10 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
     user_message = body.get("message") or body.get("input")
     if not _content_has_visible_payload(user_message):
         return None, _error_response("Missing 'message' field", 400, code="missing_message")
+    # Session chat accepts a plain text turn directly.  Its request size is not
+    # constrained by the defensive cap used while flattening structured parts.
+    if isinstance(user_message, str):
+        return user_message, None
     try:
         return _normalize_multimodal_content(user_message), None
     except ValueError as exc:

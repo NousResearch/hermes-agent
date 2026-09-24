@@ -726,7 +726,15 @@ def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, a
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
-        return []
+        # A prompt-level block rides in promptFeedback with no candidates at all; dropping it
+        # made the stream look empty and a deterministic refusal retried as an outage (#121317).
+        feedback = event.get("promptFeedback")
+        if not (isinstance(feedback, dict) and feedback.get("blockReason")):
+            return []
+        finish_chunk = _make_stream_chunk(model=model, finish_reason="content_filter")
+        if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
+            finish_chunk.usage = _usage_from_metadata(usage_meta)
+        return [finish_chunk]
     cand = candidates[0] if isinstance(candidates[0], dict) else {}
     parts = (cand.get("content") or {}).get("parts") or []
     chunks: List[_GeminiStreamChunk] = []

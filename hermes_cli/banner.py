@@ -143,6 +143,8 @@ _last_target_rev: Optional[str] = None
 
 # Returned when an update is known to exist but commits can't be counted (e.g. nix builds).
 UPDATE_AVAILABLE_NO_COUNT = -1
+# HEAD and origin/main have diverged (neither is an ancestor). Not a fast-forward count (#68484).
+UPDATE_DIVERGED = -2
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 _OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
@@ -303,6 +305,15 @@ def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: O
     if head_rev == target_rev or (repo_dir is not None and _git_ok(
             ["merge-base", "--is-ancestor", target_rev, "HEAD"], cwd=repo_dir)):
         return 0
+    # Full clone, no fetch: shared merge-base + neither tip is an ancestor of
+    # the other = diverged (not a behind-count). Shallow clones fail merge-base
+    # and must fall through to GitHub compare (#68484 / #68677).
+    if (
+        repo_dir is not None
+        and _git_ok(["merge-base", "HEAD", target_rev], cwd=repo_dir)
+        and not _git_ok(["merge-base", "--is-ancestor", "HEAD", target_rev], cwd=repo_dir)
+    ):
+        return UPDATE_DIVERGED
     counted = _github_compare_behind(head_rev, target_rev)
     return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
@@ -577,6 +588,11 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 def _format_update_notice(behind: int) -> str:
     """Render the update warning line for a non-zero ``behind`` result."""
     from hermes_cli.config import get_managed_update_command, recommended_update_command
+    if behind == UPDATE_DIVERGED:
+        return (
+            "[bold yellow]⚠ branch diverged from origin/main[/]"
+            f"[dim yellow] — not a fast-forward; review before "
+            f"[bold]{recommended_update_command()}[/bold][/]")
     if behind > 0:
         return (
             f"[bold yellow]⚠ {behind} {_plural(behind, 'commit')} behind[/]"

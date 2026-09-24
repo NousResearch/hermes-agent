@@ -86,7 +86,7 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
-  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
+  const updateAvailable = behind > 0 || behind === -2 || Boolean(status?.updateAvailable)
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 
@@ -111,7 +111,12 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
     statusLine = a.installing
     statusTone = 'available'
   } else if (updateAvailable) {
-    statusLine = behind > 0 ? a.updateReady(behind) : a.updateReadyUnknown
+    statusLine =
+      behind === -2
+        ? "Branch diverged from origin/main (not a fast-forward)"
+        : behind > 0
+          ? a.updateReady(behind)
+          : a.updateReadyUnknown
     statusTone = 'available'
   } else if (status) {
     statusLine = a.onLatest

@@ -158,3 +158,40 @@ def test_upstream_main_sha_ls_remote_fallback_disables_git_prompts(monkeypatch):
     assert kwargs["stdin"] is banner.subprocess.DEVNULL
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"
+
+
+def test_tips_behind_diverged_when_merge_base_exists_and_neither_is_ancestor(tmp_path, monkeypatch):
+    """Full clone: shared history but neither tip is ancestor → UPDATE_DIVERGED, not a count."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def fake_ok(args, cwd=None, **kw):
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            return False
+        if args[:1] == ["merge-base"]:
+            return True
+        return False
+
+    monkeypatch.setattr(banner, "_git_ok", fake_ok)
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda *a, **k: 99)
+    assert banner._tips_behind(SHA_A, SHA_B, repo) == banner.UPDATE_DIVERGED
+
+
+def test_tips_behind_shallow_no_merge_base_uses_compare(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def fake_ok(args, cwd=None, **kw):
+        return False
+
+    monkeypatch.setattr(banner, "_git_ok", fake_ok)
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda *a, **k: 61)
+    assert banner._tips_behind(SHA_A, SHA_B, repo) == 61
+
+
+def test_format_update_notice_diverged_is_not_a_tip_count(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.recommended_update_command", lambda: "hermes update")
+    text = banner._format_update_notice(banner.UPDATE_DIVERGED)
+    assert "diverged" in text.lower()
+    assert "+-2" not in text
+    assert "2 commit" not in text

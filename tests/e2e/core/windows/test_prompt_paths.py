@@ -18,11 +18,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.windows._helpers import (
+    KnownBugSymptom,
     expect,
     hermes,
-    known_marks,
-    known,
     last_user,
     make_home,
     nonce,
@@ -34,10 +34,14 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
 
-KNOWN: dict[str, str] = {
-    "native-backslash": "#121150 subdirectory hints never load from native Windows paths (POSIX shlex)",
-    "chain_labels": "#121015 AGENTS.md chain labels use os.path.relpath separators (..\\AGENTS.md)",
-    "folder_header": "#121114 @folder listing header mixes separators on Windows (pkg\\sub/)",
+# key -> (the bug's own failure signature, "#issue reason"); see _pending_fixes.known_failure.
+KNOWN: dict[str, tuple[str, str]] = {
+    "native-backslash": (r"^native-backslash: backend/AGENTS\.md never reached the model after ",
+                         "#121150 subdirectory hints never load from native Windows paths (POSIX shlex)"),
+    "chain_labels": (r"^AGENTS\.md chain headings are not the portable spelling: \[.*\\",
+                     "#121015 AGENTS.md chain labels use os.path.relpath separators (..\\AGENTS.md)"),
+    "folder_header": (r"^@folder header lines: \['pkg\\+sub/'\]",
+                      "#121114 @folder listing header mixes separators on Windows (pkg\\sub/)"),
 }
 
 # spelling -> terminal command the model issues (the issue's own repro commands)
@@ -47,9 +51,7 @@ HINT_COMMANDS: dict[str, str] = {
 }
 
 
-@pytest.mark.parametrize("spelling", [
-    pytest.param(name, marks=known_marks(name, KNOWN)) for name in HINT_COMMANDS
-])
+@pytest.mark.parametrize("spelling", list(HINT_COMMANDS))
 def test_subdirectory_hint_reaches_model(spelling: str, tmp_path: Path) -> None:
     canary = nonce("BACKEND-RULES")
     with FakeLLMServer([ToolCall("terminal", {"command": HINT_COMMANDS[spelling]}), Text("done")]) as srv:
@@ -61,12 +63,12 @@ def test_subdirectory_hint_reaches_model(spelling: str, tmp_path: Path) -> None:
         assert res.returncode == 0, res.tail()
         results = tool_results(srv)
     assert len(results) == 1, f"expected one terminal result on the wire, got {results}"
-    expect(canary in results[0],
-           f"{spelling}: backend/AGENTS.md never reached the model after {HINT_COMMANDS[spelling]!r}:\n"
-           f"{results[0][-1500:]}")
+    with known_gate(KNOWN, spelling, raises=KnownBugSymptom):
+        expect(canary in results[0],
+               f"{spelling}: backend/AGENTS.md never reached the model after {HINT_COMMANDS[spelling]!r}:\n"
+               f"{results[0][-1500:]}")
 
 
-@known("chain_labels", KNOWN)
 def test_agents_chain_labels_are_os_independent(tmp_path: Path) -> None:
     canaries = {name: nonce(name.upper()) for name in ("root", "pkg", "inner")}
     with FakeLLMServer([Text("done")]) as srv:
@@ -83,11 +85,11 @@ def test_agents_chain_labels_are_os_independent(tmp_path: Path) -> None:
     missing = [name for name, c in canaries.items() if c not in prompt]
     assert not missing, f"AGENTS.md chain members missing from the system prompt: {missing}"
     headings = [line[3:] for line in prompt.splitlines() if line.startswith("## ") and "AGENTS.md" in line]
-    expect(headings == ["../../AGENTS.md", "../AGENTS.md", "AGENTS.md"],
-           f"AGENTS.md chain headings are not the portable spelling: {headings}")
+    with known_gate(KNOWN, "chain_labels", raises=KnownBugSymptom):
+        expect(headings == ["../../AGENTS.md", "../AGENTS.md", "AGENTS.md"],
+               f"AGENTS.md chain headings are not the portable spelling: {headings}")
 
 
-@known("folder_header", KNOWN)
 def test_folder_reference_header_uses_one_separator(tmp_path: Path) -> None:
     body = nonce("FOLDER-FILE")
     with FakeLLMServer([Text("done")]) as srv:
@@ -104,4 +106,5 @@ def test_folder_reference_header_uses_one_separator(tmp_path: Path) -> None:
     assert "- a.py" in user, f"@folder listing never reached the model:\n{user[-2000:]}"
     # The header is the one non-entry line naming the folder; entries are "- name" lines.
     header = [ln.strip() for ln in user.splitlines() if ln.strip().endswith("sub/") and not ln.lstrip().startswith("-")]
-    expect(header == ["pkg/sub/"], f"@folder header lines: {header}\n{user[-1500:]}")
+    with known_gate(KNOWN, "folder_header", raises=KnownBugSymptom):
+        expect(header == ["pkg/sub/"], f"@folder header lines: {header}\n{user[-1500:]}")

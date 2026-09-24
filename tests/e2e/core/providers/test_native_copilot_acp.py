@@ -34,6 +34,7 @@ from typing import Any, Callable
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
     KnownSymptom,
@@ -74,8 +75,10 @@ SUMMARY = "SUMMARY-ACP-7f3: files f1..fN were read; each is lorem ipsum filler."
 FINAL_COMPACT = "All eight files read (FINAL-COMPACT)."
 
 
-KNOWN: dict[str, str] = {
-    "late_chunk": "#65788 agent_message_chunk emitted after the session/prompt result is dropped",
+# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
+KNOWN: dict[str, tuple[str, str]] = {
+    "late_chunk": (r"^late chunk dropped: \d+ model calls, stdout=",
+                   "#65788 agent_message_chunk emitted after the session/prompt result is dropped"),
 }
 
 
@@ -300,14 +303,14 @@ def test_compaction_in_an_acp_session_keeps_the_next_prompt_valid_and_grounded(o
     assert any(FINAL_COMPACT in (r["content"] or "") for r in rows if r["role"] == "assistant"), rows
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["late_chunk"])
 def test_message_chunk_after_prompt_result_reaches_the_user(outcomes):
     sc = outcomes["late"]
     run = sc.runs[0]
     assert run.returncode == 0, run.describe()
     assert sc.fake.invalid() == [], sc.fake.invalid()
     rows = messages(sc.nh, latest_session(sc.nh))
-    if LATE_TEXT not in run.stdout:
-        raise KnownSymptom(f"late chunk dropped: {len(sc.fake.main_prompts())} model calls, stdout={run.stdout!r}")
+    with known_gate(KNOWN, "late_chunk", raises=KnownSymptom):
+        if LATE_TEXT not in run.stdout:
+            raise KnownSymptom(f"late chunk dropped: {len(sc.fake.main_prompts())} model calls, stdout={run.stdout!r}")
     assert_no_duplicate_assistant_text(rows, LATE_TEXT)
     assert len(sc.fake.main_prompts()) == 1, "a delivered late chunk must not trigger an empty-response retry"

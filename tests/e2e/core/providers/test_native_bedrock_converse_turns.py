@@ -20,6 +20,7 @@ import pytest
 
 pytest.importorskip("botocore")
 
+from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
 from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     ChatResult, KnownSymptom, NativeHome, latest_session, make_home, messages, run_chat, session_ids, tool_calls_of,
 )
@@ -29,9 +30,12 @@ from tests.fakes.providers.bedrock_converse import (  # noqa: E402
 
 MODEL = "deepseek.v3-v1:0"
 
-KNOWN = {
-    "reasoning_shredded": "#98468 streamed reasoning is persisted with '\\n\\n' between every delta",
-    "resume_drops_reasoning": "#121293 --resume replays Bedrock assistant turns without their signed reasoningContent",
+# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
+KNOWN: dict[str, tuple[str, str]] = {
+    "reasoning_shredded": (r"^persisted reasoning has blank lines between streamed deltas: ",
+                           "#98468 streamed reasoning is persisted with '\\n\\n' between every delta"),
+    "resume_drops_reasoning": (r"^resumed assistant tool-use turn replayed without signed reasoningContent: ",
+                               "#121293 --resume replays Bedrock assistant turns without their signed reasoningContent"),
 }
 
 SEED_TEXT = "codeword PELICAN-5501"
@@ -225,13 +229,13 @@ def _reasoning_rows(nh: NativeHome) -> list[str]:
     return [r["reasoning_content"] for r in messages(nh) if r["role"] == "assistant" and r["reasoning_content"]]
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["reasoning_shredded"])
 def test_persisted_reasoning_equals_the_streamed_reasoning_text(runs: dict[str, Any]) -> None:
     _ok(runs["tools"]["result"])
     persisted = _reasoning_rows(runs["tools"]["nh"])
     assert [p.replace("\n\n", "") for p in persisted] == [R_A1, R_A2, R_A3], persisted
-    if persisted != [R_A1, R_A2, R_A3]:  # same text once the blank lines are removed: exactly the bug
-        raise KnownSymptom(f"{KNOWN['reasoning_shredded']}: {persisted}")
+    with known_gate(KNOWN, "reasoning_shredded", raises=KnownSymptom):
+        if persisted != [R_A1, R_A2, R_A3]:  # same text once the blank lines are removed: exactly the bug
+            raise KnownSymptom(f"persisted reasoning has blank lines between streamed deltas: {persisted}")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -258,7 +262,6 @@ def test_resume_in_new_process_replays_tool_history_valid_for_converse(runs: dic
     assert rows[-1]["content"] == FINAL_B2
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["resume_drops_reasoning"])
 def test_resume_replays_signed_reasoning_verbatim(runs: dict[str, Any]) -> None:
     run = runs["resume"]
     _ok(run["first"])
@@ -271,8 +274,10 @@ def test_resume_replays_signed_reasoning_verbatim(runs: dict[str, Any]) -> None:
     assert requests[1]["body"]["messages"][1]["content"][0] == signed[0]
     # ... and after --resume (new process) it must be identical.
     resumed = requests[2]["body"]["messages"]
-    if not [b for b in resumed[1]["content"] if "reasoningContent" in b]:
-        raise KnownSymptom(f"{KNOWN['resume_drops_reasoning']}: {resumed[1]['content']}")
+    with known_gate(KNOWN, "resume_drops_reasoning", raises=KnownSymptom):
+        if not [b for b in resumed[1]["content"] if "reasoningContent" in b]:
+            raise KnownSymptom(f"resumed assistant tool-use turn replayed without signed reasoningContent: "
+                               f"{resumed[1]['content']}")
     assert resumed[1]["content"][0] == signed[0], resumed[1]["content"]
     assert [b for b in resumed[3]["content"] if "reasoningContent" in b] == [
         b for b in requests[1]["emitted"] if "reasoningContent" in b]

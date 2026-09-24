@@ -25,6 +25,7 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
+from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
 from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     ChatResult,
     KnownSymptom,
@@ -46,10 +47,11 @@ from tests.fakes.providers.vertex import (  # noqa: E402
     signatures_on_wire,
 )
 
-# key -> "#issue reason"; a strict xfail turns red the moment the bug is fixed.
-KNOWN: dict[str, str] = {
-    "default_toolset": "#109115 terminal.notify anyOf[boolean, array] is rejected by Vertex's FunctionDeclaration "
-                       "translator, so every default-toolset turn 400s",
+# key -> (symptom pattern, "#issue reason"), gated at run time by ``known_gate``.
+KNOWN: dict[str, tuple[str, str]] = {
+    "default_toolset": (r"Vertex rejected the tool declarations: .*schema type should be ARRAY",
+                        "#109115 terminal.notify anyOf[boolean, array] is rejected by Vertex's FunctionDeclaration "
+                        "translator, so every default-toolset turn 400s"),
 }
 
 SECRET_1 = "PINEAPPLE-42"
@@ -61,7 +63,7 @@ FILE_ONLY = ("-t", "file")
 
 
 class Precondition(RuntimeError):
-    """A scenario broke before reaching the property under test (never masquerades as a KNOWN xfail)."""
+    """A scenario broke before reaching the property under test (never masquerades as a KNOWN gap)."""
 
 
 def require(ok: Any, what: str) -> None:
@@ -235,13 +237,13 @@ def test_expired_token_is_reminted_and_request_retried(results: dict[str, Any]) 
     assert [r["role"] for r in rows] == ["user", "assistant", "tool", "assistant"], rows
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["default_toolset"])
 def test_default_toolset_schemas_accepted_by_vertex(results: dict[str, Any]) -> None:
     """With Hermes' default toolsets every tool declaration must survive Vertex's translation."""
     res = results["default_toolset"]
     fake = res["fake"]
     require(fake.requests and fake.requests[0]["auth"].startswith("Bearer ya29."), "turn never reached Vertex")
     schema_rejects = [r["rejected"] for r in fake.rejected() if "schema type should be ARRAY" in (r["rejected"] or "")]
-    if schema_rejects:
-        raise KnownSymptom(f"Vertex rejected the tool declarations: {schema_rejects[0]}")
+    with known_gate(KNOWN, "default_toolset", raises=KnownSymptom):
+        if schema_rejects:
+            raise KnownSymptom(f"Vertex rejected the tool declarations: {schema_rejects[0]}")
     assert "Default toolset answer." in res["turn"].stdout, res["turn"].describe()

@@ -18,6 +18,7 @@ import pytest
 
 pytest.importorskip("botocore")
 
+from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
 from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     ChatResult, KnownSymptom, NativeHome, assert_no_duplicate_assistant_text, make_home, messages, run_chat,
 )
@@ -34,9 +35,12 @@ IAM_DENIAL = ("User: arn:aws:iam::123456789012:user/e2e is not authorized to per
               "bedrock:InvokeModelWithResponseStream on resource: arn:aws:bedrock:us-east-1::foundation-model/"
               + MODEL)
 
-KNOWN = {
-    "validation_retried": "#121294 a Bedrock 400 ValidationException is retried and reported as 'temporarily unavailable'",
-    "eof_before_message_stop": "#109988 a ConverseStream that ends before messageStop is accepted as the answer",
+# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
+KNOWN: dict[str, tuple[str, str]] = {
+    "validation_retried": (r"^400 ValidationException retried: fake saw [2-9]\d* requests",
+                           "#121294 a Bedrock 400 ValidationException is retried and reported as 'temporarily unavailable'"),
+    "eof_before_message_stop": (r"^truncated stream accepted as the answer: requests=1 rows=",
+                                "#109988 a ConverseStream that ends before messageStop is accepted as the answer"),
 }
 
 
@@ -132,7 +136,6 @@ def test_mid_stream_drop_retries_without_duplicated_persisted_content(runs: dict
     assert run["requests"][0]["reply"] == "Drop", run["requests"][0]
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["eof_before_message_stop"])
 def test_stream_ending_before_message_stop_is_not_accepted(runs: dict[str, Any]) -> None:
     run = runs["eof_before_message_stop"]
     assert run["result"].returncode == 0, run["result"].describe()
@@ -140,20 +143,21 @@ def test_stream_ending_before_message_stop_is_not_accepted(runs: dict[str, Any])
     rows = [r["content"] for r in _assistant_rows(run["nh"])]
     sent = len(run["requests"])
     # Symptom: the truncated first stream is persisted as the final answer and never retried.
-    if sent == 1 and rows and FINAL.startswith(rows[-1]) and rows[-1] != FINAL:
-        raise KnownSymptom(f"{KNOWN['eof_before_message_stop']}: requests={sent} rows={rows}")
+    with known_gate(KNOWN, "eof_before_message_stop", raises=KnownSymptom):
+        if sent == 1 and rows and FINAL.startswith(rows[-1]) and rows[-1] != FINAL:
+            raise KnownSymptom(f"truncated stream accepted as the answer: requests={sent} rows={rows}")
     assert (sent, rows) == (2, [FINAL]), f"requests={sent} rows={rows}"
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["validation_retried"])
 def test_validation_exception_is_surfaced_once_without_retry(runs: dict[str, Any]) -> None:
     run = runs["validation"]
     result: ChatResult = run["result"]
     sent = len(run["requests"])
     assert sent >= 1 and run["requests"][0]["reply"] == "HttpError", run["requests"]
     # Symptom: the 400 is retried (the scripted success behind it is reached).
-    if sent > 1:
-        raise KnownSymptom(f"{KNOWN['validation_retried']}: fake saw {sent} requests")
+    with known_gate(KNOWN, "validation_retried", raises=KnownSymptom):
+        if sent > 1:
+            raise KnownSymptom(f"400 ValidationException retried: fake saw {sent} requests")
     shown = result.stdout + result.stderr
     assert result.returncode != 0 and FINAL not in shown, result.describe()
     assert VALIDATION_MARK in shown and "ValidationException" in shown, result.describe()

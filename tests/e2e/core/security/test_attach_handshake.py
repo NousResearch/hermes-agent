@@ -47,12 +47,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.security._helpers import (
     BoundaryBreach,
     canary,
     hermetic_env,
     kill_group,
-    known_param,
     run_hermes,
     run_python,
     write_home,
@@ -63,8 +63,10 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("node") is None, reason="the TUI hand-off needs node on PATH"),
 ]
 
-KNOWN: dict[str, str] = {
-    "impersonator": "#120604 attach handshake accepts an echoing loopback listener",
+KNOWN: dict[str, tuple[str, str]] = {
+    "impersonator": (r"^impersonator: TUI was attached to the rogue listener's socket: "
+                     r"ws://127\.0\.0\.1:\d+/api/ws\?token=stolen-ws-token-",
+                     "#120604 attach handshake accepts an echoing loopback listener"),
 }
 SCENARIOS = ["impersonator", "foreign_owner"]
 
@@ -257,7 +259,7 @@ def _describe(result: subprocess.CompletedProcess) -> str:
     return f"rc={result.returncode}\nstdout:\n{result.stdout[-1500:]}\nstderr:\n{result.stderr[-2500:]}"
 
 
-@pytest.mark.parametrize("scenario", [known_param(n, KNOWN) for n in SCENARIOS])
+@pytest.mark.parametrize("scenario", SCENARIOS)
 def test_rogue_listener_is_not_attached(home: Path, scenario: str) -> None:
     sid = f"attach-{uuid.uuid4().hex[:12]}"
     stolen = canary("stolen-ws-token")
@@ -275,11 +277,12 @@ def test_rogue_listener_is_not_attached(home: Path, scenario: str) -> None:
     assert (result.returncode == 0) == (handoff is not None), f"inconsistent launch outcome\n{_describe(result)}"
 
     gateway = (handoff or {}).get("gateway_url") or ""
-    if stolen in gateway or gateway.startswith(listener.origin.replace("http:", "ws:")):
-        raise BoundaryBreach(f"{scenario}: TUI was attached to the rogue listener's socket: {gateway}")
     leaked = [name for name, text in (("stdout", result.stdout), ("stderr", result.stderr)) if stolen in text]
-    if leaked:
-        raise BoundaryBreach(f"{scenario}: the rogue listener's token was echoed to {leaked}")
+    with known_gate(KNOWN, scenario, raises=BoundaryBreach):
+        if stolen in gateway or gateway.startswith(listener.origin.replace("http:", "ws:")):
+            raise BoundaryBreach(f"{scenario}: TUI was attached to the rogue listener's socket: {gateway}")
+        if leaked:
+            raise BoundaryBreach(f"{scenario}: the rogue listener's token was echoed to {leaked}")
 
 
 def test_genuine_owner_is_attached(home: Path) -> None:

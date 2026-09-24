@@ -992,6 +992,13 @@ def _import_members(
 
 def run_import(args) -> None:
     """Restore a Hermes backup from a zip file."""
+    # ``--verify-only`` runs the same pipeline into a throwaway home and never publishes
+    # anything: the pre-rebuild gate that proves a capture is restorable (#117005).
+    if getattr(args, "verify_only", False):
+        from hermes_cli.backup_verify import run_verify_import
+
+        run_verify_import(args)
+        return
     zip_path = Path(args.zipfile).expanduser().resolve()
     if not zip_path.is_file():
         print(f"Error: File not found: {zip_path}")

@@ -1,0 +1,25 @@
+name: whatsapp-agent-platform
+repo: https://github.com/ahtishamdilawar/hermes-whatsapp-agent-platform
+sha: 5771c7c5f90eb2804ff80e072571093598ed92eb
+version: "0.1.0"
+requires_hermes: ">=0.21.4"
+title: WhatsApp Agent Platform
+description: >-
+  Community platform plugin (not affiliated with Meta or Nous Research) that connects a WhatsApp Agent to
+  Hermes through Meta's WhatsApp Agent Platform API (/agent/v1): long-poll inbound (no webhook or public URL),
+  text replies with WhatsApp formatting, read receipts and typing indicators, creator verification, and
+  cron/home-channel delivery to the agent's creator. Disclosure — sends the agent API key and message content
+  only to api.whatsapp.com (per WhatsApp's Third-Party Agents Terms, agent chats are not end-to-end encrypted);
+  stores the poll cursor, recent message ids and the creator's id under HERMES_HOME; no other network egress,
+  no telemetry, no self-update.
+maintainer: ahtishamdilawar
+tier: community
+category: platform
+docs_url: https://github.com/ahtishamdilawar/hermes-whatsapp-agent-platform/blob/5771c7c5f90eb2804ff80e072571093598ed92eb/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - WHATSAPP_AGENT_PLATFORM_API_KEY

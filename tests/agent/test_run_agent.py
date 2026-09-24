@@ -2817,7 +2817,7 @@ class TestHandleMaxIterations:
                 ],
             )
 
-        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_run_codex_stream):
             result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
 
         assert result == "Summary"

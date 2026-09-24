@@ -41,7 +41,7 @@ def _make_mock_agent(provider="xai-oauth", api_mode="codex_responses", base_url=
 
 def test_xai_responses_receives_stale_timeout_floor_in_api_call(monkeypatch):
     """interruptible_api_call elevates stale timeout to context floor (>=900s) for xai-oauth codex_responses.
-    
+
     When baseline _compute_non_stream_stale_timeout is 0.2s and TTFB watchdog is disabled (0),
     a 0.5s execution would fail with stale_call_kill on base (stale timeout at 0.2s), but passes when the floor elevates it to >=900s.
     """

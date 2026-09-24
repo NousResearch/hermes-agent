@@ -3943,13 +3943,25 @@
       // Re-run when the attachment set changes (upload/delete).
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [atts.map(function (a) { return `${a.id}:${a.size}`; }).join("|")]);
-    // Lightbox: Escape closes, backdrop click closes.
+    // Lightbox: Escape closes, ←/→ keys step through images (wrapping),
+    // backdrop click closes.
+    function lightboxStep(delta) {
+      if (!lightbox || images.length < 2) return;
+      const idx = images.findIndex(function (a) { return a.id === lightbox.id; });
+      if (idx < 0) return;
+      setLightbox(images[(idx + delta + images.length) % images.length]);
+    }
     useEffect(function () {
       if (!lightbox) return undefined;
-      function onKey(e) { if (e.key === "Escape") setLightbox(null); }
+      function onKey(e) {
+        if (e.key === "Escape") setLightbox(null);
+        else if (e.key === "ArrowLeft") { e.preventDefault(); lightboxStep(-1); }
+        else if (e.key === "ArrowRight") { e.preventDefault(); lightboxStep(1); }
+      }
       window.addEventListener("keydown", onKey);
       return function () { window.removeEventListener("keydown", onKey); };
-    }, [lightbox]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lightbox, images]);
     // Download via authenticated fetch → blob → synthetic anchor click.
     // A plain <a href> can't carry the auth the dashboard middleware requires,
     // so fetch authenticated and hand the browser a blob URL instead.
@@ -4103,6 +4115,70 @@
         style: { maxWidth: "90vw", maxHeight: "85vh", objectFit: "contain" },
         onClick: function (e) { e.stopPropagation(); },
       }),
+      h("div", {
+        style: {
+          position: "fixed",
+          top: "16px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 1001,
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+        },
+        onClick: function (e) { e.stopPropagation(); },
+      },
+        images.length > 1 ? h("button", {
+          type: "button",
+          title: tx(i18n, "prevImage", "Previous image (←)"),
+          onClick: function (e) { e.stopPropagation(); lightboxStep(-1); },
+          style: {
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            border: "1px solid var(--ui-stroke-secondary, rgba(128,128,128,0.35))",
+            background: "rgba(0, 0, 0, 0.55)",
+            color: "#fff",
+            fontSize: "18px",
+            lineHeight: "1",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "0",
+          },
+        }, "‹") : null,
+        h("div", {
+          style: {
+            padding: "4px 10px",
+            borderRadius: "6px",
+            background: "rgba(0, 0, 0, 0.55)",
+            color: "#fff",
+            fontSize: "12px",
+            border: "1px solid var(--ui-stroke-secondary, rgba(128,128,128,0.35))",
+          },
+        }, `${images.findIndex(function (a) { return a.id === lightbox.id; }) + 1} / ${images.length}`),
+        images.length > 1 ? h("button", {
+          type: "button",
+          title: tx(i18n, "nextImage", "Next image (→)"),
+          onClick: function (e) { e.stopPropagation(); lightboxStep(1); },
+          style: {
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            border: "1px solid var(--ui-stroke-secondary, rgba(128,128,128,0.35))",
+            background: "rgba(0, 0, 0, 0.55)",
+            color: "#fff",
+            fontSize: "18px",
+            lineHeight: "1",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "0",
+          },
+        }, "›") : null,
+      ),
     ) : null,
   );
   }

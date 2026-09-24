@@ -172,8 +172,9 @@ def tool_calls_of(row: dict[str, Any]) -> list[dict[str, Any]]:
 class KnownSymptom(AssertionError):
     """Raised ONLY at a tracked bug's exact symptom.
 
-    Every KNOWN strict xfail uses ``raises=KnownSymptom`` so a harness failure (process death, timeout,
-    precondition assert, fixture teardown error) fails for real instead of counting as the known bug.
+    It is the type ``known_gate``/``known_failure`` accept (``raises=KnownSymptom``), so a harness failure
+    (process death, timeout, precondition assert, fixture teardown error) fails for real instead of
+    counting as the known bug.
     """
 
 

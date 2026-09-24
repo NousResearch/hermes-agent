@@ -324,32 +324,11 @@ def nonce(prefix: str) -> str:
 
 
 class KnownBugSymptom(Exception):
-    """Raised ONLY at the assertion that pins a tracked bug's symptom. Not an AssertionError:
-    a KNOWN entry's strict xfail matches just this, so a harness failure or any other broken
-    invariant in the same test still fails loudly instead of hiding behind the xfail."""
+    """Raised ONLY at the assertion that pins a tracked bug's symptom. Not an AssertionError: a
+    file's ``KNOWN`` gate (``known_gate(KNOWN, key, raises=KnownBugSymptom)``) accepts just this,
+    so a harness failure or any other broken invariant in the same test still fails loudly."""
 
 
 def expect(ok: bool, message: str) -> None:
     if not ok:
         raise KnownBugSymptom(message)
-
-
-def known_marks(name: str, table: dict[str, str]) -> list[Any]:
-    """Marks for a test named in a file's ``KNOWN`` table: strict xfail on the symptom only.
-    Strict, so the test turns red the moment the bug is fixed and the entry must go."""
-    import pytest
-
-    if name not in table:
-        return []
-    return [pytest.mark.xfail(strict=True, raises=KnownBugSymptom, reason=table[name])]
-
-
-def known(name: str, table: dict[str, str]) -> Callable[[Callable], Callable]:
-    """Decorator form of :func:`known_marks` for a non-parametrized test."""
-
-    def apply(fn: Callable) -> Callable:
-        for mark in known_marks(name, table):
-            fn = mark(fn)
-        return fn
-
-    return apply

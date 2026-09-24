@@ -36,8 +36,6 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
 pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
 
-KNOWN: dict[str, str] = {}  # nothing red on origin/main in this file
-
 TEXT = "Grüße, 日本語 und Emoji 😂👍🏽"
 REPLY = "Réponse ✓ 😂"
 BMP = "Grüße, 日本語"
@@ -139,6 +137,9 @@ def test_classic_cli_console_non_ascii_reaches_wire(tmp_path: Path) -> None:
             console.proc.write(f"{BMP} {tag}")
             wait_until(lambda: tag in console.screen, 30, "the composer to echo the typed text")
             echoed = _plain(console.screen)
+            # An Enter within 50 ms of the last composer change is read as a pasted newline, and the
+            # echo can paint inside that window: give the Enter real time after the last typed key.
+            time.sleep(0.5)
             console.proc.write("\r")
             wait_until(lambda: srv.main_requests(), 90, "the typed turn to reach the provider")
             user = last_user(srv.main_requests()[0])

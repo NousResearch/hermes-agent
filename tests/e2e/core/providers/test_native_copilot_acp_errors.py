@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
+from tests.e2e.core._pending_fixes import known_failure, known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
     KnownSymptom,
@@ -53,8 +53,10 @@ PARTIAL = "PARTIAL-BEFORE-CRASH "
 CRASH_STDERR = "fatal: agent segfaulted (fake)"
 
 
-KNOWN: dict[str, str] = {
-    "auth_remedy": "#121290 copilot-acp auth failure tells the user to run a hermes command that is not implemented",
+# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
+KNOWN: dict[str, tuple[str, str]] = {
+    "auth_remedy": (r"^remedy 'hermes [^']+' is not implemented for copilot-acp: ",
+                    "#121290 copilot-acp auth failure tells the user to run a hermes command that is not implemented"),
 }
 
 
@@ -147,7 +149,6 @@ def test_acp_failure_is_retried_per_semantics_and_surfaced_once(outcomes, name):
 REMEDY_RE = re.compile(r"`(hermes [^`]+)`")
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["auth_remedy"])
 def test_auth_failure_remedy_is_an_actionable_command(outcomes):
     """The sign-in remedy printed for an ACP ``Authentication required`` must not be a dead end: any
     ``hermes ...`` command it names has to be implemented for this provider."""
@@ -158,5 +159,6 @@ def test_auth_failure_remedy_is_an_actionable_command(outcomes):
         proc = subprocess.run(argv, cwd=out.nh.project, env=out.nh.env(), capture_output=True, text=True,
                               timeout=60, stdin=subprocess.DEVNULL)
         said = (proc.stdout + proc.stderr).lower()
-        if "not implemented" in said:
-            raise KnownSymptom(f"remedy {command!r} is not implemented for copilot-acp: {said.strip()[:300]}")
+        with known_gate(KNOWN, "auth_remedy", raises=KnownSymptom):
+            if "not implemented" in said:
+                raise KnownSymptom(f"remedy {command!r} is not implemented for copilot-acp: {said.strip()[:300]}")

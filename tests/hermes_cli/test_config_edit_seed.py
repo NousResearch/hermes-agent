@@ -1,6 +1,9 @@
 """Every writer that seeds or first-configures config.yaml must leave each messaging platform's display defaults
 alone (#121230). The gateway loader merges no DEFAULT_CONFIG, so any written global ``display.<key>`` beats every
 platform tier (e.g. Telegram/Slack tool_progress ``off`` -> ``all``, QQBot show_reasoning ``False`` -> ``True``)."""
+import os
+import shutil
+
 import pytest
 
 from tests.gateway.test_display_config import assert_keeps_platform_display_defaults
@@ -39,12 +42,29 @@ def _blank_slate(tmp_path, monkeypatch, cfg):
     cfg.save_config(config)
 
 
+def _doctor_fix(tmp_path, monkeypatch, cfg):
+    """`hermes doctor --fix` on a home with no config.yaml: the real config-file check, fix enabled."""
+    import hermes_cli.doctor as doctor
+    from hermes_cli.doctor_config import _check_config_file
+
+    root = tmp_path / "checkout"  # only the template, so a stray cli-config.yaml cannot short-circuit the seed
+    root.mkdir()
+    shutil.copy2(cfg.get_project_root() / "cli-config.yaml.example", root / "cli-config.yaml.example")
+    home = cfg.get_hermes_home()
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "PROJECT_ROOT", root)
+    assert _check_config_file(True).fixed == 1
+    if os.name == "posix":
+        assert (home / "config.yaml").stat().st_mode & 0o777 == 0o600
+
+
 SEEDERS = {
     "config-edit-template": lambda *a: _config_edit(*a, template=True),
     "config-edit-no-template": lambda *a: _config_edit(*a, template=False),
     "setup-agent-enter": _setup_agent_enter,
     "apply-default-agent-settings": _apply_default_agent_settings,
     "blank-slate": _blank_slate,
+    "doctor-fix": _doctor_fix,
 }
 
 

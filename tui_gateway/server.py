@@ -1549,12 +1549,17 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         return {}
     overrides: dict = {}
     field = lambda k: str(model_config.get(k) or "").strip()
-    model = str(row.get("model") or model_config.get("model") or "").strip()
+    # model_config holds the chat's pick as a pair (mid-chat switch writers update it too). The model column
+    # is the billing record: a fallback that served the first call rewrites it (first_accounted_route) without
+    # touching model_config, so it is only the model source for legacy rows with no model_config model.
+    row_model = str(row.get("model") or "").strip()
+    model = field("model") or row_model
     # ``billing_provider`` is only the billing bucket — for a custom endpoint the bare class "custom", which
     # agent_init treats as non-routable. Only restore an explicit provider; else resume uses the configured default.
     provider = field("provider")
     billing_provider = str(model_config.get("billing_provider") or row.get("billing_provider") or "").strip()
-    if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
+    # The billing provider served the model column; pairing it with a different picked model would mismatch.
+    if not provider and model == row_model and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
         provider = billing_provider
     base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
     reasoning_config = model_config.get("reasoning_config")

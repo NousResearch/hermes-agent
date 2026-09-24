@@ -3900,6 +3900,23 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider(monkeypatc
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
+@pytest.mark.parametrize("picked", [
+    {"model": "claude-opus-4", "provider": "anthropic"},
+    {"model": "claude-opus-4"},
+], ids=["picked-pair", "picked-model-only"])
+def test_stored_session_runtime_overrides_never_pairs_billing_model_with_picked_provider(picked):
+    """A chat whose first call was served by a fallback has the fallback route in the billing columns
+    (``first_accounted_route``) and the user's pick in ``model_config``. Resume must restore the pick as a
+    pair, never the fallback model on the picked provider (or the picked model on the fallback provider)."""
+    ov = server._stored_session_runtime_overrides({
+        "model": "deepseek/deepseek-v4-flash", "billing_provider": "openrouter", "model_config": picked,
+    })
+    restored = ov["model_override"]
+    assert restored["model"] == picked["model"]
+    assert restored["provider"] == picked.get("provider")
+    assert ov.get("provider_override") == picked.get("provider")
+
+
 def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
     overrides = server._stored_session_runtime_overrides(
         {

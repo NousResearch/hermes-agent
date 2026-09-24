@@ -3,9 +3,9 @@
 ``list_picker_providers`` wraps ``list_authenticated_providers`` and
 post-processes the result for interactive pickers (Telegram, Discord):
 
-- OpenRouter's ``models`` are replaced with the live-filtered output of
-  ``fetch_openrouter_models``, so IDs the live catalog no longer carries
-  drop out.
+- OpenRouter's ``models`` are the live-filtered output of
+  ``fetch_openrouter_models``. IDs the catalog no longer carries drop out,
+  except ``providers.openrouter.models``, which stay in front.
 - Provider rows with an empty ``models`` list are dropped, except custom
   endpoints (``is_user_defined=True`` with an ``api_url``) where the user
   may supply their own model set through config.
@@ -272,3 +272,41 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+def test_openrouter_configured_models_lead_the_live_catalog(monkeypatch):
+    """providers.openrouter.models must stay in the picker, ahead of the live list.
+
+    Every other built-in keeps a configured id. OpenRouter used to replace the
+    merged row with fetch_openrouter_models and drop stealth ids the catalog omits.
+    """
+    extra = "vendor/pinned-model"
+
+    def _base(**kwargs):
+        return [
+            _make_provider("openrouter", models=[extra, "a/curated"]),
+            _make_provider("deepseek", models=[extra, "deepseek-chat"]),
+        ]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", _base)
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers", _base)
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: [("a/curated", ""), ("b/curated", ""), (extra, "")],
+    )
+    user_providers = {"openrouter": {"models": [extra]}, "deepseek": {"models": [extra]}}
+
+    rows = model_switch_providers.list_picker_providers(user_providers=user_providers)
+    by_slug = {r["slug"]: r for r in rows}
+
+    assert by_slug["openrouter"]["models"][:3] == [extra, "a/curated", "b/curated"]
+    assert by_slug["openrouter"]["models"].count(extra) == 1
+    assert by_slug["openrouter"]["total_models"] == 3
+    assert by_slug["deepseek"]["models"][0] == extra
+
+    capped = model_switch_providers.list_picker_providers(
+        user_providers=user_providers, max_models=1,
+    )
+    openrouter = next(r for r in capped if r["slug"] == "openrouter")
+    assert openrouter["models"] == [extra]
+    assert openrouter["total_models"] == 3

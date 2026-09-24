@@ -43,17 +43,6 @@ UPDATE_TIMEOUT = 1500
 PROFILES = ("default", "work", "research")
 
 
-class Gap(Exception):
-    """Contract breach tracked in KNOWN (not an AssertionError: any other failure still fails)."""
-
-
-KNOWN: dict[str, str] = {}
-
-
-def known(key: str):
-    return pytest.mark.xfail(strict=True, raises=Gap, reason=KNOWN[key]) if key in KNOWN else ()
-
-
 def _profile_home(sb: I.Sandbox, name: str):
     return sb.hermes_home if name == "default" else sb.hermes_home / "profiles" / name
 
@@ -229,11 +218,10 @@ def test_conflicting_update_keeps_the_users_edit_recoverable(conflicting_leg, wo
     assert in_tree or parked, "the user's tracked edit was lost by the update"
 
 
-@pytest.mark.parametrize("key", [pytest.param("untracked", marks=known("untracked"))])
-def test_conflicting_update_leaves_untracked_extension_in_the_tree(conflicting_leg, world, key):
+def test_conflicting_update_leaves_untracked_extension_in_the_tree(conflicting_leg):
     up = conflicting_leg["update"]
     assert I.TRACEBACK not in up.stdout + up.stderr, I.describe(up)
     after = I.tree_digest(conflicting_leg["ext"]) if conflicting_leg["ext"].exists() else {}
-    if after != conflicting_leg["before"]:
-        raise Gap(f"untracked extension files left the working tree: {sorted(conflicting_leg['before'])} -> {sorted(after)}\n"
-                  + I.describe(up))
+    assert after == conflicting_leg["before"], (
+        f"untracked extension files left the working tree: {sorted(conflicting_leg['before'])} -> {sorted(after)}\n"
+        + I.describe(up))

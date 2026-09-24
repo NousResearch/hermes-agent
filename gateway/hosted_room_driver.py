@@ -20,7 +20,7 @@ from typing import Any, Callable, Literal, get_args
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
-    transaction)
+    table_exists, transaction)
 
 Clock = Callable[[], float]
 TaskStatus = Literal["queued", "running", "settled", "failed", "cancelled", "indeterminate", "deferred", "stopping"]
@@ -382,6 +382,10 @@ def _load_active_room(conn: sqlite3.Connection, room_id: str) -> sqlite3.Row:
         raise
     if row is None or row["disbanded_at"] is not None:
         raise RoomUnavailableError("hosted room does not exist" if row is None else "hosted room is disbanded")
+    if table_exists(conn, "hosted_room_quarantine") and conn.execute(
+        "SELECT 1 FROM hosted_room_quarantine WHERE room_id=?", (room_id,)
+    ).fetchone() is not None:
+        raise RoomUnavailableError("hosted room authority is quarantined")
     return row
 
 
@@ -582,6 +586,13 @@ def renew_lease(db_path: DbPath, lease: DriverLease, *, ttl_seconds: Any, clock:
             (expires_at, now, lease.room_id, *_run_fence(lease), now),
             StaleLeaseError("driver lease changed during renewal"))
         return dataclasses.replace(lease, expires_at=expires_at, reclaimed=False)
+
+
+def require_active_lease(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> DriverLease:
+    """Revalidate one exact lease generation without extending its lifetime."""
+    with _transaction(db_path) as conn:
+        current = _require_active_lease(conn, lease, now=_timestamp(clock))
+        return _lease_from_row(current)
 
 
 def release_lease(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[str, Any]:
@@ -871,6 +882,10 @@ def prune_published_terminal_tasks(
         raise DriverValidationError("retention_seconds must be positive")
     _bounded_int(retain, message="retain must be a non-negative integer")
     with _transaction(db_path) as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='state_meta' AND type='table'").fetchone():
+            from gateway.hosted_room_task_scan import pending
+            if pending(conn, room_id):
+                return 0  # Unenumerated task generations are still original evidence.
         publications = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_policy_publications'").fetchone()
         if publications is None:
@@ -882,12 +897,28 @@ def prune_published_terminal_tasks(
                                 AND p.kind IN ('turn.settled', 'turn.failed', 'turn.cancelled'))
                 ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id,)).fetchall()
         cutoff = now - float(retention_seconds)
+        pinned = set()
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hosted_room_artifact_retries' AND type='table'").fetchone():
+            pinned.update(r[0] for r in conn.execute('''SELECT task.task_id FROM hosted_room_driver_tasks task
+                JOIN hosted_room_artifact_retries retry ON retry.room_id=task.room_id AND retry.task_id=task.task_id
+                  AND retry.execution_generation=task.execution_generation WHERE task.room_id=?''', (room_id,)))
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='state_meta' AND type='table'").fetchone():
+            pinned.update(r[0] for r in conn.execute("""SELECT task.task_id FROM hosted_room_driver_tasks task
+                JOIN state_meta intent ON json_extract(intent.value,'$.room_id')=task.room_id
+                  AND json_extract(intent.value,'$.task_id')=task.task_id
+                  AND json_extract(intent.value,'$.execution_generation')=task.execution_generation
+                WHERE task.room_id=? AND intent.key LIKE 'gateway.hosted.output_cleanup.v1:%'
+                  AND json_extract(intent.value,'$.state') IS NOT 'completed'""", (room_id,)))
         candidates = [
             str(row["task_id"]) for index, row in enumerate(rows)
-            if index >= retain or (row["terminal_at"] is not None and float(row["terminal_at"]) <= cutoff)
+            if str(row['task_id']) not in pinned
+            and (index >= retain or (row["terminal_at"] is not None and float(row["terminal_at"]) <= cutoff))
         ][:MAX_TASK_PRUNE_BATCH]
         if not candidates:
             return 0
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='state_meta' AND type='table'").fetchone():
+            from gateway.hosted_room_output_completion import compact_task_completions
+            compact_task_completions(conn, room_id, candidates)
         deleted = conn.execute(
             f"DELETE FROM hosted_room_driver_tasks WHERE room_id=? AND task_id IN ({','.join('?' * len(candidates))})",
             (room_id, *candidates))

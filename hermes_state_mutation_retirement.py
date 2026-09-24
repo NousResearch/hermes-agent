@@ -23,6 +23,8 @@ def has_mutation_receipt(db, principal_id, session_id, request_id):
 def retire_terminal_receipts(conn, session_ids):
     from hermes_state_terminal import ADMISSION_PREFIX, WORKER_PREFIX, identity_key
     for sid in session_ids:
+        if _output_cleanup_pending(conn, sid):
+            raise RuntimeStoreError('output_cleanup_pending')
         admissions = conn.execute('SELECT * FROM session_admissions WHERE target_session_id=?', (sid,)).fetchall()
         workers = conn.execute('SELECT * FROM worker_executions WHERE session_id=?', (sid,)).fetchall()
         states = {r['status'] for r in [*admissions, *workers]} - {'terminal'}
@@ -52,6 +54,8 @@ def retire_terminal_receipts(conn, session_ids):
                          (WORKER_PREFIX + row['execution_id'], _json(row)))
             conn.execute('DELETE FROM worker_receipts WHERE execution_id=?', (row['execution_id'],))
         conn.execute('DELETE FROM worker_executions WHERE session_id=?', (sid,))
+        from gateway.hosted_room_output_completion import compact_retired_completions
+        compact_retired_completions(conn, sid)
         conn.execute('DELETE FROM session_admissions WHERE target_session_id=?', (sid,))
 
 
@@ -71,11 +75,29 @@ def retire_sessions(conn, session_ids):
     retire_routes(conn, session_ids)
 
 
+def _output_cleanup_pending(conn, session_id):
+    # Keep original canonical evidence until its exact physical obligation ends.
+    if conn.execute("""SELECT 1 FROM state_meta WHERE key LIKE 'gateway.hosted.output_cleanup.v1:%'
+        AND json_extract(value,'$.state') IS NOT 'completed'
+        AND json_extract(value,'$.binding.admission.target_session_id')=? LIMIT 1""", (session_id,)).fetchone() is not None:
+        return True
+    from gateway.hosted_room_task_scan import pending
+    for row in conn.execute("SELECT request_id FROM session_admissions WHERE target_session_id=? AND request_id LIKE 'hosted:%'", (session_id,)):
+        try:
+            identity, generation = json.loads(row[0][7:])
+            if pending(conn, identity['room_id']):
+                return True
+        except (ValueError, TypeError, KeyError):
+            raise RuntimeStoreError('output_cleanup_pending') from None
+    return False
+
+
 def retire_prunable(conn, session_ids):
     """Sweep variant of :func:`retire_sessions`: fence the idle sessions and return only those ids.
     A session with live or unknown work is skipped, so one busy row cannot abort a whole
     prune/empty-session sweep (explicit deletes still refuse with ``session_busy``)."""
-    quiet = [sid for sid in session_ids if conn.execute(_LIVE_LEDGER_SQL, (sid, sid)).fetchone() is None]
+    quiet = [sid for sid in session_ids if conn.execute(_LIVE_LEDGER_SQL, (sid, sid)).fetchone() is None
+             and not _output_cleanup_pending(conn, sid)]
     retire_sessions(conn, quiet)
     return quiet
 

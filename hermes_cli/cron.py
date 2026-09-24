@@ -280,6 +280,9 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
     if unverified := job.get("last_delivery_unverified"):
         lines.append(f"{color('⚠ Delivery UNVERIFIED:', Colors.YELLOW)} adapter acked "
                      f"{_unverified_targets(unverified)} without message_id/raw_response")
+    if fallback := job.get("last_delivery_fallback"):
+        lines.append(f"{color('⚠ Standalone fallback:', Colors.YELLOW)} "
+                     f"{_short_reason('; '.join(fallback))}")
     fire_err = job.get("last_fire_error")
     if isinstance(fire_err, dict) and fire_err.get("detail"):
         lines.append(color(f"⚠ {_missed_fire_issue(job, fire_err)}", Colors.RED))
@@ -623,6 +626,8 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     if unverified := job.get("last_delivery_unverified"):
         issues.append("last delivery unverified (adapter acked without evidence): "
                       + _unverified_targets(unverified))
+    if fallback := job.get("last_delivery_fallback"):
+        issues.append("last delivery used standalone fallback: " + _short_reason('; '.join(fallback)))
     # Dispatch records measure lateness, not whether the scheduler process was running.
     if isinstance(dispatch := job.get("last_dispatch"), dict):
         if label := _dispatch_kind_label(dispatch.get("kind")):

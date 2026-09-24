@@ -1183,7 +1183,9 @@ def _result_field(send_result, key: str, default=None):
 
 
 def _confirm_adapter_delivery(
-    send_result, job_id: str = "?", unverified: Optional[list] = None) -> bool:
+    send_result, job_id: str = "?", unverified: Optional[list] = None,
+    lane: str = "live adapter",
+) -> bool:
     """Return True only if ``send_result`` unambiguously confirms delivery. ``None`` or no
     ``success`` attr/key is NOT success (would log "delivered" while nothing was sent).
     ``delivered is False`` REJECTS even with truthy ``success`` (the silence-narration filter
@@ -1212,10 +1214,10 @@ def _confirm_adapter_delivery(
         and not _result_field(send_result, "raw_response")
     ):
         logger.warning(
-            "Job '%s': live adapter reported success with no delivery evidence "
+            "Job '%s': %s reported success with no delivery evidence "
             "(no message_id, no raw_response) — treating as delivered but "
             "UNVERIFIED",
-            job_id)
+            job_id, lane)
         if unverified is not None:
             unverified.append(True)
     return True
@@ -1289,6 +1291,18 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         update_job(job["id"], values)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
+
+def _record_delivery_fallback(job: dict, fallback_reasons: list) -> None:
+    """Keep the last run's per-target lane downgrade reasons, including successful fallbacks."""
+    value = list(fallback_reasons) or None
+    if (job.get("last_delivery_fallback") or None) == value:
+        return
+    job["last_delivery_fallback"] = value
+    try:
+        from cron.jobs import update_job
+        update_job(job["id"], {"last_delivery_fallback": value})
+    except Exception as exc:
+        logger.debug("Job '%s': could not record delivery fallback: %s", job.get("id"), exc)
 
 
 @dataclass
@@ -1481,7 +1495,9 @@ def _live_send_text(
         router._deliver_to_platform(
             route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
     if future is None:
-        target_errors.append("live adapter event loop scheduling failed")
+        msg = f"live adapter event loop scheduling failed for {t.where}"
+        _warn_live_lane_failure(job, msg, t.is_relay)
+        target_errors.append(msg)
         return False, False, None
     try:
         send_result = future.result(timeout=60)
@@ -1491,7 +1507,7 @@ def _live_send_text(
         # started (loop wedged): MUST fall through to standalone or it is silently dropped.
         if future.cancel():
             msg = f"live adapter send to {t.where} timed out before the coroutine was dispatched"
-            logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
+            _warn_live_lane_failure(job, msg, t.is_relay)
             target_errors.append(msg)
             return False, False, None
         logger.warning(
@@ -1503,7 +1519,7 @@ def _live_send_text(
         return True, True, None
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone.
-        target_errors.append(f"live adapter send failed: {ex}")
+        target_errors.append(f"live adapter send to {t.where} failed: {ex}")
         raise
 
     # _deliver_to_platform returns a SendResult, or a plain dict {"success": True, "delivered":
@@ -1742,6 +1758,7 @@ def _standalone_send(
 
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
+    unverified_targets: list,
 ) -> None:
     """Standalone fallback for a target the live lane did not deliver."""
     job = t.job
@@ -1752,7 +1769,7 @@ def _deliver_standalone(
         delivery_errors.extend(target_errors)
         return
     result, err = _standalone_send(t, content, media_files)
-    if err is None and result and result.get("error"):
+    if err is None and isinstance(result, dict) and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], err)
@@ -1760,13 +1777,24 @@ def _deliver_standalone(
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         return
+    evidence_gap: list = []
+    if not _confirm_adapter_delivery(result, job["id"], evidence_gap, lane="standalone sender"):
+        msg = f"standalone send to {t.where} returned unconfirmed result"
+        _note_target_error(job, msg, target_errors)
+        delivery_errors.extend(target_errors)
+        return
+    if evidence_gap:
+        unverified_targets.append(t.where)
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
     for _w in (result.get("warnings") if isinstance(result, dict) else None) or []:
         msg = f"delivery warning: {_w} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
-    logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
+    logger.info("Job '%s': delivered to %s:%s via standalone thread=%s message_id=%s%s",
+                job["id"], t.platform_name, t.chat_id, t.thread_id or "-",
+                _result_field(result, "message_id") or "-",
+                " (UNVERIFIED)" if evidence_gap else "")
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
@@ -1952,6 +1980,7 @@ def _deliver_result(
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
+    fallback_reasons: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])
         delivery_content = (
@@ -2043,8 +2072,15 @@ def _deliver_result(
             unverified_targets=unverified_targets,
         )
         if not delivered:
+            if target_errors and not t.is_relay:
+                fallback_reasons.extend(f"{t.where}: {reason}" for reason in target_errors)
+            elif not t.is_relay and not t.live_adapter_ready:
+                fallback_reasons.append(f"{t.where}: live adapter unavailable")
+                logger.info("Job '%s': live adapter unavailable for %s, using standalone",
+                            job["id"], t.where)
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors,
+                unverified_targets)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.
@@ -2053,6 +2089,7 @@ def _deliver_result(
     else:
         delivery_errors.extend(policy_drop_errors)
     _record_delivery_verification(job, unverified_targets)
+    _record_delivery_fallback(job, fallback_reasons)
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

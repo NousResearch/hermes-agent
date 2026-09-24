@@ -166,7 +166,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
 
     async def _fake_send_to_platform(platform, pconfig, chat_id, text, **kwargs):
         standalone_calls.append({"chat_id": chat_id, "text": text, "kwargs": kwargs})
-        return standalone_result if standalone_result is not None else {}
+        return standalone_result if standalone_result is not None else {"success": True}
 
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config(relay)), \
          patch("cron.scheduler.load_config",
@@ -382,6 +382,28 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
         error, _, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1234))
         assert error is None
         assert RECORDED_VERIFICATION == [("92e639af907f", [])]
+
+    def test_standalone_ack_without_receipt_records_unverified_and_downgrade(self, caplog):
+        job = _job()
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error, _, sends = _run(job, "Nightly report.", None,
+                                   standalone_result={"success": True})
+        assert error is None
+        assert len(sends) == 1
+        assert RECORDED_VERIFICATION == [(job["id"], [f"telegram:{CHAT_ID}"])]
+        assert "no response from adapter" in job["last_delivery_fallback"][0]
+        assert "falling back to standalone" in caplog.text
+        assert "via standalone" in caplog.text and "UNVERIFIED" in caplog.text
+
+    def test_standalone_rejection_is_not_delivered(self, caplog):
+        job = _job()
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error, _, sends = _run(job, "Nightly report.", None,
+                                   standalone_result={"success": False})
+        assert len(sends) == 1
+        assert "returned unconfirmed result" in error
+        assert "via standalone" not in caplog.text
+        assert RECORDED_VERIFICATION == [(job["id"], [])]
 
     def test_recorder_skips_the_write_when_nothing_changed(self):
         with patch("cron.jobs.update_job") as update_job:

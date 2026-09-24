@@ -1,13 +1,13 @@
 name: peripheral-vision
 repo: https://github.com/MaJorDan383/peripheral-vision
-sha: 260199734b15f0d3fdae51eaa5cf6e9e8ec1a9d2
+sha: 1ccd40fc78f82e7c8fc4f2c45fdeb0f7f76741ab
 description: "Peripheral vision for the conversation: watch a whole display, one application window (even one sitting behind another app), or a camera; changed frames are described with the session's model and fed into the turn. Windows-only."
 maintainer: MaJorDan383
 tier: community
 category: desktop
 requires_hermes: ">=0.20.1"
 docs_url: https://github.com/MaJorDan383/peripheral-vision#readme
-version: "1.2.0"
+version: "1.2.1"
 platforms: [windows]
 capabilities:
   provides_tools: []

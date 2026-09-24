@@ -15,9 +15,15 @@
  * drift on the next page.
  */
 
-import { getOlderSessionMessages } from '@/hermes'
+import { getOlderSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { recordTranscriptBackfillPage, type TranscriptProfileScope, transcriptTailState } from '@/store/transcript-tail'
+import {
+  recordTranscriptBackfillPage,
+  tailStateFromPage,
+  type TranscriptProfileScope,
+  transcriptTailState
+} from '@/store/transcript-tail'
+import type { SessionMessagesResponse } from '@/types/hermes'
 
 /** Older rows likely exist beyond what the in-memory store holds. */
 export function transcriptBackfillAvailable(
@@ -248,20 +254,62 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
 const REFRESH_OVERLAP_PAGE_LIMIT = 4
 
 /**
+ * Reader for the pages older than a refreshed newest page. Paging follows the
+ * transcript-tail rules: it starts at the page's own offset and stops once a
+ * page comes back short, or without pagination metadata (a legacy backend
+ * already returned everything).
+ */
+export function olderPageReader(
+  storedSessionId: string,
+  scope: ProfileScope,
+  page: null | Pick<SessionMessagesResponse, 'messages' | 'pagination'> | undefined
+): () => Promise<ChatMessage[]> {
+  let state = page ? tailStateFromPage(page) : undefined
+
+  return async () => {
+    if (!state?.possiblyTruncated) {
+      return []
+    }
+
+    const older = await getOlderSessionMessages(storedSessionId, scope, state.nextOffset)
+    state = tailStateFromPage(older)
+
+    return toChatMessages(older.messages)
+  }
+}
+
+/**
  * A refresh begins at the newest persisted row. A tool-heavy turn can fill
  * that page entirely, putting its first durable row after the rendered
  * transcript. Read a small, bounded number of older pages until one shares a
  * durable row, so graftRefreshedTailOntoBackfill can retain the live prefix.
+ * Stored ids only grow, so once a page reaches below the oldest rendered id
+ * no older page can overlap.
  */
 export async function extendRefreshPageToOverlap(
   refreshedTail: ChatMessage[],
   previous: ChatMessage[],
   readOlderPage: () => Promise<ChatMessage[]>
 ): Promise<ChatMessage[]> {
-  if (!refreshedTail.length || !previous.length || sharesDurableRow(refreshedTail, previous)) {
+  if (!refreshedTail.length || !previous.length) {
     return refreshedTail
   }
 
+  const previousRowIds = durableRowIds(previous)
+
+  // Streamed or optimistic rows carry no stored id: nothing can overlap.
+  if (previousRowIds.size === 0) {
+    return refreshedTail
+  }
+
+  const sharesPrevious = (messages: ChatMessage[]) =>
+    messages.some(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+
+  if (sharesPrevious(refreshedTail)) {
+    return refreshedTail
+  }
+
+  const oldestPrevious = Math.min(...previousRowIds)
   let extended = refreshedTail
 
   for (let page = 0; page < REFRESH_OVERLAP_PAGE_LIMIT; page += 1) {
@@ -280,8 +328,12 @@ export async function extendRefreshPageToOverlap(
 
     extended = [...older, ...extended]
 
-    if (sharesDurableRow(extended, previous)) {
+    if (sharesPrevious(older)) {
       return extended
+    }
+
+    if (older.some(message => message.rowId !== undefined && message.rowId < oldestPrevious)) {
+      return refreshedTail
     }
   }
 

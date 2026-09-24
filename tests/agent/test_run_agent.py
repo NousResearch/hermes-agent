@@ -5652,6 +5652,7 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client = MagicMock()
         stream_cm = MagicMock()
         stream_cm.__enter__.return_value.get_final_message.return_value = response
+        stream_cm.__enter__.return_value.__iter__.return_value = iter([SimpleNamespace(type="message_stop")])
         agent._anthropic_client.messages.stream.return_value = stream_cm
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh:

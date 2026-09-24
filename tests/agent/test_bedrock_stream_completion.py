@@ -95,6 +95,7 @@ def test_bedrock_wire_requires_message_stop(terminal):
 
 def test_explicit_interrupt_keeps_partial_response_contract():
     from agent.bedrock_adapter import stream_converse_with_callbacks
+    from agent.chat_completion_helpers import _finalize_bedrock_relay_events
 
     interrupted = False
 
@@ -102,14 +103,15 @@ def test_explicit_interrupt_keeps_partial_response_contract():
         nonlocal interrupted
         interrupted = True
 
+    events = [
+        {"contentBlockDelta": {"delta": {"text": "partial"}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+    ]
     response = stream_converse_with_callbacks(
-        {
-            "stream": [
-                {"contentBlockDelta": {"delta": {"text": "partial"}}},
-                {"contentBlockStop": {"contentBlockIndex": 0}},
-            ]
-        },
+        {"stream": events},
         on_text_delta=on_text,
         on_interrupt_check=lambda: interrupted,
     )
     assert response.choices[0].message.content == "partial"
+    # The relay finalizer has no interrupt: no messageStop -> nothing to record.
+    assert _finalize_bedrock_relay_events(events) is None

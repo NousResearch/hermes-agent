@@ -96,9 +96,9 @@ def _strip_shell_comments(command: str) -> str:
     """Strip shell comments before LLM assessment.
 
     This is a word/quote-aware heuristic, not a full shell or heredoc parser.
-    Quote state carries across lines. Commands containing expansion/extglob/special-quote
-    markers, or a heredoc, are preserved verbatim: the shared scanner cannot
-    establish word boundaries reliably for expansions, extglobs or dollar quotes,
+    Quote state carries across lines. Commands containing expansion, extglob,
+    assignment, conditional or special-quote markers, or a heredoc, are preserved
+    verbatim: the shared scanner cannot establish word boundaries in those contexts,
     and a heredoc body is data (``execute_code`` wraps its Python script as one).
     """
     # Even quoted/escaped markers take this conservative path. Trying to classify
@@ -107,10 +107,16 @@ def _strip_shell_comments(command: str) -> str:
     # Detect markers split by line continuations without changing the input.
     # Extglob may be enabled by an earlier line or inherited shell state; its
     # closing ')' belongs to the word, so a following '#' can still be data.
+    # Assignment words and [[...]] regexes also have non-shell word boundaries.
     marker_text = command.replace("\\\n", "")
     if any(marker in marker_text for marker in (
-        "<(", ">(", "$(", "${", "$'", '$"', "`", "@(", "?(", "*(", "+(", "!(",
+        "<(", ">(", "$(", "${", "$'", '$"', "`", "@(", "?(", "*(", "+(", "!(", "=(", "[[",
     )):
+        return command
+    # A continuation can split a heredoc operator. Do not strip the body while
+    # waiting for the raw scanner to recognize adjacent '<' characters. Like
+    # the marker fallback above, quoted markers and here-strings may overmatch.
+    if marker_text != command and "<<" in marker_text:
         return command
 
     spans = _comment_spans(command)

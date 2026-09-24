@@ -16,11 +16,12 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+
+from tests.fakes.providers.anthropic_messages import ApiError, AnthropicMessagesServer, Reply, Response, Text, ToolUse
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TAG_VAR = "OAUTH_E2E_TAG"
@@ -132,134 +133,44 @@ def wait_until(pred: Callable[[], Any], timeout: float, what: str, interval: flo
         time.sleep(interval)
 
 
-# ---- minimal Anthropic Messages endpoint -----------------------------------
+# ---- Anthropic Messages endpoint --------------------------------------------
 #
-# Just enough of the Messages API for a text turn (JSON and SSE). The request
-# record keeps the bearer so a test can prove which access token each call
-# carried; ``decide`` maps a record to ("text", str) | ("tool", name, input)
-# | ("error", status, type, msg) | ("hold", threading.Event, next_decision)
-# | ("call", zero-arg callable returning the decision at send time).
+# The SDK-oracle fake (tests/fakes/providers/anthropic_messages.py) validates every
+# body and builds every reply from SDK models. A test's ``decide(record)`` returns a
+# ``Decision``: a scripted ``Response`` (``Reply``/``ApiError``), a ``Hold`` that
+# parks the reply on the handler thread until an event fires, or a zero-arg
+# callable evaluated at send time. ``record["bearer"]`` / ``record["x_api_key"]``
+# carry the credential each call presented.
 
 
-def _sse(event: str, data: dict[str, Any]) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+@dataclass
+class Hold:
+    event: threading.Event
+    then: Any  # Decision
+    timeout: float = 120.0
 
 
-class MessagesServer:
-    MODEL = "claude-sonnet-4-5"
+def resolve(decision: Any) -> Response:
+    """Follow ``Hold``s and callables down to the ``Response`` sent on the wire."""
+    while not isinstance(decision, (Reply, ApiError)):
+        if isinstance(decision, Hold):
+            decision.event.wait(decision.timeout)
+            decision = decision.then
+        else:
+            decision = decision()
+    return decision
 
-    def __init__(self, decide: Callable[[dict[str, Any]], tuple]) -> None:
-        self.decide = decide
-        self.requests: list[dict[str, Any]] = []
-        self._lock = threading.Lock()
-        self._httpd: ThreadingHTTPServer | None = None
 
-    @property
-    def base_url(self) -> str:
-        assert self._httpd is not None
-        return f"http://127.0.0.1:{self._httpd.server_address[1]}/anthropic"
+def text(s: str) -> Reply:
+    return Reply([Text(s)])
 
-    def main_requests(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [r for r in self.requests if r["body"].get("tools")]
 
-    def start(self) -> "MessagesServer":
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self._httpd.daemon_threads = True
-        threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
-        return self
+def tool(name: str, args: dict[str, Any]) -> Reply:
+    return Reply([ToolUse(name, args)])
 
-    def stop(self) -> None:
-        if self._httpd is not None:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-            self._httpd = None
 
-    def _handler(self) -> type[BaseHTTPRequestHandler]:
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def do_GET(self) -> None:  # noqa: N802 - model listing probes
-                self._json(200, {"data": [{"id": outer.MODEL, "type": "model", "display_name": outer.MODEL}],
-                                 "has_more": False})
-
-            def do_POST(self) -> None:  # noqa: N802
-                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                if not self.path.split("?", 1)[0].endswith("/v1/messages"):
-                    # Local-endpoint capability probes (e.g. ``/api/show``) are not Messages calls.
-                    return self._json(404, {"type": "error", "error": {"type": "not_found_error", "message": "no"}})
-                body = json.loads(raw or b"{}")
-                auth = self.headers.get("Authorization", "")
-                record = {"path": self.path, "body": body, "bearer": auth.removeprefix("Bearer ").strip(),
-                          "x_api_key": self.headers.get("x-api-key", ""), "at": time.monotonic()}
-                with outer._lock:
-                    outer.requests.append(record)
-                decision = outer.decide(record)
-                while decision[0] in ("hold", "call"):
-                    if decision[0] == "call":
-                        decision = decision[1]()
-                        continue
-                    decision[1].wait(120)
-                    decision = decision[2]
-                if decision[0] == "error":
-                    _, status, etype, msg = decision
-                    return self._json(status, {"type": "error", "error": {"type": etype, "message": msg}})
-                if decision[0] == "tool":
-                    block = {"type": "tool_use", "id": f"toolu_{uuid.uuid4().hex[:12]}", "name": decision[1],
-                             "input": decision[2]}
-                    stop = "tool_use"
-                else:
-                    block, stop = {"type": "text", "text": decision[1]}, "end_turn"
-                if body.get("stream"):
-                    return self._stream(block, stop)
-                self._json(200, {"id": "msg_fake", "type": "message", "role": "assistant", "model": outer.MODEL,
-                                 "content": [block], "stop_reason": stop,
-                                 "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 5}})
-
-            def _stream(self, block: dict[str, Any], stop: str) -> None:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                msg = {"id": "msg_fake", "type": "message", "role": "assistant", "model": outer.MODEL,
-                       "content": [], "stop_reason": None, "stop_sequence": None,
-                       "usage": {"input_tokens": 10, "output_tokens": 1}}
-                if block["type"] == "tool_use":
-                    start = {**block, "input": {}}
-                    delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
-                else:
-                    start = {"type": "text", "text": ""}
-                    delta = {"type": "text_delta", "text": block["text"]}
-                for chunk in (
-                    _sse("message_start", {"type": "message_start", "message": msg}),
-                    _sse("content_block_start", {"type": "content_block_start", "index": 0, "content_block": start}),
-                    _sse("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": delta}),
-                    _sse("content_block_stop", {"type": "content_block_stop", "index": 0}),
-                    _sse("message_delta", {"type": "message_delta",
-                                           "delta": {"stop_reason": stop, "stop_sequence": None},
-                                           "usage": {"output_tokens": 5}}),
-                    _sse("message_stop", {"type": "message_stop"}),
-                ):
-                    self.wfile.write(chunk)
-                self.wfile.flush()
-                self.close_connection = True
-
-            def _json(self, status: int, payload: dict[str, Any]) -> None:
-                data = json.dumps(payload).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(data)
-                self.close_connection = True
-
-            def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
-                return
-
-        return Handler
+def credential(record: dict[str, Any]) -> str:
+    return record["bearer"] or record["x_api_key"]
 
 
 # ---- Anthropic OAuth rig ----------------------------------------------------
@@ -270,6 +181,8 @@ class MessagesServer:
 
 ANTHROPIC_TOKEN_HOSTS = ("platform.claude.com", "console.anthropic.com")
 OLD_ACCESS = "sk-ant-oat01-e2e-old-access"
+EXPIRED = ApiError(401, "authentication_error", "OAuth token has expired")
+MODEL = "claude-sonnet-4-5"
 
 
 @dataclass
@@ -277,7 +190,7 @@ class AnthropicOAuthRig:
     fh: FakeHome
     tokens: Any  # OAuthTokenServer
     proxy: Any  # TLSInterceptProxy
-    messages: MessagesServer
+    messages: AnthropicMessagesServer
     seed_refresh: str
     child_env: dict[str, str]
 
@@ -292,24 +205,29 @@ class AnthropicOAuthRig:
         return next((r for r in rows if r.get("id") == entry_id), {})
 
 
-def start_anthropic_rig(root: Path, decide: Callable[[dict[str, Any]], tuple], *,
-                        title_generation: bool, entries: int = 1) -> AnthropicOAuthRig:
+def start_anthropic_rig(root: Path, decide: Callable[[dict[str, Any]], Any], *,
+                        title_generation: bool, entries: int = 1,
+                        expires_at_ms: int | None = None) -> AnthropicOAuthRig:
+    """``expires_at_ms`` is the seeded row's clock expiry; default: an hour ahead, so only the
+    vendor's 401 (early revocation/expiry) can trigger the refresh."""
     from tests.fakes.providers.oauth_token_server import OAuthTokenServer, TLSInterceptProxy, make_test_ca
 
     ca = make_test_ca(root / "ca", ANTHROPIC_TOKEN_HOSTS)
     tokens = OAuthTokenServer().start()
     proxy = TLSInterceptProxy(tokens, ca, ANTHROPIC_TOKEN_HOSTS).start()
-    messages = MessagesServer(decide).start()
+    def responder(record: dict[str, Any]) -> Response:
+        return resolve(decide(record))
+
+    messages = AnthropicMessagesServer(responder, aux=responder, models=[MODEL]).start()
     fh = make_home(root)
     fh.write_config({
-        "model": {"provider": "anthropic", "default": MessagesServer.MODEL, "base_url": messages.base_url},
+        "model": {"provider": "anthropic", "default": MODEL, "base_url": messages.base_url},
         "auxiliary": {"title_generation": {"enabled": title_generation}},
     })
     seed = tokens.seed_refresh_token()
     rows = [{"id": "e1", "label": "acct-1", "auth_type": "oauth", "priority": 0, "source": "manual",
              "access_token": OLD_ACCESS, "refresh_token": seed,
-             # Not expired by the clock: the vendor revoking/expiring it early (401) is the trigger.
-             "expires_at_ms": int(time.time() * 1000) + 3_600_000}]
+             "expires_at_ms": expires_at_ms if expires_at_ms is not None else int(time.time() * 1000) + 3_600_000}]
     for i in range(2, entries + 1):
         rows.append({"id": f"e{i}", "label": f"acct-{i}", "auth_type": "oauth", "priority": i - 1,
                      "source": "manual", "access_token": f"sk-ant-oat01-e2e-spare-{i}",

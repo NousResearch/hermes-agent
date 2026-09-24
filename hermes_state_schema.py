@@ -986,7 +986,11 @@ class SessionSchemaMixin:
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             cursor.executemany(
                 "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
-                [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso)],
+                [
+                    ("store_instance_id", str(uuid.uuid4())),
+                    ("store_created_at_utc", now_iso),
+                    ("session_activity_message_backfill_version", "1"),
+                ],
             )
         else:
             self._run_data_migrations(cursor, row[0], fts5_available)
@@ -1051,13 +1055,35 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'session_activity_message_backfill_version' LIMIT 1"
+        ).fetchone() is None:
+            # v31: the bounded recent-candidate index is correct only when its durable
+            # activity key is at least the newest transcript timestamp.  Keep a separate
+            # completion marker: an FTS-unavailable runtime deliberately defers advancing
+            # schema_version, but must not rescan every message on every startup.
+            cursor.execute("""
+                WITH message_activity AS (
+                    SELECT session_id, MAX(timestamp) AS latest_timestamp
+                    FROM messages
+                    GROUP BY session_id
+                )
+                UPDATE sessions
+                SET last_activity_at = (
+                    SELECT latest_timestamp FROM message_activity WHERE session_id = sessions.id
+                )
+                WHERE id IN (SELECT session_id FROM message_activity)
+                  AND (last_activity_at IS NULL OR last_activity_at < (
+                      SELECT latest_timestamp FROM message_activity WHERE session_id = sessions.id
+                  ))
+            """)
+            self.set_meta("session_activity_message_backfill_version", "1", cursor=cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);
             # v30: delegate-child transcripts too (FTS_TRIGRAM_EXCLUDED_SOURCES + _delegate_from).
             # Rebuild once so rows indexed by older view/trigger definitions do not linger.
             fts_migrations_complete = self._migrate_trigram_cron_exclusion(cursor)
-
         # Stamp the FTS layout version (fresh/optimized DBs); a legacy DB keeps its absent/0
         # marker until optimize-storage runs. An INTERRUPTED optimize (markers, trash, or an
         # empty external index against non-empty messages) is NOT stamped: the marker is the

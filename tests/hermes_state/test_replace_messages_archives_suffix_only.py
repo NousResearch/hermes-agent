@@ -68,3 +68,22 @@ def test_reloaded_session_prefix_still_matches_its_rows(tmp_path):
 
     assert [m["id"] for m in db.get_messages(sid)] == prefix_ids
     assert len([m for m in db.get_messages(sid, include_inactive=True) if not m["active"]]) == 2
+
+
+def test_archive_rewrite_counts_kept_and_inserted_tool_calls(tmp_path):
+    """A rewritten suffix contributes its tool calls alongside the retained prefix."""
+    db = SessionDB(tmp_path / "state.db")
+    sid = "rewrite-counter"
+    db.create_session(sid, "test")
+    db.append_message(sid, "user", "keep")
+    db.append_message(sid, "assistant", "replace me")
+
+    db.replace_messages(sid, [
+        {"role": "user", "content": "keep"},
+        {"role": "assistant", "content": "replacement", "tool_calls": [{"name": "tool"}]},
+    ], active_only=True, archive_dropped=True)
+
+    active = db.get_messages(sid)
+    session = db.get_session(sid)
+    assert session["message_count"] == len(active) == 2
+    assert session["tool_call_count"] == sum(bool(message.get("tool_calls")) for message in active) == 1

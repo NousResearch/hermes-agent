@@ -80,8 +80,8 @@ Creates a new profile.
 | Argument / Option | Description |
 |-------------------|-------------|
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
-| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, and skills from the current profile. |
-| `--clone-all` | Copy everything (config, memories, skills, cron, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints. |
+| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, skills, the curated `memories/MEMORY.md` / `memories/USER.md`, and the active `memory.provider`'s own config (`<provider>/` or `<provider>.json`, e.g. `hindsight/config.json`) from the current profile. Sessions, `state.db` and cron jobs are not copied. |
+| `--clone-all` | Copy everything (config, memories, skills, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints — and cron jobs, which stay bound to the source profile (a clone that inherited them would fire every job twice). When the source is the default profile, the machine-scoped local-model trees (`models/`, `runtimes/`, `node/`) are also skipped — the same trees `hermes backup` excludes. |
 | `--clone-from <profile>` | Clone config/skills/SOUL from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
 | `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
@@ -163,7 +163,7 @@ hermes profile delete mybot --yes
 ```
 
 :::warning
-This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. Cannot delete the currently active profile.
+This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. The `default` profile (`~/.hermes`) cannot be deleted — use `hermes uninstall` to remove everything.
 :::
 
 ## `hermes profile show`
@@ -173,6 +173,8 @@ hermes profile show <name>
 ```
 
 Displays details about a profile including its home directory, configured model, gateway status, skills count, and configuration file status.
+
+The skills count here (and in `hermes profile list`) is counted on the spot. The Desktop and dashboard profile lists are polled every few seconds, so they show the last known count instead and refresh it in the background — a freshly started backend may briefly show `0` skills for a profile until the first background count lands, and a skill you just installed appears in those lists within about a minute.
 
 This shows the profile's Hermes home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
 
@@ -242,13 +244,86 @@ hermes profile rename mybot assistant
 # ~/.local/bin/mybot → ~/.local/bin/assistant
 ```
 
+The rename also migrates the profile's persisted session/routing identity — session keys
+(`agent:<old>:*`), `sessions.profile_name`, heartbeats, and routing/delivery rows — to the new
+name. A live multiplexed gateway owns that migration (it holds the routing index in memory), so
+when it is running the CLI delegates to it. Checkpoint (`/rollback`) history of workspaces that
+live inside the profile directory is rekeyed to their new path as well, so it stays reachable
+after the rename; `hermes profile migrate-identity` retries that step too if it was reported as
+failed.
+
+## `hermes profile migrate-identity`
+
+```bash
+hermes profile migrate-identity <old-name> <new-name>
+```
+
+Retries the identity migration of a rename that already completed. Run it if `hermes profile
+rename` warned that the live gateway could not migrate session identity: restart the gateway
+(it reloads the routing index from the database, so the migration lands), or stop it — with no
+gateway holding the store the command performs the durable rewrite itself.
+
+The migration is driven by the rows that still name `<old>`, so `profiles/<old>` does not have
+to exist; only `<new>` is checked. Idempotent — re-running a completed migration succeeds with
+nothing left to rekey. Exits non-zero when a live gateway refuses the migration, when a
+database rejects the rewrite (a routing collision, a lock, or one of the two databases failing
+while the other succeeds), naming the database and error.
+
+**Example:**
+
+```bash
+hermes profile rename mybot assistant
+# ⚠ Profile was renamed, but the live gateway could not migrate session identity (…).
+#   Restart the gateway, then run:
+#     hermes profile migrate-identity mybot assistant
+
+hermes profile migrate-identity mybot assistant
+# ✓ Session/routing identity migrated: mybot → assistant
+```
+
+## `hermes profile purge-identity`
+
+```bash
+hermes profile purge-identity <name>
+```
+
+Retries the identity purge of a delete that already completed. Run it if `hermes profile delete`
+reported that its session/routing identity settlement is still pending: restart the gateway (it
+reloads the routing index from the database, so the purge lands), or stop it — with no gateway
+holding the store the command performs the durable delete itself.
+
+The purge keys off `<name>` alone, so the profile directory does not have to exist — but a profile
+that is live again under that name is refused: identity is settled by name, so purging it would take
+the new profile's routing with it. Routing keys (`agent:<name>:*`), heartbeat rows and the profile's
+Telegram topic bindings/mode rows are deleted; `delivery_obligations` rows are marked `abandoned`
+rather than dropped, so pending delivery state is not lost silently. Session rows are not deleted by
+the purge itself — it settles identity, not history; whether a conversation record outlives a delete
+is decided by `hermes profile delete`, which removes the profile's own `profiles/<name>/`, its
+`state.db` included. Idempotent — re-running a completed purge succeeds with nothing left to purge.
+Exits non-zero when the name is a live profile again, when a live gateway refuses the purge, or when
+a database rejects the delete (a lock, or a partial failure).
+
+**Example:**
+
+```bash
+hermes profile delete mybot
+# ⚠ Profile was deleted, but the live gateway could not purge its session identity (…).
+#   Restart the gateway, then run:
+#     hermes profile purge-identity mybot
+
+hermes profile purge-identity mybot
+# ✓ Session/routing identity purged: mybot
+```
+
 ## `hermes profile export`
 
 ```bash
 hermes profile export <name> [options]
 ```
 
-Exports a profile as a compressed tar.gz archive.
+Exports a profile as a compressed tar.gz archive — a portable snapshot you can back up, move to another machine, or hand to someone else. `auth.json` and `.env` are always excluded.
+
+Also available in chat as [`/export`](./slash-commands.md), and in the desktop app via **⌘K → Export profile…** or a profile square's right-click menu. A desktop export additionally stages `desktop.json` (skin, light/dark mode, custom themes, rail color, window layout) into the archive.
 
 | Argument / Option | Description |
 |-------------------|-------------|
@@ -264,13 +339,17 @@ hermes profile export work
 hermes profile export work -o ./work-2026-03-29.tar.gz
 ```
 
+See [Export and import a profile file](../user-guide/profile-distributions.md#export-and-import-a-profile-file) for exactly what lands in the archive and what to check before sending one to someone else.
+
 ## `hermes profile import`
 
 ```bash
 hermes profile import <archive> [options]
 ```
 
-Imports a profile from a tar.gz archive.
+Imports a profile from a tar.gz archive, as a new profile. Refuses to overwrite an existing profile, and cannot import as `default` (the built-in root profile) — pass `--name` in either case. A shell wrapper is created when the name doesn't collide with an existing command.
+
+Also available in chat as [`/import`](./slash-commands.md), and in the desktop app via **⌘K → Import profile…** or the import button beside the profile rail's **+**. A desktop import also applies any bundled `desktop.json` overlay (theme, layout) and switches you into the new profile.
 
 | Argument / Option | Description |
 |-------------------|-------------|
@@ -305,10 +384,7 @@ The recipient's user data (memories, sessions, auth, their own edits to
 updates.
 
 :::info
-`hermes profile export` / `import` are still the right commands for
-**local backup and restore** of a profile on your own machine. Distribution
-(`install` / `update` / `info`) is a separate concept: ship a profile via
-git so someone else can install it.
+Two ways to share a profile, and they complement each other. `hermes profile export` / `import` (also `/export` and `/import` in chat) produce a **single file** — no repo, no manifest, and a desktop export carries your theme and layout too. Distribution (`install` / `update` / `info`) publishes a profile as a **git repo** so recipients can pull versioned updates later. Backup and restore is the export file's other job. See [Two ways to share a profile](../user-guide/profile-distributions.md#two-ways-to-share-a-profile).
 :::
 
 ### `hermes profile install`
@@ -354,8 +430,12 @@ hermes profile update <name> [--force-config] [--yes]
 ```
 
 Re-clones the distribution from its recorded source and applies updates.
-Distribution-owned files (SOUL.md, skills/, cron/, mcp.json) are
-overwritten; user data (memories, sessions, auth, .env) is never touched.
+Distribution-owned files (SOUL.md, mcp.json) are overwritten and the
+skills and cron jobs the distribution ships are replaced; skills or cron
+jobs you added under `skills/` or `cron/` yourself stay in place. User data
+(memories, sessions, auth, .env) is never touched. A symlinked `skills/`,
+`cron/` or skill category directory is refused before anything is written — replace the link with a real
+directory and re-run.
 
 `config.yaml` is preserved by default to keep your local overrides.
 Pass `--force-config` to reset it to the distribution's shipped config.

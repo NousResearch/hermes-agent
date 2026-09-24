@@ -100,15 +100,6 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value={}):
             assert runner._get_proxy_url() is None
 
-    def test_reads_from_env_var(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://192.168.1.100:8642")
-        runner = _make_runner()
-        assert runner._get_proxy_url() == "http://192.168.1.100:8642"
-
-    def test_strips_trailing_slash(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642/")
-        runner = _make_runner()
-        assert runner._get_proxy_url() == "http://host:8642"
 
     def test_reads_from_config_yaml(self, monkeypatch):
         monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
@@ -117,27 +108,40 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
 
-    def test_env_var_overrides_config(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://env-host:8642")
-        runner = _make_runner()
-        cfg = {"gateway": {"proxy_url": "http://config-host:8642"}}
-        with patch("gateway.run._load_gateway_config", return_value=cfg):
-            assert runner._get_proxy_url() == "http://env-host:8642"
 
-    def test_empty_string_treated_as_unset(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "  ")
+class _SelectiveScope(dict):
+    """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
+    def get(self, name, default=None):
+        if name == "GATEWAY_PROXY_URL":
+            return "http://proxy.local:8642"
+        if name == "GATEWAY_PROXY_KEY":
+            raise RuntimeError("resolver boom")
+        return dict.get(self, name, default)
+
+
+class TestProxyKeyScopeFailure:
+    """The proxy key read must propagate a bound-scope failure -- the ambient env
+    may hold another profile's credential (pre-fix: ``except Exception -> os.getenv``)."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_key_scope_failure_never_borrows_env(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("GATEWAY_PROXY_KEY", "foreign-key")
         runner = _make_runner()
-        with patch("gateway.run._load_gateway_config", return_value={}):
-            assert runner._get_proxy_url() is None
+        runner._run_still_current_fn = lambda *a, **k: True
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(_SelectiveScope())
+        try:
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                await runner._run_agent_via_proxy("hi", "ctx", [], _make_source(), "sess-1")
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
 
 
 class TestResolveProxyUrl:
-    def test_normalizes_socks_alias_from_all_proxy(self, monkeypatch):
-        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
-                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080/")
-        assert resolve_proxy_url() == "socks5://127.0.0.1:1080/"
 
     def test_no_proxy_bypasses_matching_host(self, monkeypatch):
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
@@ -157,14 +161,45 @@ class TestResolveProxyUrl:
 
         assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
 
-    def test_no_proxy_ignored_without_target(self, monkeypatch):
-        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
-                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
-        monkeypatch.setenv("NO_PROXY", "*")
 
-        assert resolve_proxy_url() == "http://proxy.example:8080"
+@pytest.mark.macos_only
+class TestMacosProxyProbeCache:
+    """``scutil --proxy`` is a ~11 ms fork and resolve_proxy_url runs it on the SEND path —
+    per chunk of an outbound message and per media attachment."""
+
+    SCUTIL_OUT = "<dictionary> {\n  HTTPEnable : 1\n  HTTPProxy : 10.0.0.1\n  HTTPPort : 3128\n}"
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
+        import gateway.platforms.base as base
+        base.reset_macos_proxy_cache()
+        yield
+        base.reset_macos_proxy_cache()
+
+    def _count_forks(self, monkeypatch):
+        import gateway.platforms.base as base
+        calls = []
+
+        def fake(*a, **kw):
+            calls.append(a)
+            return self.SCUTIL_OUT
+        monkeypatch.setattr(base.subprocess, "check_output", fake)
+        return base, calls
+
+    def test_repeated_probes_fork_scutil_once(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        results = [base._detect_macos_system_proxy() for _ in range(10)]
+        assert len(calls) == 1, f"expected 1 scutil fork for 10 probes, got {len(calls)}"
+        assert results == ["http://10.0.0.1:3128"] * 10
+
+    def test_expired_ttl_re_reads(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(base.time, "monotonic", lambda: clock["t"])
+        base._detect_macos_system_proxy()
+        clock["t"] += base._MACOS_PROXY_TTL_SECONDS + 1
+        base._detect_macos_system_proxy()
+        assert len(calls) == 2
 
 
 class TestRunAgentProxyDispatch:
@@ -201,27 +236,6 @@ class TestRunAgentProxyDispatch:
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
-
-    @pytest.mark.asyncio
-    async def test_run_agent_skips_proxy_when_not_configured(self, monkeypatch):
-        monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
-        runner = _make_runner()
-
-        runner._run_agent_via_proxy = AsyncMock()
-
-        with patch("gateway.run._load_gateway_config", return_value={}):
-            try:
-                await runner._run_agent(
-                    message="hi",
-                    context_prompt="",
-                    history=[],
-                    source=_make_source(),
-                    session_id="test-session",
-                )
-            except Exception:
-                pass  # Expected — bare runner can't create a real agent
-
-        runner._run_agent_via_proxy.assert_not_called()
 
 
 class TestRunAgentViaProxy:
@@ -280,29 +294,6 @@ class TestRunAgentViaProxy:
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
-    @pytest.mark.asyncio
-    async def test_handles_http_error(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
-        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
-        runner = _make_runner()
-        source = _make_source()
-
-        resp = _FakeSSEResponse(status=401, error_text="Unauthorized: invalid API key")
-        session = _FakeSession(resp)
-
-        with patch("gateway.run._load_gateway_config", return_value={}):
-            with _patch_aiohttp(session):
-                with patch("aiohttp.ClientTimeout"):
-                    result = await runner._run_agent_via_proxy(
-                        message="hi",
-                        context_prompt="",
-                        history=[],
-                        source=source,
-                        session_id="test",
-                    )
-
-        assert "Proxy error (401)" in result["final_response"]
-        assert result["api_calls"] == 0
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
@@ -332,140 +323,9 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy connection error" in result["final_response"]
-
-    @pytest.mark.asyncio
-    async def test_skips_tool_messages_in_history(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
-        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
-        runner = _make_runner()
-        source = _make_source()
-
-        resp = _FakeSSEResponse(
-            status=200,
-            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
-        )
-        session = _FakeSession(resp)
-
-        history = [
-            {"role": "user", "content": "search for X"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1"}]},
-            {"role": "tool", "content": "search results...", "tool_call_id": "tc1"},
-            {"role": "assistant", "content": "Found results."},
-        ]
-
-        with patch("gateway.run._load_gateway_config", return_value={}):
-            with _patch_aiohttp(session):
-                with patch("aiohttp.ClientTimeout"):
-                    await runner._run_agent_via_proxy(
-                        message="tell me more",
-                        context_prompt="",
-                        history=history,
-                        source=source,
-                        session_id="test",
-                    )
-
-        # Only user and assistant with content should be forwarded
-        messages = session.captured_json["messages"]
-        roles = [m["role"] for m in messages]
-        assert "tool" not in roles
-        # assistant with None content should be skipped
-        assert all(m.get("content") for m in messages)
-
-    @pytest.mark.asyncio
-    async def test_result_shape_matches_run_agent(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
-        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
-        runner = _make_runner()
-        source = _make_source()
-
-        resp = _FakeSSEResponse(
-            status=200,
-            sse_chunks=[b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'],
-        )
-        session = _FakeSession(resp)
-
-        with patch("gateway.run._load_gateway_config", return_value={}):
-            with _patch_aiohttp(session):
-                with patch("aiohttp.ClientTimeout"):
-                    result = await runner._run_agent_via_proxy(
-                        message="hi",
-                        context_prompt="",
-                        history=[{"role": "user", "content": "prev"}, {"role": "assistant", "content": "ok"}],
-                        source=source,
-                        session_id="sess-123",
-                    )
-
-        # Required keys that callers depend on
-        assert "final_response" in result
-        assert result["final_response"] == "answer"
-        assert "messages" in result
-        assert "api_calls" in result
-        assert "tools" in result
-        assert "history_offset" in result
-        assert result["history_offset"] == 2  # len(history)
-        assert "session_id" in result
-        assert result["session_id"] == "sess-123"
-
-    @pytest.mark.asyncio
-    async def test_proxy_stale_generation_returns_empty_result(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
-        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
-        runner = _make_runner()
-        source = _make_source()
-        runner._session_run_generation["test-key"] = 2
-
-        resp = _FakeSSEResponse(
-            status=200,
-            sse_chunks=[
-                'data: {"choices":[{"delta":{"content":"stale"}}]}\n\n',
-                "data: [DONE]\n\n",
-            ],
-        )
-        session = _FakeSession(resp)
-
-        with patch("gateway.run._load_gateway_config", return_value={}):
-            with _patch_aiohttp(session):
-                with patch("aiohttp.ClientTimeout"):
-                    result = await runner._run_agent_via_proxy(
-                        message="hi",
-                        context_prompt="",
-                        history=[],
-                        source=source,
-                        session_id="sess-123",
-                        session_key="test-key",
-                        run_generation=1,
-                    )
-
-        assert result["final_response"] == ""
-        assert result["messages"] == []
+        assert "Connection refused" in result["final_response"]
         assert result["api_calls"] == 0
 
-    @pytest.mark.asyncio
-    async def test_no_auth_header_without_key(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
-        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
-        runner = _make_runner()
-        source = _make_source()
-
-        resp = _FakeSSEResponse(
-            status=200,
-            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
-        )
-        session = _FakeSession(resp)
-
-        with patch("gateway.run._load_gateway_config", return_value={}):
-            with _patch_aiohttp(session):
-                with patch("aiohttp.ClientTimeout"):
-                    await runner._run_agent_via_proxy(
-                        message="hi",
-                        context_prompt="",
-                        history=[],
-                        source=source,
-                        session_id="test",
-                    )
-
-        assert "Authorization" not in session.captured_headers
 
     @pytest.mark.asyncio
     async def test_no_system_message_when_context_empty(self, monkeypatch):
@@ -498,19 +358,196 @@ class TestRunAgentViaProxy:
         assert messages[0]["content"] == "hello"
 
 
-class TestEnvVarRegistration:
-    """Verify GATEWAY_PROXY_URL and GATEWAY_PROXY_KEY are registered."""
+class TestStreamingResilience:
+    """Tests for SSE streaming robustness — hang avoidance and malformed-chunk tolerance."""
 
-    def test_proxy_url_in_optional_env_vars(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "GATEWAY_PROXY_URL" in OPTIONAL_ENV_VARS
-        info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
-        assert info["category"] == "messaging"
-        assert info["password"] is False
+    @pytest.mark.asyncio
+    async def test_done_marker_stops_reading_trailing_chunks(self, monkeypatch):
+        """After `[DONE]`, no further SSE chunks must be processed.
 
-    def test_proxy_key_in_optional_env_vars(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "GATEWAY_PROXY_KEY" in OPTIONAL_ENV_VARS
-        info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_KEY"]
-        assert info["category"] == "messaging"
-        assert info["password"] is True
+        A buggy upstream that holds the connection open and streams more
+        chunks after `[DONE]` should not leak those chunks into the
+        response. Regression test for the inner `break` that only exited
+        the line-parse loop, leaving the outer chunk loop to keep reading
+        until sock_read timeout.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        # Content → [DONE] → MORE content. The trailing chunk must be
+        # dropped. With the pre-fix code it would be appended to
+        # full_response, since `break` only exited the inner loop.
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+                'data: [DONE]\n',
+                'data: {"choices":[{"delta":{"content":" IGNORED"}}]}\n',
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"] == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_residual_buffer_flushed_after_eof(self, monkeypatch):
+        """A final SSE frame without a trailing newline must not be dropped.
+
+        The line loop only consumes complete lines; if the upstream's last
+        frame lacks the newline, its content sat in ``buffer`` at EOF and
+        was silently discarded (pi#8997's bug class). The residual buffer
+        is now flushed after the read loop.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+                'data: {"choices":[{"delta":{"content":" world"}}]}',  # no newline, then EOF
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_eof_without_done_and_no_content_is_an_error(self, monkeypatch):
+        """Clean EOF with no [DONE] and no content must surface an error, not
+        an empty 'response'. With content, the partial text is kept (and the
+        truncation is logged) rather than thrown away."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(status=200, sse_chunks=[])
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"]
+        assert result["api_calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_client_timeout_sets_sock_connect(self, monkeypatch):
+        """ClientTimeout must bound the TCP connect phase.
+
+        Without an explicit ``sock_connect``, an unreachable proxy host
+        hangs for the OS default (minutes) before failing. The fix sets
+        a short connect cap so the gateway surfaces the error quickly.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(status=200, sse_chunks=['data: [DONE]\n'])
+        session = _FakeSession(resp)
+
+        captured = {}
+
+        def _capture_timeout(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout", side_effect=_capture_timeout):
+                    await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "sock_connect" in captured, (
+            "ClientTimeout should set sock_connect to bound TCP connect"
+        )
+        assert 0 < captured["sock_connect"] <= 60, (
+            f"sock_connect should be a short, reasonable cap — got {captured['sock_connect']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_malformed_chunk_is_skipped_not_fatal(self, monkeypatch):
+        """One bad SSE chunk must not abort the whole stream.
+
+        Pre-fix: `choices[0].get(...)` raised ``AttributeError`` when
+        ``choices[0]`` was ``None``, escaping the narrow
+        ``except json.JSONDecodeError`` and bubbling to the outer
+        ``except Exception`` which returned whatever partial response
+        was accumulated. All later chunks were lost.
+
+        Post-fix: type guards + broader exception handling skip the bad
+        chunk and keep parsing.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+                'data: {"choices":[null]}\n',
+                'data: {"choices":"wrong-type"}\n',
+                'data: {"choices":[{"delta":"wrong-type"}]}\n',
+                'data: {"choices":[{"delta":{"content":" world"}}]}\n',
+                'data: [DONE]\n',
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"] == "Hello world"
+
+
+

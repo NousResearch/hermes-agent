@@ -17,6 +17,7 @@ import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
+import { NO_SKILLS_INSTALLED } from '../../userMessages.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -326,6 +327,16 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['learning', 'memory-graph'],
+    help: 'open your learning journey — skills + memories on a timeline',
+    name: 'journey',
+    run: (_arg, ctx) => {
+      void ctx
+      patchOverlayState({ journey: true })
+    }
+  },
+
+  {
     help: 'replay a completed spawn tree · `/replay [N|last|list|load <path>]`',
     name: 'replay',
     run: (arg, ctx) => {
@@ -451,13 +462,17 @@ export const opsCommands: SlashCommand[] = [
     help: 're-scan installed skills in the live TUI gateway',
     name: 'reload-skills',
     run: (_arg, ctx) => {
+      // Bound to the session so the rescan and the refreshed catalog see its
+      // repo's project-local skills, not the launch environment's.
+      const params = ctx.sid ? { session_id: ctx.sid } : {}
+
       ctx.gateway
-        .rpc<SkillsReloadResponse>('skills.reload', {})
+        .rpc<SkillsReloadResponse>('skills.reload', params)
         .then(
           ctx.guarded<SkillsReloadResponse>(r => {
             ctx.transcript.page(r.output || 'skills reloaded', 'Reload Skills')
             ctx.gateway
-              .rpc<CommandsCatalogResponse>('commands.catalog', {})
+              .rpc<CommandsCatalogResponse>('commands.catalog', params)
               .then(
                 ctx.guarded<CommandsCatalogResponse>(catalog => {
                   if (!catalog?.pairs) {
@@ -519,7 +534,7 @@ export const opsCommands: SlashCommand[] = [
               const cats = Object.entries(r.skills ?? {}).sort()
 
               if (!cats.length) {
-                return sys('no skills available')
+                return sys(NO_SKILLS_INSTALLED)
               }
 
               panel(

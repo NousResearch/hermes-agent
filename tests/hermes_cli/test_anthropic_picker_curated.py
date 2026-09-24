@@ -16,21 +16,6 @@ from unittest.mock import patch
 from hermes_cli import models as M
 
 
-def test_anthropic_curated_alias_survives_when_live_omits_it():
-    """A curated alias missing from /v1/models still surfaces (first)."""
-    curated = M._PROVIDER_MODELS["anthropic"]
-    assert "claude-fable-5" in curated  # sanity: the alias is curated
-
-    # Live catalog the API would actually return — no fable-5.
-    live = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
-    with patch.object(M, "_fetch_anthropic_models", return_value=live):
-        result = M.provider_model_ids("anthropic")
-
-    assert "claude-fable-5" in result
-    # Curated order is preserved at the front.
-    assert result[:len(curated)] == list(curated)
-
-
 def test_anthropic_merge_dedupes_overlap_and_appends_live_only():
     """Models in both lists appear once; live-only models are appended."""
     live = [
@@ -46,7 +31,8 @@ def test_anthropic_merge_dedupes_overlap_and_appends_live_only():
     # Live-only entry is preserved (discovery still works for unknown models).
     assert "claude-future-9-99" in result
     # Curated entries lead, live-only trails.
-    assert result.index("claude-fable-5") < result.index("claude-future-9-99")
+    curated = list(M._PROVIDER_MODELS["anthropic"])
+    assert result[:len(curated)] == curated and result[-1] == "claude-future-9-99"
 
 
 def test_anthropic_falls_back_to_curated_when_live_unavailable():
@@ -55,4 +41,3 @@ def test_anthropic_falls_back_to_curated_when_live_unavailable():
         result = M.provider_model_ids("anthropic")
 
     assert result == list(M._PROVIDER_MODELS["anthropic"])
-    assert "claude-fable-5" in result

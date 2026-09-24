@@ -1,6 +1,6 @@
 //! Bootstrap orchestration.
 //!
-//! Direct port of `runBootstrap` from `apps/desktop/electron/bootstrap-runner.cjs`.
+//! Direct port of `runBootstrap` from `apps/desktop/electron/bootstrap-runner.ts`.
 //! Drives install.ps1 / install.sh stage-by-stage, emits progress events
 //! over the Tauri `bootstrap` channel, writes a forensic log to
 //! HERMES_HOME/logs/bootstrap-<timestamp>.log.
@@ -12,11 +12,12 @@
 //!   4. Worker iterates stages, calling `install.ps1 -Stage NAME -NonInteractive -Json`.
 //!   5. On success → `complete`. On any stage failure → `failed`. On cancel → `failed`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
@@ -25,6 +26,8 @@ use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
 use crate::powershell::{self, StreamSink};
 use crate::AppState;
+
+const MAX_STAGE_ATTEMPTS: usize = 3;
 
 // ---------------------------------------------------------------------------
 // Public Tauri commands
@@ -184,14 +187,8 @@ pub async fn launch_hermes_desktop(
     // directly; this matches user double-click/open behavior and avoids cwd /
     // quarantine oddities after a self-update rebuild.
     let mut cmd = desktop_launch_command(&exe_path, &install_root);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS = 0x00000008
-        cmd.creation_flags(0x0000_0008);
-    }
 
-    cmd.spawn().map_err(|e| {
+    spawn_detached_desktop(cmd.as_std_mut()).map_err(|e| {
         format!(
             "failed to launch {}: {e}",
             exe_path.display()
@@ -260,6 +257,152 @@ pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
         && resolve_hermes_desktop_exe(install_root).is_some()
 }
 
+fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
+    if let Some(commit) = pin
+        .commit
+        .as_ref()
+        .filter(|commit| !commit.trim().is_empty())
+    {
+        return Some(commit.clone());
+    }
+
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(install_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if commit.is_empty() {
+        None
+    } else {
+        Some(commit)
+    }
+}
+
+fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<serde_json::Value> {
+    use std::io::Write;
+
+    let marker_path = crate::paths::likely_bootstrap_marker(install_root);
+    if let Some(parent) = marker_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "could not create bootstrap marker directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let completed_at_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let marker = serde_json::json!({
+        "schemaVersion": 1,
+        "pinnedCommit": resolve_marker_commit(install_root, pin),
+        "pinnedBranch": pin.branch.clone(),
+        "completedAtUnix": completed_at_unix,
+    });
+    let mut body = serde_json::to_vec_pretty(&marker)?;
+    body.push(b'\n');
+
+    // Atomic publish (temp sibling + flush + rename), matching Electron's
+    // writeFileAtomic(). hermes_is_installed() only checks existence, so a
+    // partial direct write would incorrectly enable the launcher fast path.
+    let tmp_path = install_root.join(".hermes-bootstrap-complete.tmp");
+    {
+        let mut file = std::fs::File::create(&tmp_path).with_context(|| {
+            format!(
+                "could not create temp bootstrap marker {}",
+                tmp_path.display()
+            )
+        })?;
+        file.write_all(&body).with_context(|| {
+            format!(
+                "could not write temp bootstrap marker {}",
+                tmp_path.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "could not flush temp bootstrap marker {}",
+                tmp_path.display()
+            )
+        })?;
+    }
+    // Windows rename fails if the destination already exists; drop any prior
+    // marker first so a re-run can still publish a fresh payload.
+    if marker_path.exists() {
+        std::fs::remove_file(&marker_path).with_context(|| {
+            format!(
+                "could not replace existing bootstrap marker {}",
+                marker_path.display()
+            )
+        })?;
+    }
+    if let Err(err) = std::fs::rename(&tmp_path, &marker_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err).with_context(|| {
+            format!(
+                "could not publish bootstrap marker {} → {}",
+                tmp_path.display(),
+                marker_path.display()
+            )
+        });
+    }
+
+    tracing::info!(path = %marker_path.display(), "bootstrap marker written");
+    Ok(marker)
+}
+
+#[cfg(windows)]
+fn detach_inheritable_std_handles() {
+    use windows_sys::Win32::Foundation::{
+        SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    for (kind, name) in [
+        (STD_INPUT_HANDLE, "STD_INPUT_HANDLE"),
+        (STD_OUTPUT_HANDLE, "STD_OUTPUT_HANDLE"),
+        (STD_ERROR_HANDLE, "STD_ERROR_HANDLE"),
+    ] {
+        // SAFETY: GetStdHandle has no preconditions; the second call receives its validated result.
+        let result = unsafe {
+            let h = GetStdHandle(kind);
+            if h.is_null() || h == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)
+        };
+        if result == 0 {
+            tracing::warn!(std_handle = name, "could not detach inheritable standard handle");
+        }
+    }
+}
+
+fn spawn_detached_desktop(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // The installer's stdout/stderr may be pipes the user's shell is reading.
+        // Windows duplicates every inheritable handle into the child regardless of
+        // its stdio (rust-lang/rust#54760), so clear the flags immediately before
+        // this handoff; the installer exits moments later.
+        // DETACHED_PROCESS = 0x00000008
+        cmd.creation_flags(0x0000_0008);
+        detach_inheritable_std_handles();
+    }
+
+    cmd.spawn()
+}
+
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
 /// exists or the spawn fails, so the caller can fall back to showing the
 /// installer UI.
@@ -268,23 +411,19 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
         std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
     })?;
     let mut cmd = desktop_launch_command_std(&exe, install_root);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS = 0x00000008 — keep the desktop alive after the
-        // installer exits, mirroring launch_hermes_desktop. Kept correct here
-        // even though the only caller is macOS-gated today, so future reuse on
-        // Windows doesn't reintroduce the relaunch race.
-        cmd.creation_flags(0x0000_0008);
-    }
-    cmd.spawn().map(|_child| ())
+    spawn_detached_desktop(&mut cmd).map(|_child| ())
 }
 
+// The installer exits right after launch, so the Desktop must not keep the
+// installer's stdout/stderr open (#112856).
 #[cfg(target_os = "macos")]
 pub(crate) fn open_macos_app_detached(app_bundle: &std::path::Path) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("/usr/bin/open");
     cmd.arg(app_bundle);
     cmd.current_dir(crate::paths::hermes_home());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     cmd.spawn().map(|_child| ())
 }
 
@@ -308,12 +447,18 @@ fn desktop_launch_command(
             let mut cmd = tokio::process::Command::new("/usr/bin/open");
             cmd.arg(app_bundle);
             cmd.current_dir(crate::paths::hermes_home());
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
             return cmd;
         }
     }
 
     let mut cmd = tokio::process::Command::new(exe_path);
     cmd.current_dir(exe_path.parent().unwrap_or(install_root));
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     cmd
 }
 
@@ -327,12 +472,18 @@ fn desktop_launch_command_std(
             let mut cmd = std::process::Command::new("/usr/bin/open");
             cmd.arg(app_bundle);
             cmd.current_dir(crate::paths::hermes_home());
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
             return cmd;
         }
     }
 
     let mut cmd = std::process::Command::new(exe_path);
     cmd.current_dir(exe_path.parent().unwrap_or(install_root));
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     cmd
 }
 
@@ -417,12 +568,13 @@ async fn run_bootstrap(
         manifest_args_full.push("-IncludeDesktop".to_string());
     }
 
+    let mut manifest_cancel_rx = None;
     let manifest_result = run_install_script(
         &app,
         &script.path,
         &manifest_args_full,
         args.hermes_home.as_deref(),
-        None,
+        &mut manifest_cancel_rx,
         Some("__manifest__".to_string()),
     )
     .await?;
@@ -431,7 +583,7 @@ async fn run_bootstrap(
         let err = format!(
             "install.ps1 -Manifest failed: exit {:?}\n{}",
             manifest_result.exit_code,
-            manifest_result.stderr.trim()
+            crate::events::strip_ansi(manifest_result.stderr.trim())
         );
         emit_event(
             &app,
@@ -520,19 +672,58 @@ async fn run_bootstrap(
             stage_args.push("-IncludeDesktop".to_string());
         }
 
-        // Each stage gets its own cancel receiver because tokio::select!
-        // in run_script consumes it. Take/return through the Arc<Mutex>.
-        let local_cancel_rx = cancel_rx_holder.lock().await.take();
+        // A Windows PowerShell host can occasionally terminate with raw status
+        // 0xffffffff while a long-running native child (npm / Playwright) is
+        // still active. That bypasses install.ps1's finally block, so there is
+        // no JSON frame to distinguish success from failure. Stage workers are
+        // required to be idempotent; retry only this exact abrupt-host shape,
+        // and keep it bounded so ordinary script failures remain immediate.
+        let mut attempt = 1;
+        let mut local_cancel_rx = cancel_rx_holder.lock().await.take();
+        let (stage_result, result_frame) = loop {
+            let mut result = run_install_script(
+                &app,
+                &script.path,
+                &stage_args,
+                args.hermes_home.as_deref(),
+                &mut local_cancel_rx,
+                Some(stage.name.clone()),
+            )
+            .await?;
+            let frame = powershell::parse_stage_result(&result.stdout);
 
-        let stage_result = run_install_script(
-            &app,
-            &script.path,
-            &stage_args,
-            args.hermes_home.as_deref(),
-            local_cancel_rx,
-            Some(stage.name.clone()),
-        )
-        .await?;
+            if should_retry_missing_stage_frame(result.exit_code, result.killed, attempt)
+                && frame.is_none()
+            {
+                if retry_backoff_cancelled(local_cancel_rx.as_mut()).await {
+                    result.killed = true;
+                    break (result, frame);
+                }
+                attempt += 1;
+                let line = format!(
+                    "[bootstrap] {} stage host exited unexpectedly before its JSON result; retrying ({attempt}/{MAX_STAGE_ATTEMPTS})",
+                    stage.name
+                );
+                tracing::warn!(
+                    stage = %stage.name,
+                    exit = ?result.exit_code,
+                    attempt,
+                    "stage host exited without a result frame; retrying"
+                );
+                emit_event(
+                    &app,
+                    BootstrapEvent::Log {
+                        stage: Some(stage.name.clone()),
+                        line,
+                        stream: LogStream::Stderr,
+                    },
+                );
+                continue;
+            }
+
+            break (result, frame);
+        };
+        *cancel_rx_holder.lock().await = local_cancel_rx;
 
         let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -556,8 +747,6 @@ async fn run_bootstrap(
             );
             return Err(anyhow!("cancelled by user"));
         }
-
-        let result_frame = powershell::parse_stage_result(&stage_result.stdout);
 
         match result_frame {
             None => {
@@ -644,6 +833,23 @@ async fn run_bootstrap(
         .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
     let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
 
+    // Marker publish is terminal for this run: a write failure must emit Failed
+    // so the UI leaves the progress state (it does not poll get_bootstrap_status).
+    let marker = match write_bootstrap_complete_marker(&install_root, &pin) {
+        Ok(marker) => marker,
+        Err(err) => {
+            let msg = format!("write bootstrap marker failed: {err:#}");
+            emit_event(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+    };
+
     // Copy ourselves to HERMES_HOME/hermes-setup.exe so the desktop app can
     // re-invoke us with `--update` and shortcuts have a stable target. This is
     // a one-shot install concern; an `--update` re-invocation no-ops because
@@ -660,14 +866,36 @@ async fn run_bootstrap(
         &app,
         BootstrapEvent::Complete {
             install_root: install_root.to_string_lossy().into_owned(),
-            marker: Some(serde_json::json!({
-                "pinnedCommit": pin.commit,
-                "pinnedBranch": pin.branch,
-            })),
+            marker: Some(marker),
         },
     );
 
     Ok(install_root.to_string_lossy().into_owned())
+}
+
+fn should_retry_missing_stage_frame(
+    exit_code: Option<i32>,
+    killed: bool,
+    attempt: usize,
+) -> bool {
+    !killed && exit_code == Some(-1) && attempt < MAX_STAGE_ATTEMPTS
+}
+
+async fn retry_backoff_cancelled(cancel_rx: Option<&mut mpsc::Receiver<()>>) -> bool {
+    let backoff = tokio::time::sleep(std::time::Duration::from_millis(500));
+    tokio::pin!(backoff);
+
+    match cancel_rx {
+        Some(rx) => tokio::select! {
+            biased;
+            signal = rx.recv() => signal.is_some(),
+            _ = &mut backoff => false,
+        },
+        None => {
+            backoff.await;
+            false
+        }
+    }
 }
 
 async fn cancellation_signalled(holder: &Arc<Mutex<Option<mpsc::Receiver<()>>>>) -> bool {
@@ -684,7 +912,7 @@ async fn run_install_script(
     script_path: &std::path::Path,
     args: &[String],
     hermes_home_override: Option<&str>,
-    cancel_rx: Option<mpsc::Receiver<()>>,
+    cancel_rx: &mut Option<mpsc::Receiver<()>>,
     stage_name: Option<String>,
 ) -> Result<powershell::ScriptResult> {
     let app_for_stdout = app.clone();
@@ -757,6 +985,10 @@ fn build_pin_args(script: &install_script::ResolvedScript) -> Vec<String> {
 }
 
 fn emit_event(app: &AppHandle, event: BootstrapEvent) {
+    // The webview shows log lines as plain text, so ANSI styling/cursor
+    // bytes from install.sh must not cross the event boundary (#112675).
+    // The disk tee keeps the raw bytes — only the UI payload is sanitized.
+    let event = event.sanitized_for_ui();
     // Tee important state transitions to the rolling installer log so
     // bootstrap-installer.log isn't just "starting" + final summary.
     // Log lines (the noisy stuff) handle their own tracing in
@@ -821,8 +1053,20 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::path::Path;
+    #[cfg(windows)]
+    use std::io::{Read, Write};
+    use std::path::{Path, PathBuf};
+
+    #[cfg(windows)]
+    const STDIO_HELPER_ENV: &str = "HERMES_BOOTSTRAP_STDIO_HELPER";
+    #[cfg(windows)]
+    const STDIO_SLEEPER_ENV: &str = "HERMES_BOOTSTRAP_STDIO_SLEEPER";
+    #[cfg(windows)]
+    const STDIO_HELPER_TEST: &str = "bootstrap::tests::stdio_helper_launch";
+    #[cfg(windows)]
+    const STDIO_SLEEPER_TEST: &str = "bootstrap::tests::stdio_sleeper";
+    #[cfg(windows)]
+    const STDIO_SENTINEL: &str = "helper-launched";
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
@@ -902,5 +1146,269 @@ mod tests {
             "no resolved app when nothing has been built"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_uses_desktop_compatible_schema() {
+        let root = unique_tmp_dir("marker-schema");
+        let pin = Pin {
+            commit: Some("abcdef1234567890".to_string()),
+            branch: Some("main".to_string()),
+        };
+
+        let marker =
+            write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
+        let marker_path = root.join(".hermes-bootstrap-complete");
+        let from_disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
+
+        assert_eq!(marker, from_disk);
+        assert_eq!(from_disk["schemaVersion"], 1);
+        assert_eq!(from_disk["pinnedCommit"], "abcdef1234567890");
+        assert_eq!(from_disk["pinnedBranch"], "main");
+        assert!(
+            from_disk["completedAtUnix"].as_u64().is_some(),
+            "marker must carry a completion timestamp"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_is_published_atomically() {
+        let root = unique_tmp_dir("marker-atomic");
+        make_release_tree(&root);
+        let pin = Pin {
+            commit: Some("abcdef1234567890".to_string()),
+            branch: Some("main".to_string()),
+        };
+
+        write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
+
+        let marker_path = root.join(".hermes-bootstrap-complete");
+        let tmp_path = root.join(".hermes-bootstrap-complete.tmp");
+        assert!(
+            marker_path.is_file(),
+            "final marker must exist after atomic publish"
+        );
+        assert!(
+            !tmp_path.exists(),
+            "temp sibling must not remain after atomic publish"
+        );
+        assert!(
+            hermes_is_installed(&root),
+            "atomically published marker must enable the installer fast path"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hermes_is_installed_treats_marker_existence_as_sufficient() {
+        // Documents why write_bootstrap_complete_marker must publish atomically:
+        // the launcher predicate only checks existence, so a partial/corrupt
+        // final marker would still enable the fast path.
+        let root = unique_tmp_dir("marker-existence-only");
+        make_release_tree(&root);
+        std::fs::write(root.join(".hermes-bootstrap-complete"), b"").unwrap();
+
+        assert!(
+            hermes_is_installed(&root),
+            "empty/partial marker content still counts as installed"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn marker_write_failure_leaves_no_final_marker() {
+        // install_root is a regular file → create_dir_all on its path fails
+        // before any marker bytes are published under the final name.
+        let base = unique_tmp_dir("marker-fail");
+        let not_a_dir = base.join("not-a-dir");
+        std::fs::write(&not_a_dir, b"not a directory").unwrap();
+        let pin = Pin {
+            commit: Some("abcdef1234567890".to_string()),
+            branch: Some("main".to_string()),
+        };
+
+        let err = write_bootstrap_complete_marker(&not_a_dir, &pin)
+            .expect_err("marker write against a non-directory root must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("bootstrap marker"),
+            "error should mention the marker path: {msg}"
+        );
+        assert!(
+            !not_a_dir.join(".hermes-bootstrap-complete").exists(),
+            "failed write must not leave a final marker that enables the fast path"
+        );
+        assert!(
+            !not_a_dir.join(".hermes-bootstrap-complete.tmp").exists(),
+            "failed write must not leave a temp marker sibling either"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn abrupt_windows_stage_exit_is_retried_but_never_forever() {
+        assert!(should_retry_missing_stage_frame(Some(-1), false, 1));
+        assert!(should_retry_missing_stage_frame(Some(-1), false, 2));
+        assert!(
+            !should_retry_missing_stage_frame(Some(-1), false, MAX_STAGE_ATTEMPTS),
+            "the retry policy must stay bounded"
+        );
+    }
+
+    #[test]
+    fn ordinary_failure_or_cancellation_is_not_retried_without_a_frame() {
+        assert!(!should_retry_missing_stage_frame(Some(1), false, 1));
+        assert!(!should_retry_missing_stage_frame(Some(0), false, 1));
+        assert!(!should_retry_missing_stage_frame(None, false, 1));
+        assert!(!should_retry_missing_stage_frame(Some(-1), true, 1));
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_retry_backoff_stops_the_retry() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(()).await.unwrap();
+
+        assert!(retry_backoff_cancelled(Some(&mut rx)).await);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stdio_helper_launch() {
+        let mode = match std::env::var(STDIO_HELPER_ENV) {
+            Ok(mode) => mode,
+            Err(_) => return,
+        };
+        let (builder, stream) = mode
+            .split_once(':')
+            .expect("stdio helper mode must be <builder>:<stream>");
+        assert!(
+            matches!(stream, "stdout" | "stderr"),
+            "unknown stdio helper stream: {stream}"
+        );
+
+        let exe_path = std::env::current_exe().expect("resolve current test executable");
+        let install_root = unique_tmp_dir("stdio-helper");
+        let child = match builder {
+            "std" => {
+                let mut command = desktop_launch_command_std(&exe_path, &install_root);
+                command
+                    .args(["--exact", STDIO_SLEEPER_TEST, "--nocapture"])
+                    .env(STDIO_HELPER_ENV, &mode)
+                    .env(STDIO_SLEEPER_ENV, "1");
+                spawn_detached_desktop(&mut command)
+            }
+            "tokio" => {
+                let mut command = desktop_launch_command(&exe_path, &install_root);
+                command
+                    .args(["--exact", STDIO_SLEEPER_TEST, "--nocapture"])
+                    .env(STDIO_HELPER_ENV, &mode)
+                    .env(STDIO_SLEEPER_ENV, "1");
+                spawn_detached_desktop(command.as_std_mut())
+            }
+            _ => panic!("unknown stdio helper builder: {builder}"),
+        }
+        .expect("spawn detached stdio sleeper");
+        drop(child);
+        let _ = std::fs::remove_dir_all(&install_root);
+
+        match stream {
+            "stdout" => {
+                println!("{STDIO_SENTINEL}");
+                std::io::stdout()
+                    .flush()
+                    .expect("flush stdio helper stdout");
+            }
+            "stderr" => {
+                eprintln!("{STDIO_SENTINEL}");
+                std::io::stderr()
+                    .flush()
+                    .expect("flush stdio helper stderr");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stdio_sleeper() {
+        if matches!(
+            std::env::var(STDIO_SLEEPER_ENV).as_deref(),
+            Ok("1")
+        ) {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+        }
+    }
+
+    #[cfg(windows)]
+    fn assert_desktop_launch_pipe_closes(builder: &str, stream: &str) {
+        let mode = format!("{builder}:{stream}");
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("resolve test executable"));
+        command
+            .args(["--exact", STDIO_HELPER_TEST, "--nocapture"])
+            .env(STDIO_HELPER_ENV, mode)
+            .stdin(Stdio::null());
+
+        match stream {
+            "stdout" => {
+                command.stdout(Stdio::piped()).stderr(Stdio::null());
+            }
+            "stderr" => {
+                command.stdout(Stdio::null()).stderr(Stdio::piped());
+            }
+            _ => panic!("unknown captured stream: {stream}"),
+        }
+
+        let mut helper = command.spawn().expect("spawn stdio helper");
+        let started = std::time::Instant::now();
+        let mut output = String::new();
+        match stream {
+            "stdout" => helper
+                .stdout
+                .take()
+                .expect("stdio helper stdout pipe")
+                .read_to_string(&mut output)
+                .expect("read stdio helper stdout to EOF"),
+            "stderr" => helper
+                .stderr
+                .take()
+                .expect("stdio helper stderr pipe")
+                .read_to_string(&mut output)
+                .expect("read stdio helper stderr to EOF"),
+            _ => unreachable!(),
+        };
+        let eof_elapsed = started.elapsed();
+        let status = helper.wait().expect("wait for stdio helper");
+
+        assert!(
+            output.contains(STDIO_SENTINEL),
+            "stdio helper test did not run or emit its sentinel; output: {output:?}"
+        );
+        assert!(
+            status.success(),
+            "stdio helper exited unsuccessfully: {status}; output: {output:?}"
+        );
+        assert!(
+            eof_elapsed < std::time::Duration::from_secs(2),
+            "{stream} pipe stayed open for {eof_elapsed:?}; the detached Desktop inherited it"
+        );
+    }
+
+    // One invariant per launch builder (std = launcher fast path, tokio =
+    // `--update` handoff); stdout and stderr share the same inheritance
+    // mechanism, so each builder is paired with a different stream rather
+    // than running the full 2x2 matrix. Regression coverage for #112856.
+    #[cfg(windows)]
+    #[test]
+    fn desktop_launch_stdout_pipe_closes_when_installer_exits_std() {
+        assert_desktop_launch_pipe_closes("std", "stdout");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn desktop_launch_stderr_pipe_closes_when_installer_exits_tokio() {
+        assert_desktop_launch_pipe_closes("tokio", "stderr");
     }
 }

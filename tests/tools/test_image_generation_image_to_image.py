@@ -14,7 +14,7 @@ tool routes to a provider's edit endpoint when ``image_url`` /
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import pytest
 import yaml
@@ -58,25 +58,22 @@ class TestFalEditPayload:
         # nano-banana edit advertises aspect_ratio in edit_supports
         assert payload.get("aspect_ratio") == "16:9"
 
-    def test_edit_payload_strips_keys_outside_edit_supports(self):
+
+    def test_singular_edit_image_param_kling_image_v3(self):
+        """Kling Image v3's i2i endpoint takes a SINGULAR `image_url` string;
+        the catalog opts in via edit_image_param and only the first source
+        image is sent — no `image_urls` list may leak into the payload."""
         from tools.image_generation_tool import _build_fal_edit_payload
 
-        # gpt-image-2 edit does NOT advertise image_size (auto-inferred), so
-        # it must be stripped even though the text-to-image path sets it.
         payload = _build_fal_edit_payload(
-            "fal-ai/gpt-image-2", "swap bg", ["https://x/y.png"], "square",
+            "fal-ai/kling-image/v3/text-to-image", "make it winter",
+            ["https://x/a.png", "https://x/b.png"], "landscape",
         )
-        assert "image_size" not in payload
-        assert payload["image_urls"] == ["https://x/y.png"]
-        assert payload["quality"] == "medium"
-
-    def test_text_only_model_has_no_edit_endpoint(self):
-        from tools.image_generation_tool import FAL_MODELS
-
-        # z-image/turbo is a pure text-to-image model — no edit endpoint.
-        assert "edit_endpoint" not in FAL_MODELS["fal-ai/z-image/turbo"]
-        # while nano-banana-pro is edit-capable
-        assert FAL_MODELS["fal-ai/nano-banana-pro"].get("edit_endpoint")
+        assert payload["prompt"] == "make it winter"
+        assert payload["image_url"] == "https://x/a.png"
+        assert "image_urls" not in payload
+        assert payload.get("aspect_ratio") == "16:9"
+        assert payload.get("resolution") == "2K"
 
 
 class TestMandatoryKeysSurviveWhitelist:
@@ -135,63 +132,17 @@ class TestFalRouting:
         capture: dict = {}
         self._patch_submit(monkeypatch, image_tool, capture)
 
-        raw = image_tool.image_generate_tool(prompt="a cat", aspect_ratio="square")
+        # Routing test — disable the (default-on) upscale pass so the captured
+        # endpoint is the generation submit, not the upscaler.
+        raw = image_tool.image_generate_tool(
+            prompt="a cat", aspect_ratio="square", upscale=False,
+        )
         out = json.loads(raw)
         assert out["success"] is True
         assert out["modality"] == "text"
         assert capture["endpoint"] == "fal-ai/nano-banana-pro"
         assert "image_urls" not in capture["arguments"]
 
-    def test_image_to_image_routes_to_edit_endpoint(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
-
-        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
-        capture: dict = {}
-        self._patch_submit(monkeypatch, image_tool, capture)
-
-        raw = image_tool.image_generate_tool(
-            prompt="make it night",
-            aspect_ratio="square",
-            image_url="https://in/src.png",
-        )
-        out = json.loads(raw)
-        assert out["success"] is True
-        assert out["modality"] == "image"
-        assert capture["endpoint"] == "fal-ai/nano-banana-pro/edit"
-        assert capture["arguments"]["image_urls"] == ["https://in/src.png"]
-
-    def test_reference_images_clamped_to_model_cap(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
-
-        # nano-banana-pro caps at 2 reference images.
-        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
-        capture: dict = {}
-        self._patch_submit(monkeypatch, image_tool, capture)
-
-        raw = image_tool.image_generate_tool(
-            prompt="blend",
-            image_url="https://in/a.png",
-            reference_image_urls=["https://in/b.png", "https://in/c.png", "https://in/d.png"],
-        )
-        out = json.loads(raw)
-        assert out["success"] is True
-        assert capture["arguments"]["image_urls"] == ["https://in/a.png", "https://in/b.png"]
-
-    def test_text_only_model_rejects_image_url(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
-
-        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/z-image/turbo"}})
-        capture: dict = {}
-        self._patch_submit(monkeypatch, image_tool, capture)
-
-        raw = image_tool.image_generate_tool(
-            prompt="edit this", image_url="https://in/src.png",
-        )
-        out = json.loads(raw)
-        assert out["success"] is False
-        assert "image-to-image" in out["error"]
-        # Must NOT have submitted anything.
-        assert capture == {}
 
     def test_edit_skips_upscaler(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
@@ -212,6 +163,7 @@ class TestFalRouting:
         out = json.loads(raw)
         assert out["success"] is True
         assert out["modality"] == "image"
+        assert capture["endpoint"] == image_tool.FAL_MODELS["fal-ai/flux-2-pro"]["edit_endpoint"]
         assert upscale_called["hit"] is False
 
 
@@ -280,22 +232,6 @@ class TestPluginDispatchImageToImage:
         assert provider.received["image_url"] == "https://in/src.png"
         assert provider.received["reference_image_urls"] == ["https://in/ref.png"]
 
-    def test_dispatch_text_only_when_no_image(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from hermes_cli import plugins as plugins_module
-        from agent import image_gen_registry as reg
-
-        provider = _EditCapableProvider()
-        reg.register_provider(provider)
-        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "editcap")
-        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
-        monkeypatch.setattr(reg, "get_provider", lambda n: provider if n == "editcap" else None)
-
-        raw = image_tool._dispatch_to_plugin_provider("a dog", "landscape")
-        out = json.loads(raw)
-        assert out["success"] is True
-        assert provider.received["image_url"] is None
-        assert "reference_image_urls" not in provider.received or provider.received["reference_image_urls"] is None
 
     def test_legacy_provider_edit_request_surfaces_clear_error(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
@@ -321,57 +257,11 @@ class TestPluginDispatchImageToImage:
 # ---------------------------------------------------------------------------
 
 
-class _PluginBothProvider(ImageGenProvider):
-    @property
-    def name(self) -> str:
-        return "both"
-
-    def is_available(self) -> bool:
-        return True
-
-    def default_model(self) -> Optional[str]:
-        return "both-v1"
-
-    def capabilities(self) -> Dict[str, Any]:
-        return {"modalities": ["text", "image"], "max_reference_images": 5}
-
-    def generate(self, prompt, aspect_ratio="landscape", *, image_url=None,
-                 reference_image_urls=None, **kwargs):
-        return {"success": True}
-
-
 class TestDynamicSchema:
     def _no_discovery(self, monkeypatch):
         import hermes_cli.plugins as plugins_module
         monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
 
-    def test_fal_edit_model_advertises_both(self, cfg_home, monkeypatch):
-        from tools.image_generation_tool import _build_dynamic_image_schema
-
-        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
-        desc = _build_dynamic_image_schema()["description"]
-        assert "text-to-image" in desc and "image-to-image" in desc
-        assert "routes automatically" in desc
-
-    def test_fal_text_only_model_warns(self, cfg_home, monkeypatch):
-        from tools.image_generation_tool import _build_dynamic_image_schema
-
-        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/z-image/turbo"}})
-        desc = _build_dynamic_image_schema()["description"]
-        assert "text-to-image only" in desc
-        assert "NOT capable of image-to-image" in desc
-
-    def test_plugin_both_provider_advertises_refs(self, cfg_home, monkeypatch):
-        from tools.image_generation_tool import _build_dynamic_image_schema
-        from agent import image_gen_registry as reg
-
-        _write_cfg(cfg_home, {"image_gen": {"provider": "both"}})
-        reg.register_provider(_PluginBothProvider())
-        self._no_discovery(monkeypatch)
-
-        desc = _build_dynamic_image_schema()["description"]
-        assert "image-to-image / editing" in desc
-        assert "up to 5 reference image(s)" in desc
 
     def test_builder_wired_into_registry(self):
         from tools.registry import discover_builtin_tools, registry

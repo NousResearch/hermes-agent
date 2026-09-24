@@ -14,11 +14,8 @@ full credential environment. Two tiers:
 import os
 from unittest.mock import patch
 
-from tools.environments.local import (
-    hermes_subprocess_env,
-    _ALWAYS_STRIP_KEYS,
-    _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-)
+from tools.environments.local import hermes_subprocess_env
+from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX
 
 
 _TIER1_SAMPLE = {
@@ -62,17 +59,19 @@ class TestStripByDefault:
         for var in _TIER1_SAMPLE:
             assert var not in result, f"{var} leaked (Tier-1) with inherit_credentials=False"
 
-    def test_safe_vars_preserved(self):
-        result = _build()
-        assert result["HOME"] == "/home/user"
-        assert result["USER"] == "testuser"
-        assert "PATH" in result
-        assert result["MY_APP_VAR"] == "keep-me"
+    def test_buzz_platform_vars_stripped_by_default(self):
+        """BUZZ_* first-party platform credentials must NOT reach the
+        non-terminal spawn surface (browser / TUI host / copilot-executor),
+        even though they pass through to terminal children (issue #78026)."""
+        buzz_sample = {
+            "BUZZ_PRIVATE_KEY": "nsec1fake",
+            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
+            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
+        }
+        result = _build(buzz_sample)
+        for var in buzz_sample:
+            assert var not in result, f"{var} leaked via hermes_subprocess_env"
 
-    def test_force_prefix_hints_stripped(self):
-        result = _build({f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-x"})
-        assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY" not in result
-        assert "OPENAI_API_KEY" not in result
 
     def test_pythonutf8_set(self):
         result = _build()
@@ -149,3 +148,79 @@ class TestBrowserPassthroughPattern:
         # Provider + gateway secrets must NOT come back.
         assert "ANTHROPIC_API_KEY" not in env
         assert "TELEGRAM_BOT_TOKEN" not in env
+
+
+class TestDelegatedChildMarker:
+    def test_delegated_child_context_scrubs_parent_kanban_keys_and_sets_marker(self):
+        from agent.delegation_context import delegated_child_context
+
+        with patch.dict(
+            os.environ,
+            {
+                **_SAFE_SAMPLE,
+                "HERMES_KANBAN_TASK": "t_parent",
+                "HERMES_KANBAN_RUN_ID": "123",
+                "HERMES_KANBAN_DB": "/tmp/parent-kanban.db",
+                "HERMES_KANBAN_WORKSPACE": "/tmp/parent-workspace",
+            },
+            clear=True,
+        ):
+            with delegated_child_context():
+                env = hermes_subprocess_env(inherit_credentials=True)
+
+        assert env["HERMES_DELEGATED_CHILD_CONTEXT"]  # fenced board root (path), not a bare flag
+        # Worker identity is scrubbed; board location and workspace routing survive so the
+        # fenced descendant can still read the board it belongs to.
+        assert "HERMES_KANBAN_TASK" not in env
+        assert "HERMES_KANBAN_RUN_ID" not in env
+        assert env["HERMES_KANBAN_DB"] == "/tmp/parent-kanban.db"
+        assert env["HERMES_KANBAN_WORKSPACE"] == "/tmp/parent-workspace"
+        assert env["MY_APP_VAR"] == "keep-me"
+
+
+_INTERNAL_DYNAMIC_SAMPLE = {
+    "AUXILIARY_VISION_API_KEY": "sk-vision",
+    "AUXILIARY_VISION_BASE_URL": "http://internal:1234/v1",
+    "AUXILIARY_WEB_EXTRACT_API_KEY": "sk-webx",
+    "GATEWAY_RELAY_SECRET": "relay-secret",
+    "GATEWAY_RELAY_DELIVERY_KEY": "relay-delivery",
+}
+
+
+class TestInternalDynamicSecrets:
+    """AUXILIARY_*_API_KEY / _BASE_URL and GATEWAY_RELAY_* auth are stripped on
+    BOTH paths — including inherit_credentials=True — since a model-driving CLI
+    (codex/copilot) never needs them even when it needs provider keys."""
+
+    def test_stripped_by_default(self):
+        result = _build(_INTERNAL_DYNAMIC_SAMPLE)
+        for var in _INTERNAL_DYNAMIC_SAMPLE:
+            assert var not in result, f"{var} leaked with inherit_credentials=False"
+
+
+    def test_auxiliary_non_secrets_preserved(self):
+        """AUXILIARY_*_PROVIDER / _MODEL routing config survives (not secrets)."""
+        result = _build(
+            {"AUXILIARY_VISION_PROVIDER": "openai", "AUXILIARY_VISION_MODEL": "gpt-4o"},
+        )
+        assert result.get("AUXILIARY_VISION_PROVIDER") == "openai"
+        assert result.get("AUXILIARY_VISION_MODEL") == "gpt-4o"
+
+    def test_gateway_relay_id_stripped_even_when_inheriting(self):
+        """GATEWAY_RELAY_ID has no secret suffix (predicate skips it) but is
+        gateway-identifying auth material provisioned alongside the relay
+        secret. It's in _ALWAYS_STRIP_KEYS so it's stripped on the inherit path
+        too — closes the codex/copilot leak the predicate alone would miss."""
+        result = _build(
+            {**_PROVIDER_SAMPLE, "GATEWAY_RELAY_ID": "relay-id"},
+            inherit_credentials=True,
+        )
+        assert "GATEWAY_RELAY_ID" not in result
+        # provider keys still flow (codex auth)
+        for var in _PROVIDER_SAMPLE:
+            assert var in result
+
+    def test_relay_triplet_in_always_strip(self):
+        assert {
+            "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
+        } <= _ALWAYS_STRIP_KEYS

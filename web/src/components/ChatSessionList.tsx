@@ -23,8 +23,9 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 
+import { ChatWorkspacePicker } from "@/components/ChatWorkspacePicker";
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
@@ -45,6 +46,14 @@ interface ChatSessionListProps {
    * omitted, we fall back to clearing the resume param ourselves.
    */
   onNewChat?: () => void;
+  /**
+   * Workspace a FRESH chat starts in (absolute host path, "" = server
+   * default). Owned by ChatPage, which sends it as `/api/pty?cwd=`; the
+   * picker renders here beside "New chat" so the choice sits next to the
+   * action it affects. Omit both to hide the picker.
+   */
+  workspaceCwd?: string;
+  onWorkspaceChange?: (cwd: string) => void;
 }
 
 function rowLabel(session: SessionInfo, untitled: string): string {
@@ -61,6 +70,8 @@ export function ChatSessionList({
   className,
   onPicked,
   onNewChat,
+  workspaceCwd,
+  onWorkspaceChange,
 }: ChatSessionListProps) {
   const { t } = useI18n();
   const [, setSearchParams] = useSearchParams();
@@ -241,6 +252,14 @@ export function ChatSessionList({
           <RefreshCw className={cn(loading && "animate-spin")} />
         </Button>
       </div>
+
+      {onWorkspaceChange && (
+        <ChatWorkspacePicker
+          profile={profile}
+          value={workspaceCwd ?? ""}
+          onChange={onWorkspaceChange}
+        />
+      )}
 
       <Button
         outlined

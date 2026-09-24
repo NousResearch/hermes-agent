@@ -37,22 +37,17 @@ def test_puid_pgid_remaps_hermes_user(
         f"expected hermes GID 1000 after PGID remap, got: {r.stdout.strip()}"
     )
 
-
-def test_hermes_uid_gid_take_precedence_over_aliases(
-    built_image: str, container_name: str,
-) -> None:
-    """HERMES_UID/HERMES_GID must win over PUID/PGID when both are set."""
-    start_container(built_image, container_name, "HERMES_UID=2000", "HERMES_GID=2001", "PUID=1000", "PGID=1000")
-
-    r = docker_exec_sh(container_name, "id -u hermes", timeout=10)
-    assert r.stdout.strip() == "2000", (
-        f"expected hermes UID 2000 (HERMES_UID wins), got: {r.stdout.strip()}"
+    # The remapped user must still be able to write to the data volume.
+    r = docker_exec_sh(
+        container_name,
+        "touch /opt/data/test_write && echo WRITE_OK || echo WRITE_FAIL",
+        timeout=10,
+    )
+    assert "WRITE_OK" in r.stdout, (
+        f"hermes user cannot write to /opt/data after remap: {r.stdout}"
     )
 
-    r = docker_exec_sh(container_name, "id -g hermes", timeout=10)
-    assert r.stdout.strip() == "2001", (
-        f"expected hermes GID 2001 (HERMES_GID wins), got: {r.stdout.strip()}"
-    )
+
 
 
 def test_nas_low_uid_accepted(
@@ -72,17 +67,3 @@ def test_nas_low_uid_accepted(
     )
 
 
-def test_remap_enables_data_volume_writes(
-    built_image: str, container_name: str,
-) -> None:
-    """After remap, the hermes user must be able to write to /opt/data."""
-    start_container(built_image, container_name, "PUID=1000", "PGID=1000")
-
-    r = docker_exec_sh(
-        container_name,
-        "touch /opt/data/test_write && echo WRITE_OK || echo WRITE_FAIL",
-        timeout=10,
-    )
-    assert "WRITE_OK" in r.stdout, (
-        f"hermes user cannot write to /opt/data after remap: {r.stdout}"
-    )

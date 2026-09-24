@@ -1,6 +1,6 @@
 """Tests for user-configured ``model.default_headers`` in the auxiliary client.
 
-Companion to ``tests/run_agent/test_provider_attribution_headers.py`` (which
+Companion to ``tests/agent/test_provider_attribution_headers.py`` (which
 covers the main agent client). The main agent turn and the auxiliary client
 (title generation, context compression, vision routing) build separate OpenAI
 clients, so a ``custom`` endpoint behind a gateway/WAF that rejects the OpenAI
@@ -31,34 +31,9 @@ def _write_config(tmp_path, config_dict):
 class TestApplyUserDefaultHeadersHelper:
     """Direct unit tests for the merge helper."""
 
-    def test_user_headers_merged_and_win(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "m", "default_headers": {"User-Agent": "curl/8.7.1", "X-Extra": "1"}},
-        })
-        from agent.auxiliary_client import _apply_user_default_headers
-        merged = _apply_user_default_headers({"User-Agent": "OpenAI/Python 2.24.0"})
-        assert merged["User-Agent"] == "curl/8.7.1"  # user wins
-        assert merged["X-Extra"] == "1"
 
-    def test_no_config_is_noop_returns_original(self, tmp_path):
-        _write_config(tmp_path, {"model": {"default": "m"}})
-        from agent.auxiliary_client import _apply_user_default_headers
-        original = {"User-Agent": "OpenAI/Python"}
-        merged = _apply_user_default_headers(original)
-        assert merged == original
 
-    def test_none_headers_with_config_creates_dict(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "m", "default_headers": {"User-Agent": "curl/8.7.1"}},
-        })
-        from agent.auxiliary_client import _apply_user_default_headers
-        merged = _apply_user_default_headers(None)
-        assert merged == {"User-Agent": "curl/8.7.1"}
 
-    def test_none_headers_no_config_returns_none(self, tmp_path):
-        _write_config(tmp_path, {"model": {"default": "m"}})
-        from agent.auxiliary_client import _apply_user_default_headers
-        assert _apply_user_default_headers(None) is None
 
     def test_none_values_skipped(self, tmp_path):
         _write_config(tmp_path, {

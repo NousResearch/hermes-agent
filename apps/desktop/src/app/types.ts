@@ -1,6 +1,8 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { Tiered } from '@/store/interface-mode'
+import type { SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -52,10 +54,44 @@ export interface BrowserManageResponse {
   messages?: string[]
 }
 
+/** Response from the `session.compress` RPC. `messages` is the post-compress
+ *  history (same shape `session.resume` returns via `_history_to_messages`),
+ *  so the desktop can replace its transcript from it rather than leaving stale
+ *  bubbles on screen. `summary` carries the "compressed N → M messages" line. */
+export interface SessionCompressResponse {
+  host_ack?: {
+    output?: string
+  }
+  info?: {
+    title?: string
+    usage?: Partial<UsageStats>
+  }
+  messages?: SessionMessage[]
+  /** Set with `status: 'pending'` when the gateway's compute-host wait expired
+   *  while compression is still running; the transcript refreshes from the
+   *  pushed session.info / `compacted` status edge (#97948). */
+  message?: string
+  removed?: number
+  status?: string
+  summary?: {
+    aborted?: boolean
+    headline?: string
+    noop?: boolean
+    note?: null | string
+    token_line?: string
+  }
+  usage?: Partial<UsageStats>
+}
+
 export interface SessionSteerResponse {
   // 'queued' == accepted into the live turn's steer slot (injected at the next
   // tool-result boundary); 'rejected' == no live tool window, caller queues.
   status?: 'queued' | 'rejected'
+  text?: string
+}
+
+export interface SessionRedirectResponse {
+  status?: 'redirected' | 'queued' | 'rejected'
   text?: string
 }
 
@@ -87,59 +123,46 @@ export interface HandoffFailResponse {
   state?: string
 }
 
-export interface ExecCommandDispatchResponse {
-  type: 'exec' | 'plugin'
-  output?: string
-}
+export type SidebarNavId =
+  'artifacts' | 'capabilities' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings'
 
-export interface AliasCommandDispatchResponse {
-  type: 'alias'
-  target: string
-}
-
-export interface SkillCommandDispatchResponse {
-  type: 'skill'
-  name: string
-  message?: string
-}
-
-export interface SendCommandDispatchResponse {
-  type: 'send'
-  message: string
-  notice?: string
-}
-
-export interface PrefillCommandDispatchResponse {
-  type: 'prefill'
-  message: string
-  notice?: string
-}
-
-export type CommandDispatchResponse =
-  | ExecCommandDispatchResponse
-  | AliasCommandDispatchResponse
-  | SkillCommandDispatchResponse
-  | SendCommandDispatchResponse
-  | PrefillCommandDispatchResponse
-
-export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
-
-export interface SidebarNavItem {
-  id: SidebarNavId
+export interface SidebarNavItem extends Tiered {
+  /** Built-in view id, or a contributed row's namespaced contribution id. */
+  id: SidebarNavId | (string & {})
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
   action?: 'new-session'
+  /** Keybind action id — when set, the tooltip shows the keybind hint. */
+  keybindActionId?: string
+}
+
+export interface PersistedDisplayTranscriptProvenance {
+  source: 'persisted-display'
+  connectionId: string
+  profile: string
+  storedSessionId: string
+  lineageRootId: string | null
+  coverage: 'latest-page'
 }
 
 export interface ClientSessionState {
   storedSessionId: string | null
+  transcriptAuthorityEpoch?: number
+  transcriptProvenance?: PersistedDisplayTranscriptProvenance
   messages: ChatMessage[]
   branch: string
   cwd: string
   model: string
   provider: string
   reasoningEffort: string
+  /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
+   *  has stamped the current pick (so a clamp is never inferred client-side). */
+  reasoningEffortWire?: string
+  /** The runtime has not reported this session's effort yet, so '' above means
+   *  "unknown", not "profile default". A cold resume answers before the agent
+   *  builds, and only the built agent knows the session's own pin (#79807). */
+  reasoningEffortPending?: boolean
   serviceTier: string
   fast: boolean
   yolo: boolean
@@ -148,14 +171,38 @@ export interface ClientSessionState {
   awaitingResponse: boolean
   streamId: string | null
   sawAssistantPayload: boolean
+  /** This window picked up a turn it did not start — it resumed onto a session
+   *  that was already running somewhere else (leaving HUD mode, opening a
+   *  pop-out mid-turn). It therefore holds the reply but never received the
+   *  prompt, so the usual "I streamed it, my transcript is complete" shortcut
+   *  is false and the turn must hydrate from stored history when it settles. */
+  adoptedRunningTurn: boolean
   pendingBranchGroup: string | null
   interrupted: boolean
+  /** True after message.interim finalized a bubble in the still-running turn. */
+  interimBoundaryPending: boolean
+  /** Stream bubble a running=false heartbeat settled before its turn's
+   *  message.complete arrived. The frame can be reordered behind the
+   *  heartbeat (#119569); when it lands it settles onto this bubble instead of
+   *  appending a duplicate. Cleared by the next message.start or complete. */
+  heartbeatSettledStreamId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean
   /** Epoch ms the current turn started, or null when idle. Per-session so a
    *  background turn's elapsed timer keeps counting while another session is
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
+   *  Seeded optimistically at submit (before the backend accepts), so it is a
+   *  CLOCK, not proof the turn is live — gate on turnLive for that.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** The backend has confirmed this turn is running (message.start, a
+   *  running=true session.info edge, or resuming onto an in-flight turn).
+   *  False while a submit is only optimistically armed — the discriminator the
+   *  no-payload settle gate needs now that turnStartedAt is seeded at send. */
+  turnLive: boolean
+  /** Cumulative token usage, updated per completed turn. Per-session twin of
+   *  the primary-only $currentUsage — the statusbar reads it for a focused
+   *  tile's context count. Null until the first turn reports. */
+  usage: null | UsageStats
 }

@@ -1,7 +1,8 @@
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
 export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
@@ -31,7 +32,7 @@ export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
         "focus-visible:ring-inset",
       )}
     >
-      <div className="flex flex-col gap-1 font-mondwest text-xs leading-snug tracking-[0.08em]">
+      <div className="flex flex-col gap-1 font-sans text-xs leading-snug tracking-[0.08em]">
         <p className="break-words">
           <span className="text-text-tertiary">{gatewayStatusLabel}</span>{" "}
           <span className={cn("font-medium", gw.tone)}>{gw.label}</span>
@@ -57,8 +58,19 @@ export function gatewayLine(
     running: { label: g.running, tone: "text-success" },
     starting: { label: g.starting, tone: "text-warning" },
     startup_failed: { label: g.failed, tone: "text-destructive" },
+    // Live: some channels offline. Retained on a dead PID: a watchdog hard-exited a wedged
+    // process (gateway_exit_reason names it) — same verdict `hermes gateway status` prints.
+    degraded: {
+      label: g.degraded ?? en.app.gatewayStrip.degraded!,
+      tone: status.gateway_running ? "text-warning" : "text-destructive",
+    },
     stopped: { label: g.stopped, tone: "text-muted-foreground" },
   };
+  // Alive but housekeeping stopped stamping the heartbeat: 'Running' would be the lie the
+  // reporter saw (loop/housekeeping wedged while gateway_state.json still said running).
+  if (status.gateway_heartbeat_stale_s != null) {
+    return { label: g.heartbeatStale ?? en.app.gatewayStrip.heartbeatStale!, tone: "text-destructive" };
+  }
   if (status.gateway_state && byState[status.gateway_state]) {
     return byState[status.gateway_state];
   }

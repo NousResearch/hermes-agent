@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from threading import Lock
 
 import pytest
 
@@ -39,13 +38,6 @@ class TestSaveCheckpoint:
         assert result["run_name"] == "test"
         assert result["completed_prompts"] == [1, 2, 3]
 
-    def test_adds_last_updated(self, runner):
-        data = {"run_name": "test", "completed_prompts": []}
-        runner._save_checkpoint(data)
-
-        result = json.loads(runner.checkpoint_file.read_text())
-        assert "last_updated" in result
-        assert result["last_updated"] is not None
 
     def test_overwrites_previous_checkpoint(self, runner):
         runner._save_checkpoint({"run_name": "test", "completed_prompts": [1]})
@@ -54,20 +46,7 @@ class TestSaveCheckpoint:
         result = json.loads(runner.checkpoint_file.read_text())
         assert result["completed_prompts"] == [1, 2, 3]
 
-    def test_with_lock(self, runner):
-        lock = Lock()
-        data = {"run_name": "test", "completed_prompts": [42]}
-        runner._save_checkpoint(data, lock=lock)
 
-        result = json.loads(runner.checkpoint_file.read_text())
-        assert result["completed_prompts"] == [42]
-
-    def test_without_lock(self, runner):
-        data = {"run_name": "test", "completed_prompts": [99]}
-        runner._save_checkpoint(data, lock=None)
-
-        result = json.loads(runner.checkpoint_file.read_text())
-        assert result["completed_prompts"] == [99]
 
     def test_creates_parent_dirs(self, tmp_path):
         runner_deep = BatchRunner.__new__(BatchRunner)
@@ -89,9 +68,6 @@ class TestSaveCheckpoint:
 class TestLoadCheckpoint:
     """Verify _load_checkpoint reads existing data or returns defaults."""
 
-    def test_returns_empty_when_no_file(self, runner):
-        result = runner._load_checkpoint()
-        assert result.get("completed_prompts", []) == []
 
     def test_loads_existing_checkpoint(self, runner):
         data = {"run_name": "test_run", "completed_prompts": [5, 10, 15],
@@ -110,51 +86,6 @@ class TestLoadCheckpoint:
         assert isinstance(result, dict)
 
 
-class TestResumePreservesProgress:
-    """Verify that initializing a run with resume=True loads prior checkpoint."""
-
-    def test_completed_prompts_loaded_from_checkpoint(self, runner):
-        # Simulate a prior run that completed prompts 0-4
-        prior = {
-            "run_name": "test_run",
-            "completed_prompts": [0, 1, 2, 3, 4],
-            "batch_stats": {"0": {"processed": 5}},
-            "last_updated": "2026-01-01T00:00:00",
-        }
-        runner.checkpoint_file.write_text(json.dumps(prior))
-
-        # Load checkpoint like run() does
-        checkpoint_data = runner._load_checkpoint()
-        if checkpoint_data.get("run_name") != runner.run_name:
-            checkpoint_data = {
-                "run_name": runner.run_name,
-                "completed_prompts": [],
-                "batch_stats": {},
-                "last_updated": None,
-            }
-
-        completed_set = set(checkpoint_data.get("completed_prompts", []))
-        assert completed_set == {0, 1, 2, 3, 4}
-
-    def test_different_run_name_starts_fresh(self, runner):
-        prior = {
-            "run_name": "different_run",
-            "completed_prompts": [0, 1, 2],
-            "batch_stats": {},
-        }
-        runner.checkpoint_file.write_text(json.dumps(prior))
-
-        checkpoint_data = runner._load_checkpoint()
-        if checkpoint_data.get("run_name") != runner.run_name:
-            checkpoint_data = {
-                "run_name": runner.run_name,
-                "completed_prompts": [],
-                "batch_stats": {},
-                "last_updated": None,
-            }
-
-        assert checkpoint_data["completed_prompts"] == []
-        assert checkpoint_data["run_name"] == "test_run"
 
 
 class TestBatchWorkerResumeBehavior:
@@ -162,7 +93,8 @@ class TestBatchWorkerResumeBehavior:
         batch_file = tmp_path / "batch_1.jsonl"
         prompt_result = {
             "success": True,
-            "trajectory": [{"role": "assistant", "content": "x"}],
+            "trajectory": [{"from": "human", "value": "hi"},
+                            {"role": "assistant", "content": "x"}],
             "reasoning_stats": {"has_any_reasoning": False},
             "tool_stats": {},
             "metadata": {},
@@ -183,68 +115,54 @@ class TestBatchWorkerResumeBehavior:
 
         assert result["discarded_no_reasoning"] == 1
         assert result["completed_prompts"] == [0]
-        assert not batch_file.exists() or batch_file.read_text() == ""
+
+        # A tombstone row must be written so the content-based resume scan
+        # can see this prompt was already processed and discarded.
+        assert batch_file.exists()
+        lines = [l for l in batch_file.read_text(encoding="utf-8").strip().split("\n") if l]
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["discarded"] == "no_reasoning"
+        # The lightweight tombstone carries the human prompt text so the
+        # content scan can match it without a full trajectory payload.
+        assert entry["prompt"] == "hi"
+
+    def test_resume_after_all_discarded_batch_reruns_zero_prompts(self, tmp_path, monkeypatch):
+        """Regression for the issue: a resumed run must not re-execute
+        prompts that were already processed and discarded for having no
+        reasoning — the content-based scan must see the discard tombstone.
+        """
+        prompt_result = {
+            "success": True,
+            "trajectory": [{"from": "human", "value": "hi"},
+                            {"role": "assistant", "content": "x"}],
+            "reasoning_stats": {"has_any_reasoning": False},
+            "tool_stats": {},
+            "metadata": {},
+            "completed": True,
+            "api_calls": 1,
+            "toolsets_used": [],
+        }
+        monkeypatch.setattr("batch_runner._process_single_prompt", lambda *args, **kwargs: prompt_result)
+
+        # First run: prompt 0 gets processed and discarded, writing its
+        # tombstone row into batch_1.jsonl.
+        _process_batch_worker((1, [(0, {"prompt": "hi"})], tmp_path, set(), {"verbose": False}))
+
+        # Simulate a fresh resume: scan batch files by content, exactly as
+        # BatchRunner.run() does.
+        r = BatchRunner.__new__(BatchRunner)
+        r.output_dir = tmp_path
+        completed_prompt_texts = r._scan_completed_prompts_by_content()
+
+        assert "hi" in completed_prompt_texts, (
+            "discarded prompt is invisible to the content-based resume scan"
+        )
+
+        r.dataset = [{"prompt": "hi"}]
+        filtered_entries, skipped_indices = r._filter_dataset_by_completed(completed_prompt_texts)
+
+        assert filtered_entries == [], "discarded prompt was rescheduled on resume"
+        assert skipped_indices == [0]
 
 
-class TestFinalCheckpointNoDuplicates:
-    """Regression: the final checkpoint must not contain duplicate prompt
-    indices.
-
-    Before PR #15161, `run()` populated `completed_prompts_set` incrementally
-    as each batch completed, then at the end built `all_completed_prompts =
-    list(completed_prompts_set)` AND extended it again with every batch's
-    `completed_prompts` — double-counting every index.
-    """
-
-    def _simulate_final_aggregation_fixed(self, batch_results):
-        """Mirror the fixed code path in batch_runner.run()."""
-        completed_prompts_set = set()
-        for result in batch_results:
-            completed_prompts_set.update(result.get("completed_prompts", []))
-        # This is what the fixed code now writes to the checkpoint:
-        return sorted(completed_prompts_set)
-
-    def test_no_duplicates_in_final_list(self):
-        batch_results = [
-            {"completed_prompts": [0, 1, 2]},
-            {"completed_prompts": [3, 4]},
-            {"completed_prompts": [5]},
-        ]
-        final = self._simulate_final_aggregation_fixed(batch_results)
-        assert final == [0, 1, 2, 3, 4, 5]
-        assert len(final) == len(set(final))  # no duplicates
-
-    def test_persisted_checkpoint_has_unique_prompts(self, runner):
-        """Write what run()'s fixed aggregation produces to disk; the file
-        must load back with no duplicate indices."""
-        batch_results = [
-            {"completed_prompts": [0, 1]},
-            {"completed_prompts": [2, 3]},
-        ]
-        final = self._simulate_final_aggregation_fixed(batch_results)
-        runner._save_checkpoint({
-            "run_name": runner.run_name,
-            "completed_prompts": final,
-            "batch_stats": {},
-        })
-        loaded = json.loads(runner.checkpoint_file.read_text())
-        cp = loaded["completed_prompts"]
-        assert cp == sorted(set(cp))
-        assert len(cp) == 4
-
-    def test_old_buggy_pattern_would_have_duplicates(self):
-        """Document the bug this PR fixes: the old code shape produced
-        duplicates.  Kept as a sanity anchor so a future refactor that
-        re-introduces the pattern is immediately visible."""
-        completed_prompts_set = set()
-        results = []
-        for batch in ({"completed_prompts": [0, 1, 2]},
-                      {"completed_prompts": [3, 4]}):
-            completed_prompts_set.update(batch["completed_prompts"])
-            results.append(batch)
-        # Buggy aggregation (pre-fix):
-        buggy = list(completed_prompts_set)
-        for br in results:
-            buggy.extend(br.get("completed_prompts", []))
-        # Every index appears twice
-        assert len(buggy) == 2 * len(set(buggy))

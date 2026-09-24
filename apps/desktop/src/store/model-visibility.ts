@@ -1,9 +1,15 @@
+import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
-import type { ModelOptionProvider } from '@/types/hermes'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
+
+/** Every `provider::model` key the user has had a chance to judge — snapshotted
+ *  each time the visible set is persisted. A model absent from here appeared
+ *  AFTER the user last curated (plugin update, catalog refresh, new release), so
+ *  it falls through to the curated default rule instead of defaulting to hidden. */
+const KNOWN_STORAGE_KEY = 'hermes.desktop.known-models'
 
 /** Models shown per provider in the status-bar dropdown before the user has
  *  customized the list. Backend `models` are already relevance-ordered. */
@@ -68,8 +74,8 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
   return families
 }
 
-function loadVisible(): Set<string> | null {
-  const raw = storedString(STORAGE_KEY)
+function loadKeySet(storageKey: string): Set<string> | null {
+  const raw = storedString(storageKey)
 
   if (!raw) {
     return null
@@ -86,13 +92,56 @@ function loadVisible(): Set<string> | null {
 
 /** Explicit set of visible `provider::model` keys, or null when the user
  *  hasn't customized — in which case the curated default applies. */
-export const $visibleModels = atom<Set<string> | null>(loadVisible())
+export const $visibleModels = atom<Set<string> | null>(loadKeySet(STORAGE_KEY))
+
+/** Keys the user has seen, or null when nothing has been recorded yet (a fresh
+ *  install, or a store written before the snapshot existed). */
+export const $knownModels = atom<Set<string> | null>(loadKeySet(KNOWN_STORAGE_KEY))
 
 export const $modelVisibilityOpen = atom(false)
 
-export function setVisibleModels(keys: Set<string>): void {
+/** Every collapsed-family key across `providers`. */
+function allFamilyKeys(providers: readonly ModelOptionProvider[]): Set<string> {
+  const keys = new Set<string>()
+
+  for (const provider of providers) {
+    for (const family of collapseModelFamilies(provider.models ?? [])) {
+      keys.add(modelVisibilityKey(provider.slug, family.id))
+    }
+  }
+
+  return keys
+}
+
+/** Persist the visible set and, when the current catalog is supplied, mark every
+ *  model in it as judged so only models that appear later count as new. */
+export function setVisibleModels(keys: Set<string>, providers: readonly ModelOptionProvider[] = []): void {
   $visibleModels.set(new Set(keys))
   persistString(STORAGE_KEY, JSON.stringify([...keys]))
+
+  if (providers.length === 0) {
+    return
+  }
+
+  persistKnownModels(new Set([...($knownModels.get() ?? []), ...allFamilyKeys(providers)]))
+}
+
+function persistKnownModels(known: Set<string>): void {
+  $knownModels.set(known)
+  persistString(KNOWN_STORAGE_KEY, JSON.stringify([...known]))
+}
+
+/** One-time adoption for a visible set persisted before the known snapshot
+ *  existed: everything in the catalog at that moment counts as judged (the
+ *  user's hide choices are honoured verbatim); only models that appear later are
+ *  new. Never a running union — that would mark a newcomer judged on the very
+ *  render that first shows it. Call when the catalog has loaded. */
+export function seedKnownModels(providers: readonly ModelOptionProvider[]): void {
+  if ($knownModels.get() !== null || $visibleModels.get() === null || providers.length === 0) {
+    return
+  }
+
+  persistKnownModels(allFamilyKeys(providers))
 }
 
 export function setModelVisibilityOpen(open: boolean): void {
@@ -111,14 +160,31 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   return keys
 }
 
-/** Add a provider's curated default model keys (top-N collapsed families) to
- *  `target`. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
+/** Add a provider's curated default model keys to `target`. Prefers the
+ *  backend's `featured_models` shortlist (one flagship per lab) for aggregator
+ *  providers that would otherwise flood the default view with dozens of models;
+ *  falls back to the top-N collapsed families when a provider ships no featured
+ *  list. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
  *  expansion rule lives in exactly one place. */
-function expandProviderDefaults(provider: ModelOptionProvider, target: Set<string>): void {
+function expandProviderDefaults(
+  provider: ModelOptionProvider,
+  target: Set<string>,
+  admit: (key: string) => boolean = () => true
+): void {
   const families = collapseModelFamilies(provider.models ?? [])
 
-  for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
-    target.add(modelVisibilityKey(provider.slug, family.id))
+  const featured = provider.featured_models ?? []
+
+  const defaults = featured.length
+    ? families.filter(family => featured.includes(family.id))
+    : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
+
+  for (const family of defaults) {
+    const key = modelVisibilityKey(provider.slug, family.id)
+
+    if (admit(key)) {
+      target.add(key)
+    }
   }
 }
 
@@ -126,8 +192,18 @@ function expandProviderDefaults(provider: ModelOptionProvider, target: Set<strin
  *  default expansion for any provider they haven't customized. Hide-all
  *  sentinels are PRESERVED here — this is the set the toggle handler mutates and
  *  persists, so dropping a sentinel would silently re-enable a provider the user
- *  emptied. Use `effectiveVisibleKeys` for display (sentinels stripped). */
-export function resolveVisibleKeys(stored: Set<string> | null, providers: readonly ModelOptionProvider[]): Set<string> {
+ *  emptied. Use `effectiveVisibleKeys` for display (sentinels stripped).
+ *
+ *  A provider the user has curated still admits models absent from `known`
+ *  (they arrived after the last curation) through the same default rule, so a
+ *  plugin or catalog update never lands a model silently switched off. A
+ *  provider the user hid outright (sentinel) stays hidden, new models included.
+ *  With no snapshot yet (`known` null) nothing counts as new. */
+export function resolveVisibleKeys(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[],
+  known: Set<string> | null = $knownModels.get()
+): Set<string> {
   if (!stored) {
     return defaultVisibleKeys(providers)
   }
@@ -141,15 +217,17 @@ export function resolveVisibleKeys(stored: Set<string> | null, providers: readon
   for (const provider of providers) {
     const providerPrefix = `${provider.slug}::`
 
-    const hasStoredProvider = [...stored].some(key => key.startsWith(providerPrefix) && !isProviderSentinel(key))
-
-    const hasSentinel = stored.has(emptyProviderSentinelKey(provider.slug))
-
-    if (hasStoredProvider || hasSentinel) {
+    if (stored.has(emptyProviderSentinelKey(provider.slug))) {
       continue
     }
 
-    expandProviderDefaults(provider, next)
+    const hasStoredProvider = [...stored].some(key => key.startsWith(providerPrefix) && !isProviderSentinel(key))
+
+    if (!hasStoredProvider) {
+      expandProviderDefaults(provider, next)
+    } else if (known) {
+      expandProviderDefaults(provider, next, key => !known.has(key))
+    }
   }
 
   return next
@@ -159,9 +237,10 @@ export function resolveVisibleKeys(stored: Set<string> | null, providers: readon
  *  set with bookkeeping sentinels stripped (they are not real models). */
 export function effectiveVisibleKeys(
   stored: Set<string> | null,
-  providers: readonly ModelOptionProvider[]
+  providers: readonly ModelOptionProvider[],
+  known: Set<string> | null = $knownModels.get()
 ): Set<string> {
-  const next = resolveVisibleKeys(stored, providers)
+  const next = resolveVisibleKeys(stored, providers, known)
 
   // Strip sentinel keys — they are bookkeeping, not real visibility entries.
   for (const key of [...next]) {
@@ -182,10 +261,11 @@ export function toggleModelVisibility(
   stored: Set<string> | null,
   providers: readonly ModelOptionProvider[],
   providerSlug: string,
-  model: string
+  model: string,
+  known: Set<string> | null = $knownModels.get()
 ): Set<string> {
   // `resolveVisibleKeys` always returns a fresh Set, so we can mutate it directly.
-  const next = resolveVisibleKeys(stored, providers)
+  const next = resolveVisibleKeys(stored, providers, known)
   const key = modelVisibilityKey(providerSlug, model)
   const sentinel = emptyProviderSentinelKey(providerSlug)
 
@@ -205,6 +285,49 @@ export function toggleModelVisibility(
     // re-enable." (Locked in by the sentinel-clear-on-re-enable test.)
     next.delete(sentinel)
     next.add(key)
+  }
+
+  return next
+}
+
+/** Compute the next persisted visibility set when a provider's master switch is
+ *  flipped. `visible=true` enables every one of the provider's collapsed model
+ *  families (and clears its hide-all sentinel); `visible=false` removes them all
+ *  and records the sentinel so the defaults are not silently re-expanded.
+ *  Seeds from `resolveVisibleKeys` so other providers' state (including their
+ *  sentinels) survives the persist, mirroring `toggleModelVisibility`. */
+export function setProviderVisibility(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[],
+  providerSlug: string,
+  visible: boolean,
+  known: Set<string> | null = $knownModels.get()
+): Set<string> {
+  const next = resolveVisibleKeys(stored, providers, known)
+  const sentinel = emptyProviderSentinelKey(providerSlug)
+  const provider = providers.find(p => p.slug === providerSlug)
+  const families = collapseModelFamilies(provider?.models ?? [])
+
+  // Drop every existing entry for this provider (real keys + sentinel); we
+  // rebuild its state from scratch below.
+  for (const key of [...next]) {
+    if (key.startsWith(`${providerSlug}::`)) {
+      next.delete(key)
+    }
+  }
+
+  if (visible) {
+    for (const family of families) {
+      next.add(modelVisibilityKey(providerSlug, family.id))
+    }
+
+    // A provider with zero models can't be "all on" — leave it empty rather
+    // than stranding a sentinel that reads as an explicit hide-all.
+    if (families.length === 0) {
+      next.delete(sentinel)
+    }
+  } else {
+    next.add(sentinel)
   }
 
   return next

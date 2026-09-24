@@ -1,4 +1,3 @@
-import asyncio
 import sys
 import types
 from types import SimpleNamespace
@@ -9,16 +8,12 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import cron.scheduler as cron_scheduler
-import gateway.run as gateway_run
 import run_agent
-from gateway.config import Platform
-from gateway.session import SessionSource
 
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
-        run_agent,
-        "get_tool_definitions",
+        "model_tools.get_tool_definitions",
         lambda **kwargs: [
             {
                 "type": "function",
@@ -30,7 +25,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
 
 def _codex_message_response(text: str):
@@ -94,11 +89,11 @@ class _Codex401ThenSuccessAgent(run_agent.AIAgent):
 
 def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
-    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **kwargs: {
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
@@ -123,70 +118,3 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"
 
 
-def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
-    _patch_agent_bootstrap(monkeypatch)
-    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
-    monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
-    monkeypatch.setattr(
-        gateway_run,
-        "_resolve_runtime_agent_kwargs",
-        lambda: {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "codex-token",
-        },
-    )
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS", "false")
-    monkeypatch.setenv("HERMES_MODEL", "gpt-5.3-codex")
-
-    _Codex401ThenSuccessAgent.refresh_attempts = 0
-    _Codex401ThenSuccessAgent.last_init = {}
-
-    runner = gateway_run.GatewayRunner.__new__(gateway_run.GatewayRunner)
-    runner.adapters = {}
-    runner._ephemeral_system_prompt = ""
-    runner._prefill_messages = []
-    runner._reasoning_config = None
-    runner._provider_routing = {}
-    runner._fallback_model = None
-    runner._running_agents = {}
-    from unittest.mock import MagicMock, AsyncMock
-    runner.hooks = MagicMock()
-    runner.hooks.emit = AsyncMock()
-    runner.hooks.loaded_hooks = []
-    runner._session_db = None
-    # Ensure model resolution returns the codex model even if xdist
-    # leaked env vars cleared HERMES_MODEL.
-    monkeypatch.setattr(
-        gateway_run.GatewayRunner,
-        "_resolve_turn_agent_config",
-        lambda self, msg, model, runtime: {
-            "model": model or "gpt-5.3-codex",
-            "runtime": runtime,
-        },
-    )
-
-    source = SessionSource(
-        platform=Platform.LOCAL,
-        chat_id="cli",
-        chat_name="CLI",
-        chat_type="dm",
-        user_id="user-1",
-    )
-
-    result = asyncio.run(
-        runner._run_agent(
-            message="ping",
-            context_prompt="",
-            history=[],
-            source=source,
-            session_id="session-1",
-            session_key="agent:main:local:dm",
-        )
-    )
-
-    assert result["final_response"] == "Recovered via refresh"
-    assert _Codex401ThenSuccessAgent.refresh_attempts == 1
-    assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"
-    assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"

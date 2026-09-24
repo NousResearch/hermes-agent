@@ -14,7 +14,7 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
-| `tools/cronjob_tools.py` | Model-facing `cronjob` tool registration and handler |
+| `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
 
@@ -29,7 +29,7 @@ Four schedule formats are supported:
 | **Cron expression** | `0 9 * * *` | Standard 5-field cron syntax (minute, hour, day, month, weekday) |
 | **ISO timestamp** | `2025-01-15T09:00:00` | One-shot, fires at the exact time |
 
-The model-facing surface is a single `cronjob` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
+The model-facing surface is a single `cronjob_manage` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
 
 ## Job Storage
 
@@ -62,6 +62,20 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "script": null
 }
 ```
+
+### `last_status` literals
+
+`last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
+renderer (`hermes cron list`/`doctor`, the `cronjob_manage` tool, the web dashboard
+badge, the Desktop routine inspector) maps each literal explicitly — a consumer
+must never test `== "ok"` for "the user got their result":
+
+| Literal | Meaning | Detail field |
+|---------|---------|--------------|
+| `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
+| `error` | Agent run failed | `last_error` |
+| `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
+| `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
 
 ### Job Lifecycle States
 
@@ -100,6 +114,76 @@ tick()
   6. Release scheduler lock
 ```
 
+### Missed-occurrence contract (restart gaps)
+
+Recurring jobs are **at-most-once per occurrence, and every occurrence is
+accounted for**: it either runs (one execution row carrying its
+`scheduled_instant`), or its skip is logged with a reason. An occurrence is never
+dropped silently. The mechanics, in the order the due scan applies them
+(`cron/jobs.py::_evaluate_due_job`):
+
+1. **Pre-dispatch advance is provisional.** `tick()` advances `next_run_at` past
+   the due occurrence *before* dispatch so a crash mid-run cannot re-fire it on
+   every restart. Because that leaves a window — advanced, but no fire claim yet
+   (interpreter finalizing, executor refusing work, `SIGKILL`) — the due scan
+   stamps `pending_slot = {scheduled_at, at, by}` on the record in the same
+   save. `claim_job_for_fire` (the point after which side effects may exist)
+   and `mark_job_run` clear it; an explicit `schedule` / `next_run_at` /
+   `enabled` / `state` rewrite (edit, pause, resume, run-now) drops it.
+2. **Restore once.** A later scan that finds a `pending_slot` whose owner is
+   provably gone (this process and the job is not in its running set; another
+   process past the 300 s fire-claim lease or with a dead pid) puts
+   `scheduled_at` back as `next_run_at`, drops the stamp, and logs a WARNING
+   (`cron/occurrences.py::unclaimed_pending_slot`). This happens at most once
+   per lost occurrence — the restored instant then meets the ordinary rules
+   below like any other overdue slot, so there is never a replay of N slots.
+3. **Already fired → never twice.** `completed_occurrence()` consults the
+   executions ledger for a `completed` row with that exact `scheduled_instant`
+   before anything is due; a slot that ran before the restart advances without
+   firing. `failed` / `unknown` rows do not count as completion, and neither
+   does a `completed` row whose `finished_at` (else `claimed_at`) precedes the
+   instant it is stamped with — a run cannot prove an occurrence that had not
+   happened yet. Rows without a comparable timestamp keep counting.
+   An occurrence identity is only claimable once it is due: `claim_job_for_fire`
+   drops a `scheduled_instant` that is still in the future, so an off-tick fire
+   (dashboard trigger, webhook, lease reclaim, misfire backstop) runs
+   occurrence-free instead of consuming the next slot.
+4. **Late within grace → fire late.** Grace = half the period clamped to
+   `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
+   `last_dispatch.kind = late`.
+5. **Past grace → collapse the backlog, fire once** (`kind = catch_up`), or skip
+   with a logged reason when the operator set `cron.catch_up_missed: false`
+   (planned downtime). One-shots past their 120 s grace are retired with a
+   diagnostic, never resurrected.
+6. **Paused / disabled / terminal jobs never fire**; the due scan drops them
+   before any of the above, and pause/resume clears any pending slot. A
+   recurring occurrence that came due *while paused* is not lost, though:
+   `resume_job` keeps a past stored `next_run_at` as the due instant instead of
+   re-anchoring from now (and logs that it did), so the first tick after
+   resume applies rules 3–5 to it — one late/catch-up run, or a logged skip.
+   One-shots and future instants recompute from now on resume.
+
+The same store fields drive every topology: a standalone `hermes -p X gateway
+run` and a profile served by the host gateway (`_start_multiplex` ticks each
+home under `_profile_cron_scope`) evaluate the identical record. One gateway
+process per host ticks *every* profile's store — `gateway.multiplex_profiles`
+gates adapters, not cron — and per-run bookkeeping (in-flight claims, the
+parallel worker pool, the stale-code yield decision) is keyed by profile home,
+so two profiles may carry identically named jobs without colliding. A profile
+that runs its own gateway is skipped per tick, so the two processes never race
+its store and its deliveries always leave through its own live adapters.
+
+**Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
+a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat
+sample that reads the claim as someone else's is re-sampled once before it
+counts: only a confirmed loss cancels the in-flight run. Even then the run's
+outcome is decided against the store at completion, not against that latch —
+a claim the store still validates records the run's real result (`ok`, or the
+real error), while a genuinely re-owned claim discards the stale result and
+never writes over the new owner. `Interrupted by shutdown before terminal
+completion.` is therefore recorded only when a real transport cancel (gateway
+drain) stops a run that still holds its claim.
+
 ### Gateway Integration
 
 In gateway mode, the cron **trigger** (the part that decides *when* a due job
@@ -114,7 +198,7 @@ The active provider is chosen by the `cron.provider` config key:
   historical in-process loop calling `scheduler.tick()` every 60 seconds. This
   is byte-identical to the pre-provider behavior.
 - **a named provider** (e.g. `chronos`, a managed-cron provider for
-  scale-to-zero deployments) → discovered from `plugins/cron/<name>/` or
+  scale-to-zero deployments) → discovered from `plugins/cron_providers/<name>/` or
   `$HERMES_HOME/plugins/<name>/`.
 
 If a named provider is missing, fails to load, or reports `is_available() ==
@@ -126,6 +210,13 @@ accidentally removed.
 What "firing" *means* (job execution + delivery) is unchanged and shared by all
 providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
 A provider only controls the trigger, never execution.
+
+A ticker whose checkout was updated under it (boot revision ≠ disk revision) yields its tick
+only to a gateway that can actually take it over: the runtime-lock holder must be a live gateway
+whose `gateway_state.json` heartbeat is fresh and whose stamped `code_sha` is the on-disk revision.
+A lock held by a process that is itself still running the pre-update code — the common case right
+after `hermes update` with a single gateway — never counts as a fresh gateway, so the ticker keeps
+dispatching instead of yielding every tick to nobody.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 
@@ -169,14 +260,16 @@ If Chronos is misconfigured or the agent isn't logged into Nous,
 `resolve_cron_scheduler()` falls back to the built-in ticker (logged warning) —
 cron never loses its trigger. Recurring jobs re-arm after each fire; `repeat`-N
 jobs stop cleanly when the count is exhausted (no orphaned one-shot). The full
-agent↔Nous wire contract lives in `docs/chronos-managed-cron-contract.md`.
+agent↔Nous wire contract lives in [Chronos managed-cron contract](chronos-managed-cron-contract.md).
 
 ### Fresh Session Isolation
 
 Each cron job runs in a completely fresh agent session:
 
 - No conversation history from previous runs
-- No memory of previous cron executions (unless persisted to memory/files)
+- No memory of previous cron executions (persistent memory — MEMORY.md /
+  USER.md — does load, like any other agent run, so durable preferences and
+  facts carry over; per-run conversation context does not)
 - The prompt must be self-contained — cron jobs cannot ask clarifying questions
 - The `cronjob` toolset is disabled (recursion guard)
 
@@ -206,48 +299,71 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
-The script timeout defaults to 120 seconds. `_get_script_timeout()` resolves the limit through a three-layer chain:
+The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` resolves the limit through a three-layer chain:
 
 1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
 2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`
 3. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
-4. **Default** — 120 seconds
+4. **Default** — 3600 seconds (1 hour)
+
+This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
+
+On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
+`agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
+rescans the live tree before signalling descendants and their parent, including
+children in separate sessions with no inherited output pipes. This closes the
+fork-after-snapshot race. The stop wait is bounded; discovery or permission
+failures still use best-effort group cleanup, not a sandbox guarantee. Any target
+stopped by cleanup is resumed if termination fails; already-stopped targets keep
+their original state. Explicit graceful signals do not suspend their recipients.
+Windows continues to use `taskkill /F /T`.
 
 ### Provider Recovery
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
 
-- **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain.
+- **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain. **Unpinned jobs only:** `_job_fallback_chain()` returns no chain for a job carrying its own `provider`, `model` or `base_url`, and the same answer feeds the credential-resolution walk in `_resolve_job_runtime()`, the pre-dispatch key check, and the mid-run ladder, so a pinned job never lands on a global chain entry (#100437). It shares `hermes_cli.fallback_config.scoped_fallback_chain()` with pinned delegation children.
 - **Credential pool** — loads via `load_pool(provider)` from `agent.credential_pool` using the resolved runtime provider name. Only passed when the pool has credentials (`pool.has_credentials()`). Enables same-provider key rotation on 429/rate-limit errors.
 
 This mirrors the gateway's behavior — without it, cron agents would fail on rate limits without attempting recovery.
 
 ## Delivery Model
 
-Cron job results can be delivered to any supported platform:
+Cron job results can be delivered to any supported platform.
+
+A bare platform name (`slack`, `telegram`, …) delivers to that platform's configured **home channel**. To target a **specific** destination instead, append a target after a colon: `platform:<target>`. The target is resolved at fire time (not when the job is created), so a job can name a destination on a platform that isn't connected yet and start delivering once it comes online.
+
+Most platforms also accept an optional thread/topic as a third segment: `platform:<chat_id>:<thread_id>`.
 
 | Target | Syntax | Example |
 |--------|--------|---------|
 | Origin chat | `origin` | Deliver to the chat where the job was created |
 | Local file | `local` | Save to `~/.hermes/cron/output/` |
-| Telegram | `telegram` or `telegram:<chat_id>` | `telegram:-1001234567890` |
-| Discord | `discord` or `discord:#channel` | `discord:#engineering` |
-| Slack | `slack` | Deliver to Slack home channel |
-| WhatsApp | `whatsapp` | Deliver to WhatsApp home |
-| Signal | `signal` | Deliver to Signal |
-| Matrix | `matrix` | Deliver to Matrix home room |
-| Mattermost | `mattermost` | Deliver to Mattermost home |
-| Email | `email` | Deliver via email |
-| SMS | `sms` | Deliver via SMS |
-| Home Assistant | `homeassistant` | Deliver to HA conversation |
-| DingTalk | `dingtalk` | Deliver to DingTalk |
-| Feishu | `feishu` | Deliver to Feishu |
-| WeCom | `wecom` | Deliver to WeCom |
-| Weixin | `weixin` | Deliver to Weixin (WeChat) |
-| BlueBubbles | `bluebubbles` | Deliver to iMessage via BlueBubbles |
-| QQ Bot | `qqbot` | Deliver to QQ (Tencent) via Official API v2 |
+| Telegram | `telegram`, `telegram:<chat_id>`, `telegram:<chat_id>:<thread_id>`, `telegram:@username` | `telegram:-1001234567890:17585` |
+| Discord | `discord`, `discord:#channel`, `discord:<channel_id>`, `discord:<channel_id>:<thread_id>` | `discord:#engineering` |
+| Slack | `slack`, `slack:#channel`, `slack:<channel_id>`, `slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
+| Matrix | `matrix`, `matrix:<!room_id:server>`, `matrix:<@user:server>` | `matrix:!abc123:example.org` |
+| Feishu | `feishu`, `feishu:<chat_id>`, `feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
+| WhatsApp | `whatsapp`, `whatsapp:<jid>`, `whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
+| Signal | `signal`, `signal:group:<id>`, `signal:+<E.164>` | `signal:group:aBcD==` |
+| SMS | `sms`, `sms:+<E.164>` | `sms:+<E.164 number>` |
+| Email | `email`, `email:<address>` | `email:alerts@example.com` |
+| Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
+| Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
+| Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
+| DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |
+| WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
+| BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |
+| QQ Bot | `qqbot` or `qqbot:<chat_id>` | Bare name delivers to QQ (Tencent) via Official API v2 |
+| Bot Chat | `bot-chat` or `bot-chat:<profile>` | Inject into a local profile's canonical Bot Chat (the bot responds) |
 
-For Telegram topics, use the format `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`).
+Platforms in the first group have explicit, validated target syntax — named channels (`#channel`), topics/threads, room/user IDs, group IDs, or phone numbers. The remaining platforms accept the generic `platform:<chat_id>` form (the value after the colon is used verbatim as the destination ID); a bare platform name always delivers to the home channel.
+
+**Named channels** (`slack:#engineering`, `discord:#engineering`, or a friendly name like `slack:engineering`) are resolved against the channel directory the gateway builds from connected adapters, so the gateway must have discovered the channel for name resolution to succeed; raw IDs (`slack:C0123ABCD45`) always work.
+
+For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`). For **Slack threads**, the third segment is the parent message's `thread_ts` (e.g., `slack:C0123ABCD45:1700000000.000100`), so it only applies when replying under an existing message.
+
+**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. An existing receipt never permits CLI fallback. Without a mailbox owner it retains `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` and normal ownership fencing. Both lanes deliver a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. Historical cron status does not automatically track later receipt completion. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff. `cron.bot_chat_delivery_timeout_seconds` (default 600) bounds only the legacy subprocess lane.
 
 ### Response Wrapping
 
@@ -272,6 +388,10 @@ Cron-run sessions have the `cronjob` toolset disabled. This prevents:
 
 The scheduler uses cross-process file-based locking (`fcntl.flock` on Unix, `msvcrt.locking` on Windows) to prevent overlapping ticks from executing the same due-job batch twice — even between the gateway's in-process ticker and a standalone `hermes cron` / manual `tick()` call. If the lock cannot be acquired, `tick()` returns 0 immediately.
 
+### Stale-code yield
+
+Before the tick lock, a gateway whose checkout was updated under it (boot revision ≠ disk revision) yields the tick when another process holds the gateway runtime lock — a fresher gateway's ticker dispatches instead, and the stale one must not race it with mixed `sys.modules`. The yield is raised (`CronTickYielded`) and persisted as the ticker's last error, so `hermes cron status` reports **"Gateway is running STALE code — its cron ticker yields every tick and fires NOTHING"** with both revisions and the restart command, even though the liveness heartbeat keeps refreshing. `hermes update` closes the loop: a gateway the post-update fleet version matrix proves stale is handed to the drain-first `request_restart` path (SIGUSR1) instead of being left running; a supervised gateway respawns on the new code, a bare `gateway run` is stopped and listed under "Restart manually".
+
 ## CLI Interface
 
 The `hermes cron` CLI provides direct job management:
@@ -288,6 +408,6 @@ hermes cron remove <job_id>         # Delete a job
 
 ## Related Docs
 
-- [Cron Feature Guide](/user-guide/features/cron)
+- [Cron Feature Guide](../user-guide/features/cron.md)
 - [Gateway Internals](./gateway-internals.md)
 - [Agent Loop Internals](./agent-loop.md)

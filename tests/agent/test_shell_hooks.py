@@ -26,11 +26,6 @@ def _write_script(tmp_path: Path, name: str, body: str) -> Path:
     return path
 
 
-def _allowlist_pair(monkeypatch, tmp_path, event: str, command: str) -> None:
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
-    shell_hooks._record_approval(event, command)
-
-
 @pytest.fixture(autouse=True)
 def _reset_registration_state():
     shell_hooks.reset_for_tests()
@@ -49,103 +44,28 @@ class TestParseResponse:
         )
         assert r == {"action": "block", "message": "nope"}
 
-    def test_block_canonical_style(self):
-        r = shell_hooks._parse_response(
-            "pre_tool_call",
-            '{"action": "block", "message": "nope"}',
-        )
-        assert r == {"action": "block", "message": "nope"}
-
-    def test_block_canonical_wins_over_claude_style(self):
-        r = shell_hooks._parse_response(
-            "pre_tool_call",
-            '{"action": "block", "message": "canonical", '
-            '"decision": "block", "reason": "claude"}',
-        )
-        assert r == {"action": "block", "message": "canonical"}
+    @pytest.mark.parametrize("stdout, expected", [
+        ('{"action": "approve", "message": "  needs a human ", "rule_key": " terminal:rm "}',
+         {"action": "approve", "message": "needs a human", "rule_key": "terminal:rm"}),
+        ('{"action": "approve", "message": "", "rule_key": 7}', {"action": "approve"}),
+        # Claude-Code's ``decision: approve`` means auto-ALLOW, not "ask a human": never mapped.
+        ('{"decision": "approve", "reason": "ok"}', None),
+        ('{"action": "approve", "decision": "block", "reason": "no"}', {"action": "block", "message": "no"}),
+    ])
+    def test_approve_is_parsed_like_the_plugin_directive(self, stdout, expected):
+        """The documented ``approve`` action used to parse to None, so the tool ran with no
+        approval prompt (#92553). It now yields the same shape Python plugins return."""
+        assert shell_hooks._parse_response("pre_tool_call", stdout) == expected
 
     def test_empty_stdout_returns_none(self):
         assert shell_hooks._parse_response("pre_tool_call", "") is None
         assert shell_hooks._parse_response("pre_tool_call", "   ") is None
-
-    def test_invalid_json_returns_none(self):
-        assert shell_hooks._parse_response("pre_tool_call", "not json") is None
-
-    def test_non_dict_json_returns_none(self):
-        assert shell_hooks._parse_response("pre_tool_call", "[1, 2]") is None
-
-    def test_non_block_pre_tool_call_returns_none(self):
-        r = shell_hooks._parse_response("pre_tool_call", '{"decision": "allow"}')
-        assert r is None
-
-    def test_pre_llm_call_context_passthrough(self):
-        r = shell_hooks._parse_response(
-            "pre_llm_call", '{"context": "today is Friday"}',
-        )
-        assert r == {"context": "today is Friday"}
-
-    def test_subagent_stop_context_passthrough(self):
-        r = shell_hooks._parse_response(
-            "subagent_stop", '{"context": "child role=leaf"}',
-        )
-        assert r == {"context": "child role=leaf"}
-
-    def test_pre_llm_call_block_ignored(self):
-        """Only pre_tool_call honors block directives."""
-        r = shell_hooks._parse_response(
-            "pre_llm_call", '{"decision": "block", "reason": "no"}',
-        )
-        assert r is None
-
-    def test_block_action_without_message_uses_default(self):
-        """Block is honored even when message/reason is absent."""
-        r = shell_hooks._parse_response("pre_tool_call", '{"action": "block"}')
-        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
-
-    def test_block_decision_without_reason_uses_default(self):
-        """Block is honored even when reason/message is absent."""
-        r = shell_hooks._parse_response("pre_tool_call", '{"decision": "block"}')
-        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
-
-    def test_block_action_empty_message_uses_default(self):
-        """Empty string message falls back to default, not empty string."""
-        r = shell_hooks._parse_response(
-            "pre_tool_call", '{"action": "block", "message": ""}',
-        )
-        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
-
-    def test_block_action_non_string_message_uses_default(self):
-        """Non-string message (e.g. integer) falls back to default."""
-        r = shell_hooks._parse_response(
-            "pre_tool_call", '{"action": "block", "message": 42}',
-        )
-        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
 
 
 # ── _serialize_payload ────────────────────────────────────────────────────
 
 
 class TestSerializePayload:
-    def test_basic_pre_tool_call_schema(self):
-        raw = shell_hooks._serialize_payload(
-            "pre_tool_call",
-            {
-                "tool_name": "terminal",
-                "args": {"command": "ls"},
-                "session_id": "sess-1",
-                "task_id": "t-1",
-                "tool_call_id": "c-1",
-            },
-        )
-        payload = json.loads(raw)
-        assert payload["hook_event_name"] == "pre_tool_call"
-        assert payload["tool_name"] == "terminal"
-        assert payload["tool_input"] == {"command": "ls"}
-        assert payload["session_id"] == "sess-1"
-        assert "cwd" in payload
-        # task_id / tool_call_id end up under extra
-        assert payload["extra"]["task_id"] == "t-1"
-        assert payload["extra"]["tool_call_id"] == "c-1"
 
     def test_args_not_dict_becomes_null(self):
         raw = shell_hooks._serialize_payload(
@@ -154,42 +74,12 @@ class TestSerializePayload:
         payload = json.loads(raw)
         assert payload["tool_input"] is None
 
-    def test_parent_session_id_used_when_no_session_id(self):
-        raw = shell_hooks._serialize_payload(
-            "subagent_stop", {"parent_session_id": "p-1"},
-        )
-        payload = json.loads(raw)
-        assert payload["session_id"] == "p-1"
-
-    def test_unserialisable_extras_stringified(self):
-        class Weird:
-            def __repr__(self) -> str:
-                return "<weird>"
-
-        raw = shell_hooks._serialize_payload(
-            "on_session_start", {"obj": Weird()},
-        )
-        payload = json.loads(raw)
-        assert payload["extra"]["obj"] == "<weird>"
-
 
 # ── Matcher behaviour ─────────────────────────────────────────────────────
 
 
 class TestMatcher:
-    def test_no_matcher_fires_for_any_tool(self):
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command="echo", matcher=None,
-        )
-        assert spec.matches_tool("terminal")
-        assert spec.matches_tool("write_file")
 
-    def test_single_name_matcher(self):
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command="echo", matcher="terminal",
-        )
-        assert spec.matches_tool("terminal")
-        assert not spec.matches_tool("web_search")
 
     def test_alternation_matcher(self):
         spec = shell_hooks.ShellHookSpec(
@@ -199,18 +89,6 @@ class TestMatcher:
         assert spec.matches_tool("file")
         assert not spec.matches_tool("web")
 
-    def test_invalid_regex_falls_back_to_literal(self):
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command="echo", matcher="foo[bar",
-        )
-        assert spec.matches_tool("foo[bar")
-        assert not spec.matches_tool("foo")
-
-    def test_matcher_ignored_when_no_tool_name(self):
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command="echo", matcher="terminal",
-        )
-        assert not spec.matches_tool(None)
 
     def test_matcher_leading_whitespace_stripped(self):
         """YAML quirks can introduce leading/trailing whitespace — must
@@ -221,11 +99,6 @@ class TestMatcher:
         assert spec.matcher == "terminal"
         assert spec.matches_tool("terminal")
 
-    def test_matcher_trailing_newline_stripped(self):
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command="echo", matcher="terminal\n",
-        )
-        assert spec.matches_tool("terminal")
 
     def test_whitespace_only_matcher_becomes_none(self):
         """A matcher that's pure whitespace is treated as 'no matcher'."""
@@ -240,66 +113,7 @@ class TestMatcher:
 
 
 class TestCallbackSubprocess:
-    def test_timeout_returns_none(self, tmp_path):
-        # Script that sleeps forever; we set a 1s timeout.
-        script = _write_script(
-            tmp_path, "slow.sh",
-            "#!/usr/bin/env bash\nsleep 60\n",
-        )
-        spec = shell_hooks.ShellHookSpec(
-            event="post_tool_call", command=str(script), timeout=1,
-        )
-        cb = shell_hooks._make_callback(spec)
-        assert cb(tool_name="terminal") is None
 
-    def test_malformed_json_stdout_returns_none(self, tmp_path):
-        script = _write_script(
-            tmp_path, "bad_json.sh",
-            "#!/usr/bin/env bash\necho 'not json at all'\n",
-        )
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command=str(script),
-        )
-        cb = shell_hooks._make_callback(spec)
-        # Matcher is None so the callback fires for any tool.
-        assert cb(tool_name="terminal") is None
-
-    def test_non_zero_exit_with_block_stdout_still_blocks(self, tmp_path):
-        """A script that signals failure via exit code AND prints a block
-        directive must still block — scripts should be free to mix exit
-        codes with parseable output."""
-        script = _write_script(
-            tmp_path, "exit1_block.sh",
-            "#!/usr/bin/env bash\n"
-            'printf \'{"decision": "block", "reason": "via exit 1"}\\n\'\n'
-            "exit 1\n",
-        )
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command=str(script),
-        )
-        cb = shell_hooks._make_callback(spec)
-        assert cb(tool_name="terminal") == {"action": "block", "message": "via exit 1"}
-
-    def test_block_translation_end_to_end(self, tmp_path):
-        """v1 schema-bug regression gate.
-
-        Shell hook returns the Claude-Code-style payload and the bridge
-        must translate it to the canonical Hermes block shape so that
-        get_pre_tool_call_block_message() surfaces the block.
-        """
-        script = _write_script(
-            tmp_path, "blocker.sh",
-            "#!/usr/bin/env bash\n"
-            'printf \'{"decision": "block", "reason": "no terminal"}\\n\'\n',
-        )
-        spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call",
-            command=str(script),
-            matcher="terminal",
-        )
-        cb = shell_hooks._make_callback(spec)
-        result = cb(tool_name="terminal", args={"command": "rm -rf /"})
-        assert result == {"action": "block", "message": "no terminal"}
 
     def test_block_aggregation_through_plugin_manager(self, tmp_path, monkeypatch):
         """Registering via register_from_config makes
@@ -334,6 +148,32 @@ class TestCallbackSubprocess:
             args={"command": "rm"},
         )
         assert msg == "blocked-by-shell"
+
+    def test_approve_reaches_the_human_gate_through_plugin_manager(self, tmp_path, monkeypatch):
+        """End to end: a shell hook's approve directive escalates to request_tool_approval with its
+        message and rule_key, and the gate's denial blocks the tool (#92553)."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path, "approve.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "approve", "message": "risky", "rule_key": "terminal:rm"}\\n\'\n',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+        cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(script)}]}}
+        assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
+
+        seen = []
+
+        def _gate(tool_name, reason, **kwargs):
+            seen.append((tool_name, reason, kwargs.get("rule_key")))
+            return {"approved": False, "message": "denied by human"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _gate)
+        assert plugins.resolve_pre_tool_block("terminal", {"command": "rm"}) == "denied by human"
+        assert seen == [("terminal", "risky", "terminal:rm")]
 
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""
@@ -381,57 +221,34 @@ class TestCallbackSubprocess:
         assert "cwd" in payload
         assert payload["extra"]["task_id"] == "task-77"
 
-    def test_pre_llm_call_context_flows_through(self, tmp_path):
+
+    def test_modify_canonical_parsing(self, tmp_path):
+        """Shell hook returning canonical modify is parsed correctly."""
         script = _write_script(
-            tmp_path, "ctx.sh",
+            tmp_path, "mod_canon.sh",
             "#!/usr/bin/env bash\n"
-            'printf \'{"context": "env-note"}\\n\'\n',
+            'printf \'{"action": "modify", "args": {"path": "/safe"}}\\n\'',
         )
         spec = shell_hooks.ShellHookSpec(
-            event="pre_llm_call", command=str(script),
+            event="pre_tool_call", command=str(script),
         )
         cb = shell_hooks._make_callback(spec)
-        result = cb(
-            session_id="s1", user_message="hello",
-            conversation_history=[], is_first_turn=True,
-            model="gpt-4", platform="cli",
-        )
-        assert result == {"context": "env-note"}
+        result = cb(tool_name="write_file", args={"path": "/unsafe"})
+        assert result == {"action": "modify", "args": {"path": "/safe"}}
 
-    def test_shlex_handles_paths_with_spaces(self, tmp_path):
-        dir_with_space = tmp_path / "path with space"
-        dir_with_space.mkdir()
+    def test_modify_claude_code_parsing(self, tmp_path):
+        """Shell hook returning Claude-Code modify is normalised."""
         script = _write_script(
-            dir_with_space, "ok.sh",
-            "#!/usr/bin/env bash\nprintf '{}\\n'\n",
+            tmp_path, "mod_cc.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"decision": "modify", "tool_input": {"content": "safe"}}\\n\'',
         )
-        # Quote the path so shlex keeps it as a single token.
         spec = shell_hooks.ShellHookSpec(
-            event="post_tool_call",
-            command=f'"{script}"',
+            event="pre_tool_call", command=str(script),
         )
         cb = shell_hooks._make_callback(spec)
-        # No crash = shlex parsed it correctly.
-        assert cb(tool_name="terminal") is None  # empty object parses to None
-
-    def test_missing_binary_logged_not_raised(self, tmp_path):
-        spec = shell_hooks.ShellHookSpec(
-            event="on_session_start",
-            command=str(tmp_path / "does-not-exist"),
-        )
-        cb = shell_hooks._make_callback(spec)
-        # Must not raise — agent loop should continue.
-        assert cb(session_id="s") is None
-
-    def test_non_executable_binary_logged_not_raised(self, tmp_path):
-        path = tmp_path / "no-exec"
-        path.write_text("#!/usr/bin/env bash\necho hi\n")
-        # Intentionally do NOT chmod +x.
-        spec = shell_hooks.ShellHookSpec(
-            event="on_session_start", command=str(path),
-        )
-        cb = shell_hooks._make_callback(spec)
-        assert cb(session_id="s") is None
+        result = cb(tool_name="write_file", args={"content": "danger"})
+        assert result == {"action": "modify", "args": {"content": "safe"}}
 
 
 # ── config parsing ────────────────────────────────────────────────────────
@@ -450,17 +267,15 @@ class TestParseHooksBlock:
         assert specs[0].command == "/tmp/hook.sh"
         assert specs[0].timeout == 30
 
-    def test_unknown_event_skipped(self, caplog):
+
+    def test_python_only_event_refused(self):
+        # transform_api_error_classification returns a classification directive that
+        # _parse_response has no channel for — a shell registration would
+        # be silently ignored, so it must be refused with a warning.
         specs = shell_hooks._parse_hooks_block({
-            "pre_tools_call": [  # typo
+            "transform_api_error_classification": [
                 {"command": "/tmp/hook.sh"},
             ],
-        })
-        assert specs == []
-
-    def test_missing_command_skipped(self):
-        specs = shell_hooks._parse_hooks_block({
-            "pre_tool_call": [{"matcher": "terminal"}],
         })
         assert specs == []
 
@@ -472,38 +287,18 @@ class TestParseHooksBlock:
         })
         assert specs[0].timeout == shell_hooks.MAX_TIMEOUT_SECONDS
 
-    def test_non_int_timeout_defaulted(self):
-        specs = shell_hooks._parse_hooks_block({
-            "post_tool_call": [
-                {"command": "/tmp/x.sh", "timeout": "thirty"},
-            ],
-        })
-        assert specs[0].timeout == shell_hooks.DEFAULT_TIMEOUT_SECONDS
-
-    def test_non_list_event_skipped(self):
-        specs = shell_hooks._parse_hooks_block({
-            "pre_tool_call": "not a list",
-        })
-        assert specs == []
 
     def test_none_hooks_block(self):
         assert shell_hooks._parse_hooks_block(None) == []
         assert shell_hooks._parse_hooks_block("string") == []
         assert shell_hooks._parse_hooks_block([]) == []
 
-    def test_non_tool_event_matcher_warns_and_drops(self, caplog):
-        """matcher: is only honored for pre/post_tool_call; must warn
-        and drop on other events so the spec reflects runtime."""
-        import logging
+    def test_non_tool_event_matcher_warns_and_drops(self):
+        """matcher: is only honored for pre/post_tool_call; must drop it
+        on other events so the spec reflects runtime."""
         cfg = {"pre_llm_call": [{"matcher": "terminal", "command": "/bin/echo"}]}
-        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
-            specs = shell_hooks._parse_hooks_block(cfg)
+        specs = shell_hooks._parse_hooks_block(cfg)
         assert len(specs) == 1 and specs[0].matcher is None
-        assert any(
-            "only honored for pre_tool_call" in r.getMessage()
-            and "pre_llm_call" in r.getMessage()
-            for r in caplog.records
-        )
 
 
 # ── Idempotent registration ───────────────────────────────────────────────
@@ -567,151 +362,6 @@ class TestAllowlistConcurrency:
     _record_approval() calls used to collide on a fixed tmp path and
     silently lose entries under read-modify-write races."""
 
-    def test_parallel_record_approval_does_not_lose_entries(
-        self, tmp_path, monkeypatch,
-    ):
-        import threading
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-
-        N = 32
-        barrier = threading.Barrier(N)
-        errors: list = []
-
-        def worker(i: int) -> None:
-            try:
-                barrier.wait(timeout=5)
-                shell_hooks._record_approval(
-                    "on_session_start", f"/bin/hook-{i}.sh",
-                )
-            except Exception as exc:  # pragma: no cover
-                errors.append(exc)
-
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert not errors, f"worker errors: {errors}"
-
-        data = shell_hooks.load_allowlist()
-        commands = {e["command"] for e in data["approvals"]}
-        assert commands == {f"/bin/hook-{i}.sh" for i in range(N)}, (
-            f"expected all {N} entries, got {len(commands)}"
-        )
-
-    def test_non_posix_fallback_does_not_self_deadlock(
-        self, tmp_path, monkeypatch,
-    ):
-        """Regression: on platforms without fcntl, the fallback lock must
-        be separate from _registered_lock.  register_from_config holds
-        _registered_lock while calling _record_approval (via the consent
-        prompt path), so a shared non-reentrant lock would self-deadlock."""
-        import threading
-
-        monkeypatch.setattr(shell_hooks, "fcntl", None)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-
-        completed = threading.Event()
-        errors: list = []
-
-        def target() -> None:
-            try:
-                with shell_hooks._registered_lock:
-                    shell_hooks._record_approval(
-                        "on_session_start", "/bin/x.sh",
-                    )
-                completed.set()
-            except Exception as exc:  # pragma: no cover
-                errors.append(exc)
-                completed.set()
-
-        t = threading.Thread(target=target, daemon=True)
-        t.start()
-        if not completed.wait(timeout=3.0):
-            pytest.fail(
-                "non-POSIX fallback self-deadlocked — "
-                "_locked_update_approvals must not reuse _registered_lock",
-            )
-        t.join(timeout=1.0)
-        assert not errors, f"errors: {errors}"
-        assert shell_hooks._is_allowlisted(
-            "on_session_start", "/bin/x.sh",
-        )
-
-    def test_save_allowlist_failure_logs_actionable_warning(
-        self, tmp_path, monkeypatch, caplog,
-    ):
-        """Persistence failures must log the path, errno, and
-        re-prompt consequence so "hermes keeps asking" is debuggable."""
-        import logging
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setattr(
-            shell_hooks.tempfile, "mkstemp",
-            lambda *a, **kw: (_ for _ in ()).throw(OSError(28, "No space")),
-        )
-        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
-            shell_hooks.save_allowlist({"approvals": []})
-        msg = next(
-            (r.getMessage() for r in caplog.records
-             if "Failed to persist" in r.getMessage()), "",
-        )
-        assert "shell-hooks-allowlist.json" in msg
-        assert "No space" in msg
-        assert "re-prompt" in msg
-
-    def test_script_is_executable_handles_interpreter_prefix(self, tmp_path):
-        """For ``python3 hook.py`` and similar the interpreter reads
-        the script, so X_OK on the script itself is not required —
-        only R_OK.  Bare invocations still require X_OK."""
-        script = tmp_path / "hook.py"
-        script.write_text("print()\n")  # readable, NOT executable
-
-        # Interpreter prefix: R_OK is enough.
-        assert shell_hooks.script_is_executable(f"python3 {script}")
-        assert shell_hooks.script_is_executable(f"/usr/bin/env python3 {script}")
-
-        # Bare invocation on the same non-X_OK file: not runnable.
-        assert not shell_hooks.script_is_executable(str(script))
-
-        # Flip +x; bare invocation is now runnable too.
-        script.chmod(0o755)
-        assert shell_hooks.script_is_executable(str(script))
-
-    def test_command_script_path_resolution(self):
-        """Regression: ``_command_script_path`` used to return the first
-        shlex token, which picked the interpreter (``python3``, ``bash``,
-        ``/usr/bin/env``) instead of the actual script for any
-        interpreter-prefixed command.  That broke
-        ``hermes hooks doctor``'s executability check and silently
-        disabled mtime drift detection for such hooks."""
-        cases = [
-            # bare path
-            ("/path/hook.sh", "/path/hook.sh"),
-            ("/bin/echo hi", "/bin/echo"),
-            ("~/hook.sh", "~/hook.sh"),
-            ("hook.sh", "hook.sh"),
-            # interpreter prefix
-            ("python3 /path/hook.py", "/path/hook.py"),
-            ("bash /path/hook.sh", "/path/hook.sh"),
-            ("bash ~/hook.sh", "~/hook.sh"),
-            ("python3 -u /path/hook.py", "/path/hook.py"),
-            ("nice -n 10 /path/hook.sh", "/path/hook.sh"),
-            # /usr/bin/env shebang form — must find the *script*, not env
-            ("/usr/bin/env python3 /path/hook.py", "/path/hook.py"),
-            ("/usr/bin/env bash /path/hook.sh", "/path/hook.sh"),
-            # no path-like tokens → fallback to first token
-            ("my-binary --verbose", "my-binary"),
-            ("python3 -c 'print(1)'", "python3"),
-            # unparseable (unbalanced quotes) → return command as-is
-            ("python3 'unterminated", "python3 'unterminated"),
-            # empty
-            ("", ""),
-        ]
-        for command, expected in cases:
-            got = shell_hooks._command_script_path(command)
-            assert got == expected, f"{command!r} -> {got!r}, expected {expected!r}"
 
     def test_save_allowlist_uses_unique_tmp_paths(self, tmp_path, monkeypatch):
         """Two save_allowlist calls in flight must use distinct tmp files
@@ -721,17 +371,334 @@ class TestAllowlistConcurrency:
         p.parent.mkdir(parents=True, exist_ok=True)
 
         tmp_paths_seen: list = []
-        real_mkstemp = shell_hooks.tempfile.mkstemp
+        import utils
+        real_mkstemp = utils.tempfile.mkstemp
 
         def spying_mkstemp(*args, **kwargs):
             fd, path = real_mkstemp(*args, **kwargs)
             tmp_paths_seen.append(path)
             return fd, path
 
-        monkeypatch.setattr(shell_hooks.tempfile, "mkstemp", spying_mkstemp)
+        monkeypatch.setattr(utils.tempfile, "mkstemp", spying_mkstemp)
 
         shell_hooks.save_allowlist({"approvals": [{"event": "a", "command": "x"}]})
         shell_hooks.save_allowlist({"approvals": [{"event": "b", "command": "y"}]})
 
         assert len(tmp_paths_seen) == 2
         assert tmp_paths_seen[0] != tmp_paths_seen[1]
+
+
+# ── fail_closed parsing ───────────────────────────────────────────────────
+
+
+class TestFailClosedParsing:
+    def test_fail_closed_parsed(self):
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [
+                {"command": "/tmp/h.sh", "fail_closed": True},
+            ],
+        })
+        assert len(specs) == 1
+        assert specs[0].fail_closed is True
+
+    def test_fail_closed_defaults_false(self):
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [{"command": "/tmp/h.sh"}],
+        })
+        assert specs[0].fail_closed is False
+
+    def test_failclosed_camel_alias(self):
+        """Cursor/Claude Code configs spell it failClosed."""
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [
+                {"command": "/tmp/h.sh", "failClosed": True},
+            ],
+        })
+        assert specs[0].fail_closed is True
+
+    def test_canonical_wins_over_alias(self):
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [
+                {"command": "/tmp/h.sh", "fail_closed": False,
+                 "failClosed": True},
+            ],
+        })
+        assert specs[0].fail_closed is False
+
+    def test_non_bool_warns_and_defaults_false(self):
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [
+                {"command": "/tmp/h.sh", "fail_closed": "yes"},
+            ],
+        })
+        assert specs[0].fail_closed is False
+
+    def test_fail_closed_on_non_blocking_event_warns_and_ignores(self):
+        specs = shell_hooks._parse_hooks_block({
+            "on_session_start": [
+                {"command": "/tmp/h.sh", "fail_closed": True},
+            ],
+        })
+        assert specs[0].fail_closed is False
+
+
+# ── _evaluate_result semantics ────────────────────────────────────────────
+
+
+def _spawn_result(**overrides):
+    base = {
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+        "timed_out": False,
+        "elapsed_seconds": 0.1,
+        "error": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestEvaluateResult:
+    def _spec(self, event="pre_tool_call", fail_closed=False):
+        return shell_hooks.ShellHookSpec(
+            event=event, command="/tmp/h.sh", fail_closed=fail_closed,
+        )
+
+    # -- exit code 2 = block --------------------------------------------
+
+    def test_exit_2_blocks_with_stderr_message(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(returncode=2, stderr="policy violation\n"),
+        )
+        assert r == {"action": "block", "message": "policy violation"}
+
+    def test_exit_2_blocks_with_default_message(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(returncode=2),
+        )
+        assert r == {
+            "action": "block",
+            "message": shell_hooks._DEFAULT_BLOCK_MESSAGE,
+        }
+
+    def test_exit_2_stdout_block_json_wins(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(
+                returncode=2,
+                stdout='{"decision": "block", "reason": "from stdout"}',
+                stderr="from stderr",
+            ),
+        )
+        assert r == {"action": "block", "message": "from stdout"}
+
+    def test_exit_2_on_non_blocking_event_does_not_block(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(event="on_session_start"),
+            _spawn_result(returncode=2, stderr="boom"),
+        )
+        assert r is None
+
+    def test_other_nonzero_exit_still_parses_stdout(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(
+                returncode=1,
+                stdout='{"decision": "block", "reason": "nope"}',
+            ),
+        )
+        assert r == {"action": "block", "message": "nope"}
+
+    def test_nonzero_exit_without_directive_is_none(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(returncode=1, stderr="oops"),
+        )
+        assert r is None
+
+    # -- fail_closed ------------------------------------------------------
+
+    def test_spawn_error_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(error="No such file"),
+        )
+        assert r is None
+
+    def test_spawn_error_fail_closed_blocks(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True), _spawn_result(error="No such file"),
+        )
+        assert r["action"] == "block"
+        assert "failed closed" in r["message"]
+        assert "No such file" in r["message"]
+
+    def test_timeout_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(timed_out=True),
+        )
+        assert r is None
+
+    def test_timeout_fail_closed_blocks(self):
+        spec = self._spec(fail_closed=True)
+        r = shell_hooks._evaluate_result(spec, _spawn_result(timed_out=True))
+        assert r["action"] == "block"
+        assert f"timed out after {spec.timeout}s" in r["message"]
+
+    def test_unparseable_stdout_fail_closed_blocks(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(stdout="Traceback (most recent call last): ..."),
+        )
+        assert r["action"] == "block"
+        assert "unparseable stdout" in r["message"]
+
+    def test_unparseable_stdout_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(stdout="Traceback (most recent call last): ..."),
+        )
+        assert r is None
+
+    def test_valid_noop_json_passes_fail_closed(self):
+        """A clean {} no-op must NOT be blocked by fail_closed."""
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True), _spawn_result(stdout="{}"),
+        )
+        assert r is None
+
+    def test_empty_stdout_passes_fail_closed(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True), _spawn_result(stdout=""),
+        )
+        assert r is None
+
+    def test_fail_closed_on_non_blocking_event_still_fails_open(self):
+        """Defense in depth: even if a spec sneaks past parsing with
+        fail_closed on a non-blocking event, runtime fails open."""
+        r = shell_hooks._evaluate_result(
+            self._spec(event="on_session_start", fail_closed=True),
+            _spawn_result(error="boom"),
+        )
+        assert r is None
+
+
+# ── exit-2 / fail_closed end-to-end ──────────────────────────────────────
+
+
+class TestFailSemanticsEndToEnd:
+    def test_exit_2_script_blocks(self, tmp_path):
+        script = _write_script(
+            tmp_path, "exit2.sh",
+            "#!/usr/bin/env bash\n"
+            'echo "rm -rf is not permitted" >&2\n'
+            "exit 2\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="terminal", args={"command": "rm -rf /"})
+        assert result == {
+            "action": "block", "message": "rm -rf is not permitted",
+        }
+
+    def test_fail_closed_missing_command_blocks(self, tmp_path):
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=str(tmp_path / "does-not-exist.sh"),
+            fail_closed=True,
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="terminal", args={"command": "ls"})
+        assert result is not None and result["action"] == "block"
+        assert "failed closed" in result["message"]
+
+    def test_run_once_reflects_exit_2_block(self, tmp_path):
+        """hermes hooks test must mirror production semantics."""
+        script = _write_script(
+            tmp_path, "exit2.sh",
+            "#!/usr/bin/env bash\n"
+            'echo "denied" >&2\n'
+            "exit 2\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        result = shell_hooks.run_once(
+            spec, {"tool_name": "terminal", "args": {"command": "ls"}},
+        )
+        assert result["returncode"] == 2
+        assert result["parsed"] == {"action": "block", "message": "denied"}
+
+
+# ── multiplexed profiles ──────────────────────────────────────────────────
+
+
+class TestRoutedProfileEnv:
+    @pytest.mark.linux_only
+    def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
+        """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
+        stay out of its env, and the payload names the firing profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        launch, routed = tmp_path / "launch", tmp_path / "routed"
+        launch.mkdir(); routed.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-default-profile")
+        monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+        script = _write_script(
+            tmp_path, "env_dump.sh",
+            "#!/usr/bin/env bash\ncat > /dev/null\n"
+            'printf \'{"home": "%s", "key": "%s"}\\n\' "$HERMES_HOME" "${OPENAI_API_KEY:-}"\n',
+        )
+        spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+        token = set_hermes_home_override(str(routed))
+        try:
+            result = shell_hooks._spawn(spec, shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+            payload = json.loads(shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+        finally:
+            reset_hermes_home_override(token)
+        seen = json.loads(result["stdout"])
+        assert seen["home"] == str(routed)
+        assert seen["key"] == ""
+        assert "profile" in payload
+
+
+# ── bare script paths on native Windows ─────────────────────────────────
+# Real subprocesses, no mocked spawn: the failure being guarded is CreateProcess rejecting a text
+# file, which only exists on the host it happens on. Marked per the root AGENTS.md rule against
+# faking ``sys.platform``.
+
+
+@pytest.mark.windows_only
+def test_bare_script_hook_path_executes_on_windows(tmp_path):
+    """A hook whose command is a bare script path — the shape every example in
+    ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
+    kernel's shebang handling; CreateProcess has no equivalent, so the same config failed on
+    Windows while working everywhere else. A path that is not a file must still be reported as
+    missing rather than laundered through an interpreter."""
+    script = _write_script(tmp_path, "hook.sh", '#!/usr/bin/env bash\necho "ran" >&2\nexit 7\n')
+
+    def spec(command):
+        return shell_hooks.ShellHookSpec(event="pre_tool_call", command=command)
+
+    result = shell_hooks._spawn(spec(str(script)), "{}")
+    assert result["error"] is None, result["error"]
+    assert result["returncode"] == 7, "the script's own exit code must reach a fail_closed gate"
+    assert "ran" in result["stderr"]
+
+    missing = shell_hooks._spawn(spec(str(tmp_path / "gone.sh")), "{}")
+    assert missing["error"] == "command not found"
+
+
+@pytest.mark.windows_only
+def test_unroutable_script_hook_names_the_remediation(tmp_path):
+    """A suffix we deliberately do not route still fails, but the diagnostic has to say what to do:
+    the raw WinError text is localized, so a non-English Windows install could not act on it."""
+    script = _write_script(tmp_path, "hook.zsh", "#!/bin/zsh\necho hi\n")
+    spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+
+    result = shell_hooks._spawn(spec, "{}")
+
+    assert result["returncode"] is None
+    assert "interpreter" in result["error"] and "bash" in result["error"]

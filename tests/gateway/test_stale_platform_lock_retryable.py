@@ -1,5 +1,6 @@
-"""Regression test for #54167 — stale platform lock must be retryable.
+"""Regression tests for platform-lock acquire behavior.
 
+#54167 — stale platform lock must be retryable.
 When a gateway process is killed (SIGKILL, crash) during Telegram
 initialization, the scoped lock file survives. On next startup,
 ``acquire_scoped_lock()`` detects the stale lock and deletes it, but may
@@ -11,10 +12,11 @@ process grab the lock first).
 so the reconnect watcher can retry after a delay — not permanently kill
 the platform.
 
-Contract asserted here
-----------------------
-``_set_fatal_error`` is called with ``retryable=True`` when lock
-acquisition fails, regardless of the reason.
+#65176 — a live gateway token conflict may attempt one-shot takeover only
+during the initial connect of an explicit ``gateway run --replace`` startup.
+``gateway run --replace`` only kills same-HERMES_HOME PID-file holders.
+A normal start or reconnect must retain the retryable conflict behavior and
+must never evict the active holder.
 """
 
 from typing import Any, Dict
@@ -54,6 +56,8 @@ def adapter():
     obj._fatal_error_handler = None
     obj._platform_lock_scope = None
     obj._platform_lock_identity = None
+    obj._platform_lock_takeover_allowed = False
+    obj._platform_lock_takeover_attempted = False
     obj._status_write_logged = None
     return obj
 
@@ -71,3 +75,83 @@ def test_stale_lock_failure_is_retryable(adapter):
     assert result is False
     assert adapter._fatal_error_retryable is True
     assert adapter._fatal_error_code == "telegram-bot-token_lock"
+
+
+def test_explicit_replace_takeover_reacquires_lock_once(adapter):
+    """Initial explicit --replace may hand off and re-acquire once (#65176)."""
+    existing = {
+        "pid": 4242,
+        "kind": "hermes-gateway",
+        "argv": ["hermes", "gateway", "run"],
+        "start_time": 123,
+    }
+    acquire = MagicMock(side_effect=[(False, existing), (True, None)])
+    adapter._platform_lock_takeover_allowed = True
+
+    with patch("gateway.status.acquire_scoped_lock", acquire), patch(
+        "gateway.status.take_over_scoped_lock_holder",
+        return_value=4242,
+    ) as takeover, patch.object(
+        adapter, "_write_runtime_status_safe"
+    ):
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token", "test-token", "Telegram bot token"
+        )
+
+    assert result is True
+    assert adapter._platform_lock_takeover_allowed is False
+    assert adapter._platform_lock_takeover_attempted is True
+    takeover.assert_called_once_with(existing)
+    assert acquire.call_count == 2
+
+
+def test_lock_conflict_names_owning_profile(adapter):
+    """OOF-3: cross-profile conflicts must name the owning profile, not just a PID."""
+    existing = {
+        "pid": 559,
+        "start_time": 123,
+        "profile": "lead-gen-outreach",
+        "hermes_home": "/opt/data/profiles/lead-gen-outreach",
+    }
+
+    with patch(
+        "gateway.status.acquire_scoped_lock",
+        return_value=(False, existing),
+    ), patch.object(adapter, "_write_runtime_status_safe"):
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token",
+            "test-token",
+            "Telegram bot token",
+        )
+
+    assert result is False
+    assert "lead-gen-outreach" in adapter._fatal_error_message
+    assert "559" in adapter._fatal_error_message
+    assert adapter._fatal_error_retryable is True
+    assert adapter._fatal_error_code == "telegram-bot-token_lock"
+
+
+def test_lock_conflict_infers_profile_from_legacy_hermes_home(adapter):
+    """Locks written before the profile field existed still attribute via hermes_home."""
+    existing = {
+        "pid": 559,
+        "start_time": 123,
+        "hermes_home": "/opt/data/profiles/lead-gen-outreach",
+    }
+
+    with patch(
+        "gateway.status.acquire_scoped_lock",
+        return_value=(False, existing),
+    ), patch.object(adapter, "_write_runtime_status_safe"):
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token",
+            "test-token",
+            "Telegram bot token",
+        )
+
+    assert result is False
+    assert "'lead-gen-outreach' profile gateway (PID 559)" in (
+        adapter._fatal_error_message
+    )
+
+

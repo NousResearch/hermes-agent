@@ -9,7 +9,7 @@ description: "随 Hermes Agent 附带并通过生命周期 hook 自动运行的�
 
 Hermes 随仓库附带了一小组插件。它们位于 `<repo>/plugins/<name>/`，与用户安装在 `~/.hermes/plugins/` 中的插件一同自动加载。它们使用与第三方插件相同的插件接口——hook、工具、斜杠命令——只是在仓库内维护。
 
-请参阅 [插件](/user-guide/features/plugins) 页面了解通用插件系统，以及 [构建 Hermes 插件](/guides/build-a-hermes-plugin) 了解如何编写自己的插件。
+请参阅 [插件](./plugins.md) 页面了解通用插件系统，以及 [构建 Hermes 插件](../../developer-guide/plugins/index.md) 了解如何编写自己的插件。
 
 ## 发现机制
 
@@ -253,7 +253,7 @@ agent 会启动会议加入流程，在通话进行时将转录内容流式传�
 
 ## 添加内置插件
 
-内置插件的编写方式与其他 Hermes 插件完全相同——参见 [构建 Hermes 插件](/guides/build-a-hermes-plugin)。唯一的区别是：
+内置插件的编写方式与其他 Hermes 插件完全相同——参见 [构建 Hermes 插件](../../developer-guide/plugins/index.md)。唯一的区别是：
 
 - 目录位于 `<repo>/plugins/<name>/`，而非 `~/.hermes/plugins/<name>/`
 - 在 `hermes plugins list` 中，manifest 来源显示为 `bundled`

@@ -81,10 +81,13 @@ curl http://localhost:8644/health
 | `events` | 否 | 要接受的事件类型列表（例如 `["pull_request"]`）。若为空，则接受所有事件。事件类型从 `X-GitHub-Event`、`X-GitLab-Event` 或 payload 中的 `event_type` 读取。 |
 | `secret` | **是** | 用于签名验证的 HMAC secret。若路由未设置，则回退到全局 `secret`。仅用于测试时可设为 `"INSECURE_NO_AUTH"`（跳过验证）。 |
 | `prompt` | 否 | 使用点号表示法访问 payload 字段的模板字符串（例如 `{pull_request.title}`）。若省略，则将完整 JSON payload 转储到 prompt 中。 |
+| `filters` | 否 | 声明式 payload 过滤器，在认证/请求体/事件过滤之后、agent 或直接投递之前求值。不匹配时返回 `{"status":"ignored","reason":"filter"}`（HTTP 200）。 |
+| `script` | 否 | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入。stdout 为 JSON 对象时会在模板渲染前替换 payload；文本 stdout 以 `script_output` 形式暴露；空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。 |
 | `skills` | 否 | agent 运行时加载的 skill 名称列表。 |
 | `deliver` | 否 | 响应发送目标：`github_comment`、`telegram`、`discord`、`slack`、`signal`、`sms`、`whatsapp`、`matrix`、`mattermost`、`homeassistant`、`email`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`，或 `log`（默认）。 |
 | `deliver_extra` | 否 | 额外的投递配置——键取决于 `deliver` 类型（例如 `repo`、`pr_number`、`chat_id`）。值支持与 `prompt` 相同的 `{dot.notation}` 模板语法。 |
 | `deliver_only` | 否 | 若为 `true`，完全跳过 agent——渲染后的 `prompt` 模板直接作为消息体投递。零 LLM token 消耗，亚秒级投递。参见[直接投递模式](#direct-delivery-mode)了解使用场景。要求 `deliver` 为真实目标（非 `log`）。 |
+| `cron_job` | 否 | 每次事件触发一个已有的 cron 任务（按 ID 或名称），而不是启动新的 webhook agent 会话。渲染后的 `prompt` 作为单次运行的临时上下文；以任务自身的 prompt、skills、模型和投递设置为准。与 `deliver_only` 互斥。参见[事件触发的 Cron 任务](#event-triggered-cron-jobs)。 |
 
 ### 完整示例
 
@@ -116,8 +119,74 @@ platforms:
           events: ["push"]
           secret: "deploy-secret"
           prompt: "New push to {repository.full_name} branch {ref}: {head_commit.message}"
+          filters:
+            - field: "ref"
+              equals: "refs/heads/main"
           deliver: "telegram"
 ```
+
+### Payload 过滤器 {#payload-filters}
+
+当服务商发送宽泛的事件流、但只有部分 payload 应唤醒 agent 或触发 `deliver_only` 投递时，使用 `filters`。过滤器在签名验证、请求体解析和 `events` 之后运行，但在 prompt 渲染、幂等去重、agent 调度或直接投递之前运行。
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        todoist:
+          events: ["item:updated"]
+          secret: "todoist-secret"
+          filters:
+            - field: "payload.labels"
+              contains: "hermes"
+            - any:
+                - field: "payload.priority"
+                  equals: 4
+                - field: "payload.project_id"
+                  in_file: "~/.hermes/data/todoist/watchlist.json"
+          prompt: "Todoist task changed: {payload.content}"
+```
+
+支持的操作符：
+
+- `exists: true|false`
+- `missing: true`
+- `equals` / `not_equals`
+- `contains` — 适用于字符串、列表和 dict 键
+- `in` — 内联列表
+- `in_file` — JSON 数组、JSON 对象（使用其键）或按行分隔的文本文件
+- `regex`
+- `all`、`any` 和 `not` 分组
+
+字段路径使用点号表示法。当存在顶层 `payload` 对象时，`payload.foo` 从中读取；对扁平 payload 则从 webhook 请求体根部读取。`event` / `event_type` 匹配解析出的事件类型，`headers.<Name>` 读取请求头。
+
+### 脚本过滤与转换 {#script-filters-and-transforms}
+
+当声明式过滤器不够用时，使用 `script`。脚本必须位于当前 profile 的 `~/.hermes/scripts/` 目录下；相对路径在该目录内解析，且禁止路径穿越到目录之外。`.sh` 和 `.bash` 脚本用 bash 运行，其他扩展名用当前 Python 解释器运行。
+
+路由 payload 以 JSON 形式发送到 stdin：
+
+```python
+# ~/.hermes/scripts/todoist-hermes-label.py
+import json
+import sys
+
+payload = json.load(sys.stdin)
+labels = payload.get("payload", {}).get("labels", [])
+if "hermes" not in labels:
+    print("[SILENT]")
+    raise SystemExit(0)
+
+payload["body"] = payload["payload"]["content"]
+print(json.dumps(payload))
+```
+
+脚本结果：
+
+- stdout 为 JSON 对象时，替换 `prompt` 和 `deliver_extra` 使用的 payload。
+- 非 JSON 文本 stdout 会以 `script_output` 字段加入 payload。
+- 空 stdout、精确的 `[SILENT]`、`{"__hermes_ignore__": true}`、超时、脚本缺失或非零退出码，均返回 HTTP 200 及 `{"status":"ignored","reason":"script"}`。
 
 ### Prompt 模板
 
@@ -324,6 +393,54 @@ hermes webhook subscribe antenna-matches \
 - 直接投递模式下 `skills` 字段被忽略（不运行 agent，无处注入 skill）。
 - 模板渲染使用与 agent 模式相同的 `{dot.notation}` 语法，包括 `{__raw__}` token。
 - 幂等性使用相同的 `X-GitHub-Delivery` / `X-Request-ID` 请求头——携带相同 ID 的重试返回 `status=duplicate` 且**不**重复投递。
+
+---
+
+## 事件触发的 Cron 任务 {#event-triggered-cron-jobs}
+
+在路由上设置 `cron_job`，即可在事件到达时触发一个**已有的 cron 任务**——无需按固定周期轮询，也不会启动新的 webhook agent 会话。这让任何定时任务都能变成事件驱动的任务：把原有的定时计划保留为兜底扫描（或设为低频），让 webhook 在事情真正发生的那一刻立即触发它。
+
+
+工作原理：
+
+1. 事件经过与其他路由相同的 HMAC 认证、速率限制、`events`/`filters`/`script` 过滤和幂等去重。
+2. 路由的 `prompt` 模板根据 payload 渲染后，作为**单次运行的临时上下文**注入任务（与 `cronjob(action='run', prompt=...)` 走同一条通道——任务存储的 prompt 永远不会被修改）。
+3. 任务通过与调度器相同的 at-most-once 认领机制触发，因此 webhook 突发流量不会重复触发正在运行的任务，任务自身的投递目标会收到输出。
+
+### 示例：在收到 review 反馈时触发 PR 审查任务
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        pr-feedback:
+          events: ["pull_request_review"]
+          secret: "github-webhook-secret"
+          cron_job: "pr-review-sweeper"        # 已有任务的 ID 或名称
+          prompt: |
+            {repository.full_name} 的 PR #{number} 收到了来自
+            {review.user.login} 的新审查反馈：{review.body}
+```
+
+### 通过 CLI
+
+```bash
+hermes webhook subscribe pr-feedback \
+  --events "pull_request_review" \
+  --cron-job "pr-review-sweeper" \
+  --prompt "PR #{number} 收到反馈：{review.body}"
+```
+
+创建订阅时会立即校验任务引用，拼写错误会当场报错。
+
+### 注意事项
+
+- `cron_job` 与 `deliver_only` 互斥（路由同时设置两者时适配器拒绝启动）。cron 任务自行处理投递。
+- `cron_job` 路由会忽略路由级的 `deliver`、`deliver_extra` 和 `skills` 字段——以任务自身的设置为准。
+- 已暂停/已禁用的任务不会被触发；事件会被记录并丢弃。
+- POST 立即返回 `202 Accepted`；任务在后台运行。
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: canvas
-description: Canvas LMS integration — fetch enrolled courses and assignments using API token authentication.
+description: Fetch Canvas LMS courses and assignments via API token.
 version: 1.0.0
 author: community
 license: MIT

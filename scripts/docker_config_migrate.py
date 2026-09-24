@@ -4,39 +4,33 @@ from __future__ import annotations
 
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 from hermes_cli.config import (
+    InvalidUserConfigError,
+    _read_config_version_stamp,
     check_config_version,
     get_config_path,
     get_env_path,
     migrate_config,
 )
+from hermes_cli.config_backups import backup_config, list_config_backups
+from hermes_cli.config_migrations import (
+    SUPPORT_FLOOR_VERSION,
+    support_floor_message,
+)
 from utils import env_var_enabled
 
 
-def _backup_path(path: Path, stamp: str) -> Path:
-    base = path.with_name(f"{path.name}.bak-{stamp}")
-    if not base.exists():
-        return base
-    for index in range(1, 1000):
-        candidate = path.with_name(f"{path.name}.bak-{stamp}.{index}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError(f"could not choose a backup path for {path}")
-
-
 def _backup_existing(paths: Iterable[Path]) -> dict[Path, Path]:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    """Snapshot each file into backups/config/; an identical existing snapshot is reused."""
     backups: dict[Path, Path] = {}
     for path in paths:
-        if not path.is_file():
-            continue
-        dest = _backup_path(path, stamp)
-        shutil.copy2(path, dest)
-        backups[path] = dest
+        dest = backup_config(path, "pre-docker-migrate") or next(
+            iter(list_config_backups(path, "pre-docker-migrate")), None)
+        if dest is not None:
+            backups[path] = dest
     return backups
 
 
@@ -55,8 +49,29 @@ def main() -> int:
         print("[config-migrate] HERMES_SKIP_CONFIG_MIGRATION is set; skipping config migration")
         return 0
 
-    current_ver, latest_ver = check_config_version()
+    # Strict read: malformed YAML or a non-mapping root is left alone with a warning and the
+    # boot continues, instead of running the backup/migrate dance that migrate_config() would
+    # refuse anyway.
+    try:
+        stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
+    except InvalidUserConfigError as exc:
+        print(f"[config-migrate] WARNING: {exc}; leaving config.yaml untouched", file=sys.stderr)
+        return 0
+    current_ver = 0 if stamp is None else stamp
     if current_ver >= latest_ver:
+        return 0
+
+    # Below the auto-migration support floor: migrate_config() refuses (and
+    # leaves the file untouched), so don't run the backup/verify dance that
+    # would raise "did not advance config version" and block the boot.
+    # Warn-and-continue matches the CLI's fail-safe posture. A config with no
+    # _config_version (stamp None: a volume seeded from the template) is not
+    # below the floor: migrate_config() stamps it.
+    if stamp is not None and current_ver < SUPPORT_FLOOR_VERSION:
+        print(
+            f"[config-migrate] WARNING: {support_floor_message()}",
+            file=sys.stderr,
+        )
         return 0
 
     backups = _backup_existing((get_config_path(), get_env_path()))

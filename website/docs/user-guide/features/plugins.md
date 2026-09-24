@@ -11,10 +11,10 @@ Hermes has a plugin system for adding custom tools, hooks, and integrations with
 
 If you want to create a custom tool for yourself, your team, or one project,
 this is usually the right path. The developer guide's
-[Adding Tools](/developer-guide/adding-tools) page is for built-in Hermes
+[Adding Tools](../../developer-guide/adding-tools.md) page is for built-in Hermes
 core tools that live in `tools/` and `toolsets.py`.
 
-**→ [Build a Hermes Plugin](/guides/build-a-hermes-plugin)** — step-by-step guide with a complete working example.
+**→ [Build a Hermes Plugin](../../developer-guide/plugins/index.md)** — step-by-step guide with a complete working example.
 
 ## Quick overview
 
@@ -77,7 +77,6 @@ def register(ctx):
         toolset="hello_world",
         schema=schema,
         handler=handle_hello,
-        description="Return a friendly greeting for the given name.",
     )
 
     # --- Hook: log every tool call ---
@@ -88,6 +87,8 @@ def register(ctx):
 ```
 
 Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the model can immediately call `hello_world`. The hook prints a log line after every tool invocation.
+
+The model-facing tool description belongs in `schema["description"]`. The optional `ctx.register_tool(description=...)` value is separate `ToolEntry` registry metadata: when omitted, it defaults to the schema description, but Hermes does not copy it back into a schema that lacks `description`. Prefer defining the text once in the schema. If you provide both values, keep them synchronized; the model sees the schema value.
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
@@ -102,28 +103,31 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
-| Inject messages | `ctx.inject_message(content, role="user")` — see [Injecting Messages](#injecting-messages) |
+| Inject messages | `ctx.inject_message(content, role="user", session_key=...)` - see [Injecting Messages](#injecting-messages) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
 | Distribute via pip | `[project.entry-points."hermes_agent.plugins"]` |
-| Register a gateway platform (Discord, Telegram, IRC, …) | `ctx.register_platform(name, label, adapter_factory, check_fn, ...)` — see [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
-| Register an image-generation backend | `ctx.register_image_gen_provider(provider)` — see [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
-| Register a video-generation backend | `ctx.register_video_gen_provider(provider)` — see [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
-| Register a context-compression engine | `ctx.register_context_engine(engine)` — see [Context Engine Plugins](/developer-guide/context-engine-plugin) |
-| Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (uses a separate discovery system) |
-| Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](/developer-guide/plugin-llm-access) |
-| Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](/developer-guide/model-provider-plugin) (uses a separate discovery system) |
+| Register a gateway platform (Discord, Telegram, IRC, …) | `ctx.register_platform(name, label, adapter_factory, check_fn, ...)` — see [Adding Platform Adapters](../../developer-guide/adding-platform-adapters.md) |
+| Register an image-generation backend | `ctx.register_image_gen_provider(provider)` — see [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
+| Register a video-generation backend | `ctx.register_video_gen_provider(provider)` — see [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |
+| Register a context-compression engine | `ctx.register_context_engine(engine)` — see [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
+| Register a terminal execution backend (cloud sandbox) | `ctx.register_terminal_environment_provider(provider)` — see [Terminal Environment Plugins](../../developer-guide/terminal-environment-plugin.md) |
+| Route human approval prompts | `ctx.register_approval_transport(name, present_fn)` — see [Approval transports](#approval-transports) |
+| Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) (uses a separate discovery system) |
+| Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](../../developer-guide/plugin-llm-access.md) |
+| Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
+| Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](../../developer-guide/model-provider-plugin.md) (uses a separate discovery system) |
 
 ## Plugin discovery
 
 | Source | Path | Use case |
 |--------|------|----------|
-| Bundled | `<repo>/plugins/` | Ships with Hermes — see [Built-in Plugins](/user-guide/features/built-in-plugins) |
+| Bundled | `<repo>/plugins/` | Ships with Hermes — see [Built-in Plugins](./built-in-plugins.md) |
 | User | `~/.hermes/plugins/` | Personal plugins |
 | Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
-| Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](/getting-started/nix-setup#plugins) |
+| Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](../../getting-started/nix-setup.md#plugins) |
 
 Later sources override earlier ones on name collision, so a user plugin with the same name as a bundled plugin replaces it.
 
@@ -140,11 +144,15 @@ Within each source, Hermes also recognizes sub-category directories that route p
 | `plugins/context_engine/<name>/` | Context-compression engines (`ctx.register_context_engine()`) | **Own loader** in `plugins/context_engine/__init__.py` (one active at a time) |
 | `plugins/model-providers/<name>/` | LLM provider profiles (`register_provider(ProviderProfile(...))`) | **Own loader** in `providers/__init__.py` (lazily scanned on first `get_provider_profile()` call) |
 
-User plugins at `~/.hermes/plugins/model-providers/<name>/` and `~/.hermes/plugins/memory/<name>/` override bundled plugins of the same name — last-writer-wins in `register_provider()` / `register_memory_provider()`. Drop a directory in, and it replaces the built-in without any repo edits.
+User plugins at `~/.hermes/plugins/model-providers/<name>/` override bundled model providers of the same name (last-writer-wins in `register_provider()`), so you can replace a built-in provider profile without any repo edits. Memory providers resolve the other way round: for `~/.hermes/plugins/memory/<name>/` the **bundled** provider wins on a name collision (bundled, then user, then project, then entry points; first seen wins), so a user memory provider needs its own unique name.
 
 ## Plugins are opt-in (with a few exceptions)
 
 **General plugins and user-installed backends are disabled by default** — discovery finds them (so they show up in `hermes plugins` and `/plugins`), but nothing with hooks or tools loads until you add the plugin's name to `plugins.enabled` in `~/.hermes/config.yaml`. This stops third-party code from running without your explicit consent.
+
+:::note `plugins.enabled` governs plugins only
+[Gateway event hooks](./hooks.md#gateway-event-hooks) under `~/.hermes/hooks/<name>/` are not plugins and are **not** gated by `plugins.enabled` or `plugins.disabled`. That directory is trusted by placement: any subdirectory holding a valid `HOOK.yaml` + `handler.py` is imported by the gateway at startup, and placing the files there is the opt-in. See the [gateway hook trust model](./hooks.md#gateway-hook-trust).
+:::
 
 ```yaml
 plugins:
@@ -153,6 +161,25 @@ plugins:
     - disk-cleanup
   disabled:       # optional deny-list — always wins if a name appears in both
     - noisy-plugin
+  # Optional: deadline (seconds) for each Git clone, fetch or checkout
+  # during plugin installation, including automatic memory-provider migration.
+  # Default 300; values above 3600 are clamped. A subdirectory install
+  # (owner/repo/path/to/plugin) downloads only that folder's files.
+  clone_timeout_seconds: 300
+  # Optional: wall-clock cap (seconds) for timeout-bounded in-process Python
+  # plugin hook callbacks (hot-path observers + pre_tool_call). Default 30;
+  # set 0 to disable; values above 600 are clamped. Timed-out pre_tool_call
+  # callbacks fail closed (block the tool). Caller-thread hooks such as
+  # subagent_stop are never moved onto a timeout worker.
+  # Shell hooks keep their own per-entry timeout under the top-level hooks: key.
+  hook_callback_timeout: 30
+  # Optional: deadline (seconds) for one plugin's import + register() at load.
+  # A plugin that overruns it is skipped with the reason "load timed out after
+  # Ns" (reported like any other load failure: the startup warning and the
+  # in-session `/plugins` listing) and the remaining plugins keep loading; the
+  # stuck thread is abandoned. Default 10; set 0 to disable; values above 600
+  # are clamped.
+  load_timeout_seconds: 10
 ```
 
 Three ways to flip state:
@@ -164,6 +191,53 @@ hermes plugins disable <name>     # remove from allow-list + add to disabled
 ```
 
 After `hermes plugins install owner/repo`, you're asked `Enable 'name' now? [y/N]` — defaults to no. Skip the prompt for scripted installs with `--enable` or `--no-enable`.
+
+For a reproducible install, pin a full immutable commit (tags, branches, and
+abbreviated SHAs are not accepted):
+
+```bash
+hermes plugins install owner/repo --ref 0123456789abcdef0123456789abcdef01234567
+```
+
+Hermes checks out the commit detached, verifies that `HEAD` exactly matches the
+requested SHA, and records the canonical source, installed revision, and pin
+status in the current profile. `hermes plugins update` refuses to move a pinned
+plugin; choose a new exact commit explicitly with
+`hermes plugins install <source> --force --ref <new-commit>`. The
+profile-local install metadata contains no config values, environment values,
+secrets, or capability grants.
+
+The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
+Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
+plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
+can confirm everyone is running the same commit. `hermes plugins list` prints
+the pin in its Source column (`git pinned@<sha8>`). Pins work for private
+repositories too, through the same stored credentials described below.
+
+### Installing from a private repository
+
+`hermes plugins install` clones non-interactively (it never prompts for a
+username or password), so a private repo needs a credential Hermes can find on
+its own. Every clone, pinned `--ref` fetch and `hermes plugins update` pull is
+attempted anonymously first — public repos never see your credential, so a
+stale or revoked token cannot break a public install. Only when the remote
+refuses anonymous access does Hermes look for a credential. For an `https://`
+source it tries, in order:
+
+1. `GITHUB_TOKEN` or `GH_TOKEN` from your `.env` (GitHub hosts only).
+2. The `gh` CLI's login (`gh auth login`), GitHub hosts only.
+3. Your git credential helper (`git credential fill`) for that host — works for
+   GitLab, Bitbucket and self-hosted servers if a credential is already stored.
+
+The credential is sent as a one-shot HTTP header for that install or update;
+it is never written into the plugin's `.git/config` or the install metadata.
+SSH sources (`git@host:owner/repo.git`) authenticate through your ssh-agent as
+before. The same resolution applies to `hermes plugins update`, catalog MCP
+installs from git, and profile distributions fetched from a git URL.
+
+`hermes doctor` sends a configured `GITHUB_TOKEN`/`GH_TOKEN` to `api.github.com`
+(under **API Connectivity**) and, when GitHub rejects it, names the variable and the
+`.env` file that carries the expired token so you can remove or replace it.
 
 ### What the allow-list does NOT gate
 
@@ -181,27 +255,76 @@ Several categories of plugin bypass `plugins.enabled` — they're part of Hermes
 
 In short: **bundled "always-works" infrastructure loads automatically; third-party general plugins are opt-in.** The `plugins.enabled` allow-list is the gate specifically for arbitrary code a user drops into `~/.hermes/plugins/`.
 
+### Approval transports
+
+An approval transport changes **where a human sees and answers** an existing
+Hermes tool-approval request. It does not decide whether a command needs
+approval and it is not an authorization-policy API.
+
+```python
+def present(request):
+    # Deliver request.command and request.description to your UI, wait for
+    # its authenticated human response, then return a request-bound decision.
+    choice = send_to_my_ui_and_wait(request)  # once/session/always/deny
+    return request.respond(choice)
+
+
+def register(ctx):
+    ctx.register_approval_transport("my-ui", present)
+```
+
+`present` may be synchronous or async. Hermes runs it on a bounded worker and
+enforces the canonical `approvals.timeout` even if the plugin does not. The
+request is immutable and contains redacted display text, its host presentation
+class (`cli` or `gateway`), the host timeout, allowed choices, and an opaque
+request ID/digest.
+Return the result of
+`request.respond(choice)`; unbound dictionaries and stale or changed request
+IDs/digests are rejected. A plugin cannot return a scope that the host did not
+offer (for example, `always` on a once-only request).
+
+Registration alone does nothing. Enabling the plugin and explicitly selecting
+its transport are separate consent steps:
+
+```yaml
+plugins:
+  enabled: [my-approval-plugin]
+
+security:
+  approval:
+    transport: my-ui
+    transport_fallback: deny     # default
+```
+
+Transport exceptions, timeouts, unavailable registrations, invalid choices,
+and stale responses deny by default. To deliberately show the prompt on the
+ordinary CLI/TUI/gateway/ACP surface when the selected transport fails, set
+`transport_fallback: builtin`. Without that exact opt-in, Hermes never
+materializes the prompt on another surface.
+
+Hermes still owns hardline blocks, sudo-stdin protection, user deny rules,
+request binding, allowed scopes, persistence, hooks, and final authorization.
+Hardline commands are blocked before any transport callback. There is
+intentionally **no plugin approval policy, auto-allow callback, or required
+`pre_tool_call` policy** in this interface. A future approval-policy capability
+may use the plugin capability-consent model, but transport selection does not
+grant it.
+
 ### Migration for existing users
 
 When you upgrade to a version of Hermes that has opt-in plugins (config schema v21+), any user plugins already installed under `~/.hermes/plugins/` that weren't already in `plugins.disabled` are **automatically grandfathered** into `plugins.enabled`. Your existing setup keeps working. Bundled standalone plugins are NOT grandfathered — even existing users have to opt in explicitly. (Bundled platform/backend plugins never needed grandfathering because they were never gated.)
 
 ## Available hooks
 
-Plugins can register callbacks for these lifecycle events. See the **[Event Hooks page](/user-guide/features/hooks#plugin-hooks)** for full details, callback signatures, and examples.
+Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](./hooks.md#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
 
-| Hook | Fires when |
-|------|-----------|
-| [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | Before any tool executes |
-| [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns |
-| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the LLM loop — can return `{"context": "..."}` to [inject context into the user message](/user-guide/features/hooks#pre_llm_call) |
-| [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
-| [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) |
-| [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit handler |
-| [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session (`/new`, GC, CLI quit) |
-| [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`, `/clear`, idle rotation) |
-| [`subagent_stop`](/user-guide/features/hooks#subagent_stop) | Once per child after `delegate_task` finishes |
-| [`pre_gateway_dispatch`](/user-guide/features/hooks#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch. Return `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow. |
+| Descriptive category | Shipped hooks |
+|---|---|
+| **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
+| **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
+These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
 
 Hermes has four kinds of plugins:
@@ -221,23 +344,23 @@ The table above shows the four plugin categories, but within "General plugins" t
 
 | Want to add… | How | Authoring guide |
 |---|---|---|
-| A **tool** the LLM can call | Python plugin — `ctx.register_tool()` | [Build a Hermes Plugin](/guides/build-a-hermes-plugin) · [Adding Tools](/developer-guide/adding-tools) |
-| A **lifecycle hook** (pre/post LLM, session start/end, tool filter) | Python plugin — `ctx.register_hook()` | [Hooks reference](/user-guide/features/hooks) · [Build a Hermes Plugin](/guides/build-a-hermes-plugin) |
-| A **slash command** for the CLI / gateway | Python plugin — `ctx.register_command()` | [Build a Hermes Plugin](/guides/build-a-hermes-plugin) · [Extending the CLI](/developer-guide/extending-the-cli) |
-| A **subcommand** for `hermes <thing>` | Python plugin — `ctx.register_cli_command()` | [Extending the CLI](/developer-guide/extending-the-cli) |
-| A bundled **skill** that your plugin ships | Python plugin — `ctx.register_skill()` | [Creating Skills](/developer-guide/creating-skills) |
-| An **inference backend** (LLM provider: OpenAI-compat, Codex, Anthropic-Messages, Bedrock) | Provider plugin — `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/` | **[Model Provider Plugins](/developer-guide/model-provider-plugin)** · [Adding Providers](/developer-guide/adding-providers) |
-| A **gateway channel** (Discord / Telegram / IRC / Teams / etc.) | Platform plugin — `ctx.register_platform()` in `plugins/platforms/<name>/` | [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
-| A **memory backend** (Honcho, Mem0, Supermemory, …) | Memory plugin — subclass `MemoryProvider` in `plugins/memory/<name>/` | [Memory Provider Plugins](/developer-guide/memory-provider-plugin) |
-| A **context-compression strategy** | Context-engine plugin — `ctx.register_context_engine()` | [Context Engine Plugins](/developer-guide/context-engine-plugin) |
-| An **image-generation backend** (DALL·E, SDXL, …) | Backend plugin — `ctx.register_image_gen_provider()` | [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
-| A **video-generation backend** (Veo, Kling, Pixverse, Grok-Imagine, Runway, …) | Backend plugin — `ctx.register_video_gen_provider()` | [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
-| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, xtts, voice-cloning scripts, …) | Config-driven (recommended) — declare under `tts.providers.<name>` with `type: command` in `config.yaml`. OR Python backend plugin — `ctx.register_tts_provider()` for Python-SDK / streaming engines that need more than a shell template. | [TTS Setup](/user-guide/features/tts#custom-command-providers) · [Python plugin guide](/user-guide/features/tts#python-plugin-providers) |
-| An **STT backend** (any CLI — whisper.cpp, custom whisper binary, local ASR CLI) | Config-driven (recommended) — declare under `stt.providers.<name>` with `type: command` in `config.yaml`, or set `HERMES_LOCAL_STT_COMMAND` for the legacy single-command escape hatch. OR Python backend plugin — `ctx.register_transcription_provider()` for Python-SDK engines (OpenRouter, SenseAudio, Gemini-STT, etc.). | [STT Setup](/user-guide/features/tts#stt-custom-command-providers) · [Python plugin guide](/user-guide/features/tts#python-plugin-providers-stt) |
-| **External tools via MCP** (filesystem, GitHub, Linear, Notion, any MCP server) | Config-driven — declare `mcp_servers.<name>` with `command:` / `url:` in `config.yaml`. Hermes auto-discovers the server's tools and registers them alongside built-ins. | [MCP](/user-guide/features/mcp) |
-| **Additional skill sources** (custom GitHub repos, private skill indexes) | CLI — `hermes skills tap add <repo>` | [Skills Hub](/user-guide/features/skills#skills-hub) · [Publishing a custom tap](/user-guide/features/skills#publishing-a-custom-skill-tap) |
-| **Gateway event hooks** (fire on `gateway:startup`, `session:start`, `agent:end`, `command:*`) | Drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` | [Event Hooks](/user-guide/features/hooks#gateway-event-hooks) |
-| **Shell hooks** (run a shell command on events — notifications, audit logs, desktop alerts) | Config-driven — declare under `hooks:` in `config.yaml` | [Shell Hooks](/user-guide/features/hooks#shell-hooks) |
+| A **tool** the LLM can call | Python plugin — `ctx.register_tool()` | [Build a Hermes Plugin](../../developer-guide/plugins/index.md) · [Adding Tools](../../developer-guide/adding-tools.md) |
+| A **lifecycle hook** (pre/post LLM, session start/end, tool filter) | Python plugin — `ctx.register_hook()` | [Hooks reference](./hooks.md) · [Build a Hermes Plugin](../../developer-guide/plugins/index.md) |
+| A **slash command** for the CLI / gateway | Python plugin — `ctx.register_command()` | [Build a Hermes Plugin](../../developer-guide/plugins/index.md) · [Extending the CLI](../../developer-guide/extending-the-cli.md) |
+| A **subcommand** for `hermes <thing>` | Python plugin — `ctx.register_cli_command()` | [Extending the CLI](../../developer-guide/extending-the-cli.md) |
+| A bundled **skill** that your plugin ships | Python plugin — `ctx.register_skill()` | [Creating Skills](../../developer-guide/creating-skills.md) |
+| An **inference backend** (LLM provider: OpenAI-compat, Codex, Anthropic-Messages, Bedrock) | Provider plugin — `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/` | **[Model Provider Plugins](../../developer-guide/model-provider-plugin.md)** · [Adding Providers](../../developer-guide/adding-providers.md) |
+| A **gateway channel** (Discord / Telegram / IRC / Teams / etc.) | Platform plugin — `ctx.register_platform()` in `plugins/platforms/<name>/` | [Adding Platform Adapters](../../developer-guide/adding-platform-adapters.md) |
+| A **memory backend** (Honcho, Mem0, Supermemory, …) | Memory plugin — subclass `MemoryProvider` in `plugins/memory/<name>/` | [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) |
+| A **context-compression strategy** | Context-engine plugin — `ctx.register_context_engine()` | [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
+| An **image-generation backend** (DALL·E, SDXL, …) | Backend plugin — `ctx.register_image_gen_provider()` | [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
+| A **video-generation backend** (Veo, Kling, Pixverse, Grok-Imagine, Runway, …) | Backend plugin — `ctx.register_video_gen_provider()` | [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |
+| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, xtts, voice-cloning scripts, …) | Config-driven (recommended) — declare under `tts.providers.<name>` with `type: command` in `config.yaml`. OR Python backend plugin — `ctx.register_tts_provider()` for Python-SDK / streaming engines that need more than a shell template. | [TTS Setup](./tts.md#custom-command-providers) · [Python plugin guide](./tts.md#python-plugin-providers) |
+| An **STT backend** (any CLI — whisper.cpp, custom whisper binary, local ASR CLI) | Config-driven (recommended) — declare under `stt.providers.<name>` with `type: command` in `config.yaml`, or set `HERMES_LOCAL_STT_COMMAND` for the legacy single-command escape hatch. OR Python backend plugin — `ctx.register_transcription_provider()` for Python-SDK engines (OpenRouter, SenseAudio, Gemini-STT, etc.). | [STT Setup](./tts.md#stt-custom-command-providers) · [Python plugin guide](./tts.md#python-plugin-providers-stt) |
+| **External tools via MCP** (filesystem, GitHub, Linear, Notion, any MCP server) | Config-driven — declare `mcp_servers.<name>` with `command:` / `url:` in `config.yaml`. Hermes auto-discovers the server's tools and registers them alongside built-ins. | [MCP](./mcp.md) |
+| **Additional skill sources** (custom GitHub repos, private skill indexes) | CLI — `hermes skills tap add <repo>` | [Skills Hub](./skills.md#skills-hub) · [Publishing a custom tap](./skills.md#publishing-a-custom-skill-tap) |
+| **Gateway event hooks** (fire on `gateway:startup`, `session:start`, `agent:end`, `command:*`) | Drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` | [Event Hooks](./hooks.md#gateway-event-hooks) |
+| **Shell hooks** (run a shell command on events — notifications, audit logs, desktop alerts) | Config-driven — declare under `hooks:` in `config.yaml` | [Shell Hooks](./hooks.md#shell-hooks) |
 
 :::note
 Not everything is a Python plugin. Some extension surfaces intentionally use **config-driven shell commands** (TTS, STT, shell hooks) so any CLI you already have becomes a plugin without writing Python. Others are **external servers** (MCP) the agent connects to and auto-registers tools from. And some are **drop-in directories** (gateway hooks) with their own manifest format. Pick the right surface for the integration style that fits your use case; the authoring guides in the table above each cover placeholders, discovery, and examples.
@@ -245,7 +368,7 @@ Not everything is a Python plugin. Some extension surfaces intentionally use **c
 
 ## NixOS declarative plugins
 
-On NixOS, plugins can be installed declaratively via the module options — no `hermes plugins install` needed. See the **[Nix Setup guide](/getting-started/nix-setup#plugins)** for full details.
+On NixOS, plugins can be installed declaratively via the module options — no `hermes plugins install` needed. See the **[Nix Setup guide](../../getting-started/nix-setup.md#plugins)** for full details.
 
 ```nix
 services.hermes-agent = {
@@ -264,14 +387,352 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 
 ```bash
 hermes plugins                               # unified interactive UI
-hermes plugins list                          # table: enabled / disabled / not enabled
+hermes plugins list                          # table: enabled / disabled / not enabled (bundled backends,
+                                             # platforms and the live memory.provider count as enabled)
+hermes plugins search <term>                 # search the Hermes plugin catalog
+hermes plugins install <name>                # install a catalog entry (repo @ reviewed pinned SHA)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
 hermes plugins install user/repo --enable    # install AND enable (no prompt)
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
-hermes plugins update my-plugin              # pull latest
-hermes plugins remove my-plugin              # uninstall
+hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
+hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
+                                             # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
-hermes plugins disable my-plugin             # remove from allow-list + add to disabled
+hermes plugins disable my-plugin             # remove from allow-list + add to disabled (bundled platforms:
+                                             # either spelling works, e.g. photon-platform or platforms/photon)
+hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
+```
+
+### One-click install links (Desktop)
+
+Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
+chat message can link straight to a plugin install:
+
+```
+hermes://plugin/install?catalog=NAME               # catalog entry, installs the reviewed pin
+hermes://plugin/install?repo=owner/repo            # any git repo
+hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
+hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
+hermes://plugin/install?catalog=<name>             # reviewed catalog entry at its pinned commit
+```
+
+The `catalog=<name>` form is what the **Open in Hermes Desktop** button on
+every [Plugin Catalog](./plugin-catalog.md) card uses. Desktop resolves the
+name against the live catalog (the same feed the **Capabilities → Plugins**
+picker shows) and opens the same **reviewed catalog entry** dialog an in-app
+pick does: the agent half installs at the catalog's pinned commit, never the
+branch tip. The link carries no repo URL, and a name that is not in the
+catalog shows an error toast and nothing else — it is never reinterpreted as a
+git path, so a link cannot smuggle an unreviewed repo behind a
+familiar-looking name.
+
+For a `repo=` link, clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
+a "Before you install" note, and GitHub browse + clone links — then
+shallow-clones the repo to detect what it ships (an **agent plugin** —
+backend Python, a **desktop plugin** — app UI, or both). You pick the
+components with checkboxes and confirm. Nothing is installed until you do;
+deep links never auto-install, and agent-plugin installs go through the same
+[install-time security scanning](#install-time-security-scanning) as
+`hermes plugins install`.
+
+Hybrid repos (agent + desktop halves in one repo) use one link and one
+dialog. The same modal is reachable without a link via **Capabilities →
+Plugins → Install from Git**. Legacy `hermes://plugin-agent/…` and
+`hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
+(`npm run dev`) the scheme is `hermes-dev://`.
+
+Websites need no SDK — a normal anchor works:
+
+```html
+<a href="hermes://plugin/install?repo=owner/repo&enable=1">Install in Hermes</a>
+```
+
+MCP servers have the equivalent link form — see
+[Add to Hermes link](../../reference/mcp-config-reference.md#add-to-hermes-link).
+
+### Plugin capabilities and consent
+
+Plugins can declare the privileged host surfaces they want in their
+`plugin.yaml`:
+
+```yaml
+name: my-plugin
+capabilities:
+  - tools.override        # replace built-in tools
+  - llm.model_override    # pick the model for host-owned LLM calls
+```
+
+When a plugin declares capabilities, `hermes plugins install` (and
+`hermes plugins enable`) shows the list with one-line risk descriptions and
+asks once. Consenting records the grant under
+`plugins.entries.<id>.granted_capabilities` together with a consent hash and
+timestamp. Declining leaves the plugin enabled with those capabilities off —
+a well-behaved plugin probes with `ctx.has_capability()` and degrades
+gracefully.
+
+**Update re-consent:** if a plugin update declares capabilities you haven't
+granted, `hermes plugins update` surfaces the additions and asks again. New
+capabilities stay off until you consent — a plugin update can never silently
+widen its access. Catalog re-pins go one step further: when the new pin adds
+tools, hooks, Python dependencies, host capabilities or a Desktop UI half the
+installed version did not have, the CLI shows the delta and asks `y/N` before
+anything moves, and the Desktop / dashboard **Update** button opens the same
+confirmation. Declining (or a non-interactive session) leaves the plugin at
+the old pin.
+
+**Non-interactive sessions fail closed:** installing or updating without a
+TTY completes the install, but declared capabilities are *not* granted. Run
+`hermes plugins enable <id>` interactively to grant them later.
+
+Inspect the state at any time:
+
+```bash
+hermes plugins capabilities             # all plugins with declared/granted capabilities
+hermes plugins capabilities my-plugin   # one plugin, declared vs granted
+```
+
+Capability ids map 1:1 to the older per-feature config gates, which keep
+working but are **deprecated** in favor of the consent flow:
+
+| Capability | Legacy key (`plugins.entries.<id>.…`) |
+|---|---|
+| `tools.override` | `allow_tool_override` |
+| `llm.provider_override` | `llm.allow_provider_override` |
+| `llm.model_override` | `llm.allow_model_override` |
+| `llm.agent_id_override` | `llm.allow_agent_id_override` |
+| `llm.profile_override` | `llm.allow_profile_override` |
+| `llm.task_override` | `llm.allow_task_override` |
+| `gateway.platform_actions` | `allow_platform_actions` |
+
+A gate is open when *either* the capability is granted *or* the legacy key is
+set — existing configs keep working unchanged.
+
+:::warning Not a sandbox
+Capabilities are a **consent and audit layer**, not isolation. Plugins run as
+regular in-process Python: a malicious plugin can ignore every gate here.
+Granting a capability is a statement of trust in the plugin author — it is
+not a code audit, and Hermes has not reviewed the plugin's code. Only install
+plugins from sources you trust.
+:::
+
+### Platform actions
+
+`ctx.platform_actions` gives a plugin a minimal, capability-gated verb set for
+acting on connected chat platforms through the live gateway adapter registry —
+the sanctioned alternative to monkeypatching an adapter. **It is off by
+default**: every call re-checks the `gateway.platform_actions` capability
+(legacy key `plugins.entries.<id>.allow_platform_actions`), and an ungranted
+call returns a structured error instead of acting.
+
+v1 verbs (both `async`, both return a plain dict, and neither ever raises into
+hook dispatch):
+
+```python
+result = await ctx.platform_actions.add_reaction(
+    platform="telegram", chat_id="-100123", message_id="456", emoji="👍",
+)
+result = await ctx.platform_actions.set_thread_title(
+    platform="discord", chat_id="123", thread_id="456", title="New title",
+)
+if not result["ok"]:
+    print(result["error"], result.get("detail"))
+```
+
+Success is `{"ok": True, "action": <verb>}`. Failures are
+`{"ok": False, "error": <code>, "detail": <str>}` with stable error codes:
+`capability_not_granted`, `invalid_argument`, `gateway_unavailable`,
+`unknown_platform`, `adapter_not_registered`, `adapter_disconnected`,
+`unsupported_platform_action`, `action_failed`. Actions validate that the
+target adapter exists and is connected before acting; a disconnected or
+missing adapter degrades to a structured error, never an exception.
+
+Platforms supported in v1: Telegram and Discord. Telegram's `add_reaction`
+*sets* the bot's reaction (the Bot API replaces a previous bot reaction rather
+than stacking). Every action — allowed or denied — is written to the log with
+the plugin id, verb, platform, and outcome.
+
+:::warning Security note
+Platform actions are a **messaging-as-the-bot power**: a granted plugin can
+react and rename threads in any chat the gateway bot can reach, not just the
+chat that triggered the hook. Grant `gateway.platform_actions` only to plugins
+you trust, and prefer plugins that document exactly which actions they take.
+Raw platform SDK payload/handle access is deliberately **not** part of this
+surface — per the #64176 round-2 design correction it requires its own
+capability (`gateway.raw_events`) with a "no stability guarantee" label and a
+separate design, and has not shipped.
+:::
+
+### Discovering plugins — the Hermes plugin catalog
+
+`hermes plugins search <term>` searches the **Hermes plugin catalog** — the
+curated, SHA-pinned catalog maintained in the hermes-agent repository
+(`plugin-catalog/`). Matching covers entry names, descriptions, and declared
+tools:
+
+```bash
+hermes plugins search telegram    # search the catalog
+hermes plugins browse             # browse every entry
+hermes plugins info <name>        # full details for one entry
+```
+
+Once you've found a plugin, install it by bare name — the name resolves to
+the entry's repository at its **pinned commit SHA**, and catalog provenance is
+recorded so `hermes plugins update` can re-pin when the catalog moves:
+
+```bash
+hermes plugins install <catalog-name>
+```
+
+Explicit `owner/repo` or Git-URL identifiers never touch the catalog and are
+flagged as custom (unreviewed) sources. An explicit
+`--ref <40-char commit SHA>` pins a custom install.
+
+See [Plugin Catalog](./plugin-catalog.md) for the full trust model, admission
+CI, and submission workflow.
+
+:::warning Cataloged ≠ audited
+A catalog entry means the entry's metadata and declared capabilities were
+reviewed at admission — **it is not a code audit**. Installing still goes
+through the normal consent flow (plugins install disabled by default,
+enabling is an explicit step, and tool-override rights require a separate
+grant). Review a plugin's source before enabling it.
+:::
+
+### Plugin packs
+
+A **plugin pack** is a declarative, shareable YAML file (`hermes-pack.yaml`)
+that pins a set of plugins — like sharing a modpack. Installing a pack fans
+out to ordinary pinned installs; nothing new exists at runtime.
+
+```yaml
+name: voice-assistant-pack
+description: STT + streaming TTS + approval relay
+author: hyper
+version: 1.0.0
+plugins:
+  - name: hermes-telegram-business       # bare plugin-catalog name…
+    ref: e905f3bc5eeaa5a9dab9bc5155601b3ebec75757
+  - repo: owner/approval-relay           # …or explicit owner/repo (or git URL)
+    ref: 8f3c2d1a9b4e5f6071829304a5b6c7d8e9f00112
+    subdir: plugins/relay                # optional monorepo path
+config:                                  # optional, non-secret seeds only
+  hermes-media-studio:
+    default_model: flux-3
+skills: []                               # declared list only (not auto-installed yet)
+```
+
+```bash
+hermes plugins pack show ./hermes-pack.yaml     # dry-run review
+hermes plugins pack install ./hermes-pack.yaml  # review → confirm → install
+hermes plugins pack export > hermes-pack.yaml   # snapshot the current install
+hermes plugins pack export --enabled-only       # only plugins.enabled
+```
+
+**Supply-chain posture.** Every entry's `ref` must be an exact 40-character
+commit SHA — tags and branch names are rejected with an error naming the
+entry, the same rule as the plugin catalog. Pack installs ride the exact
+same pinned install path as `hermes plugins install --ref <sha>` and record
+the same provenance in `plugins/.install-metadata.json`, so two installs of
+the same pack resolve identically. Packs build on the
+[manifest v2 fields](../../developer-guide/plugins/index.md) (`manifest_version`,
+`api_version`, `requires_plugins`) — each plugin's own manifest still
+validates through the normal install path.
+
+**Consent is never bulk-granted.** `pack install` shows a mandatory review
+screen (every plugin, source, pinned ref, and the capabilities it declares),
+then asks **one** confirmation for the pack contents. After that, each
+plugin's declared capabilities go through the standard per-plugin
+capability-consent prompt — identical to a single `hermes plugins install`.
+There is no `--yes`, and non-interactive sessions cannot install packs.
+
+**Secrets never travel in packs.** `config:` seeds are limited to
+non-secret `plugins.entries.<id>` keys — secret-shaped key names
+(`*token*`, `*key*`, `*password*`, …), capability grants, and the deprecated
+`allow_*` trust gates are rejected on install and stripped on export.
+Plugins that need secrets declare them in their own `requires_env`, which
+prompts during install as usual. Existing user values in
+`plugins.entries.<id>` always win over pack seeds.
+
+**Partial failure.** Each plugin installs independently; failures are
+reported per plugin, the rest continue, and the command exits non-zero if
+any plugin failed.
+
+**Export caveats.** `pack export` only includes plugins with known Git
+provenance (installed via `hermes plugins install`). Local-only plugins are
+listed as warning comments in the emitted YAML, not as installable entries.
+
+The `skills:` list is parsed and displayed at install time but not yet
+auto-installed — install those manually for now (`hermes skills`). Wiring
+skill-hub ids into pack install is a documented follow-up seam.
+
+### Install-time security scanning
+
+Every `hermes plugins install` and `hermes plugins update` runs a static
+security scan over the plugin tree before it is activated (inspired by
+Claude Cowork's skill & plugin security scanning). The scanner reuses the
+same threat-pattern engine as the [Skills Hub guard](./skills.md)
+— exfiltration of credential stores, reverse shells, destructive commands,
+persistence mechanisms, obfuscated execution, and prompt injection in
+documentation files — with plugin-aware exemptions: a provider plugin
+reading its **own** API key from the environment (the documented
+`requires_env` pattern) is not flagged.
+
+Three verdicts, matching Cowork's pass/warn/fail:
+
+| Verdict | Behavior |
+|---|---|
+| **safe** | Installs normally, no extra output |
+| **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
+| **dangerous** | Blocked. `--force` does **not** override |
+
+On `hermes plugins update`, a dangerous verdict on the updated tree
+disables the plugin until you review the findings and re-enable it. A
+dangerous block names the critical findings that caused it (e.g.
+`1 critical of 42 findings (destructive_root_rm)`), so a single blocking
+line is not hidden behind the total.
+
+Text that cannot run on the host at install time is scored as **context**, not
+as the plugin's behaviour, so it can lower a finding but never delete it —
+every finding stays in the report with file and line:
+
+- **Documentation prose** (`README.md`, `AGENTS.md`, `docs/**/*.md`, `.txt`,
+  `.rst`, `.html`) can never on its own produce **dangerous**: a command or
+  credential path quoted there (an uninstall step, a refusal list naming
+  `~/.ssh`) steps down one severity, and a README removing the plugin's
+  **own** install directory (`rm -rf "$HOME/.hermes/plugins/<name>"`) is a
+  note. Agent-facing shapes keep full severity — prompt injection, Markdown
+  exfil, agent-config edits, `curl … | sh` one-liners, an `authorized_keys`
+  append, a leaked provider key — and so does anything under a bundled
+  `skills/` tree or in `after-install.md`, which the agent reads as
+  instructions.
+- **Test trees and fixtures** (`tests/`, `test/`, `testing/`, `spec/`,
+  `specs/`, `fixtures/` at the plugin root; `__tests__/` and `__fixtures__/`
+  at any depth; `*.test.*`, `*.spec.*`, `test_*.py`, `*_test.*`) are still
+  scanned — a plugin's `__init__.py` can import from them — but a quoted-only
+  hostile string (`verdict_for("rm -rf /")`, a redaction corpus with a fake
+  `sk-…` key) is a note, and test code that would execute on import
+  (`os.system('rm -rf /')`) is capped at **caution**. The same finding in any
+  other file (`setup.sh`, `src/spec/…`) is still **dangerous**.
+- **Whole-line comments and `CHANGELOG.md`** describe a defense; they score as
+  prose does.
+- **Base64 that decodes to a media header** (PNG/JPEG/GIF/WOFF/PDF … in a
+  data URI or JSON scenery) is informational; `base64 -d` piped into a text
+  filter (`grep`, `jq`) is a note, piped into a shell or interpreter it keeps
+  full severity; `sudo` / `env|` as an alternation member of a regex literal
+  (`/approval|sudo|secret/`, a redaction pattern) is a note, in a command
+  string (`subprocess.run("sudo …")`) it is not.
+
+Likewise, a generic sample token (`hardcoded_secret`) inside a runtime `.py`
+file's `if __name__ == "__main__":` self-test block is capped at **caution**
+— the loader imports plugins and never runs that block — while every other
+finding inside it (destructive commands, provider-shaped keys such as `sk-…`)
+and the same token anywhere above the guard keep full severity.
+
+Scanning is on by default; disable it in `config.yaml`:
+
+```yaml
+plugins:
+  scan_on_install: false
 ```
 
 ### Interactive UI
@@ -322,25 +783,99 @@ In a running session, `/plugins` shows which plugins are currently loaded.
 
 ## Injecting Messages
 
-Plugins can inject messages into the active conversation using `ctx.inject_message()`:
+Plugins can inject messages into a CLI conversation or a known gateway session using `ctx.inject_message()`:
 
 ```python
+# Active CLI conversation
 ctx.inject_message("New data arrived from the webhook", role="user")
+
+# Existing gateway conversation
+ctx.inject_message(
+    "New data arrived from the webhook",
+    role="user",
+    session_key="agent:main:telegram:dm:123456789",
+)
 ```
 
-**Signature:** `ctx.inject_message(content: str, role: str = "user") -> bool`
+**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None) -> bool`
 
-How it works:
+In CLI mode:
 
 - If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
 - If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
 - For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
-- Returns `True` if the message was queued successfully, `False` if no CLI reference is available (e.g. in gateway mode).
+- Returns `True` if the message was queued successfully.
+
+In gateway mode:
+
+- `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
+- Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot supply a new chat route through this API.
+- Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
+- Routes that relied only on an adapter-time or upstream authorisation decision are rejected unless Hermes can revalidate them from current core allowlists, pairing, or explicit allow-all configuration.
+- Injected text is always conversational input. It cannot invoke slash commands, approve tools, or resolve pending confirmation and clarification prompts.
+- The route and conversation are pinned while dispatch is pending. Hermes drops the request if topic recovery changes the route or the session rotates before handling starts.
+- The request enters the platform adapter's normal message path. Active sessions use the existing busy-session queue rather than starting a competing turn.
+- Returns `True` when the live gateway accepts the request for asynchronous dispatch. This does not confirm that the agent turn or platform delivery has completed.
+- Returns `False` when `session_key` is omitted, the permission is not granted, or no live gateway can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
 
 This enables plugins like remote control viewers, messaging bridges, or webhook receivers to feed messages into the conversation from external sources.
 
-:::note
-`inject_message` is only available in CLI mode. In gateway mode, there is no CLI reference and the method returns `False`.
+Gateway injection can send an agent response to an external messaging platform. It is disabled by default for every plugin. Grant it per plugin in `config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      allow_gateway_injection: true
+```
+
+:::warning
+Only grant gateway injection to plugins you trust. Hermes checks this host API permission and restricts it to existing session routes, but Python plugins run in-process and this setting is not a sandbox.
 :::
 
-See the **[full guide](/guides/build-a-hermes-plugin)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.
+:::note
+This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
+:::
+
+## Calling MCP servers from plugins
+
+`ctx.call_mcp()` lets a plugin call a tool on one of the user's configured MCP servers — synchronously, from any hook or tool handler — routing through Hermes' existing native MCP client (same connections, trust-tier gates, circuit breaker, and reconnect logic as model-invoked MCP tools; never a parallel client).
+
+```python
+result = ctx.call_mcp(
+    "knowledge_rag",            # server name from mcp.servers
+    "query_knowledge",          # tool on that server
+    {"query": "deploy runbook"},
+    timeout=30,                 # seconds; clamped to 1–600
+)
+if result["ok"]:
+    print(result["result"])
+else:
+    print("MCP error:", result["error"])
+```
+
+**Signature:** `ctx.call_mcp(server: str, tool: str, arguments: dict | None = None, timeout: float = 30) -> dict`
+
+Returns a stable envelope: `{"ok": True, "result": ...}` (plus `structuredContent` when the server provides it) or `{"ok": False, "error": "..."}`. Results over ~64 KB are truncated and flagged with `"truncated": True`.
+
+### Security: default-off, per-server allowlist
+
+A plugin has **no MCP access by default**. The operator must grant each server explicitly in `config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      mcp_allowlist: ["knowledge_rag", "github"]
+```
+
+- Calling a server not in the list raises `PermissionError` naming the exact config key to set.
+- The grant is per-server and per-plugin — never ambient authority over every configured server, and `"*"` wildcards are not honored.
+- Every call has an enforced timeout (default 30 s) so a hung MCP server cannot stall the hook or tool pipeline that invoked it.
+- MCP servers return untrusted content. Treat `result` as data, not instructions — don't feed it into privileged decisions (approvals, command execution) without validation.
+
+:::warning
+Granting `mcp_allowlist` gives the plugin the same access to that MCP server as the model has — including any write-capable tools the server exposes (subject to the server's `trust` tier gates). Grant only servers the plugin genuinely needs.
+:::
+
+See the **[full guide](../../developer-guide/plugins/index.md)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

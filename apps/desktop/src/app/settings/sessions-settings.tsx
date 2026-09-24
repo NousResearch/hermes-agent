@@ -1,39 +1,58 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteSession, listAllProfileSessions, setSessionArchived } from '@/hermes'
+import {
+  deleteSession,
+  getHermesConfigRecord,
+  listAllProfileSessions,
+  peekConfigReadOrigin,
+  retainConfigReadOrigin,
+  saveHermesConfig,
+  setSessionArchived
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import { untombstoneSessions } from '@/store/projects'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
+import { untombstoneSessions } from '@/store/session-removal'
+import { forgetSessionUnread } from '@/store/session-unread'
+import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
-import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+import { useSettingDeepLink } from './use-setting-deep-link'
+
+const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
 
-function workspaceLabel(cwd: null | string | undefined): string {
-  const path = cwd?.trim()
-
-  if (!path) {
-    return ''
-  }
-
-  return (
-    path
-      .replace(/[/\\]+$/, '')
-      .split(/[/\\]/)
-      .filter(Boolean)
-      .pop() ?? path
-  )
+interface SessionsSettingsProps {
+  subpage?: string
 }
 
-export function SessionsSettings() {
+export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+  useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
+
+  if (subpage === 'default-directory') {
+    return (
+      <SettingsContent>
+        <DefaultProjectDirSetting />
+      </SettingsContent>
+    )
+  }
+
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+}
+
+function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
@@ -67,7 +86,7 @@ export function SessionsSettings() {
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
         untombstoneSessions([session.id, session._lineage_root_id])
-        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
+        restoreListedSession({ ...session, archived: false })
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })
       } catch (err) {
@@ -81,7 +100,13 @@ export function SessionsSettings() {
 
   const remove = useCallback(
     async (session: SessionInfo) => {
-      if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
+      const ok = await confirm({
+        confirmLabel: s.deletePermanently,
+        destructive: true,
+        title: s.deleteConfirm(sessionTitle(session))
+      })
+
+      if (!ok) {
         return
       }
 
@@ -89,6 +114,9 @@ export function SessionsSettings() {
 
       try {
         await deleteSession(session.id, session.profile)
+        // Permanent delete bypasses removeSession, so retire the persisted
+        // unread state here too rather than leaving it to rot.
+        forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {
@@ -107,12 +135,14 @@ export function SessionsSettings() {
   })
 
   if (loading) {
-    return <LoadingState label={s.loading} />
+    return <SettingsSkeleton sections={[{ rows: 1 }, { heading: true, rows: 4 }]} />
   }
 
   return (
     <SettingsContent>
-      <DefaultProjectDirSetting />
+      {includeDefaultDirectory && <DefaultProjectDirSetting />}
+
+      <AutoArchiveSetting />
 
       <SectionHeading
         icon={Archive}
@@ -128,7 +158,7 @@ export function SessionsSettings() {
       ) : (
         <div className="grid gap-1">
           {sessions.map(session => {
-            const label = workspaceLabel(session.cwd)
+            const label = pathLeaf(session.cwd)
             const busy = busyId === session.id
 
             return (
@@ -171,6 +201,119 @@ export function SessionsSettings() {
         </div>
       )}
     </SettingsContent>
+  )
+}
+
+// Opt-in retention: soft-hide chats untouched for N days. The policy itself
+// (last-activity sweep, pin exemption) lives in the backend
+// (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
+// just toggles the config keys, so CLI / gateway / Desktop all honour one
+// setting. Pins are exempt on the backend, so pinned chats survive regardless.
+function AutoArchiveSetting() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
+  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
+
+  useEffect(() => {
+    // Config REST is only reachable through the Electron bridge; skip in
+    // non-Electron contexts (tests/storybook) rather than throwing.
+    if (!window.hermesDesktop) {
+      return
+    }
+
+    let alive = true
+
+    void getHermesConfigRecord()
+      .then(record => {
+        if (!alive) {
+          return
+        }
+
+        const sessions = (record.sessions ?? {}) as Record<string, unknown>
+        const parsedDays = Number(sessions.auto_archive_days)
+        setConfig(record)
+        setEnabled(Boolean(sessions.auto_archive))
+        setDays(Number.isFinite(parsedDays) && parsedDays > 0 ? Math.round(parsedDays) : DEFAULT_AUTO_ARCHIVE_DAYS)
+      })
+      .catch(() => {
+        // Leave the control unmounted if config can't be read.
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const persist = useCallback(
+    async (autoArchive: boolean, archiveDays: number) => {
+      if (!config) {
+        return
+      }
+
+      const sessions = {
+        ...((config.sessions ?? {}) as Record<string, unknown>),
+        auto_archive: autoArchive,
+        auto_archive_days: archiveDays
+      }
+
+      // Read the route at save time from the record itself, and carry it onto
+      // the replacement snapshot so the next save still targets the gateway
+      // that served the original GET.
+      const writeScope = peekConfigReadOrigin(config)
+
+      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
+
+      try {
+        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+        // snapshot would overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
+      } catch (err) {
+        notifyError(err, s.autoArchiveFailed)
+      }
+    },
+    [config, s.autoArchiveFailed]
+  )
+
+  if (!config) {
+    return null
+  }
+
+  return (
+    <div className="mb-6">
+      <ToggleRow
+        checked={enabled}
+        description={s.autoArchiveDesc}
+        id={settingElementId(SETTING_IDS.sessions.autoArchive)}
+        label={s.autoArchiveTitle}
+        onChange={on => {
+          setEnabled(on)
+          void persist(on, days)
+        }}
+      />
+      {enabled && (
+        <ListRow
+          action={
+            <div className="flex items-center gap-2">
+              <Input
+                aria-label={s.autoArchiveDaysLabel}
+                className="w-20"
+                min={1}
+                onBlur={() => void persist(true, days)}
+                onChange={e => setDays(Math.max(1, Math.round(Number(e.target.value) || 1)))}
+                type="number"
+                value={days}
+              />
+              <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                {s.autoArchiveDaysUnit}
+              </span>
+            </div>
+          }
+          title={s.autoArchiveDaysLabel}
+        />
+      )}
+    </div>
   )
 }
 
@@ -263,7 +406,7 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title={s.defaultDirTitle} />
+      <SectionHeading icon={FolderOpen} page title={s.defaultDirTitle} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.defaultDirDesc}
       </p>

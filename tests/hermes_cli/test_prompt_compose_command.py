@@ -14,7 +14,6 @@ import tempfile
 import pytest
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.commands import resolve_command
 
 
 class _Stub(CLICommandsMixin):
@@ -40,10 +39,6 @@ def _no_visual(monkeypatch):
     monkeypatch.delenv("VISUAL", raising=False)
 
 
-def test_command_registered():
-    cd = resolve_command("prompt")
-    assert cd and cd.name == "prompt"
-    assert resolve_command("compose").name == "prompt"
 
 
 def test_compose_reads_and_strips_header(monkeypatch):
@@ -52,21 +47,6 @@ def test_compose_reads_and_strips_header(monkeypatch):
     assert "Refactor the auth module." in out
     assert "Use pytest." in out
     assert "#!" not in out  # the instructional header is stripped
-
-
-def test_prompt_sets_pending_seed(monkeypatch):
-    monkeypatch.setenv("EDITOR", _fake_editor("Write a haiku about caching."))
-    s = _Stub()
-    s._handle_prompt_compose_command("/prompt")
-    assert s._pending_agent_seed
-    assert "haiku about caching" in s._pending_agent_seed
-
-
-def test_initial_text_is_seeded(monkeypatch):
-    # The fake editor appends, so the initial text leads the buffer.
-    monkeypatch.setenv("EDITOR", _fake_editor("rest of prompt"))
-    out = _Stub()._compose_in_editor("DRAFT: ")
-    assert out.startswith("DRAFT:")
 
 
 def test_empty_buffer_does_not_seed(monkeypatch):

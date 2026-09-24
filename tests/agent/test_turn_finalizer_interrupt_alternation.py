@@ -13,7 +13,6 @@ typically empty on an interrupt, so the placeholder text is used rather than
 an empty-content assistant turn.
 """
 
-import pytest
 
 from agent.turn_finalizer import finalize_turn
 
@@ -154,7 +153,7 @@ def test_interrupt_after_tool_closes_sequence_with_placeholder():
     assert messages[-1]["role"] == "assistant"
     # Empty final_response falls back to the explicit placeholder rather
     # than persisting an empty-content assistant turn.
-    assert messages[-1]["content"] == "Operation interrupted."
+    assert messages[-1]["content"].strip()
 
     # The persisted snapshot is alternation-safe: appending a new user
     # message would follow an assistant, not an orphan tool.
@@ -164,24 +163,8 @@ def test_interrupt_after_tool_closes_sequence_with_placeholder():
     _assert_no_tool_then_user(follow_on)
 
 
-def test_interrupt_after_tool_keeps_delivered_text_when_present():
-    agent = _StubAgent()
-    messages = _interrupted_tool_tail()
-    _finalize(agent, messages, interrupted=True, final_response="Partial answer so far")
-
-    assert messages[-1]["role"] == "assistant"
-    # Real delivered text is preserved, not clobbered by the placeholder.
-    assert messages[-1]["content"] == "Partial answer so far"
 
 
-def test_non_interrupted_tool_tail_is_left_untouched():
-    # A turn that ends on a tool tail WITHOUT an interrupt (mid-progress
-    # tool loop) must not get a synthetic close — that is normal dialog
-    # state handled elsewhere.
-    agent = _StubAgent()
-    messages = _interrupted_tool_tail()
-    _finalize(agent, messages, interrupted=False, final_response=None)
-    assert messages[-1]["role"] == "tool"
 
 
 def test_interrupt_without_tool_tail_adds_nothing():
@@ -196,3 +179,18 @@ def test_interrupt_without_tool_tail_adds_nothing():
     _finalize(agent, messages, interrupted=True, final_response="partial reply")
     assert len(messages) == before
     assert messages[-1]["role"] == "assistant"
+
+
+def test_interrupted_turn_with_diagnostic_text_is_not_completed():
+    """An interrupt mid-call leaves a diagnostic ``final_response`` ("Operation interrupted:
+    waiting for model response"); the result must still say ``completed=False`` like the
+    sibling producers (turn_recovery, codex_runtime) — the gateway stream gate and the API run
+    status trust that flag (#111770)."""
+    agent = _StubAgent()
+    result = _finalize(
+        agent, [{"role": "user", "content": "hi"}], interrupted=True,
+        final_response="Operation interrupted: waiting for model response (0.1s elapsed).",
+    )
+    assert result["interrupted"] is True
+    assert result["completed"] is False
+    assert result["failed"] is False

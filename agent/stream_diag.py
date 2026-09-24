@@ -30,34 +30,6 @@ def stream_diag_init() -> Dict[str, Any]:
     }
 
 
-def stream_diag_note_serving_provider(diag: Dict[str, Any], chunk: Any) -> None:
-    """Record which downstream provider actually served this attempt, from a delta chunk body.
-
-    On OpenRouter-style relays the provider is re-rolled per request and reported only inside the
-    chunk JSON (``"provider": "Novita"``) — those responses carry no ``x-openrouter-provider``
-    header, just ``cf-ray`` / ``server: cloudflare``, so the header snapshot cannot attribute a
-    mid-stream drop to a downstream. First non-empty value wins: the attempt was served by whatever
-    produced its first chunk, and later chunks must not overwrite that. Best-effort, never raises.
-    """
-    if not isinstance(diag, dict) or diag.get("serving_provider"):
-        return
-    try:
-        value = getattr(chunk, "provider", None)
-        if value is None:  # unknown top-level fields land in pydantic model_extra on the OpenAI SDK
-            extra = getattr(chunk, "model_extra", None)
-            if isinstance(extra, dict):
-                value = extra.get("provider")
-        if value is None and isinstance(chunk, dict):
-            value = chunk.get("provider")
-        if isinstance(value, str) and value.strip():
-            diag["serving_provider"] = value.strip()[:64]  # keep log lines bounded
-    except Exception:
-        # Deliberately swallowed: this is a best-effort annotation on the diagnostics path and
-        # must never break streaming. Logged at DEBUG so a reader can tell it apart from a
-        # missed error-handling gap.
-        logger.debug("stream_diag: could not read serving provider from chunk", exc_info=True)
-
-
 def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response: Any) -> None:
     """Snapshot headers + HTTP status at stream open (so they survive a drop before the first chunk). Best-effort."""
     if http_response is None or not isinstance(diag, dict):
@@ -256,7 +228,6 @@ __all__ = [
     "connect_exhausted_notice",
     "buffer_connect_exhausted_notice",
     "stream_diag_init",
-    "stream_diag_note_serving_provider",
     "stream_diag_capture_response",
     "flatten_exception_chain",
     "log_stream_retry",

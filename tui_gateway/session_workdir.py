@@ -313,7 +313,7 @@ def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
 # dropping the tag re-plants them as bare user turns after a restart and corrupts the truncate ordinal address space.
 _WORKDIR_SEED_FIELDS = (
     "content", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
-    "codex_message_items", "display_kind", "display_metadata", "timestamp")
+    "codex_message_items", "bedrock_content_blocks", "display_kind", "display_metadata", "timestamp")
 
 
 def _persist_branch_seed(session: dict) -> None:

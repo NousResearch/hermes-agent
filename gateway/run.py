@@ -1108,7 +1108,7 @@ def _prepare_resume_pending_message(
 # phase on all assistant messages — dropping it can degrade performance."  Required for prefix cache hits. *
 # ``finish_reason``: informational; cheap to keep so transcripts replay identically across CLI and gateway.
 _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items", "bedrock_content_blocks",
     "finish_reason")
 
 

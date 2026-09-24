@@ -2049,7 +2049,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
 
 
 _BRANCH_COPY_FIELDS = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items", "bedrock_content_blocks",
     # Timeline markers ride as role=user; untagged they become bare user turns after a restart, corrupting
     # the truncate ordinal address space.
     "display_kind", "display_metadata",

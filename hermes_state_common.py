@@ -416,6 +416,7 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
+    bedrock_content_blocks TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     _compressed_summary INTEGER NOT NULL DEFAULT 0,

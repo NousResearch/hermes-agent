@@ -193,6 +193,7 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
     "reasoning_details",
     "codex_reasoning_items",
     "codex_message_items",
+    "bedrock_content_blocks",
 )
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 

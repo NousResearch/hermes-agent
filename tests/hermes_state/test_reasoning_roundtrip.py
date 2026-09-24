@@ -27,6 +27,14 @@ CODEX_MESSAGE_ITEMS = [
         "content": [{"type": "output_text", "text": "done"}],
     }
 ]
+BEDROCK_CONTENT_BLOCKS = [
+    {"reasoningContent": {"text": "consider the tool", "signature": "signed-reasoning"}},
+    {"toolUse": {"toolUseId": "tool-1", "name": "lookup", "input": {"query": "Hermes"}}},
+]
+BEDROCK_REPLAY_BLOCKS = [
+    {"reasoningContent": {"reasoningText": {"text": "consider the tool", "signature": "signed-reasoning"}}},
+    BEDROCK_CONTENT_BLOCKS[1],
+]
 
 
 @pytest.fixture
@@ -67,6 +75,26 @@ class TestDirectWrite:
         assert msg["reasoning_details"] == REASONING_DETAILS
         assert msg["codex_reasoning_items"] == CODEX_REASONING_ITEMS
         assert msg["codex_message_items"] == CODEX_MESSAGE_ITEMS
+
+    def test_bedrock_content_blocks_survive_reopen_and_converse_replay(self, db):
+        """Regression for #121293: resume must retain signed Converse reasoning blocks."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        db.create_session("bedrock", source="cli")
+        db.append_message("bedrock", role="user", content="use a tool")
+        db.append_message(
+            "bedrock", role="assistant", content="", bedrock_content_blocks=BEDROCK_CONTENT_BLOCKS,
+        )
+        db_path = db.db_path
+        db.close()
+
+        resumed = SessionDB(db_path)
+        try:
+            _system, messages = convert_messages_to_converse(resumed.get_messages_as_conversation("bedrock"))
+        finally:
+            resumed.close()
+
+        assert messages[1]["content"] == BEDROCK_REPLAY_BLOCKS
 
 
 class TestForkRoundTrip:

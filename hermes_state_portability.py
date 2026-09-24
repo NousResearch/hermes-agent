@@ -29,7 +29,7 @@ _IMPORT_MESSAGE_TEXT_FIELDS = (
     "tool_call_id", "tool_name", "effect_disposition", "finish_reason",
     "reasoning", "reasoning_content", "platform_message_id", "message_id",
 )
-_IMPORT_MESSAGE_JSON_FIELDS = ("reasoning_details", "codex_reasoning_items", "codex_message_items")
+_IMPORT_MESSAGE_JSON_FIELDS = ("reasoning_details", "codex_reasoning_items", "codex_message_items", "bedrock_content_blocks")
 _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
                            system_prompt_hash,

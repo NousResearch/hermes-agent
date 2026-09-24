@@ -100,6 +100,9 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     "sudo diskutil eraseDisk APFS Data /dev/disk2",
     "sudo wipefs -a /dev/disk0",
     "env FOO=1 mke2fs /dev/sda1",
+    "env -i wipefs -a /dev/sda",
+    "env --ignore-environment blkdiscard /dev/nvme0n1",
+    "env -u HOME shred -n 1 -z /dev/sda",
     "nohup blkdiscard /dev/sda",
     "(wipefs -a /dev/sda)",
     "{ mke2fs /dev/sda1; }",
@@ -230,6 +233,8 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     "busybox ls /tmp",
     "stdbuf -oL grep foo bar.txt",
     "ionice -c3 rsync a b",
+    "env -i command -v mkfs",
+    "env --ignore-environment command -V mke2fs",
     # ordinary quoted redirect targets
     'echo hi > "out.txt"',
     'printf "%s" > "some file.txt"',

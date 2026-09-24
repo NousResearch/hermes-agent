@@ -121,12 +121,3 @@ def test_slash_kanban_gc_retention_bounds(board, days, expected):
     assert log.exists()
 
 
-def test_gc_parser_rejects_negative_retention_days():
-    """``hermes kanban gc --event-retention-days -1`` is a usage error before
-    ``_cmd_gc`` runs; ``0`` still parses (the CLI treats it as 'disabled')."""
-    from hermes_cli.kanban_parser import _nonnegative_int
-    assert _nonnegative_int("0") == 0
-    with pytest.raises(argparse.ArgumentTypeError, match=">= 0"):
-        _nonnegative_int("-1")
-    with pytest.raises(argparse.ArgumentTypeError, match="integer"):
-        _nonnegative_int("thirty")

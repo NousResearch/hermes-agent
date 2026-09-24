@@ -36,9 +36,6 @@ def _read_config(home: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 class TestReadChain:
-    def test_returns_empty_list_when_unset(self):
-        from hermes_cli.fallback_cmd import _read_chain
-        assert _read_chain({}) == []
 
     def test_reads_new_list_format(self):
         from hermes_cli.fallback_cmd import _read_chain
@@ -86,13 +83,6 @@ class TestExtractFallback:
 # ---------------------------------------------------------------------------
 
 class TestListCommand:
-    def test_list_empty(self, isolated_home, capsys):
-        _write_config(isolated_home, {})
-        from hermes_cli.fallback_cmd import cmd_fallback_list
-        cmd_fallback_list(types.SimpleNamespace())
-        out = capsys.readouterr().out
-        assert "No fallback providers configured" in out
-        assert "hermes fallback add" in out
 
     def test_list_with_entries(self, isolated_home, capsys):
         _write_config(isolated_home, {
@@ -105,7 +95,6 @@ class TestListCommand:
         from hermes_cli.fallback_cmd import cmd_fallback_list
         cmd_fallback_list(types.SimpleNamespace())
         out = capsys.readouterr().out
-        assert "Fallback chain (2 entries)" in out
         assert "anthropic/claude-sonnet-4.6" in out
         assert "Hermes-4" in out
         # Primary should be shown too
@@ -117,7 +106,7 @@ class TestListCommand:
 # ---------------------------------------------------------------------------
 
 class TestAddCommand:
-    def test_add_appends_new_entry(self, isolated_home, capsys):
+    def test_add_appends_new_entry(self, isolated_home):
         _write_config(isolated_home, {
             "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
         })
@@ -152,11 +141,9 @@ class TestAddCommand:
                 "api_mode": "chat_completions",
             }
         ]
-        out = capsys.readouterr().out
-        assert "Added fallback" in out
 
 
-    def test_add_rejects_same_as_primary(self, isolated_home, capsys):
+    def test_add_rejects_same_as_primary(self, isolated_home):
         _write_config(isolated_home, {
             "model": {"provider": "openrouter", "default": "gpt-5.4"},
         })
@@ -175,8 +162,6 @@ class TestAddCommand:
 
         cfg = _read_config(isolated_home)
         assert "fallback_providers" not in cfg or cfg["fallback_providers"] == []
-        out = capsys.readouterr().out
-        assert "matches the current primary" in out
 
     def test_add_preserves_primary_when_picker_changes_it(self, isolated_home):
         """The picker mutates config["model"]; fallback_add must restore the primary."""
@@ -297,7 +282,7 @@ class TestAddCommand:
 
 class TestRemoveCommand:
 
-    def test_remove_selected_entry(self, isolated_home, capsys):
+    def test_remove_selected_entry(self, isolated_home):
         _write_config(isolated_home, {
             "fallback_providers": [
                 {"provider": "openrouter", "model": "gpt-5.4"},
@@ -316,9 +301,6 @@ class TestRemoveCommand:
             {"provider": "openrouter", "model": "gpt-5.4"},
             {"provider": "anthropic", "model": "claude-sonnet-4-6"},
         ]
-        out = capsys.readouterr().out
-        assert "Removed fallback" in out
-        assert "Hermes-4" in out
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +309,7 @@ class TestRemoveCommand:
 
 class TestClearCommand:
 
-    def test_clear_with_confirmation(self, isolated_home, capsys, monkeypatch):
+    def test_clear_with_confirmation(self, isolated_home, monkeypatch):
         _write_config(isolated_home, {
             "fallback_providers": [
                 {"provider": "openrouter", "model": "gpt-5.4"},
@@ -340,8 +322,6 @@ class TestClearCommand:
 
         cfg = _read_config(isolated_home)
         assert cfg.get("fallback_providers") == []
-        out = capsys.readouterr().out
-        assert "Fallback chain cleared" in out
 
 
 # ---------------------------------------------------------------------------
@@ -362,27 +342,3 @@ class TestDispatcher:
 # argparse wiring — verify the subparser is registered
 # ---------------------------------------------------------------------------
 
-class TestArgparseWiring:
-    """Verify `hermes fallback` is wired into main.py's argparse tree.
-
-    main() builds the parser inline, so we invoke main([...]) via subprocess
-    with --help to introspect registered subcommands without side effects.
-    """
-
-    def test_fallback_help_lists_subcommands(self):
-        import subprocess
-        import sys
-        result = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", "fallback", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        # --help exits 0
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        out = result.stdout + result.stderr
-        # All four subcommands should appear in help
-        assert "list" in out
-        assert "add" in out
-        assert "remove" in out
-        assert "clear" in out

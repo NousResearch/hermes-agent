@@ -15,11 +15,13 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useI18n,
   useQuery
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { labeled } from './dialog-parts'
+import { useBots } from './i18n'
 import { botRouteKey, requestForBot, resolveBotConnectionRoute } from './routing'
 import { ID } from './shared'
 import type { RosterRow } from './types'
@@ -116,7 +118,9 @@ interface ModelPickerProps {
   value: ModelSelection
 }
 
-export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'gateway default' }: ModelPickerProps) {
+export function ModelPicker({ bot = null, value, onChange, placeholderModel }: ModelPickerProps) {
+  const b = useBots()
+  const { t } = useI18n()
   const { data, isLoading, error } = useModelOptions(bot)
 
   // Hooks are ALWAYS declared up front, before any conditional return.
@@ -140,7 +144,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
     return (
       <div className="grid grid-cols-2 gap-2.5">
         {labeled(
-          'Provider',
+          t.settings.model.provider,
           <Input
             onChange={event =>
               onChange({
@@ -152,7 +156,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
           />
         )}
         {labeled(
-          'Model',
+          t.settings.model.model,
           <Input
             onChange={event =>
               onChange({
@@ -172,26 +176,26 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
       <div className="flex flex-col gap-2">
         <div className="grid grid-cols-2 gap-2.5">
           {labeled(
-            'Provider (Custom)',
+            b.editor.providerCustom,
             <Input
               onChange={event =>
                 onChange({
                   provider: event.target.value
                 })
               }
-              placeholder="e.g. omnirouter, inferx, 9router"
+              placeholder="omnirouter / inferx / 9router"
               value={value.provider}
             />
           )}
           {labeled(
-            'Model (Custom)',
+            b.editor.modelCustom,
             <Input
               onChange={event =>
                 onChange({
                   model: event.target.value
                 })
               }
-              placeholder="e.g. antigravity/gemini-3.6-flash-high"
+              placeholder="antigravity/gemini-3.6-flash-high"
               value={value.model}
             />
           )}
@@ -202,7 +206,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
           size="sm"
           variant="ghost"
         >
-          ← Back to dropdowns
+          {b.editor.backToDropdowns}
         </Button>
       </div>
     )
@@ -217,7 +221,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
   return (
     <div className="grid grid-cols-[1fr_1.4fr] gap-2.5">
       {labeled(
-        'Provider',
+        t.settings.model.provider,
         <Select
           onValueChange={v => {
             if (v === NONE) {
@@ -243,18 +247,18 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE}>Inherit (launch profile)</SelectItem>
+            <SelectItem value={NONE}>{b.editor.inheritLaunch}</SelectItem>
             {providers.map(p => (
               <SelectItem key={p.slug} value={p.slug}>
                 {p.name ? `${p.name} (${p.slug})` : p.slug}
               </SelectItem>
             ))}
-            <SelectItem value={CUSTOM}>✏️ Enter manually…</SelectItem>
+            <SelectItem value={CUSTOM}>{b.editor.enterManually}</SelectItem>
           </SelectContent>
         </Select>
       )}
       {labeled(
-        'Model',
+        t.settings.model.model,
         activeProvider && models.length > 0 ? (
           <Select
             onValueChange={v =>
@@ -282,7 +286,9 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
                 model: event.target.value
               })
             }
-            placeholder={placeholderModel || 'e.g. model name'}
+            placeholder={
+              placeholderModel === undefined ? b.editor.gatewayDefault : placeholderModel || b.editor.modelNameExample
+            }
             value={value.model}
           />
         )

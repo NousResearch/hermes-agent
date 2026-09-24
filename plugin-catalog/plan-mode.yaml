@@ -1,0 +1,24 @@
+name: plan-mode
+title: Plan mode
+repo: https://github.com/100yenadmin/hermes-plan-mode
+sha: b2516184698d030131f6aec4020fe55ffb65cb56
+description: 'Enforced per-session plan mode: /planmode on blocks mutating Hermes tools dispatched through pre_tool_call (writes outside
+  .hermes/plans, terminal, code execution, delegation, MCP) until you /planmode approve the plan. Fails closed. Enforced in the classic CLI on
+  released Hermes (<= 0.21.4); gateway, TUI and Desktop need a build with hermes-agent commits 5943347a2a and 35fdb4608a (after v2026.9.21) and
+  refuse /planmode on until then. Disclosure: Codex app-server native exec and TUI side agents bypass pre_tool_call and are not enforced.'
+maintainer: 100yenadmin
+tier: community
+category: tools
+requires_hermes: '>=0.21.2'
+docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
+version: "0.1.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - on_session_finalize
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

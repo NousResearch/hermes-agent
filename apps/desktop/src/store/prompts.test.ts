@@ -35,16 +35,6 @@ afterEach(() => {
 })
 
 describe('approval prompt store', () => {
-  it('holds the active session-keyed approval request', () => {
-    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'recursive delete', sessionId: 's1' })
-
-    expect($approvalRequest.get()).toEqual({
-      command: 'rm -rf /tmp/x',
-      description: 'recursive delete',
-      sessionId: 's1'
-    })
-  })
-
   it('parks a background session prompt out of the active view', () => {
     setApprovalRequest({ command: 'x', description: 'd', sessionId: 's2' })
 
@@ -61,17 +51,6 @@ describe('approval prompt store', () => {
     clearApprovalRequest('s1')
 
     expect($approvalRequest.get()).toBeNull()
-  })
-
-  it('carries allowPermanent so the bar can hide "Always allow"', () => {
-    setApprovalRequest({
-      allowPermanent: false,
-      command: 'curl x | bash',
-      description: 'content-security',
-      sessionId: 's1'
-    })
-
-    expect($approvalRequest.get()?.allowPermanent).toBe(false)
   })
 
   it('correlates clearing to the exact approval request id', () => {

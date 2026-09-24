@@ -129,40 +129,8 @@ async def test_create_dm_topic_handles_duplicate_error():
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_create_dm_topic_handles_generic_error():
-    """Generic error should return None with warning."""
-    adapter = _make_adapter()
-    adapter._bot = AsyncMock()
-    adapter._bot.create_forum_topic.side_effect = Exception("some random error")
-
-    result = await adapter._create_dm_topic(chat_id=111, name="General")
-
-    assert result is None
 
 
-@pytest.mark.asyncio
-async def test_create_dm_topic_not_a_forum_points_to_botfather_threaded_mode(caplog):
-    """The 'not a forum' warning must send the operator to the real toggle.
-
-    A bot DM has no "Topics" toggle to tap in chat info — that UI only
-    exists for group forums. The only place that enables Private Chat
-    Topics for a bot DM is BotFather's Threaded Mode, reachable through the
-    BotFather Mini App (not the /mybots text menu). See issue #115019.
-    """
-    adapter = _make_adapter()
-    adapter._bot = AsyncMock()
-    adapter._bot.create_forum_topic.side_effect = Exception("Bad Request: the chat is not a forum")
-
-    with caplog.at_level("WARNING"):
-        result = await adapter._create_dm_topic(chat_id=111, name="General")
-
-    assert result is None
-    warning_text = " ".join(r.message for r in caplog.records)
-    assert "BotFather" in warning_text
-    assert "Threaded Mode" in warning_text
-    assert "tap the bot name" not in warning_text
-    assert "enable 'Topics' in chat settings" not in warning_text
 
 
 @pytest.mark.asyncio

@@ -165,6 +165,10 @@ export const ga: Translations = {
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
     newChat: "Comhrá nua",
+    workspace: "spás oibre",
+    workspaceDefault: "Réamhshocrú",
+    workspaceRescan: "Athscan na stórtha",
+    workspaceCustom: "Cosán eile…",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
     roles: {

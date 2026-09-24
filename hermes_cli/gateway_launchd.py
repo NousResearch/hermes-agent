@@ -577,11 +577,19 @@ def refresh_launchd_plist_if_needed() -> bool:
     return True
 
 
-def launchd_install(force: bool = False):
+def launchd_install(force: bool = False, *, start_now: bool = True):
     plist_path = _gw().get_launchd_plist_path()
+    label = _gw().get_launchd_label()
+    # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
+    # loading it. A gateway that launchd already runs is still reloaded; this install did not start it.
+    load = start_now or _gw()._launchctl_label_supervising_process(label)
 
     if plist_path.exists() and not force:
-        if not _gw().launchd_plist_is_current():
+        if _gw().launchd_plist_is_current():
+            print(f"Service already installed at: {plist_path}")
+            print("Use --force to reinstall")
+            return
+        if load:
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
             if _gw().refresh_launchd_plist_if_needed():
                 print("✓ Service definition updated")
@@ -595,9 +603,6 @@ def launchd_install(force: bool = False):
                     f"{display_hermes_home()}/logs/launchd-reload.log for details."
                 )
             return
-        print(f"Service already installed at: {plist_path}")
-        print("Use --force to reinstall")
-        return
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     new_plist = _gw().generate_launchd_plist()
@@ -606,8 +611,22 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(new_plist, encoding="utf-8")
 
+    if not load:
+        # A job left loaded but idle (a parked clean exit) keeps its old definition, and that is
+        # what `hermes gateway start` would kickstart instead of loading this plist.
+        subprocess.run(
+            ["launchctl", "bootout", f"{_gw()._launchd_domain()}/{label}"],
+            check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+        print()
+        print("✓ Service installed, not started (launchd starts it at your next login)")
+        print()
+        print("Next steps:")
+        print("  hermes gateway start              # Start it now")
+        print("  hermes gateway status             # Check status")
+        return
+
     try:
-        _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, _gw().get_launchd_label(), timeout=30)
+        _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
     except subprocess.CalledProcessError as e:
         _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
         return

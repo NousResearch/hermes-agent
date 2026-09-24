@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -482,18 +482,12 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
     Pinned children (provider, endpoint or model override) never borrow the parent chain;
     unpinned children inherit it when ``fallback_providers`` is absent/null. An explicit ``[]``
     disables fallback either way. Malformed entries are dropped by the canonical normalizer.
+    Same rule as a pinned cron job (``cron/scheduler.py::_job_fallback_chain``).
     """
-    default = None if pinned else (getattr(parent_agent, "_fallback_chain", None) or None)
-    declared = routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None
-    if declared is None:
-        return default
-    if declared == []:
-        return None
-    normalized = get_fallback_chain({"fallback_providers": declared})
-    if not normalized:
-        logger.warning("delegation fallback_providers has no usable routes; using the %s default",
-                       "pinned" if pinned else "inherited")
-    return normalized or default
+    return scoped_fallback_chain(
+        getattr(parent_agent, "_fallback_chain", None),
+        routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None,
+        pinned=pinned, owner="delegation")
 
 
 def _resolve_child_runtime(

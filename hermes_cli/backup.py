@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import zipfile
+import zlib
 from contextlib import closing, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -126,6 +127,17 @@ _EXCLUDED_PREFIXES = (
 # ``container_boot._STALE_RUNTIME_FILES``; import filters too because older backups predate the
 # backup-side exclusions.
 _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
+
+try:  # zipfile already imports lzma (free); it is absent only from Pythons built without liblzma
+    import lzma
+    _LZMA_ERRORS: tuple[type[BaseException], ...] = (lzma.LZMAError,)
+except ImportError:  # pragma: no cover
+    _LZMA_ERRORS = ()
+
+# What reading a member's data raises when the archive itself is bad (a bzip2 bad stream and a
+# media read error are OSError, caught alongside): bad deflate stream, bad CRC, truncated stream.
+_ZIP_MEMBER_READ_ERRORS: tuple[type[BaseException], ...] = (
+    zipfile.BadZipFile, zlib.error, EOFError, *_LZMA_ERRORS)
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 # vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
@@ -773,6 +785,49 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     return True, ""
 
 
+def _find_corrupt_members(zf: zipfile.ZipFile, members: List[str]) -> List[str]:
+    """Return ``"<member>: <error>"`` for every member whose data does not decompress or
+    fails its CRC, streaming each one in 1 MiB chunks so a multi-GB ``state.db`` is never
+    held in memory.
+
+    ``is_zipfile()``/``namelist()`` only read the central directory, so an archive with a
+    rotten member passes them and the damage surfaces as ``zlib.error``/``BadZipFile`` in
+    the middle of the restore, after earlier members already replaced the user's files
+    (#121258). Not ``zf.testzip()``: it lets ``zlib.error`` escape and names at most the
+    first bad member.
+    """
+    bad: list[str] = []
+    for member in members:
+        try:
+            with zf.open(member) as src:
+                while src.read(1 << 20):  # CRC is checked when the stream hits EOF
+                    pass
+        except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+            bad.append(f"{member}: {exc}")
+    return bad
+
+
+def _import_skipped(rel: str) -> bool:
+    """True for a HERMES_HOME-relative member the import deliberately does not restore: runtime
+    state (``_IMPORT_SKIP_NAMES``), an archived SQLite WAL/SHM/journal -- a ``.db`` member is
+    page-restored into the live file, and a sidecar from a different database image installed
+    beside it would replay a foreign WAL on next open (current backups never ship these, older or
+    hand-built archives might)."""
+    return Path(rel).name in _IMPORT_SKIP_NAMES or rel.endswith(_SQLITE_SIDECAR_SUFFIXES)
+
+
+def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
+    """Classify an archive member exactly as the restore does: return ``(rel, skipped)``.
+
+    ``_external/`` members are home-relative and never skipped; every other member is
+    HERMES_HOME-relative after stripping the archive ``prefix``. Shared by the integrity
+    pre-flight and ``_import_members`` so the two cannot disagree on what gets restored."""
+    if member.startswith(_EXTERNAL_PREFIX):
+        return member[len(_EXTERNAL_PREFIX):], False
+    rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
+    return rel, _import_skipped(rel)
+
+
 def _detect_prefix(zf: zipfile.ZipFile) -> str:
     """Detect if the zip has a common directory prefix wrapping all entries."""
     names = [n for n in zf.namelist() if not n.endswith("/")]
@@ -935,23 +990,15 @@ def _import_members(
         # ``_external/`` members restore to their home-relative location (~/.honcho/config.json),
         # NOT under HERMES_HOME; provider configs commonly hold credentials, so tighten to 0600.
         external = member.startswith(_EXTERNAL_PREFIX)
+        rel, skipped = _import_member_rel(member, prefix)
+        if skipped:
+            skipped_runtime.append(rel)
+            continue
         if external:
-            rel = member[len(_EXTERNAL_PREFIX):]
             target = home_dir / rel
             root = home_dir
             tighten = target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES
         else:
-            rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
-            if rel and Path(rel).name in _IMPORT_SKIP_NAMES:  # see ``_IMPORT_SKIP_NAMES``
-                skipped_runtime.append(rel)
-                continue
-            # A ``.db`` member is page-restored into the live file; an archived WAL/SHM/journal
-            # describes a different database image and installed beside it (over a live sidecar)
-            # would replay a foreign WAL on next open. Current backups never ship these
-            # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
-            if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
-                skipped_runtime.append(rel)
-                continue
             target = hermes_root / rel
             root = hermes_root.resolve()
             tighten = target.name in _SECRET_FILE_NAMES
@@ -981,7 +1028,10 @@ def _import_members(
                             raise
                 restored += 1
                 restored_external += external
-            except (PermissionError, OSError) as exc:
+            except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+                # _ZIP_MEMBER_READ_ERRORS: the pre-flight in run_import already refused
+                # archives that fail to decompress; this keeps a member that rots between the two
+                # passes (archive on failing media) from aborting the rest of the restore.
                 errors.append(f"{label}: {exc}")
 
         if restored % 500 == 0:
@@ -990,8 +1040,13 @@ def _import_members(
     return restored, restored_external, errors, skipped_runtime, db_shrunk
 
 
-def run_import(args) -> None:
-    """Restore a Hermes backup from a zip file."""
+def run_import(args) -> Optional[int]:
+    """Restore a Hermes backup from a zip file.
+
+    Return 1 when the archive is damaged (refused before anything is written) or the restore is
+    incomplete (some members were not written); None on success or when the overwrite prompt is
+    declined. A missing, non-zip or invalid archive exits 1 via ``sys.exit``.
+    """
     zip_path = Path(args.zipfile).expanduser().resolve()
     if not zip_path.is_file():
         print(f"Error: File not found: {zip_path}")
@@ -1015,13 +1070,23 @@ def run_import(args) -> None:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
         if not args.force and not _confirm_import_overwrite(hermes_root):
             return
+        # Every member is decompressed once here and once again below: a damaged archive
+        # must be refused while the home is still untouched, not half-way through the restore.
+        print("\nChecking archive integrity ...")
+        # Members the restore skips anyway (gateway.pid, WAL sidecars) cannot block it.
+        corrupt = _find_corrupt_members(zf, [m for m in members if not _import_member_rel(m, prefix)[1]])
+        if corrupt:
+            _print_capped(f"Error: backup archive is damaged ({len(corrupt)} member(s) fail to "
+                          f"decompress or fail their CRC); nothing was restored:", corrupt, "  ")
+            return 1
         print(f"\nImporting {file_count} files ...")
         hermes_root.mkdir(parents=True, exist_ok=True)
         t0 = time.monotonic()
         restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
             zf, members, prefix, hermes_root, file_count)
         elapsed = time.monotonic() - t0
-        print(f"\nImport complete: {restored} files restored in {elapsed:.1f}s\n  Target: {display_hermes_home()}")
+        print(f"\nImport {'incomplete' if errors else 'complete'}: {restored} files restored in {elapsed:.1f}s\n"
+              f"  Target: {display_hermes_home()}")
         if restored_external:
             print(f"\n  Restored {restored_external} memory-provider file(s) to "
                   f"their original location(s) outside {display_hermes_home()}.")
@@ -1049,6 +1114,12 @@ def run_import(args) -> None:
             for pname in restored_profiles:
                 print(f"  hermes -p {pname} gateway install")
         _revive_gateway_after_import(hermes_root)
+        if errors:
+            # A refused state.db leaves the old sessions in place; exit 0 would let scripts and
+            # the dashboard's "done" badge treat that as a full restore.
+            print(f"Import incomplete: {len(errors)} file(s) were not restored (see Warnings above). "
+                  "Fix the cause and re-run the import.")
+            return 1
         print("Done. Your Hermes configuration has been restored.")
 
 

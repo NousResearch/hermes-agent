@@ -107,14 +107,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
-    # made _is_satisfied() reject every newer compatible release, so `hermes update` (and the hindsight
-    # plugin's own >=_MIN_CLIENT_VERSION auto-upgrade) kept downgrading a working 0.9.x client to 0.6.1
-    # and broke embedded daemons whose DB a newer client had migrated (#86992, #39424, #98407).
-    "memory.hindsight": ("hindsight-client>=0.6.1,<1",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),
+    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
+    # made _is_satisfied() reject every newer compatible release, so `hermes update` kept downgrading a
+    # working newer client and broke daemons whose DB it had migrated (#86992, #39424, #98407).
     "memory.mem0": ("mem0ai>=2.0.10,<3",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
@@ -206,15 +204,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "httpx2==2.7.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use]
         "starlette==1.3.1",
     ),
-    # huggingface-hub is SHARED with transformers (>=1.5.0,<2 via Hindsight) and marked active
-    # on mere presence, so `hermes update` re-asserts this pin everywhere hub exists. MUST stay
-    # inside transformers' window and match uv.lock (tests/test_project_metadata.py enforces).
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace). huggingface-hub is a SHARED
-    # dependency: transformers (pulled by sentence-transformers for local Hindsight embeddings) requires
-    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively. Because active_features() marks a
-    # feature active from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin
-    # on every install where hub is present — so an exact pin below 1.5.0 force-downgrades the shared
-    # package and breaks Hindsight startup (#60783). Policy: keep the exact pin (no ranges — security
+    # dependency: transformers (pulled by sentence-transformers when a memory plugin runs local embeddings,
+    # e.g. the catalog hindsight plugin's local_embedded mode) requires >=1.5.0,<2, and
+    # faster-whisper/tokenizers depend on it transitively. Because active_features() marks a feature active
+    # from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin on every install
+    # where hub is present — so an exact pin below 1.5.0 force-downgrades the shared package and breaks
+    # those embedding daemons on startup (#60783). Policy: keep the exact pin (no ranges — security
     # posture), but it MUST stay inside transformers' accepted window and MUST match uv.lock so the whole
     # tree converges on ONE hub version (tests/test_project_metadata.py enforces both). When bumping: update
     # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.
@@ -532,13 +528,30 @@ def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
 
 
-def _uv_policy_cwd() -> Optional[str]:
-    """Directory uv must run from so the checkout's ``[tool.uv]`` policy (``exclude-newer`` quarantine and its
-    per-package exceptions) applies: uv reads it from the *current directory's* project only, so a lazy or
-    plugin install launched from ``$HOME``, a gateway service or the Desktop backend was never quarantined.
-    ``None`` (inherit cwd) when this is not a source checkout."""
+# Whose dependency-security policy an install runs under. ``core``: Hermes's own packages (LAZY_DEPS
+# extras, refreshed by ``hermes update``) resolve under the checkout's ``[tool.uv]`` policy — the 14-day
+# ``exclude-newer`` quarantine and its per-package exceptions. ``plugin``: a plugin's declared
+# ``python_dependencies`` follow the PLUGIN's own policy (maintainer ruling: "plugins don't have to abide
+# by our 14 day rule; they can have their own security policy on that. Only Hermes' dependencies themselves
+# have to"), so Hermes's project config is not applied — a plugin floored on a release younger than 14 days
+# would otherwise be uninstallable through Hermes while installing fine everywhere else.
+INSTALL_POLICIES = ("core", "plugin")
+
+
+def _uv_policy_args(policy: str) -> tuple[list[str], Optional[str]]:
+    """``(extra uv args, cwd)`` that pin the resolver to *policy* regardless of the caller's cwd.
+
+    uv reads ``[tool.uv]`` from the project discovered at the *current directory*, so cwd is the seam:
+    ``core`` runs from the checkout root (a lazy install launched from ``$HOME``, a gateway service or the
+    Desktop backend still gets the quarantine); ``plugin`` passes ``--no-config`` so no project file is
+    discovered from any cwd (env knobs such as ``UV_INDEX_URL`` / ``UV_EXCLUDE_NEWER`` still apply, so an
+    operator can quarantine plugin deps themselves). Verified with ``uv pip install --show-settings``."""
+    if policy not in INSTALL_POLICIES:
+        raise ValueError(f"unknown install policy {policy!r}; expected one of {INSTALL_POLICIES}")
+    if policy == "plugin":
+        return ["--no-config"], None
     root = Path(__file__).resolve().parent.parent
-    return str(root) if (root / "pyproject.toml").is_file() else None
+    return [], (str(root) if (root / "pyproject.toml").is_file() else None)
 
 
 def _uv_binary() -> Optional[str]:
@@ -570,15 +583,17 @@ def _after_successful_install(specs: tuple[str, ...], target: Optional[Path], dr
 
 
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_lines: tuple[str, ...] = (),
-                      dry_run: bool = False) -> _InstallResult:
+                      dry_run: bool = False, policy: str = "core") -> _InstallResult:
     """Install ``specs`` via the uv -> pip -> ensurepip ladder, venv-scoped or into the durable
     ``--target`` (constrained to core versions) when :data:`_LAZY_TARGET_ENV` is set. Independent of
     ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
 
     *constraint_lines* pins the resolver (plugin installs pass Hermes' own declared ranges so a plugin
-    can never move a core package out of range); *dry_run* resolves without installing."""
+    can never move a core package out of range); *dry_run* resolves without installing; *policy* is one
+    of :data:`INSTALL_POLICIES` (see :func:`_uv_policy_args`)."""
     if not specs:
         return _InstallResult(True, "", "")
+    policy_args, uv_cwd = _uv_policy_args(policy)
     target = _lazy_install_target()
     constraints: Optional[Path] = None
     extra_args: list[str] = ["--dry-run"] if dry_run else []
@@ -612,12 +627,13 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
                 if pip_index_url:
                     uv_env["UV_INDEX_URL"] = pip_index_url
             try:
-                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs],
-                                   timeout=timeout, env=uv_env, cwd=_uv_policy_cwd())
+                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *policy_args, *extra_args, *specs],
+                                   timeout=timeout, env=uv_env, cwd=uv_cwd)
                 if r.returncode != 0:
                     logger.debug("uv pip install failed: %s", r.stderr)
                 # A uv resolver failure is authoritative: falling through to pip would discard uv
-                # policy (exclude-newer) and could install a quarantined release.
+                # policy (exclude-newer for core; the constraints file for both) and could install a
+                # quarantined or out-of-range release.
                 return _finish(r)
             except subprocess.TimeoutExpired as e:
                 logger.debug("uv invocation failed: %s", e)
@@ -748,14 +764,19 @@ class InstallSpecsResult:
 
 
 def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
-                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False) -> InstallSpecsResult:
-    """Install data-driven pip specs (plugin manifest ``pip_dependencies``) with the same routing and
+                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False,
+                  policy: str = "plugin") -> InstallSpecsResult:
+    """Install data-driven pip specs (plugin manifest ``python_dependencies``) with the same routing and
     gating as :func:`ensure`, but unknown packages are allowed — the caller owns manifest trust, this
     owns spec hygiene. *constraints* are requirement lines the resolver must honour; *dry_run* only
-    resolves. Never raises; inspect the :class:`InstallSpecsResult`."""
+    resolves; *policy* defaults to ``"plugin"`` (the plugin's own dependency policy, not Hermes's
+    ``exclude-newer`` quarantine — :data:`INSTALL_POLICIES`). Never raises; inspect the
+    :class:`InstallSpecsResult`."""
     cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
     if not cleaned:
         return InstallSpecsResult(ok=True, command="")
+    if policy not in INSTALL_POLICIES:
+        return InstallSpecsResult(ok=False, blocked=True, reason=f"unknown install policy {policy!r}")
     for spec in cleaned:
         if not _spec_is_safe(spec):
             return InstallSpecsResult(ok=False, blocked=True, reason=f"refusing to install unsafe spec {spec!r}")
@@ -769,7 +790,8 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
     display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
     logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
     try:
-        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run)
+        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run,
+                                   policy=policy)
     except Exception as exc:
         logger.warning("install_specs failed unexpectedly: %s", exc)
         return InstallSpecsResult(ok=False, command=display, stderr=f"install failed: {exc}")

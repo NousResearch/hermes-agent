@@ -98,6 +98,22 @@ def _renderer_bundle_torn(dist_dir: Path) -> bool:
     return False
 
 
+def _packaged_node_pty_missing(dist_dir: Path) -> bool:
+    """True when the packaged node-pty has no native binary for this OS.
+
+    The main process requires node-pty at startup, so such a package dies
+    before any window opens while the source stamp still matches (#62462).
+    Same places node-pty's loader and stage-native-deps.mjs look. Conservative:
+    a package without node-pty at all is not judged here.
+    """
+    root = dist_dir / "node_modules" / "node-pty"
+    if not (root / "package.json").is_file():
+        return False
+
+    native_dirs = [root / "build" / "Release", *(root / "prebuilds").glob(f"{sys.platform}-*")]
+    return not any(next(d.rglob("*.node"), None) for d in native_dirs if d.is_dir())
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """True when the desktop build output is stale, missing, torn, or built in the other mode."""
     if source_mode:
@@ -111,6 +127,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     dist_dir = _renderer_bundle_dir(desktop_dir, source_mode=source_mode)
     if dist_dir is not None and _renderer_bundle_torn(dist_dir):
         print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
+        return True
+
+    if not source_mode and dist_dir is not None and _packaged_node_pty_missing(dist_dir):
+        print("  ⚠ The packaged desktop app has no node-pty native binary; rebuilding it")
         return True
 
     return not _stamp_is_current(

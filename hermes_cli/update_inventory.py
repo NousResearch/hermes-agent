@@ -250,13 +250,29 @@ def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> "tuple
     return None
 
 
+def _systemd_owner_for_ledger_entry(pid: int) -> "tuple[str, str] | None":
+    """``(scope, unit)`` of the systemd service whose main process is this ledger row, if any.
+
+    A backend run as its own unit (``ExecStart=hermes dashboard ...``) records no spawner, so the
+    spawner probe alone misreads it as ``manual-serve``: the plan proposes a respawn-argv restart
+    for a process systemd owns, and every CLI start then files a "manual restart still pending"
+    reminder the operator cannot discharge. Only ``MainPID`` ownership classifies; sharing a
+    unit's cgroup does not."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+
+        return _dash._systemd_unit_owning_backend(pid)
+    return None
+
+
 def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
-    detached argv respawn) — the spawner probe cannot see that (#116503)."""
+    detached argv respawn) — the spawner probe cannot see that (#116503). A backend that is the
+    main process of a systemd unit is classified ``systemd`` for the same reason."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
@@ -275,6 +291,8 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs) if launchd_jobs else None
             if job:
                 supervisor, detail["launchd_domain"], detail["launchd_label"] = "launchd", job[0], job[1]
+            elif unit := _systemd_owner_for_ledger_entry(pid):
+                supervisor, detail["systemd_scope"], detail["systemd_unit"] = "systemd", unit[0], unit[1]
             else:
                 supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
             plan.runtimes.append(_runtime(

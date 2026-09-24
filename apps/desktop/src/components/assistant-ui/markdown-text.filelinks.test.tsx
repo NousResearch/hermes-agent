@@ -57,3 +57,13 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(document.querySelector('a[href="#section-2"]')).not.toBeNull()
   })
 })
+
+describe('MarkdownLink authored labels', () => {
+  it('preserves an inline-code link label instead of falling back to the URL', async () => {
+    render(
+      <MarkdownTextContent isRunning={false} text={'Created [`v1.0.1`](https://example.com/releases/tag/v1.0.1).'} />
+    )
+
+    expect((await screen.findByTitle('https://example.com/releases/tag/v1.0.1')).textContent).toContain('v1.0.1')
+  })
+})

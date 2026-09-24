@@ -104,10 +104,8 @@ export function urlSlugTitleLabel(value: string): string {
       continue
     }
 
-    const titled = cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
-
-    if (titled.length >= 4) {
-      return titled
+    if (cleaned.length >= 4) {
+      return cleaned
     }
   }
 

@@ -915,6 +915,28 @@ _SLASH_BUILTINS = {
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 
+
+def _cmd_external_skills(rid, session, arg):
+    """Run the desktop-safe /skills review slice for a remote caller."""
+    commands = _tools_mod("hermes_cli.commands")
+    allowed = commands.resolve_command("skills").desktop_subcommands or ()
+    args = arg.strip().split()
+    if not args or args[0].lower() not in allowed:
+        return _err(
+            rid, 4018,
+            "External transports may use only /skills review subcommands: " + ", ".join(allowed))
+
+    def set_approval(enabled):
+        cfg = _load_cfg_raw()
+        cfg.setdefault("skills", {})["write_approval"] = bool(enabled)
+        _save_cfg(cfg)
+
+    with _session_home_scope(session):
+        handler = _tools_mod("hermes_cli.write_approval_commands").handle_pending_subcommand
+        output = handler(
+            _tools_mod("tools.write_approval").SKILLS, args, set_mode_fn=set_approval)
+    return _exec_out(rid, output)
+
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
@@ -948,6 +970,18 @@ def _(rid, params: dict) -> dict:
     parts = cmd.lstrip("/").split(maxsplit=1)
     base = (parts[0] if parts else "").lower()
     arg = parts[1] if len(parts) > 1 else ""
+    # The interactive skills hub is local UI: remote callers get only the
+    # registry-declared review slice. Authority comes from the server-selected
+    # transport, never an RPC parameter. Stdio and the authenticated internal
+    # TUI websocket retain the full hub; legacy-token websockets do not.
+    transport = current_transport()
+    identity = getattr(transport, "auth_identity", None)
+    internal_tui = identity == {
+        "user_id": "server-internal",
+        "provider": "server-internal",
+    }
+    if base == "skills" and transport is not None and transport is not _stdio_transport and not internal_tui:
+        return _cmd_external_skills(rid, session, arg)
     sid = params.get("session_id", "")
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:

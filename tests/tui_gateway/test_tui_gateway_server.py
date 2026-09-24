@@ -631,6 +631,95 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     assert server._session_info(None, session)["model"] == "host-model"
 
 
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"provider": "basic", "user_id": "alice"},
+        None,
+    ],
+)
+def test_slash_exec_rejects_skills_hub_mutations_for_external_transports(monkeypatch, identity):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("skills hub must not start on an external transport")
+
+    external = types.SimpleNamespace(auth_identity=identity)
+    server._sessions["sid-skills"] = _session()
+    monkeypatch.setattr(server, "current_transport", lambda: external)
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-install",
+                "method": "slash.exec",
+                "params": {"command": "skills install demo", "session_id": "sid-skills"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid-skills", None)
+
+    assert response["error"]["code"] == 4018
+    assert "review subcommands" in response["error"]["message"]
+
+
+def test_slash_exec_runs_skills_review_subcommands_without_the_hub(monkeypatch, tmp_path):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("skills review must not start the interactive hub")
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("skills:\n  write_approval: true\n", encoding="utf-8")
+    external = types.SimpleNamespace(auth_identity={"provider": "basic", "user_id": "alice"})
+    server._sessions["sid-skills"] = _session(profile_home=str(home))
+    monkeypatch.setattr(server, "current_transport", lambda: external)
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-pending",
+                "method": "slash.exec",
+                "params": {"command": "skills pending", "session_id": "sid-skills"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid-skills", None)
+
+    assert response["result"]["output"] == "No pending skills writes."
+
+
+def test_slash_exec_keeps_skills_hub_for_server_internal_tui(monkeypatch):
+    class _HubWorker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, command):
+            assert command == "skills install demo"
+            return "hub output"
+
+    internal = types.SimpleNamespace(
+        auth_identity={"provider": "server-internal", "user_id": "server-internal"}
+    )
+    server._sessions["sid-skills"] = _session()
+    monkeypatch.setattr(server, "current_transport", lambda: internal)
+    monkeypatch.setattr(server, "_SlashWorker", _HubWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-internal",
+                "method": "slash.exec",
+                "params": {"command": "skills install demo", "session_id": "sid-skills"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid-skills", None)
+
+    assert response["result"]["output"] == "hub output"
+
+
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):

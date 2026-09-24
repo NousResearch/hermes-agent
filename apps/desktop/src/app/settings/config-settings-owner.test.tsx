@@ -13,6 +13,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('default'),
   $profiles: atom([{ name: 'default', is_default: true }]),
+  $showAllProfiles: atom(false),
   normalizeProfileKey: (value?: string | null) => value?.trim() || 'default'
 }))
 vi.mock('@/store/projects', () => ({

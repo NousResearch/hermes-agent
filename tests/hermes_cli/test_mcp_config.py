@@ -272,6 +272,44 @@ class TestMcpAdd:
         assert srv["args"] == ["-y", "test-mcp-server"]
         assert "env" not in srv
 
+    @pytest.mark.parametrize("transport", ["url", "command"])
+    @pytest.mark.parametrize("preset_kind", ["unknown", "legacy", "catalog", "absent"])
+    def test_explicit_transport_bypasses_preset(self, tmp_path, monkeypatch, transport, preset_kind):
+        from hermes_cli import mcp_catalog, mcp_config
+        from hermes_cli.config import read_raw_config
+
+        entry = next(e for e in mcp_catalog.list_catalog() if e.name not in mcp_config._MCP_PRESETS)
+        unknown = "missing-test-preset"
+        assert mcp_catalog.get_entry(unknown) is None
+        assert unknown not in mcp_config._MCP_PRESETS
+        monkeypatch.setitem(mcp_config._MCP_PRESETS, "legacy-test", {
+            "command": "legacy-command", "args": ["legacy-arg"],
+        })
+        presets = {"unknown": unknown, "legacy": "legacy-test", "catalog": entry.name, "absent": None}
+        existing = {"untouched": {"command": "existing", "args": ["keep"]}}
+        _seed_config(tmp_path, existing)
+        expected = ({"url": "https://explicit.example/mcp"} if transport == "url" else
+                    {"command": "explicit-command", "args": ["explicit-arg"]})
+
+        def probe(name, config):
+            assert config == expected
+            return [("tool", "description")]
+
+        def unexpected_lookup(name):
+            pytest.fail("Explicit transport must bypass catalog lookup")
+
+        monkeypatch.setattr(mcp_catalog, "get_entry", unexpected_lookup)
+        monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+        monkeypatch.setattr("builtins.input", lambda _: "n" if transport == "url" else "")
+        monkeypatch.setattr(mcp_config, "_choose_tools", lambda *args: 1)
+        mcp_config.cmd_mcp_add(_make_args(
+            name="local-alias", preset=presets[preset_kind],
+            url=expected.get("url"), mcp_command=expected.get("command"), args=["explicit-arg"],
+        ))
+        assert read_raw_config()["mcp_servers"] == {
+            **existing, "local-alias": {**expected, "enabled": True},
+        }
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test

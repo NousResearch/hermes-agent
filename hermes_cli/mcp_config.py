@@ -371,11 +371,11 @@ def _apply_mcp_preset(
     """Apply a known MCP preset when transport details were omitted."""
     if not preset_name:
         return url, command, cmd_args, False
+    if url or command:
+        return url, command, cmd_args, False
     preset = _MCP_PRESETS.get(preset_name)
     if not preset:
         raise ValueError(f"Unknown MCP preset: {preset_name}")
-    if url or command:
-        return url, command, cmd_args, False
     url, command = preset.get("url"), preset.get("command")
     cmd_args = list(preset.get("args") or [])
     if url:

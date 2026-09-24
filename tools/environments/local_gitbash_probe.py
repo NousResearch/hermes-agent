@@ -84,7 +84,11 @@ def _git_bash_aslr_help(bash: str, details: str = "") -> str:
 def _bash_starts(bash: str) -> bool:
     """True if *bash* can launch external MSYS programs (cached per path).
     ``--noprofile --norc`` so a broken login post-install (``Directory
-    \\drivers\\etc``) does not falsely condemn an otherwise usable bash."""
+    \\drivers\\etc``) does not falsely condemn an otherwise usable bash.
+
+    On Windows, rejects WSL bash (``linux-gnu`` build) which triggers WSL
+    infrastructure (wslrelay, vmmemWSL, wslhost) on every command.  Only
+    MSYS/Cygwin builds (Git Bash) are accepted."""
     if bash in _bash_starts_cache:
         return _bash_starts_cache[bash]
     try:
@@ -102,6 +106,20 @@ def _bash_starts(bash: str) -> bool:
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             timeout=_BASH_PROBE_TIMEOUT, raise_on_spawn_failure=True)
         ok = result is not None and result.returncode == 0
+        if ok and _IS_WINDOWS:
+            # Reject WSL bash: its --version reports "linux-gnu" (e.g.
+            # "x86_64-pc-linux-gnu") while Git Bash reports "cygwin"/"msys".
+            # WSL bash *can* run commands but spawns wslrelay/vmmemWSL/wslhost
+            # on every invocation, polluting the process table.
+            ver = bounded_probe_run([bash, "--version"], timeout=_BASH_PROBE_TIMEOUT)
+            version_output = f"{ver.stdout or ''}{ver.stderr or ''}" if ver is not None else ""
+            if "linux-gnu" in version_output.lower():
+                ok = False
+                _bash_probe_details_cache[bash] = (
+                    f"Rejected: WSL bash detected (linux-gnu build). "
+                    f"WSL bash triggers wslrelay/vmmemWSL on every command. "
+                    f"Use Git Bash (cygwin build) instead.{version_output[:500]}")
+                logger.warning("bash probe rejected WSL bash at %s (linux-gnu build)", bash)
         if not ok:
             combined = (f"{result.stdout or ''}{result.stderr or ''}".strip() if result is not None
                         else f"probe timed out after {_BASH_PROBE_TIMEOUT:g}s")

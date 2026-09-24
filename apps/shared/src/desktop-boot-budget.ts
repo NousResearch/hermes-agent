@@ -24,12 +24,20 @@ type AnnounceTimeoutEnv = {
   HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS?: string
 }
 
+// apps/shared is typechecked without Node types. Read the override off
+// globalThis so Electron's no-arg call still honors the env var.
+function defaultAnnounceEnv(): AnnounceTimeoutEnv {
+  const env = (globalThis as { process?: { env?: AnnounceTimeoutEnv } }).process?.env
+
+  return env ?? {}
+}
+
 /**
  * Port-announcement deadline. Honors `HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS`
  * for slow disks / aggressive AV, clamped to the warm-start floor so a bad
  * value can't make boot flakier than the historical default.
  */
-export function resolvePortAnnounceTimeoutMs(env: AnnounceTimeoutEnv = process.env): number {
+export function resolvePortAnnounceTimeoutMs(env: AnnounceTimeoutEnv = defaultAnnounceEnv()): number {
   const parsed = Number(env.HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS)
 
   if (Number.isFinite(parsed) && parsed > 0) {

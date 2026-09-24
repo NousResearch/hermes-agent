@@ -52,6 +52,17 @@ def test_hidden_reasoning_does_not_emit_reasoning_deltas(monkeypatch, tool_progr
     assert events[0][2]["text"] == "⏳ waiting on the provider"
 
 
+def test_hidden_reasoning_does_not_emit_identified_reasoning_lifecycle(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "hide-codex-reasoning", show_reasoning=False)
+
+    callback = server._agent_cbs("hide-codex-reasoning")["reasoning_event_callback"]
+    assert callback("start", "reasoning-1", "") is False
+    assert callback("delta", "reasoning-1", "private thought") is False
+    assert callback("end", "reasoning-1", "") is False
+    assert events == []
+
+
 def test_shown_reasoning_still_emits_reasoning_delta(monkeypatch):
     events = _capture(monkeypatch)
     _session(monkeypatch, "show-deltas", show_reasoning=True, effort="high")

@@ -3365,14 +3365,21 @@ function Set-PathVariable {
         Write-Info "PATH already configured"
     }
     
-    # Set HERMES_HOME so the Python code finds config/data in the right place.
-    # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
-    # of the Unix default ~/.hermes
-    $currentHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
-    if (-not $currentHermesHome -or $currentHermesHome -ne $HermesHome) {
-        [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
-        Write-Success "Set HERMES_HOME=$HermesHome"
-    }
+    # Set HERMES_HOME for THIS process so the rest of the install run (and any
+    # child it spawns) finds config/data in the right place. Only needed on
+    # Windows where we install to %LOCALAPPDATA%\hermes instead of the Unix
+    # default ~/.hermes.
+    #
+    # Deliberately NOT persisted at User scope (#118988). A user-level
+    # HERMES_HOME leaks into every Desktop SSH remote probe: the Windows remote
+    # probe reads $env:HERMES_HOME, which resolves through the client's
+    # inherited environment, and a local Windows path
+    # (C:\Users\<u>\AppData\Local\hermes\hermes-agent) then fails the
+    # remote-home safety check as a Windows-style absolute path. The CLI
+    # already sets HERMES_HOME explicitly per spawn, and main.ts reads the
+    # live registry only when it has to, so nothing here needs persistence.
+    # A value the user set deliberately (setx HERMES_HOME ...) is left exactly
+    # as it is -- we never read, rewrite, or delete it.
     $env:HERMES_HOME = $HermesHome
     
     # Update current session

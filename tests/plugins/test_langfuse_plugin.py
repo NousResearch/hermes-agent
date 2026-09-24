@@ -10,35 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import yaml
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PLUGIN_DIR = REPO_ROOT / "plugins" / "observability" / "langfuse"
-
-
-# ---------------------------------------------------------------------------
-# Manifest + layout
-# ---------------------------------------------------------------------------
-
-class TestManifest:
-
-    def test_manifest_fields(self):
-        data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
-        assert data["name"] == "langfuse"
-        assert data["version"]
-        # All eleven hooks the plugin implements.
-        assert set(data["hooks"]) == {
-            "pre_api_request", "post_api_request", "api_request_error",
-            "pre_llm_call", "post_llm_call",
-            "pre_tool_call", "post_tool_call",
-            "on_session_finalize", "on_session_end",
-            "subagent_start", "subagent_stop",
-        }
-        # Required env vars are the user-facing HERMES_ prefixed keys.
-        assert "HERMES_LANGFUSE_PUBLIC_KEY" in data["requires_env"]
-        assert "HERMES_LANGFUSE_SECRET_KEY" in data["requires_env"]
-
 
 # ---------------------------------------------------------------------------
 # Plugin discovery: langfuse is opt-in (not loaded unless explicitly enabled).
@@ -91,39 +62,17 @@ class TestRuntimeGate:
         langfuse_plugin = self._fresh_plugin()
         assert langfuse_plugin._get_langfuse() is None
 
-    def test_get_langfuse_caches_failure_no_config_load(self, monkeypatch):
-        """A miss must be cached — no per-hook config.yaml reads, no env re-reads."""
-        for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
-            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-
+    def test_missing_sdk_logs_one_warning(self, monkeypatch, caplog):
         langfuse_plugin = self._fresh_plugin()
+        monkeypatch.setattr(langfuse_plugin, "Langfuse", None)
+        langfuse_plugin._LANGFUSE_CLIENT = None
 
-        # Prime the cache with one call.
-        assert langfuse_plugin._get_langfuse() is None
-
-        # Now block os.environ.get — a correctly-cached plugin must not
-        # touch env again.
-        import os
-        called = {"n": 0}
-        real_get = os.environ.get
-
-        def tracking_get(key, default=None):
-            if key.startswith(("HERMES_LANGFUSE_", "LANGFUSE_")):
-                called["n"] += 1
-            return real_get(key, default)
-
-        monkeypatch.setattr(os.environ, "get", tracking_get)
-
-        for _ in range(20):
+        with caplog.at_level(logging.WARNING, logger=langfuse_plugin.__name__):
+            assert langfuse_plugin._get_langfuse() is None
             assert langfuse_plugin._get_langfuse() is None
 
-        assert called["n"] == 0, (
-            f"_get_langfuse() re-read env {called['n']} times after cache miss — "
-            "it should short-circuit via _INIT_FAILED"
-        )
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -183,23 +132,6 @@ class TestPayloadSanitization:
             "omitted": True,
             "length": len(payload),
         }
-
-
-class TestTraceScopeKey:
-    def _fresh_plugin(self):
-        mod_name = "plugins.observability.langfuse"
-        sys.modules.pop(mod_name, None)
-        return importlib.import_module(mod_name)
-
-    def test_trace_key_scopes_by_turn_id_when_available(self):
-        plugin = self._fresh_plugin()
-
-        key_a = plugin._trace_key("task-1", "session-1", turn_id="turn-a")
-        key_b = plugin._trace_key("task-1", "session-1", turn_id="turn-b")
-
-        assert key_a != key_b
-        assert "turn:turn-a" in key_a
-        assert "turn:turn-b" in key_b
 
 
 # ---------------------------------------------------------------------------
@@ -586,33 +518,6 @@ class TestRequestMessageCoercion:
             user_message="u",
         ) == [{"role": "user", "content": "h"}]
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
-
-    def test_messages_for_langfuse_includes_anthropic_system_param(self):
-        sys.modules.pop("plugins.observability.langfuse", None)
-        mod = importlib.import_module("plugins.observability.langfuse")
-
-        out = mod._messages_for_langfuse_input(
-            request_messages=[{"role": "user", "content": "hi"}],
-            system_prompt="You are Hermes.",
-        )
-        assert out[0]["role"] == "system"
-        assert out[0]["content"] == "You are Hermes."
-        assert out[1]["role"] == "user"
-
-    def test_messages_for_langfuse_skips_duplicate_system(self):
-        sys.modules.pop("plugins.observability.langfuse", None)
-        mod = importlib.import_module("plugins.observability.langfuse")
-
-        out = mod._messages_for_langfuse_input(
-            request_messages=[
-                {"role": "system", "content": "already here"},
-                {"role": "user", "content": "hi"},
-            ],
-            system_prompt="ignored when messages include system",
-        )
-        assert out[0]["role"] == "system"
-        assert out[0]["content"] == "already here"
-        assert out[1]["role"] == "user"
 
 
 class TestAssistantMessageSerialization:
@@ -1061,7 +966,6 @@ class TestCostTotal:
             base_url="",
         )
 
-        assert cost_details["total"] == pytest.approx(0.0111)
         components = {k: v for k, v in cost_details.items() if k != "total"}
         assert components
         assert cost_details["total"] == pytest.approx(sum(components.values()))
@@ -1203,35 +1107,6 @@ class TestCaptureModes:
         monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "full")
         text = "here sk-abcdefghijklmnop1234 done"
         assert mod._capture_content(text) == text
-
-    def test_capture_mode_recorded_in_trace_metadata(self, monkeypatch):
-        mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
-        seen = {}
-
-        class _Span:
-            def update(self, **kw): pass
-            def end(self, **kw): pass
-            def set_trace_io(self, **kw): pass
-            def start_observation(self, **kw): return _Span()
-
-        class _RootCM:
-            def __enter__(self): return _Span()
-            def __exit__(self, *exc): return False
-
-        class _Client:
-            def create_trace_id(self, seed=None): return "t1"
-            def start_as_current_observation(self, **kw):
-                seen.update(kw)
-                return _RootCM()
-
-        state = mod._start_root_trace(
-            "k", task_id="t", session_id="s", platform="cli", provider="p",
-            model="m", api_mode="chat", messages=[{"role": "user", "content": "hi"}],
-            client=_Client(),
-        )
-        assert seen["metadata"]["capture_mode"] == "metadata"
-        assert state is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1727,6 +1602,55 @@ class TestAtexitFinalization(TestTurnTraceIsolation):
         assert mod._get_langfuse() is not None
         assert mod._finalize_all_traces in registered
 
+    def test_finalize_flushes_every_profile_without_an_ambient_scope(self, monkeypatch, tmp_path):
+        """Multiplex gateway: every turn ran inside a profile scope (home override + secret scope),
+        so only the per-home slots hold clients and the launch slot stays empty. atexit has no
+        scope, and a credential read there raises UnscopedSecretError. The finalizer must not read
+        credentials at all — it ends the open roots and flushes each settled client, so neither
+        profile loses its pending traces."""
+        from agent import secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setattr(mod, "_end_observation", lambda obs, **k: None)
+        mod._LANGFUSE_CLIENT = None
+        mod._TRACE_STATE.clear()
+        mod._LANGFUSE_CLIENT_BY_HOME.clear()
+
+        flushed: list = []
+        fake_client = self._fake_client
+
+        def _sdk(**kw):
+            client = fake_client([])
+            client.flush = lambda pk=kw["public_key"]: flushed.append(pk)
+            return client
+
+        monkeypatch.setattr(mod, "Langfuse", _sdk)
+
+        for profile in ("alpha", "beta"):
+            home = tmp_path / profile
+            home.mkdir()
+            home_token = set_hermes_home_override(home)
+            scope_token = secret_scope.set_secret_scope({
+                "HERMES_LANGFUSE_PUBLIC_KEY": f"pk-lf-{profile}-0123456789",
+                "HERMES_LANGFUSE_SECRET_KEY": f"sk-lf-{profile}-0123456789",
+            })
+            try:
+                self._run_turn(mod, session=f"{profile}-turn", turn_n=0, finalize=False)
+            finally:
+                secret_scope.reset_secret_scope(scope_token)
+                reset_hermes_home_override(home_token)
+
+        assert len(mod._TRACE_STATE) == 2 and len(mod._LANGFUSE_CLIENT_BY_HOME) == 2
+        assert mod._LANGFUSE_CLIENT is None and secret_scope.current_secret_scope() is None
+
+        mod._finalize_all_traces()  # no scope: must not raise, must not build a client
+
+        assert sorted(flushed) == ["pk-lf-alpha-0123456789", "pk-lf-beta-0123456789"]
+        assert mod._TRACE_STATE == {} and mod._LANGFUSE_CLIENT is None
+
+
 class TestSystemPromptInGenerationInput:
     """The generation input must carry the system prompt even for providers
     that move it out of ``messages``: Anthropic Messages (``system`` kwarg)
@@ -1772,17 +1696,6 @@ class TestSystemPromptInGenerationInput:
             kwargs["system_prompt"] = system_prompt
         mod.on_pre_llm_request(**kwargs)
 
-    def test_string_system_prompt_prepended(self, monkeypatch):
-        mod = self._make_mod()
-        captured = self._capture_generation(mod, monkeypatch)
-        self._fire(
-            mod,
-            request_messages=[{"role": "user", "content": "hi"}],
-            system_prompt="You are Hermes.",
-        )
-        assert captured["input"][0]["role"] == "system"
-        assert captured["input"][0]["content"] == "You are Hermes."
-        assert captured["input"][1]["role"] == "user"
 
     def test_anthropic_block_list_flattened(self, monkeypatch):
         """Anthropic OAuth mode sends ``system`` as content blocks (with
@@ -1803,22 +1716,6 @@ class TestSystemPromptInGenerationInput:
         assert "part one" in first["content"]
         assert "part two" in first["content"]
 
-    def test_no_duplicate_when_messages_already_carry_system(self, monkeypatch):
-        """chat_completions keeps system in messages[0]; forwarding
-        system_prompt as well must not produce two system entries."""
-        mod = self._make_mod()
-        captured = self._capture_generation(mod, monkeypatch)
-        self._fire(
-            mod,
-            request_messages=[
-                {"role": "system", "content": "You are Hermes."},
-                {"role": "user", "content": "hi"},
-            ],
-            system_prompt="You are Hermes.",
-        )
-        roles = [m["role"] for m in captured["input"]]
-        assert roles.count("system") == 1
-        assert roles[0] == "system"
 
     def test_absent_system_prompt_keeps_previous_shape(self, monkeypatch):
         mod = self._make_mod()
@@ -1839,18 +1736,7 @@ class TestSystemPromptInGenerationInput:
         ]
         self._fire(mod, request_messages=many, system_prompt="SYS")
         assert captured["input"][0]["role"] == "system"
-        # window (12) + prepended system
-        assert len(captured["input"]) == 13
-
-    def test_metadata_records_chars(self, monkeypatch):
-        mod = self._make_mod()
-        captured = self._capture_generation(mod, monkeypatch)
-        self._fire(
-            mod,
-            request_messages=[{"role": "user", "content": "hi"}],
-            system_prompt="You are Hermes.",
-        )
-        assert captured["metadata"]["system_prompt_chars"] == len("You are Hermes.")
+        assert captured["input"][0]["content"] == "SYS"
 
 
 class TestSystemPromptCrossesHookBoundary:

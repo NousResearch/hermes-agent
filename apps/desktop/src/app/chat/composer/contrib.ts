@@ -36,7 +36,9 @@ export const COMPOSER_AREAS = {
   actions: 'composer.actions',
   middleware: 'composer.middleware',
   attachments: 'composer.attachments',
-  microActions: 'composer.microActions'
+  microActions: 'composer.microActions',
+  atCompletions: 'composer.atCompletions',
+  modelPill: 'composer.modelPill'
 } as const
 
 export interface ComposerDraft {
@@ -48,6 +50,27 @@ export interface ComposerDraft {
 export interface ComposerMiddleware {
   /** Rewrite (return a draft), pass through (same draft), or cancel (null). */
   handler: (draft: ComposerDraft) => ComposerDraft | null | Promise<ComposerDraft | null>
+}
+
+/** One row a `composer.atCompletions` source offers for the current query. */
+export interface ComposerAtCompletionItem {
+  /** Text inserted into the draft when picked (e.g. `@researcher`). */
+  insert: string
+  /** Row label; defaults to `insert`. */
+  display?: string
+  /** Secondary line (e.g. "Bot · Homelab"). */
+  meta?: string
+  /** Icon slug understood by the completion popover; defaults to 'simple'. */
+  icon?: string
+}
+
+/** Payload of a `composer.atCompletions` data contribution — an extra source
+ *  merged into the composer's `@` popover ABOVE the path/reference results.
+ *  `query` is the text typed after `@` (no leading `@`). Sources must be
+ *  fast and synchronous-ish (called per keystroke after the debounce); slow
+ *  lookups belong behind the source's own cache. */
+export interface ComposerAtCompletionSource {
+  provide: (query: string) => ComposerAtCompletionItem[]
 }
 
 export interface ComposerAttachmentContext {
@@ -136,4 +159,63 @@ export function useComposerMicroActionProviders(): ComposerMicroActionProvider[]
     () => contributions.map(c => c.data as ComposerMicroActionProvider).filter(p => typeof p?.resolve === 'function'),
     [contributions]
   )
+}
+
+/** What a model-pill label provider gets to branch on. Deliberately small:
+ *  every field here is a standing compatibility promise to the plugins using it. */
+export interface ComposerModelPillContext {
+  /** The model slug the pill would show. */
+  model: string
+  /** The session's live reasoning effort ('' when the model has none). */
+  reasoningEffort: string
+  /** Floating-composer mode renders only the chevron; providers are not consulted. */
+  compact: boolean
+}
+
+/** Payload of a `composer.modelPill` data contribution — the pill's label text.
+ *  Return the label to show, or `null` to let the next provider (then the core
+ *  label) win. The pill keeps its chrome and menu; only the label changes. */
+export interface ComposerModelPillProvider {
+  label: (ctx: ComposerModelPillContext) => null | string
+}
+
+/** The first provider-supplied pill label, or `null` for the core label. A
+ *  throwing provider is treated as declining — a broken plugin can't blank the
+ *  pill. */
+export function useComposerModelPillLabel({
+  compact,
+  model,
+  reasoningEffort
+}: ComposerModelPillContext): null | string {
+  const contributions = useContributions(COMPOSER_AREAS.modelPill)
+
+  // Memoised on the primitive fields (the caller builds a fresh ctx object
+  // every render) so providers run only when the registry or the pill's
+  // inputs actually change — a plugin's label() must not run per keystroke.
+  return useMemo(() => {
+    if (compact) {
+      return null
+    }
+
+    const ctx: ComposerModelPillContext = { compact, model, reasoningEffort }
+
+    for (const contribution of contributions) {
+      const provider = contribution.data as ComposerModelPillProvider | undefined
+
+      try {
+        const label = provider?.label?.(ctx)
+
+        // Only a non-empty string is a label. ModelPill renders the value
+        // straight into JSX with no error boundary, so an object/array/number
+        // from a plugin would throw and blank the composer — treat it as declining.
+        if (typeof label === 'string' && label.trim() !== '') {
+          return label
+        }
+      } catch {
+        // Decline on throw: the next provider, then the core label, wins.
+      }
+    }
+
+    return null
+  }, [contributions, compact, model, reasoningEffort])
 }

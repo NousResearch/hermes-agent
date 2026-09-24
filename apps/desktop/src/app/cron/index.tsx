@@ -1,3 +1,4 @@
+import { createCronTriggerController, type CronTriggerController } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
@@ -7,6 +8,7 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   Dialog,
   DialogContent,
@@ -36,19 +38,17 @@ import {
   getAutomationBlueprints,
   getCronDeliveryTargets,
   getCronJobRuns,
-  getCronJobs,
   instantiateAutomationBlueprint,
   pauseCronJob,
   resumeCronJob,
   type SessionInfo,
-  triggerCronJob,
   updateCronJob
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
-import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
+import { $cronFocusJobId, $cronJobs, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
@@ -74,14 +74,18 @@ import {
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
+import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
   cronEditorUpdates,
+  cronModelChoiceValue,
   jobIsScriptOnly,
+  lastErrorSummary,
   parseCronDeliveryTargets,
+  parseCronModelChoiceValue,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
-import { jobState, jobTitle, STATE_DOT } from './job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -92,6 +96,10 @@ const MODEL_DEFAULT_VALUE = '__default__'
 // "Start from" default: the manual editor (blank cron). Any other value is a
 // blueprint key. Blueprint keys never collide with this sentinel.
 const CUSTOM_TEMPLATE = 'custom'
+
+function cronProfileForScope(scope: string): string {
+  return scope === ALL_PROFILES ? 'all' : scope
+}
 
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { expr: '0 9 * * *', value: 'daily' },
@@ -299,7 +307,37 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const jobs = useStore($cronJobs)
   const [loading, setLoading] = useState(jobs.length === 0)
   const [query, setQuery] = useState('')
-  const [busyJobId, setBusyJobId] = useState<null | string>(null)
+  const [busyJobTokens, setBusyJobTokens] = useState<ReadonlyMap<string, symbol>>(() => new Map())
+  const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(() => new Set())
+  const triggerControllerRef = useRef<CronTriggerController | null>(null)
+
+  // eslint-disable-next-line no-restricted-syntax -- controller mount identity, not an atom mirror
+  useEffect(() => {
+    const controller = createCronTriggerController((key, running) => {
+      if (triggerControllerRef.current !== controller) {
+        return
+      }
+
+      setTriggeringJobKeys(current => {
+        const next = new Set(current)
+
+        if (running) {
+          next.add(key)
+        } else {
+          next.delete(key)
+        }
+
+        return next
+      })
+    })
+
+    triggerControllerRef.current = controller
+
+    return () => {
+      triggerControllerRef.current = null
+    }
+  }, [])
+
   // Master/detail: the job whose schedule + run history fill the right pane.
   const [selectedJobId, setSelectedJobId] = useState<null | string>(null)
   // Set when a job is opened from the sidebar so we scroll it into view once the
@@ -309,27 +347,35 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
-  const [deleting, setDeleting] = useState(false)
 
   // Jobs live per-profile on disk and the list endpoint aggregates 'all' by
   // default — scope the fetch to the sidebar's profile scope so this overlay
   // and the sidebar (which share the $cronJobs atom) agree on what's shown.
   const profileScope = useStore($profileScope)
+  const profile = cronProfileForScope(profileScope)
 
   const refresh = useCallback(async () => {
-    try {
-      setCronJobs(await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope))
-    } catch (err) {
-      notifyError(err, c.failedLoad)
-    } finally {
-      setLoading(false)
+    const { refreshError, stale } = await refreshCronJobs(profile)
+
+    if (stale) {
+      return
     }
-  }, [c, profileScope])
+
+    if (refreshError) {
+      notifyError(refreshError, c.failedLoad)
+    }
+
+    setLoading(false)
+  }, [c, profile])
 
   useRefreshHotkey(refresh)
 
   useEffect(() => {
     void refresh()
+    // Fence the previous profile's request before the next profile effect, and
+    // fence every pending completion when the overlay unmounts.
+
+    return () => invalidateCronJobsRequests()
   }, [refresh])
 
   // Sidebar → "open this job": resolve the focus id (or name) to a job, select
@@ -395,13 +441,46 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   const totalCount = jobs.length
 
+  function beginJobBusy(jobId: string): symbol {
+    const token = Symbol(jobId)
+
+    setBusyJobTokens(current => new Map(current).set(jobId, token))
+
+    return token
+  }
+
+  function endJobBusy(jobId: string, token: symbol): void {
+    setBusyJobTokens(current => {
+      if (current.get(jobId) !== token) {
+        return current
+      }
+
+      const next = new Map(current)
+
+      next.delete(jobId)
+
+      return next
+    })
+  }
+
   async function handlePauseResume(job: CronJob) {
-    setBusyJobId(job.id)
+    const busyToken = beginJobBusy(job.id)
 
     try {
       const isPaused = jobState(job) === 'paused'
-      const updated = isPaused ? await resumeCronJob(job.id) : await pauseCronJob(job.id)
-      updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
+
+      const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+        isPaused ? resumeCronJob(job.id) : pauseCronJob(job.id)
+      )
+
+      if (stale) {
+        return
+      }
+
+      if (refreshError) {
+        notifyError(refreshError, c.failedLoad)
+      }
+
       notify({
         kind: 'success',
         title: isPaused ? c.resumed : c.paused,
@@ -410,61 +489,116 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     } catch (err) {
       notifyError(err, c.failedUpdate)
     } finally {
-      setBusyJobId(null)
+      endJobBusy(job.id, busyToken)
     }
   }
 
   async function handleTrigger(job: CronJob) {
-    setBusyJobId(job.id)
+    const viewProfile = profile
+    const key = `${viewProfile}:${job.id}`
+    const controller = triggerControllerRef.current
+
+    if (!controller) {
+      return
+    }
 
     try {
-      const updated = await triggerCronJob(job.id)
-      updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
+      const run = await controller.run(
+        key,
+        () => triggerAndRefreshCronJobs(job.id, viewProfile),
+        () => notify({ kind: 'info', title: c.triggerNow, message: truncate(jobTitle(job), 60) })
+      )
+
+      if (
+        triggerControllerRef.current !== controller ||
+        cronProfileForScope($profileScope.get()) !== viewProfile ||
+        !run.started ||
+        !run.value
+      ) {
+        return
+      }
+
+      const { refreshError, stale } = run.value
+
+      if (stale) {
+        return
+      }
+
+      if (refreshError) {
+        notifyError(refreshError, c.failedLoad)
+      }
+
       notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
     } catch (err) {
-      notifyError(err, c.failedTrigger)
-    } finally {
-      setBusyJobId(null)
+      if (triggerControllerRef.current === controller && cronProfileForScope($profileScope.get()) === viewProfile) {
+        notifyError(err, c.failedTrigger)
+      }
     }
   }
 
+  // Throws on failure — ConfirmDialog reports it inline and stays open.
   async function handleConfirmDelete() {
     if (!pendingDelete) {
       return
     }
 
-    setDeleting(true)
+    const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () => deleteCronJob(pendingDelete.id))
 
-    try {
-      await deleteCronJob(pendingDelete.id)
-      updateCronJobs(rows => rows.filter(row => row.id !== pendingDelete.id))
-      notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
-      setPendingDelete(null)
-    } catch (err) {
-      notifyError(err, c.failedDelete)
-    } finally {
-      setDeleting(false)
+    if (stale) {
+      return
     }
+
+    if (refreshError) {
+      notifyError(refreshError, c.failedLoad)
+    }
+
+    notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
   }
 
   async function handleEditorSave(values: EditorValues) {
     if (editor.mode === 'create') {
-      const created = await createCronJob({
-        prompt: values.prompt,
-        schedule: values.schedule,
-        name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER,
-        ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
-      })
+      const {
+        value: created,
+        refreshError,
+        stale
+      } = await mutateAndRefreshCronJobs(profile, () =>
+        createCronJob({
+          prompt: values.prompt,
+          schedule: values.schedule,
+          name: values.name || undefined,
+          deliver: values.deliver || DEFAULT_DELIVER,
+          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
+        })
+      )
 
-      updateCronJobs(rows => [...rows, created])
+      if (stale || !created) {
+        return
+      }
+
+      if (refreshError) {
+        notifyError(refreshError, c.failedLoad)
+      }
+
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
 
-      const updated = await updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
+      const {
+        value: updated,
+        refreshError,
+        stale
+      } = await mutateAndRefreshCronJobs(profile, () =>
+        updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
+      )
 
-      updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
+      if (stale || !updated) {
+        return
+      }
+
+      if (refreshError) {
+        notifyError(refreshError, c.failedLoad)
+      }
+
       notify({ kind: 'success', title: c.updated, message: truncate(jobTitle(updated), 60) })
     }
 
@@ -477,14 +611,24 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // real per-profile job, and "all" is not a writable target — collapse it to
   // 'default', matching the manual create path in handleEditorSave.
   async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>) {
-    const profile = profileScope === ALL_PROFILES ? 'default' : profileScope
-    const job = await instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile)
+    const writableProfile = profileScope === ALL_PROFILES ? 'default' : profileScope
 
-    updateCronJobs(rows => {
-      const rest = rows.filter(row => row.id !== job.id)
+    const {
+      value: job,
+      refreshError,
+      stale
+    } = await mutateAndRefreshCronJobs(profile, () =>
+      instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, writableProfile)
+    )
 
-      return [...rest, job]
-    })
+    if (stale || !job) {
+      return
+    }
+
+    if (refreshError) {
+      notifyError(refreshError, c.failedLoad)
+    }
+
     notify({ kind: 'success', title: c.blueprints.scheduled, message: asText(job.schedule_display) || blueprint.title })
     setEditor({ mode: 'closed' })
   }
@@ -533,7 +677,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               />
             ))}
             {visibleJobs.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">{c.emptyTitleSearch}</p>
+              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+                {query.trim() ? c.emptyTitleSearch : c.emptyTitleNew}
+              </p>
             )}
             <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
             {visibleBlueprints.length > 0 && (
@@ -555,15 +701,25 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
           {selectedJob ? (
             <CronJobDetail
-              busy={busyJobId === selectedJob.id}
+              busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
               c={c}
               job={selectedJob}
+              onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
               onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
             />
-          ) : (
+          ) : query.trim() ? (
+            // A search with no selected job: search-flavored copy is right.
             <PanelEmpty description={c.emptyDescSearch} icon="search" />
+          ) : (
+            // No selection and no search — "Try a broader search query" here
+            // just confused people staring at an empty panel with zero jobs.
+            <PanelEmpty
+              description={c.emptyDescNew}
+              icon="watch"
+              title={jobs.length === 0 ? c.emptyTitleNew : undefined}
+            />
           )}
         </PanelBody>
       )}
@@ -575,30 +731,24 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         onSave={handleEditorSave}
       />
 
-      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{c.deleteTitle}</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? (
-                <>
-                  {c.deleteDescPrefix}
-                  <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
-                  {c.deleteDescSuffix}
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-              {deleting ? c.deleting : t.common.delete}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        busyLabel={c.deleting}
+        confirmLabel={t.common.delete}
+        description={
+          pendingDelete ? (
+            <>
+              {c.deleteDescPrefix}
+              <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
+              {c.deleteDescSuffix}
+            </>
+          ) : null
+        }
+        destructive
+        onClose={() => setPendingDelete(null)}
+        onConfirm={handleConfirmDelete}
+        open={pendingDelete !== null}
+        title={c.deleteTitle}
+      />
     </Panel>
   )
 }
@@ -631,21 +781,17 @@ function CronJobListRow({
   )
 }
 
-function CronJobDetail({
-  busy,
-  c,
-  job,
-  onOpenSession,
-  onPauseResume,
-  onTrigger
-}: {
+interface CronJobDetailProps {
   busy: boolean
   c: Translations['cron']
   job: CronJob
+  onEdit: () => void
   onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
-}) {
+}
+
+function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onTrigger }: CronJobDetailProps) {
   const state = jobState(job)
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
@@ -674,16 +820,31 @@ function CronJobDetail({
           rows={[
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
-            { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
+            {
+              label: (nextRunOverdueMs(job) === null ? c.next : c.overdueSince).replace(/:$/, ''),
+              value: formatTime(job.next_run_at)
+            },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
             ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
           ]}
         />
 
         {job.last_error ? (
-          <div className="flex items-start gap-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
-            <AlertTriangle className="mt-px size-3 shrink-0" />
-            <span className="min-w-0 break-words">{job.last_error}</span>
+          <div className="space-y-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
+            <div className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-px size-3 shrink-0" />
+              <span className="min-w-0 break-words" title={job.last_error}>
+                {c.lastRunFailed} {lastErrorSummary(job.last_error)}
+              </span>
+            </div>
+            <div className="flex items-center gap-0.5 pl-4">
+              <PanelAction disabled={busy} icon="edit" onClick={onEdit}>
+                {c.editJob}
+              </PanelAction>
+              <PanelAction disabled={busy} icon="zap" onClick={onTrigger}>
+                {c.runAgain}
+              </PanelAction>
+            </div>
           </div>
         ) : null}
       </header>
@@ -891,8 +1052,8 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
-  // Per-job model override, encoded as `${providerSlug}:${model}` (split on the
-  // first ':' when saving). MODEL_DEFAULT_VALUE = follow the global default.
+  // Per-job model override encoded as an opaque provider/model pair.
+  // MODEL_DEFAULT_VALUE = follow the global default.
   const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
   // Blueprint fills typed slots (time/enum/weekdays/text) instead of the raw
   // cron fields; the backend renders the prompt + schedule from them.
@@ -947,7 +1108,9 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
-    setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
+    setModelChoice(
+      initial && jobModel(initial) ? cronModelChoiceValue(jobProvider(initial), jobModel(initial)) : MODEL_DEFAULT_VALUE
+    )
     setSlotValues({})
     setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
@@ -990,7 +1153,9 @@ function CronEditorDialog({
   // stored pin visible and re-selectable rather than silently dropping it.
   const modelChoiceKnown =
     modelChoice === MODEL_DEFAULT_VALUE ||
-    modelProviders.some(provider => (provider.models ?? []).some(model => `${provider.slug}:${model}` === modelChoice))
+    modelProviders.some(provider =>
+      (provider.models ?? []).some(model => cronModelChoiceValue(provider.slug, model) === modelChoice)
+    )
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -1013,11 +1178,7 @@ function CronEditorDialog({
       return
     }
 
-    // Decode `${providerSlug}:${model}` — the model half may itself contain
-    // ':' (e.g. openrouter 'anthropic/claude-sonnet-4:beta'), so split once.
-    const overrideIndex = modelChoice === MODEL_DEFAULT_VALUE ? -1 : modelChoice.indexOf(':')
-    const overrideProvider = overrideIndex >= 0 ? modelChoice.slice(0, overrideIndex) : ''
-    const overrideModel = overrideIndex >= 0 ? modelChoice.slice(overrideIndex + 1) : ''
+    const override = parseCronModelChoiceValue(modelChoice)
 
     setSaving(true)
     setError(null)
@@ -1025,10 +1186,10 @@ function CronEditorDialog({
     try {
       await onSave({
         deliver,
-        model: overrideModel,
+        model: override?.model ?? '',
         name: name.trim(),
         prompt: prompt.trim(),
-        provider: overrideProvider,
+        provider: override?.provider ?? '',
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -1198,21 +1359,21 @@ function CronEditorDialog({
                     <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
                     {!modelChoiceKnown && (
                       <SelectItem className="font-mono" value={modelChoice}>
-                        {modelChoice.slice(modelChoice.indexOf(':') + 1)}
+                        {parseCronModelChoiceValue(modelChoice)?.model ?? modelChoice}
                       </SelectItem>
                     )}
                     {modelProviders.map(provider => (
                       <SelectGroup key={provider.slug}>
                         <SelectLabel>{provider.name}</SelectLabel>
-                        {(provider.models ?? []).map(model => (
-                          <SelectItem
-                            className="font-mono"
-                            key={`${provider.slug}:${model}`}
-                            value={`${provider.slug}:${model}`}
-                          >
-                            {model}
-                          </SelectItem>
-                        ))}
+                        {(provider.models ?? []).map(model => {
+                          const value = cronModelChoiceValue(provider.slug, model)
+
+                          return (
+                            <SelectItem className="font-mono" key={value} value={value}>
+                              {model}
+                            </SelectItem>
+                          )
+                        })}
                       </SelectGroup>
                     ))}
                   </SelectContent>

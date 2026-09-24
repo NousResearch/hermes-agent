@@ -1,8 +1,10 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ComposerAttachment } from '@/store/composer'
+import { $composerAttachments, type ComposerAttachment, updateComposerAttachment } from '@/store/composer'
 import { $connection } from '@/store/session'
+
+import { droppedFileInlineRefs } from '../composer/inline-refs'
 
 import {
   attachmentPreviewDataUrl,
@@ -87,9 +89,14 @@ interface StubEntry {
   isDirectory: boolean
 }
 
-function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { _pathByFile: Map<File, string> } {
+function stubTransfer(
+  entries: StubEntry[],
+  internalRaw = '',
+  uriList = ''
+): DataTransfer & { _pathByFile: Map<File, string> } {
   const files = entries.map(entry => new File(['x'], entry.path.split('/').pop() || 'f'))
-  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path]))
+  // A virtual shortcut File (browser link drag on Windows) has a name but no path.
+  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path.includes('/') ? entries[i].path : '']))
 
   const items: Record<number | string, unknown> = { length: entries.length }
   entries.forEach((entry, i) => {
@@ -101,7 +108,7 @@ function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { 
   })
 
   return {
-    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : ''),
+    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : mime === 'text/uri-list' ? uriList : ''),
     files: {
       length: files.length,
       item: (i: number) => files[i] ?? null
@@ -172,6 +179,41 @@ describe('extractDroppedFiles', () => {
     expect(inAppRefs.map(entry => entry.path)).toEqual(['/abs/src'])
     expect(inAppRefs[0]?.isDirectory).toBe(true)
     expect(osDrops.map(entry => entry.path)).toEqual(['/abs/notes.txt'])
+  })
+
+  it('turns a browser link drag into an @url chip instead of failing on the virtual .url stub', () => {
+    // Dragging a link out of a browser on Windows lands as `text/uri-list` plus a
+    // path-less `<title>.url` shortcut File. That stub used to reach the upload
+    // pipeline and toast "Could not attach agent-wiki.url".
+    const transfer = stubTransfer(
+      [{ path: 'agent-wiki.url', isDirectory: false }],
+      '',
+      'https://example.com/wiki/agent?x=1\r\n'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ path: '', url: 'https://example.com/wiki/agent?x=1' }])
+    expect(partitionDroppedFiles(result).osDrops).toEqual([])
+    expect(droppedFileInlineRefs(result, '/w')).toEqual(['@url:https://example.com/wiki/agent?x=1'])
+  })
+
+  it('keeps a path-less image dragged off a web page as an upload, not a link chip', () => {
+    const transfer = stubTransfer(
+      [{ path: 'logo.png', isDirectory: false }],
+      '',
+      'https://example.com/logo.png'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toHaveLength(1)
+    expect(result[0]?.file).toBeInstanceOf(File)
+    expect(result[0]?.url).toBeUndefined()
   })
 
   it('does not duplicate a folder that appears in both items and files', () => {
@@ -255,6 +297,48 @@ describe('useComposerActions native image drops', () => {
     vi.clearAllMocks()
   })
 
+  it('does not attach a screenshot when its draft changes during native image saving', async () => {
+    let finishSave!: (path: string) => void
+
+    const saveImageBuffer = vi.fn(
+      () =>
+        new Promise<string>(resolve => {
+          finishSave = resolve
+        })
+    )
+
+    const add = vi.fn()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { saveImageBuffer } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    let current = true
+
+    const pending = result.current.attachImageBlob(
+      new Blob([new Uint8Array([1])], { type: 'image/png' }),
+      () => current
+    )
+
+    await vi.waitFor(() => expect(saveImageBuffer).toHaveBeenCalledOnce())
+    current = false
+    finishSave('/test/screenshot.png')
+    expect(await pending).toBe(false)
+    expect(add).not.toHaveBeenCalled()
+  })
+
   it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {
     const transientPath =
       '/var/folders/x7/example/T/TemporaryItems/NSIRD_screencaptureui_4roSuW/Screen Shot 2026-08-11.png'
@@ -295,7 +379,8 @@ describe('useComposerActions native image drops', () => {
           add,
           remove: vi.fn(() => null),
           target: 'test-composer',
-          update: vi.fn(() => true)
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
         }
       })
     )
@@ -307,15 +392,404 @@ describe('useComposerActions native image drops', () => {
     })
 
     expect(attached).toBe(true)
-    expect(saveImageBuffer).toHaveBeenCalledOnce()
+    expect(saveImageBuffer).toHaveBeenCalledWith(expect.any(Uint8Array), '.png', 'Screen Shot 2026-08-11.png')
     expect(readFileDataUrl).toHaveBeenCalledWith(durablePath)
     expect(readFileDataUrl).not.toHaveBeenCalledWith(transientPath)
+    // The bounded-preview pipeline no longer retains the full-resolution data
+    // URL on the attachment (`previewUrl`); the durable path is the authority
+    // and the display thumbnail resolves asynchronously. What matters here is
+    // that the attachment is keyed to the DURABLE path, not the transient one.
     expect(add).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'image',
-        path: durablePath,
-        previewUrl
+        path: durablePath
       })
     )
+  })
+})
+
+describe('useComposerActions generated paste title metadata', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+  })
+
+  it('marks only a Hermes-generated large paste with a bounded title preview', async () => {
+    const savePastedText = vi.fn(async () => '/tmp/composer-pastes/pasted-content.txt')
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    const pasted = `Database migration incident\n${'x'.repeat(1_500)}`
+    await expect(result.current.attachPastedText(pasted)).resolves.toBe(true)
+
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'file',
+        path: '/tmp/composer-pastes/pasted-content.txt',
+        refText: '@file:/tmp/composer-pastes/pasted-content.txt',
+        titlePreview: pasted.slice(0, 1_000)
+      })
+    )
+  })
+})
+
+describe('attachImagePath thumbnail separation', () => {
+  // Full-resolution data URL the local bridge returns for a pasted screenshot.
+  // Content is irrelevant — the mock bitmap below reports 4000×3000 so the
+  // real downscale path runs (the data URL itself is never decoded in jsdom).
+  const FULL_RES =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    $composerAttachments.set([])
+    $connection.set(null)
+  })
+
+  it('does not resurrect an attachment removed while its queued resize is in flight', async () => {
+    const readFileDataUrl = vi.fn(async () => FULL_RES)
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    let resolveBitmap!: (bitmap: { close: () => void; height: number; width: number }) => void
+
+    const createBitmap = vi.fn(
+      () =>
+        new Promise<{ close: () => void; height: number; width: number }>(resolve => {
+          resolveBitmap = resolve
+        })
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) }))
+    )
+    vi.stubGlobal('createImageBitmap', createBitmap)
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage: vi.fn() })
+      convertToBlob = vi.fn(async () => new Blob(['x'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    let pending!: Promise<boolean>
+
+    act(() => {
+      pending = result.current.attachImagePath('/tmp/shot.png')
+    })
+
+    await waitFor(() => expect(createBitmap).toHaveBeenCalledOnce())
+    expect($composerAttachments.get()).toHaveLength(1)
+
+    await act(async () => {
+      await result.current.removeAttachment('image:/tmp/shot.png')
+    })
+    expect($composerAttachments.get()).toEqual([])
+
+    resolveBitmap({ close: vi.fn(), height: 3000, width: 4000 })
+
+    await act(async () => {
+      await pending
+    })
+
+    expect($composerAttachments.get()).toEqual([])
+  })
+
+  it('does not apply a removed occurrence thumbnail to the same path when reattached', async () => {
+    let resolveSecondRead!: (value: string) => void
+
+    const secondRead = new Promise<string>(resolve => {
+      resolveSecondRead = resolve
+    })
+
+    const readFileDataUrl = vi.fn().mockResolvedValueOnce(FULL_RES).mockReturnValueOnce(secondRead)
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    let resolveBitmap!: (bitmap: { close: () => void; height: number; width: number }) => void
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) }))
+    )
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(
+        () =>
+          new Promise<{ close: () => void; height: number; width: number }>(resolve => {
+            resolveBitmap = resolve
+          })
+      )
+    )
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage: vi.fn() })
+      convertToBlob = vi.fn(async () => new Blob(['first'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    let first!: Promise<boolean>
+    let replacement!: Promise<boolean>
+
+    act(() => {
+      first = result.current.attachImagePath('/tmp/shot.png')
+    })
+
+    await waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
+
+    await act(async () => {
+      await result.current.removeAttachment('image:/tmp/shot.png')
+    })
+
+    act(() => {
+      replacement = result.current.attachImagePath('/tmp/shot.png')
+    })
+
+    resolveBitmap({ close: vi.fn(), height: 3000, width: 4000 })
+    await waitFor(() => expect(readFileDataUrl).toHaveBeenCalledTimes(2))
+
+    const afterRemovedOccurrenceResolved = $composerAttachments.get()[0]
+
+    resolveSecondRead('data:text/plain;base64,c2Vjb25k')
+
+    await act(async () => {
+      await Promise.all([first, replacement])
+    })
+
+    expect(afterRemovedOccurrenceResolved?.thumbnailUrl).toBeUndefined()
+    expect($composerAttachments.get()[0]?.previewUrl).toBe('data:text/plain;base64,c2Vjb25k')
+  })
+
+  it('merges a delayed thumbnail into the latest staged state of the same occurrence', async () => {
+    const readFileDataUrl = vi.fn(async () => FULL_RES)
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    let resolveBitmap!: (bitmap: { close: () => void; height: number; width: number }) => void
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) }))
+    )
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(
+        () =>
+          new Promise<{ close: () => void; height: number; width: number }>(resolve => {
+            resolveBitmap = resolve
+          })
+      )
+    )
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage: vi.fn() })
+      convertToBlob = vi.fn(async () => new Blob(['thumbnail'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    let pending!: Promise<boolean>
+
+    act(() => {
+      pending = result.current.attachImagePath('C:\\Users\\alice\\Pictures\\photo.png')
+    })
+
+    await waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
+
+    const original = $composerAttachments.get()[0]!
+    updateComposerAttachment({
+      ...original,
+      attachedSessionId: 'session-1',
+      label: 'photo.png',
+      path: '/root/.hermes/attachments/photo.png',
+      uploadState: undefined
+    })
+
+    resolveBitmap({ close: vi.fn(), height: 3000, width: 4000 })
+
+    await act(async () => {
+      await pending
+    })
+
+    expect($composerAttachments.get()[0]).toMatchObject({
+      attachedSessionId: 'session-1',
+      path: '/root/.hermes/attachments/photo.png',
+      thumbnailUrl: expect.stringMatching(/^data:image\/png;base64,/)
+    })
+  })
+
+  it('retains only the bounded thumbnail after creating a composer image preview', async () => {
+    const readFileDataUrl = vi.fn(async () => FULL_RES)
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    // Exercise the real downscale path: 4000×3000 bitmap → 512×384 canvas.
+    const drawImage = vi.fn()
+    const close = vi.fn()
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' })
+      }))
+    )
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(async () => ({ width: 4000, height: 3000, close }))
+    )
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage })
+      convertToBlob = vi.fn(async () => new Blob(['x'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await result.current.attachImagePath('/tmp/shot.png')
+    })
+
+    const attachment = $composerAttachments.get()[0]
+
+    expect(attachment).toBeDefined()
+    // The composer retains only the bounded value; full bytes are re-read from
+    // `path` on demand by the lightbox and independently by submit/upload.
+    expect(attachment?.previewUrl).toBeUndefined()
+    expect(attachment?.thumbnailUrl).toBeDefined()
+    expect(attachment?.thumbnailUrl).not.toBe(FULL_RES)
+    expect(JSON.stringify(attachment)).not.toContain(FULL_RES)
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 512, 384)
+    expect(close).toHaveBeenCalled()
+  })
+
+  it('processes 72 image reads one at a time and retains only bounded thumbnails', async () => {
+    let activeReads = 0
+    let maxActiveReads = 0
+
+    const readFileDataUrl = vi.fn(async () => {
+      activeReads += 1
+      maxActiveReads = Math.max(maxActiveReads, activeReads)
+      await Promise.resolve()
+      activeReads -= 1
+
+      return FULL_RES
+    })
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) }))
+    )
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(async () => ({ close: vi.fn(), height: 6000, width: 6000 }))
+    )
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage: vi.fn() })
+      convertToBlob = vi.fn(async () => new Blob(['x'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await Promise.all(Array.from({ length: 72 }, (_, index) => result.current.attachImagePath(`/tmp/${index}.png`)))
+    })
+
+    const attachments = $composerAttachments.get()
+
+    expect(readFileDataUrl).toHaveBeenCalledTimes(72)
+    expect(maxActiveReads).toBe(1)
+    expect(attachments).toHaveLength(72)
+    expect(attachments.every(attachment => attachment.thumbnailUrl?.startsWith('data:image/'))).toBe(true)
+    expect(attachments.every(attachment => attachment.previewUrl === undefined)).toBe(true)
+    expect(JSON.stringify(attachments)).not.toContain(FULL_RES)
+  })
+
+  it('leaves the thumbnail undefined when the preview is not an image', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await result.current.attachImagePath('/tmp/shot.txt')
+    })
+
+    const attachment = $composerAttachments.get()[0]
+
+    expect(attachment?.previewUrl).toBe('data:text/plain;base64,aGVsbG8=')
+    expect(attachment?.thumbnailUrl).toBeUndefined()
   })
 })

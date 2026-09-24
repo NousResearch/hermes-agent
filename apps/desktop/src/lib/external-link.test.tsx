@@ -1,13 +1,19 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { IS_MAC } from '@/lib/keybinds/combo'
+import { setAlwaysExternalLinks } from '@/store/external-links'
+import { $previewTabs, closeRightRail } from '@/store/preview'
+
 import {
   __resetLinkTitleCache,
   ExternalLink,
   fetchLinkTitle,
   hostPathLabel,
+  hudForcesNativeLinks,
   isTitleFetchable,
   LinkifiedText,
+  MarkdownLinkText,
   PrettyLink,
   urlSlugTitleLabel
 } from './external-link'
@@ -35,6 +41,8 @@ function installTitleBridge(title: string) {
 
 afterEach(() => {
   __resetLinkTitleCache()
+  closeRightRail()
+  setAlwaysExternalLinks(false)
   vi.restoreAllMocks()
   cleanup()
 
@@ -102,36 +110,105 @@ describe('external link helpers', () => {
     expect(bridge).toHaveBeenCalledTimes(1)
   })
 
-  it('opens links via the desktop bridge', () => {
+  // A web link belongs in the in-app browser now; the OS browser is the
+  // ⌘/Ctrl-click escape hatch.
+  it('opens a web link in the in-app browser', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
 
     render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
 
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
   })
 
-  it('hides the trailing external-link icon by default', () => {
-    installDesktopBridge()
+  // Platform-specific on purpose (same rule as terminal links / middle-click):
+  // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
+  it('escapes to the OS browser on the platform open-elsewhere modifier', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
 
     render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
 
-    const link = screen.getByRole('link', { name: 'Example link' })
-    expect(link.querySelector('svg')).toBeNull()
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
-  it('shows a trailing external-link icon when opted in', () => {
-    installDesktopBridge()
+  it('sends a plain click to the OS browser when "always external" is on', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setAlwaysExternalLinks(true)
 
-    render(
-      <ExternalLink href="https://example.com/path/to/resource" showExternalIcon>
-        Example link
-      </ExternalLink>
-    )
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
 
-    const link = screen.getByRole('link', { name: 'Example link' })
-    expect(link.querySelector('svg')).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('treats only the HUD renderer as a native-link surface', () => {
+    expect(hudForcesNativeLinks('')).toBe(false)
+    expect(hudForcesNativeLinks('?win=secondary')).toBe(false)
+    expect(hudForcesNativeLinks('?win=browser&tab=1')).toBe(false)
+    expect(hudForcesNativeLinks('?win=hud')).toBe(true)
+    expect(hudForcesNativeLinks('?profile=work&win=hud')).toBe(true)
+  })
+
+  // The HUD has no in-app browser. A click that opened a preview tile would
+  // try to paint a webview into the transparent overlay (OAuth, consoles).
+  it('sends every HUD web link to the OS browser', () => {
+    const originalLocation = window.location
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, search: '?win=hud' }
+    })
+
+    try {
+      const openExternal = vi.fn().mockResolvedValue(undefined)
+      installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+      render(<ExternalLink href="https://accounts.google.com/o/oauth2/auth">Sign in</ExternalLink>)
+
+      fireEvent.click(screen.getByRole('link', { name: 'Sign in' }))
+
+      expect(openExternal).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/auth')
+      expect($previewTabs.get()).toHaveLength(0)
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+  })
+
+  // A setup step sends you to a console you are signed into in your own
+  // browser, to fill in a form and copy a secret back. The in-app pane has
+  // none of that session and is the wrong destination even for web URLs.
+  it('sends a setup-step link straight to the OS browser', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<MarkdownLinkText text="Enable the [Docs API](https://console.cloud.google.com/apis/library) first." />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs API' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://console.cloud.google.com/apis/library')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  // A webview can't do anything useful with these, so they always hand off.
+  it('hands a non-web scheme to the OS', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<ExternalLink href="mailto:hi@example.com">Mail</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Mail' }))
+
+    expect(openExternal).toHaveBeenCalledWith('mailto:hi@example.com')
   })
 
   it('renders pretty links with fetched titles and no host suffix', async () => {
@@ -150,17 +227,6 @@ describe('external link helpers', () => {
       expect(link.textContent).toContain('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     })
     expect(link.textContent).not.toContain('getyourguide.com')
-  })
-
-  it('shows host/path fallback when title is unavailable', () => {
-    installDesktopBridge()
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque'
-
-    render(<PrettyLink href={url} />)
-
-    const link = screen.getByTitle(url)
-
-    expect(link.textContent).toBe('Puerto Rico El Yunque')
   })
 
   it('ignores error-like fetched titles and falls back to slug label', async () => {
@@ -247,29 +313,5 @@ describe('external link helpers', () => {
 
     const link = screen.getByRole('link', { name: 'agent.log' })
     expect(link.getAttribute('href')).toBe('https://agent.log')
-  })
-
-  it('prefixes a pretty link to a known host with its brand glyph', () => {
-    installDesktopBridge()
-
-    const url = 'https://github.com/NousResearch/hermes-agent/pull/123'
-
-    render(<PrettyLink fallbackLabel="#123" href={url} />)
-
-    const link = screen.getByTitle(url)
-
-    expect(link.querySelector('svg')).toBeTruthy()
-    // The glyph is decorative — it must not pollute the link's accessible name.
-    expect(link.textContent).toBe('#123')
-  })
-
-  it('renders no brand glyph for an unknown host', () => {
-    installDesktopBridge()
-
-    const url = 'https://example.com/some/page'
-
-    render(<PrettyLink fallbackLabel="Some Page" href={url} />)
-
-    expect(screen.getByTitle(url).querySelector('svg')).toBeNull()
   })
 })

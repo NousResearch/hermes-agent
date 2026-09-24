@@ -2,15 +2,19 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
+import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
-import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
-import { desktopGit } from '@/lib/desktop-git'
+import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
+import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
+  type ComposerAttachmentPatch,
+  createComposerAttachmentOccurrenceId,
+  patchMainComposerAttachmentOccurrence,
   removeComposerAttachment,
   setComposerTerminalSelection,
   updateComposerAttachment
@@ -52,17 +56,25 @@ export function isImagePath(filePath: string): boolean {
  * In local mode the facade IS the local bridge, so this stays a single read.
  */
 export async function attachmentPreviewDataUrl(filePath: string): Promise<string> {
-  try {
-    const local = await window.hermesDesktop?.readFileDataUrl?.(filePath)
+  return readDesktopFileDataUrlLocalFirst(filePath)
+}
 
-    if (local) {
-      return local
-    }
-  } catch {
-    // Not on this machine (or unreadable locally) — try the gateway.
-  }
+let attachmentPreviewQueue = Promise.resolve()
 
-  return readDesktopFileDataUrl(filePath)
+async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: string; thumbnailUrl?: string }> {
+  const task = attachmentPreviewQueue.then(async () => {
+    const previewUrl = await attachmentPreviewDataUrl(filePath)
+    const thumbnailUrl = previewUrl.startsWith('data:image/') ? await downscaleDataUrlForPreview(previewUrl) : undefined
+
+    return { previewUrl, thumbnailUrl }
+  })
+
+  attachmentPreviewQueue = task.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return task
 }
 
 export interface DroppedFile {
@@ -77,6 +89,8 @@ export interface DroppedFile {
   line?: number
   /** Last line number for line-range drags (`line..lineEnd` inclusive). */
   lineEnd?: number
+  /** A link dragged out of a browser (`text/uri-list`). Path-less; becomes an `@url:` chip. */
+  url?: string
 }
 
 /** MIME emitted by in-app drag sources (project tree, gutter line numbers).
@@ -97,6 +111,7 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
   const seenPaths = new Set<string>()
   const seenFiles = new Set<File>()
   const getPath = window.hermesDesktop?.getPathForFile
+  const urls = droppedLinkUrls(transfer)
 
   // In-app drags first — they carry richer metadata (isDirectory) than the
   // File-based fallback can provide, and produce no overlapping native files.
@@ -153,6 +168,20 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
         path = getPath(file) || ''
       } catch {
         path = ''
+      }
+    }
+
+    // A link dragged out of a browser rides along as a virtual shortcut File
+    // (`<title>.url` on Windows, `.webloc` on macOS) with no on-disk path. It
+    // is the same link `text/uri-list` already carries, so drop the stub and
+    // let the URL become a chip instead of toasting "Could not attach X.url".
+    // A path-less *image* (dragged off a web page) keeps its bytes and wins
+    // over the link to its own src.
+    if (!path && urls.length) {
+      if (isImagePath(file.name) || file.type.startsWith('image/')) {
+        urls.length = 0
+      } else {
+        return
       }
     }
 
@@ -225,7 +254,35 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
     }
   }
 
+  for (const url of urls) {
+    result.push({ path: '', url })
+  }
+
   return result
+}
+
+/** `http(s)` links from a `text/uri-list` payload (one per line, `#` comments
+ * skipped), deduped. Empty when the drag carried none. */
+function droppedLinkUrls(transfer: DataTransfer): string[] {
+  let raw = ''
+
+  try {
+    raw = transfer.getData('text/uri-list') || ''
+  } catch {
+    return []
+  }
+
+  const urls: string[] = []
+
+  for (const line of raw.split(/\r?\n/)) {
+    const url = line.trim()
+
+    if (/^https?:\/\/[^/\s]/i.test(url) && !urls.includes(url)) {
+      urls.push(url)
+    }
+  }
+
+  return urls
 }
 
 /**
@@ -263,6 +320,7 @@ interface ComposerActionsScope {
   add: (attachment: ComposerAttachment) => void
   remove: (id: string) => ComposerAttachment | null
   update: (attachment: ComposerAttachment) => boolean
+  updateIfCurrent: (expected: ComposerAttachment, patch: ComposerAttachmentPatch) => boolean
   target: string
 }
 
@@ -270,6 +328,7 @@ const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
   add: addComposerAttachment,
   remove: removeComposerAttachment,
   update: updateComposerAttachment,
+  updateIfCurrent: patchMainComposerAttachmentOccurrence,
   target: 'main'
 }
 
@@ -333,51 +392,6 @@ export function useComposerActions({
       })
     },
     [attachToMain]
-  )
-
-  // A pasted GitHub PR-comment deep link → structured `review` attachment.
-  // Optimistic: the card lands immediately with the URL as its ref, then the
-  // background gh resolve fills in author/anchor (label + detail). If gh can't
-  // answer — offline, unauthenticated, foreign repo, remote gateway — the card
-  // downgrades to a plain `url` attachment so the paste is never lost.
-  const attachPrCommentUrl = useCallback(
-    (url: string): boolean => {
-      const id = attachmentId('review', url)
-      const refText = `@url:${formatRefValue(url)}`
-
-      attachToMain({
-        id,
-        kind: 'review',
-        label: url.replace(/^https:\/\/github\.com\//, '').replace(/#.*$/, ''),
-        refText,
-        uploadState: 'uploading'
-      })
-
-      void (async () => {
-        const comment = currentCwd
-          ? await (desktopGit()
-              ?.review.fetchPrComment(currentCwd, url)
-              .catch(() => null) ?? null)
-          : null
-
-        if (comment) {
-          scope.update({
-            id,
-            kind: 'review',
-            label: comment.path
-              ? `${pathLabel(comment.path)}${comment.line ? `:${comment.line}` : ''} — @${comment.author}`
-              : `PR #${comment.prNumber} — @${comment.author}`,
-            detail: JSON.stringify(comment),
-            refText
-          })
-        } else {
-          scope.update({ id, kind: 'url', label: pathLabel(url), refText })
-        }
-      })()
-
-      return true
-    },
-    [attachToMain, currentCwd, scope]
   )
 
   const pickContextPaths = useCallback(
@@ -458,6 +472,7 @@ export function useComposerActions({
 
       const baseAttachment: ComposerAttachment = {
         id: attachmentId('image', filePath),
+        occurrenceId: createComposerAttachmentOccurrenceId(),
         kind: 'image',
         label: pathLabel(filePath),
         detail: filePath,
@@ -467,10 +482,17 @@ export function useComposerActions({
       attachToMain(baseAttachment)
 
       try {
-        const previewUrl = await attachmentPreviewDataUrl(filePath)
+        const { previewUrl, thumbnailUrl } = await queuedAttachmentPreview(filePath)
 
         if (previewUrl) {
-          scope.add({ ...baseAttachment, previewUrl })
+          // Keep only the bounded thumbnail in composer state. The full source
+          // is read on demand for lightbox/download and separately at submit
+          // for the model, so retaining 72 multi-MB data URLs serves no purpose.
+          // Bind the late preview to this attachment occurrence's stable token.
+          // Object identity is insufficient because a session draft round-trip
+          // clones attachments; id alone is insufficient because remove +
+          // reattach of the same path reuses it.
+          scope.updateIfCurrent(baseAttachment, thumbnailUrl ? { thumbnailUrl } : { previewUrl })
         }
 
         return true
@@ -484,8 +506,8 @@ export function useComposerActions({
   )
 
   const attachImageBlob = useCallback(
-    async (blob: Blob) => {
-      if (blob.size === 0) {
+    async (blob: Blob, isCurrent: () => boolean = () => true) => {
+      if (blob.size === 0 || !isCurrent()) {
         return false
       }
 
@@ -495,8 +517,14 @@ export function useComposerActions({
 
       try {
         const buffer = await blob.arrayBuffer()
+
+        if (!isCurrent()) {
+          return false
+        }
+
         const data = new Uint8Array(buffer)
-        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
+        const name = blob instanceof File ? blob.name : undefined
+        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob), name)
 
         if (!savedPath) {
           notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })
@@ -504,7 +532,7 @@ export function useComposerActions({
           return false
         }
 
-        return attachImagePath(savedPath)
+        return isCurrent() ? attachImagePath(savedPath) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -564,6 +592,49 @@ export function useComposerActions({
       }
     },
     [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage]
+  )
+
+  /**
+   * Convert a very large plain-text paste into a `.txt` attachment chip.
+   * The trimmed, sanitized paste text is written to a
+   * Hermes-managed composer-pastes file via the main process, then attached
+   * through the same `@file:` pipeline as a manually attached text file.
+   * Returns false (paste stays inline) when the desktop bridge is missing
+   * or the write fails.
+   */
+  const attachPastedText = useCallback(
+    async (text: string) => {
+      const save = window.hermesDesktop?.savePastedText
+
+      if (!text || !save) {
+        return false
+      }
+
+      try {
+        const savedPath = await save(text)
+
+        if (!savedPath) {
+          return false
+        }
+
+        attachToMain({
+          id: attachmentId('file', savedPath),
+          kind: 'file',
+          label: `${copy.pastedContent} (${pasteSizeLabel(text)})`,
+          detail: contextPath(savedPath, currentCwd),
+          refText: `@file:${formatRefValue(savedPath)}`,
+          path: savedPath,
+          titlePreview: text.slice(0, LARGE_PASTE_TITLE_PREVIEW_CHARS)
+        })
+
+        return true
+      } catch (err) {
+        notifyError(err, copy.pasteAttachFailed)
+
+        return false
+      }
+    },
+    [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd]
   )
 
   const attachContextFolderPath = useCallback(
@@ -709,7 +780,7 @@ export function useComposerActions({
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
-    attachPrCommentUrl,
+    attachPastedText,
     insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,

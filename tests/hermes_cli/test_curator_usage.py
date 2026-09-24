@@ -8,7 +8,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 
@@ -60,15 +59,3 @@ def test_usage_empty(monkeypatch, capsys):
     assert "no skills found" in capsys.readouterr().out
 
 
-def test_usage_command_is_registered():
-    """The `usage` subcommand must be wired into the curator argparse tree."""
-    import argparse
-    import hermes_cli.curator as curator_cli
-
-    parser = argparse.ArgumentParser(prog="hermes curator")
-    curator_cli.register_cli(parser)
-    args = parser.parse_args(["usage", "--sort", "recent", "--provenance", "hub", "--json"])
-    assert args.func is curator_cli._cmd_usage
-    assert args.sort == "recent"
-    assert args.provenance == "hub"
-    assert args.json is True

@@ -605,6 +605,38 @@ def test_do_install_stale_index_names_the_problem(monkeypatch):
     assert "Could not fetch" not in out
 
 
+def test_do_install_rejected_bundle_is_not_reported_as_stale(monkeypatch):
+    """An unsafe bundle rejection is a download refusal, not a missing upstream skill."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from hermes_cli.skills_hub import do_install
+    from tools.skills_hub_github import GitHubSource
+
+    source = GitHubSource(auth=None)
+    skill_md = "---\nname: unsafe-skill\n---\nSee `references/guide.md`.\n"
+    tree = [{"path": "skills/unsafe-skill/references/guide.md", "type": "blob", "mode": "120000"}]
+    with patch.object(source, "_fetch_file_content", return_value=skill_md), \
+         patch.object(source, "_get_repo_tree", return_value=("main", tree)):
+        assert source.fetch("owner/repo/skills/unsafe-skill") is None
+    assert source.last_fetch_failure == "rejected_unsafe_path"
+
+    meta = type("Meta", (), {"identifier": "owner/repo/unsafe-skill"})()
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [source])
+    monkeypatch.setattr(
+        cli_hub, "_resolve_source_meta_and_bundle",
+        lambda identifier, sources: (meta, None, source))
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_install("owner/repo/unsafe-skill", console=console, skip_confirm=True)
+
+    out = sink.getvalue()
+    assert "rejected" in out.lower()
+    assert "unsafe" in out.lower()
+    assert "Stale index entry" not in out
+
+
 @pytest.mark.parametrize("meta_hit", [False, True])
 def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_hit):
     """No index hit — or a throttled fetch that only *looks* like a stale entry — keeps the

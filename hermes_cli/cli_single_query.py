@@ -260,17 +260,24 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 # A teammate's reply displaced the answer this run prints; tell the spawner.
                 _report_turn(result)
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-    # Surface backend errors that produced no visible output (e.g. invalid model slug
-    # -> provider 4xx) on stderr so piped stdout stays clean.
+    # Surface backend errors on stderr so piped stdout stays clean. A turn that already
+    # produced text used to skip this, so a failed codex turn after an agentMessage
+    # printed the fragment and hid the reason (#121299).
+    show_error = (
+        emitter is None
+        and isinstance(result, dict)
+        and result.get("error")
+        and (result.get("failed") or result.get("partial"))
+        and str(result.get("error")) not in (response or "")
+    )
     if emitter is not None:
         pass  # the result record below carries text/error; nothing else may touch stdout
-    elif (
-        not response and isinstance(result, dict) and result.get("error")
-        and (result.get("failed") or result.get("partial"))
-    ):
-        print(f"Error: {result['error']}", file=sys.stderr)
     elif response:
         print(response)
+        if show_error:
+            print(f"Error: {result['error']}", file=sys.stderr)
+    elif show_error:
+        print(f"Error: {result['error']}", file=sys.stderr)
 
     # Kanban goal_mode: keep working in THIS session until a judge agrees the card is
     # done, the worker terminates it, or the turn budget runs out (sticky block).

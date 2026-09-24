@@ -776,6 +776,7 @@ class TestMarkJobRun:
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
         assert updated["failure_streak"] == 1
+        assert "last_script_error" not in updated
 
     def test_explicit_status_override_wins_over_delivery_failed(self, tmp_cron_dir):
         """An explicit terminal status (T1-26 blocked_config) still wins."""
@@ -798,6 +799,33 @@ class TestMarkJobRun:
         assert get_job(job["id"])["failure_streak"] == 2
         mark_job_run(job["id"], success=True)
         assert get_job(job["id"])["failure_streak"] == 0
+
+    def test_no_agent_failure_remains_visible_after_success(self, tmp_cron_dir):
+        """A recovered script job keeps its last failure for status consumers."""
+        job = create_job(
+            prompt="Watch", schedule="every 1h", no_agent=True, script="exit 1",
+        )
+        mark_job_run(job["id"], success=False, error="exit 1")
+        failure = get_job(job["id"])["last_script_error"]
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "ok"
+        assert updated["failure_streak"] == 0
+        assert updated["last_script_error"]["detail"] == "exit 1"
+        assert updated["last_script_error"] == failure
+
+    def test_no_agent_last_script_error_tracks_latest_failure(self, tmp_cron_dir):
+        """Repeated script failures refresh the sticky record without changing the streak."""
+        job = create_job(
+            prompt="Watch", schedule="every 1h", no_agent=True, script="exit 1",
+        )
+        mark_job_run(job["id"], success=False, error="first failure")
+        mark_job_run(job["id"], success=False, error="second failure")
+
+        updated = get_job(job["id"])
+        assert updated["failure_streak"] == 2
+        assert updated["last_script_error"]["detail"] == "second failure"
 
     def test_failure_streak_ignores_delivery_errors(self, tmp_cron_dir):
         """A successful run with a delivery error must not count as a failure."""

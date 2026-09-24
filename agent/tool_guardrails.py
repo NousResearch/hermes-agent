@@ -65,7 +65,7 @@ PROGRESS_RESET_TOOL_NAMES = frozenset({
     "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
 })
 
-_BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled")
+_BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled", "async_poll_block_enabled")
 # Threshold field -> (nested section, nested key). The flat legacy key is the field name itself.
 _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_warn_after": ("warn_after", "exact_failure"),
@@ -121,6 +121,7 @@ class ToolCallGuardrailConfig:
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
     non_interactive_hard_stop_enabled: bool = True
+    async_poll_block_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
@@ -129,6 +130,14 @@ class ToolCallGuardrailConfig:
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    # General-purpose sets — provider/tool-specific politics never hard-code a name in this
+    # module. Evidence tools: a SUCCESSFUL read of state/registry/schema that means the next
+    # same-kind retry is a new experiment (advances the progress/replay guard). Async hand-off
+    # tools: a successful call hands an async batch/job id to the main loop; async status tools:
+    # polling tools gated by the per-batch confirm-once cap.
+    evidence_tool_extras: frozenset[str] = field(default_factory=frozenset)
+    async_handoff_tools: frozenset[str] = field(default_factory=frozenset)
+    async_status_tools: frozenset[str] = field(default_factory=frozenset)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
 
     @classmethod
@@ -148,8 +157,15 @@ class ToolCallGuardrailConfig:
             nested = section.get(key, data.get(name)) if isinstance(section, Mapping) else data.get(name)
             return _int_at_least(nested, getattr(d, name), 1)
 
+        def name_set(key: str) -> frozenset[str]:
+            raw = data.get(key)
+            if not isinstance(raw, (list, tuple)):
+                return frozenset()
+            return frozenset(str(x).strip() for x in raw if isinstance(x, str) and str(x).strip())
+
         thresholds = {name: threshold(name, *src) for name, src in _THRESHOLD_SOURCES.items()}
-        return cls(loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")), **flags, **thresholds)
+        sets = {key: name_set(key) for key in ("evidence_tool_extras", "async_handoff_tools", "async_status_tools")}
+        return cls(loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")), **flags, **thresholds, **sets)
 
 
 @dataclass(frozen=True)
@@ -279,6 +295,10 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "async_poll_block": (
+        "Blocked {tool_name}: batch/project {target} was already confirmed once this turn. "
+        "Stop polling it; wait for the watcher or the user instead of status->LLM->status."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -300,6 +320,11 @@ _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
     "web_search": ("max_web_searches", "_turn_web_search_count", "loop_web_search_cap"),
     "delegate_task": ("max_subagents", "_turn_subagent_count", "loop_subagent_cap"),
 }
+
+# Tool-result keys that can carry an async batch/job identifier handed back to the main loop.
+_TARGET_KEYS = ("batch_id", "project_id", "identifier", "project", "workflow", "name", "job_id")
+# Allow exactly one in-run status confirmation per handed-off batch before the guard blocks.
+ASYNC_HANDOFF_MAX_POLLS = 1
 
 
 class ToolCallGuardrailController:
@@ -335,6 +360,11 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Async hand-off bookkeeping: batch/job ids handed back this turn (by the configured
+        # hand-off tools) may be status-confirmed once; further polling of the same batch
+        # is blocked so the run converges instead of status->LLM->status.
+        self._watched_async_ids: set[str] = set()
+        self._async_poll_counts: dict[str, int] = {}
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -359,8 +389,10 @@ class ToolCallGuardrailController:
 
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
-        if cap_block is not None or not self.config.hard_stop_enabled:
-            return cap_block or allow
+        # Async poll cap is explicit convergence policy too, independent of hard_stop_enabled.
+        poll_block = self._check_async_poll_cap(tool_name, args, signature)
+        if cap_block is not None or poll_block is not None or not self.config.hard_stop_enabled:
+            return cap_block or poll_block or allow
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -413,9 +445,14 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        # A successful hand-off tool (configured) that returns a batch/job id: remember the
+        # batch as "watched" so the poll cap below can converge instead of status->LLM->status.
+        if tool_name in self.config.async_handoff_tools:
+            self._register_async_handoff(result)
         # A successful mutation is progress for every failing signature still counted
         # this turn. Pure loops never mutate between attempts, so the replay detector keeps its teeth.
-        if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
+        if tool_name in PROGRESS_RESET_TOOL_NAMES or tool_name in self.config.evidence_tool_extras \
+                or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
         if not self._is_idempotent(tool_name):
@@ -558,6 +595,29 @@ class ToolCallGuardrailController:
         setattr(self, count_attr, count + increment)
         return None
 
+    def _register_async_handoff(self, result: str | None) -> None:
+        """Watch async batch/job ids returned by a successful hand-off tool."""
+        for rid in _payload_ids(result):
+            if rid:
+                self._watched_async_ids.add(rid)
+
+    def _check_async_poll_cap(
+        self, tool_name: str, args: Mapping[str, Any], signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        """Allow one confirming status poll per handed-off batch, then block further polling
+        so the main agent converges instead of status->LLM->status. Only tools listed in
+        ``tool_loop_guardrails.async_status_tools`` are gated."""
+        if not (self.config.async_poll_block_enabled and tool_name in self.config.async_status_tools):
+            return None
+        rid = _target_from_args(args)
+        if not rid or rid not in self._watched_async_ids:
+            return None
+        count = self._async_poll_counts.get(rid, 0)
+        if count >= ASYNC_HANDOFF_MAX_POLLS:
+            return self._decide("block", "async_poll_block", tool_name, count, signature, target=rid)
+        self._async_poll_counts[rid] = count + 1
+        return None
+
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
@@ -631,6 +691,36 @@ def _subagent_spawn_count(args: Mapping[str, Any]) -> int:
         return 0
     tasks = args.get("tasks")
     return len(tasks) if isinstance(tasks, list) and tasks else 1
+
+
+def _target_from_args(args: Mapping[str, Any]) -> str:
+    """First identifier arg present (batch/job/project/workflow), used to key polling state."""
+    if not isinstance(args, Mapping):
+        return ""
+    for key in _TARGET_KEYS:
+        value = args.get(key)
+        if isinstance(value, (list, tuple)):
+            value = "".join(str(x) for x in value)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _payload_ids(result: str | None) -> list[str]:
+    """Async batch/job identifiers carried in a tool result payload."""
+    parsed = safe_json_loads(result or "")
+    if not isinstance(parsed, dict):
+        return []
+    ids: list[str] = []
+    for key in _TARGET_KEYS:
+        value = parsed.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            ids.extend(str(x).strip() for x in value if str(x).strip())
+        elif str(value).strip():
+            ids.append(str(value).strip())
+    return ids
 
 
 def _sha256(value: str) -> str:

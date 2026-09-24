@@ -400,3 +400,83 @@ def test_a_real_tool_error_is_still_a_failure():
     assert _detect_tool_failure("read_file", real)[0] is True
     # The marker is only honoured as the literal boolean, never as truthy prose.
     assert classify_tool_failure("read_file", '{"error": "x", "guardrail_refusal": "yes"}')[0] is True
+
+
+# ── Async hand-off poll cap + evidence extras ─────────────────────────────
+
+def test_async_handoff_allows_one_confirming_poll_then_blocks():
+    """A successful hand-off tool registers the batch id; the polling tool may confirm it
+    once, then further polls of the same batch are blocked (convergence)."""
+    cfg = ToolCallGuardrailConfig(
+        async_handoff_tools=frozenset({"batch_submit"}),
+        async_status_tools=frozenset({"batch_status"}),
+    )
+    controller = ToolCallGuardrailController(cfg)
+
+    assert controller.before_call("batch_submit", {"args": ["x"]}).action == "allow"
+    submit = controller.after_call(
+        "batch_submit", {"args": ["x"]}, '{"batch_id": "B-1", "ok": true}', failed=False,
+    )
+    assert submit.action == "allow"
+
+    # First status poll for the same batch is the one allowed confirmation.
+    assert controller.before_call("batch_status", {"batch_id": "B-1"}).action == "allow"
+    # Second poll of the same batch is blocked.
+    blocked = controller.before_call("batch_status", {"batch_id": "B-1"})
+    assert blocked.action == "block"
+    assert blocked.code == "async_poll_block"
+    # A different batch is not watched -> never blocked.
+    assert controller.before_call("batch_status", {"batch_id": "B-2"}).action == "allow"
+
+
+def test_async_poll_block_can_be_disabled():
+    cfg = ToolCallGuardrailConfig(
+        async_poll_block_enabled=False,
+        async_handoff_tools=frozenset({"batch_submit"}),
+        async_status_tools=frozenset({"batch_status"}),
+    )
+    controller = ToolCallGuardrailController(cfg)
+    controller.after_call("batch_submit", {"args": []}, '{"batch_id": "B-1"}', failed=False)
+    assert controller.before_call("batch_status", {"batch_id": "B-1"}).action == "allow"
+    assert controller.before_call("batch_status", {"batch_id": "B-1"}).action == "allow"
+
+
+def test_evidence_tool_extras_are_progress_for_failing_signatures():
+    """A successful configured evidence tool advances every still-failing signature, so the
+    next same-kind retry is a new experiment rather than a counted replay."""
+    cfg = ToolCallGuardrailConfig(
+        hard_stop_enabled=True,
+        exact_failure_block_after=3,
+        evidence_tool_extras=frozenset({"registry_query"}),
+    )
+    controller = ToolCallGuardrailController(cfg)
+
+    for _ in range(3):
+        controller.after_call("worker_tool", {"x": 1}, '{"error": "boom"}', failed=True)
+    assert controller.before_call("worker_tool", {"x": 1}).action == "block"
+
+    # A successful evidence read resets the streak: the retry is a new experiment.
+    evidence = controller.after_call("registry_query", {"q": "*"}, '{"ok": true}', failed=False)
+    assert evidence.action == "allow"
+    assert controller.before_call("worker_tool", {"x": 1}).action == "allow"
+
+
+def test_guardrail_config_from_mapping_parses_tool_name_sets():
+    cfg = ToolCallGuardrailConfig.from_mapping({
+        "evidence_tool_extras": ["registry_query", "catalog_status"],
+        "async_handoff_tools": ["batch_submit"],
+        "async_status_tools": ["batch_status"],
+        "async_poll_block_enabled": False,
+    })
+    assert cfg.evidence_tool_extras == frozenset({"registry_query", "catalog_status"})
+    assert cfg.async_handoff_tools == frozenset({"batch_submit"})
+    assert cfg.async_status_tools == frozenset({"batch_status"})
+    assert cfg.async_poll_block_enabled is False
+    # Unset keys stay empty; non-list values are ignored.
+    defaults = ToolCallGuardrailConfig.from_mapping({})
+    assert defaults.evidence_tool_extras == frozenset()
+    assert defaults.async_handoff_tools == frozenset()
+    assert defaults.async_status_tools == frozenset()
+    assert defaults.async_poll_block_enabled is True
+    ignored = ToolCallGuardrailConfig.from_mapping({"evidence_tool_extras": "registry_query"})
+    assert ignored.evidence_tool_extras == frozenset()

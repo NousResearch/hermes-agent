@@ -1,4 +1,5 @@
 """Internal wake entry points retain relay routing on cold adapters (#121001)."""
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,8 @@ from gateway.wake import WakeNotAccepted, admit_internal_event, deliver_wake
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["admit", "deliver"])
 @pytest.mark.parametrize("scope_id", [None, "guild-1"])
-async def test_cold_internal_wake_reply_carries_origin(entry, scope_id, monkeypatch):
+@pytest.mark.parametrize("busy", [False, True])
+async def test_cold_internal_wake_reply_carries_origin(entry, scope_id, busy, monkeypatch):
     frames = []
 
     class Transport:
@@ -38,13 +40,24 @@ async def test_cold_internal_wake_reply_carries_origin(entry, scope_id, monkeypa
         result = await adapter.send(event.source.chat_id, "wake reply")
         assert result.success
 
-    monkeypatch.setattr(adapter, "handle_message", handle)
+    event = MessageEvent(text="wake", source=source, message_type=MessageType.TEXT, internal=True)
+    if busy:
+        # Real BasePlatformAdapter admission/queue path, with a running-turn guard.
+        adapter.set_message_handler(handle)
+        key = adapter._event_session_key(event)
+        adapter._active_sessions[key] = asyncio.Event()
+    else:
+        monkeypatch.setattr(adapter, "handle_message", handle)
     assert not adapter._dm_user_by_chat
     if entry == "admit":
-        await admit_internal_event(adapter, MessageEvent(
-            text="wake", source=source, message_type=MessageType.TEXT, internal=True))
+        await admit_internal_event(adapter, event)
     else:
         await deliver_wake(adapter, text="wake", source=source)
+    if busy:
+        assert frames == []
+        queued = adapter._pending_messages[key]
+        assert queued.internal and queued.text == "wake"
+        await handle(queued)
     action, platform = frames[0]
     assert action["metadata"].get("user_id") == "user-1"
     assert action["metadata"].get("profile") == "worker"

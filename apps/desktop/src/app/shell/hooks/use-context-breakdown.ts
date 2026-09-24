@@ -62,7 +62,9 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
   }, [busy, enabled, requestGateway, sessionId])
 
   return {
-    breakdown: fetched && fetched.sessionId === sessionId ? fetched.breakdown : null,
+    // The effect clears `fetched` only after commit, so gate on `busy` here too:
+    // the first busy render must not hand out the pre-turn snapshot.
+    breakdown: !busy && fetched?.sessionId === sessionId ? fetched.breakdown : null,
     loading
   }
 }

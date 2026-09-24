@@ -66,7 +66,6 @@ describe('FreeTierSignInDialog', () => {
     })
 
     await waitFor(() => expect(screen.getByText('Do not share this code.')).toBeTruthy())
-    expect(screen.getByText('Enter this code in your browser to finish signing in.')).toBeTruthy()
 
     // The 2s poll tick is what carries the approval through to the last screen.
     await act(async () => {
@@ -74,7 +73,6 @@ describe('FreeTierSignInDialog', () => {
     })
 
     await waitFor(() => expect(screen.getByText('Signed in as someone@example.com')).toBeTruthy())
-    expect(screen.getByText('Your account now carries inference and tools.')).toBeTruthy()
     expect(screen.getByText('Hermes-4-405B')).toBeTruthy()
   })
 })

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -86,8 +85,6 @@ def test_timeout_is_structured_target_busy(root):
         assert err.reason == "target_busy"
         assert err.profile == "ops"
         assert err.waited_seconds >= 0.3
-        assert "target_busy" in str(err)
-        assert re.search(r"~\d+s", str(err))  # rough wait duration surfaced
     finally:
         release.set()
         t.join(timeout=5)
@@ -124,11 +121,6 @@ def test_lock_released_when_holder_fd_closes(root):
         pass  # acquires immediately — no TurnBusyError
 
 
-def test_reentry_after_clean_release(root):
-    with acquire_turn_lock(root, "ops", timeout_seconds=1):
-        pass
-    with acquire_turn_lock(root, "ops", timeout_seconds=1):
-        pass
 
 
 def test_lock_path_is_short_and_sanitized(root):

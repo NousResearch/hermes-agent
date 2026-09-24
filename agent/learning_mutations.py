@@ -1,11 +1,14 @@
 """User-initiated edit/delete for journey nodes (learned skills + memories).
 
 Node ids (from ``agent.learning_graph``): skills → the skill name; memories →
-``memory:<source>:<index>`` (``source`` = ``memory`` for MEMORY.md / ``profile``
-for USER.md; ``index`` = position in the combined card list, MEMORY.md first).
+``memory:<source>:<index>:<fingerprint>`` (``source`` = ``memory`` for MEMORY.md /
+``profile`` for USER.md; ``index`` = position in the combined card list, MEMORY.md
+first; ``fingerprint`` = digest of the card's text, so the entry the user clicked is
+still nameable once the list has shifted). Ids from an older graph carry no
+fingerprint and resolve by position alone.
 Shared by CLI ``hermes journey``, the TUI ``/journey`` overlay and the desktop.
 Deleting a skill *archives* it (``hermes curator restore`` recovers it);
-deleting a memory rewrites its file.
+deleting a memory rewrites its file under the memory tool's lock.
 """
 
 from __future__ import annotations
@@ -14,37 +17,60 @@ from pathlib import Path
 from typing import Any, Callable
 
 _MEMORY_FILES = {"memory": "MEMORY.md", "profile": "USER.md"}
+_STORE_TARGETS = {"memory": "memory", "profile": "user"}  # journey source -> MemoryStore target
 
 
 def parse_node_kind(node_id: str) -> str:
     return "memory" if node_id.startswith("memory:") else "skill"
 
 
-def _parse_memory_id(node_id: str) -> tuple[str, int]:
-    """``memory:<source>:<index>`` → (source, global_index)."""
-    parts = node_id.split(":", 2)
+def _parse_memory_id(node_id: str) -> tuple[str, int, str]:
+    """``memory:<source>:<index>[:<fingerprint>]`` → (source, global_index, fingerprint).
+
+    The fingerprint is empty for an id minted before the graph carried one."""
+    parts = node_id.split(":")
     try:
-        if len(parts) != 3 or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
+        if len(parts) not in (3, 4) or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
             raise ValueError
-        return parts[1], int(parts[2])
+        return parts[1], int(parts[2]), parts[3] if len(parts) == 4 else ""
     except ValueError as exc:
         raise ValueError(f"bad memory node id: {node_id!r}") from exc
 
 
+def _resolve_fingerprint(chunks: list[str], fingerprint: str) -> int | None:
+    """Index of the first entry in *chunks* whose text carries *fingerprint*, or None when gone.
+
+    The text names the entry, so a list that shifted under the user (an earlier entry removed
+    between the graph being drawn and the edit being submitted) still resolves to the card they
+    clicked. Identical entries are one entry to the memory store (it collapses byte-identical
+    copies on every mutation), so the first match is the entry.
+    """
+    from agent.learning_graph import memory_fingerprint
+
+    return next((i for i, chunk in enumerate(chunks) if memory_fingerprint(chunk) == fingerprint), None)
+
+
 def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     """Resolve a memory node id to (file, all §-delimited entries, local index).
-    Entries come from ``MemoryStore._read_file`` — the memory tool's own parser —
-    so journey indices stay aligned with what the graph renders; a profile card's
-    local index is its global index minus the MEMORY.md card count."""
+    Entries come from ``MemoryStore._read_file`` — the memory tool's own parser. A
+    fingerprinted id resolves by the entry's text; a legacy id by position (a profile
+    card's local index is its global index minus the MEMORY.md card count). Read-only
+    view: mutations resolve the id again INSIDE ``_mutate_memory``'s lock."""
     from hermes_constants import get_hermes_home
-    from agent.learning_graph import _memory_cards
     from tools.memory_tool import MemoryStore
 
-    source, gidx = _parse_memory_id(node_id)
+    source, gidx, fingerprint = _parse_memory_id(node_id)
     path = get_hermes_home() / "memories" / _MEMORY_FILES[source]
     if not path.exists():
         raise ValueError(f"{path.name} not found")
     chunks = MemoryStore._read_file(path)
+    if fingerprint:
+        local = _resolve_fingerprint(chunks, fingerprint)
+        if local is None:
+            raise ValueError("memory node id is stale — refresh the graph")
+        return path, chunks, local
+    from agent.learning_graph import _memory_cards
+
     cards = _memory_cards()
     if not 0 <= gidx < len(cards):
         raise IndexError(f"memory index {gidx} out of range")
@@ -56,11 +82,41 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
-def _write_memory(path: Path, chunks: list[str]) -> None:
-    """Atomic temp-file + rename via the memory tool, so a concurrent reader
-    never sees a half-written file (and the §-join stays single-sourced)."""
-    from tools.memory_tool import MemoryStore
-    MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
+def _mutate_memory(node_id: str, replacement: str | None) -> dict[str, Any]:
+    """Replace (or, with ``replacement=None``, remove) the entry *node_id* names, through
+    ``MemoryStore._mutate`` — the memory tool's cross-process lock, re-read under lock and
+    drift guard (``.bak`` snapshot + refusal when the file wouldn't round-trip). The file is
+    shared with the live agent, so a read-modify-write from an unlocked snapshot silently
+    dropped whatever the agent stored in between and reformatted hand-edited files
+    (#119668). The id is resolved to its entry text INSIDE the lock and matched by exact
+    text against the store's re-read entries; a target gone under the lock is refused."""
+    from tools.memory_tool import load_on_disk_store
+
+    source, _, _ = _parse_memory_id(node_id)
+    name = _MEMORY_FILES[source]
+    message = f"deleted memory from {name}" if replacement is None else f"updated memory in {name}"
+
+    def _apply(entries, limit):
+        from tools.memory_tool import ENTRY_DELIMITER
+
+        _, chunks, local = _locate_memory(node_id)
+        text = chunks[local].strip()
+        if text not in entries:
+            return {"success": False, "error": "memory node id is stale — refresh the graph"}
+        idx = entries.index(text)
+        new_entries = entries[:idx] + ([] if replacement is None else [replacement]) + entries[idx + 1:]
+        # Same cap the memory tool enforces on replace (never on remove: deleting is how a file
+        # already over its total gets back under it). An over-limit entry reads as external drift
+        # to every later mutation, so the tool's own remove/replace refuse until hand-fixed.
+        if replacement is not None and (total := len(ENTRY_DELIMITER.join(new_entries))) > limit:
+            return {"success": False,
+                    "error": f"Replacement would put memory at {total:,}/{limit:,} chars. Shorten the new content."}
+        return new_entries, message
+
+    result = load_on_disk_store()._mutate(_STORE_TARGETS[source], _apply)
+    if not result.get("success"):
+        return {"ok": False, "message": result.get("error", f"{name} write failed")}
+    return {"ok": True, "message": message}
 
 
 def _clear_skill_cache() -> None:
@@ -125,10 +181,7 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
-    path, chunks, local = _locate_memory(node_id)
-    del chunks[local]
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"deleted memory from {path.name}"}
+    return _mutate_memory(node_id, None)
 
 
 # ── Edit ────────────────────────────────────────────────────────────────────
@@ -151,7 +204,4 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(node_id)
-    chunks[local] = body
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"updated memory in {path.name}"}
+    return _mutate_memory(node_id, body)

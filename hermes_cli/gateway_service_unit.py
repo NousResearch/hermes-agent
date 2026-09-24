@@ -326,6 +326,25 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
+def _retire_hermes_replace_dropin(system: bool = False) -> bool:
+    """Unlink the ``20-replace.conf`` drop-in an older Hermes wrote to end a respawn storm; True if removed.
+
+    It appends ``--replace`` to a supervised ExecStart the generator no longer emits, and since the
+    cross-profile ownership guard that override turns a per-profile fleet into a unit that can never
+    start (#119467). Only the Hermes-authored file (recognised by its own comment) is touched.
+    """
+    unit_path = _gw().get_systemd_unit_path(system=system)
+    dropin = unit_path.parent / f"{unit_path.name}.d" / "20-replace.conf"
+    try:
+        text = dropin.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not all(token in text for token in ("Added to end the gateway respawn storm", "--replace", "ExecStart=")):
+        return False
+    dropin.unlink()
+    return True
+
+
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = _gw().get_systemd_unit_path(system=system)
@@ -333,7 +352,13 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # _gw().systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
-    if _gw().systemd_unit_is_current(system=system):
+    current = _gw().systemd_unit_is_current(system=system)
+    if _retire_hermes_replace_dropin(system=system):
+        _gw()._run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+        print(f"↻ Removed the stale Hermes --replace drop-in from the gateway {_gw()._service_scope_label(system)} service")
+        if current:
+            return True
+    elif current:
         return False
 
     expected_user = _gw()._read_systemd_user_from_unit(unit_path) if system else None

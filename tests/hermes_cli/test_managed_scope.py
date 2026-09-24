@@ -1,7 +1,6 @@
 """Unit tests for hermes_cli.managed_scope (resolver + loaders + key helpers)."""
 import textwrap
 
-import pytest
 
 
 # ── Directory resolver ───────────────────────────────────────────────────────
@@ -49,8 +48,3 @@ def test_load_managed_env_and_is_env_managed(tmp_path, monkeypatch):
 
 
 
-def test_managed_dir_env_scrubbed_by_default():
-    """conftest must scrub HERMES_MANAGED_DIR so a dev-shell value can't leak in."""
-    import os
-
-    assert "HERMES_MANAGED_DIR" not in os.environ

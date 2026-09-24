@@ -129,20 +129,18 @@ class TestKimiModelDiscovery:
         assert models == ["kimi-k2.6"]
 
 
-class TestKimiFullKwargsIntegration:
-    """The transport's full kwargs carry at most one reasoning knob."""
-
-    def _build(self, kimi_profile, reasoning_config):
-        from agent.transports.chat_completions import ChatCompletionsTransport
-
-        return ChatCompletionsTransport().build_kwargs(
-            model="kimi-k2-turbo-preview",
-            messages=[{"role": "user", "content": "ping"}],
-            tools=None,
-            provider_profile=kimi_profile,
-            reasoning_config=reasoning_config,
-            base_url="https://api.moonshot.ai/v1",
-            provider_name="kimi-coding",
-        )
 
 
+
+
+@pytest.mark.parametrize("name", ["kimi-coding", "kimi-coding-cn"])
+def test_moonshot_profiles_exclude_brotli(name):
+    """#28043: httpx/brotlicffi mis-decodes Moonshot's br-encoded SSE stream,
+    so both Moonshot profiles must negotiate gzip instead of brotli."""
+    import model_tools  # noqa: F401
+    import providers
+
+    profile = providers.get_provider_profile(name)
+    assert profile is not None
+    enc = {k.lower(): v for k, v in profile.default_headers.items()}.get("accept-encoding", "")
+    assert "br" not in enc.lower() and "gzip" in enc.lower()

@@ -13,6 +13,8 @@ from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
+from hermes_platform.host.runtime import _detect_container, is_container, is_termux, is_wsl  # noqa: F401
+
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
@@ -81,6 +83,10 @@ def _warn_profile_fallback_once() -> None:
     global _profile_fallback_warned
     if _profile_fallback_warned:
         return
+    # Latch on the FIRST check regardless of outcome (one-shot contract). Previously the latch
+    # was only set on the warning branch, so with no active_profile (or "default") the stat +
+    # read re-ran on every get_hermes_home() call (#90065).
+    _profile_fallback_warned = True
     try:
         fallback_home = _get_platform_default_hermes_home()
         active_path = fallback_home / "active_profile"
@@ -88,7 +94,6 @@ def _warn_profile_fallback_once() -> None:
     except (UnicodeDecodeError, OSError):
         active = ""
     if active and active != "default":
-        _profile_fallback_warned = True
         # Direct stderr, not logging: runs at import time (often before logging is
         # configured) and root-logger propagation would double-emit.
         msg = (
@@ -157,10 +162,45 @@ def get_process_hermes_home() -> Path:
     """Hermes home of the running process, ignoring task overrides.
 
     For process-level assets (theme YAML, dashboard plugin manifests) that must stay visible while a
-    request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
+    request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``). Follows
+    ``HERMES_HOME`` live on purpose: routed-profile DECISIONS compare against
+    :func:`get_routing_process_hermes_home` instead (#119242).
     """
     val = os.environ.get("HERMES_HOME", "").strip()
     return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
+
+
+# Host-pinned identity of the profile this process serves as its own (None: follow HERMES_HOME).
+_PINNED_PROCESS_HERMES_HOME: str | None = None
+
+
+def pin_process_hermes_home(path: str | Path | None) -> None:
+    """Pin the home this process serves as its own profile, for "is this task routed?" decisions.
+
+    An embedding host that serves several profiles and mirrors the active turn's profile into
+    ``os.environ["HERMES_HOME"]`` for legacy readers (Hermes WebUI) otherwise makes every turn's own
+    profile look like the launch profile: ``agent.secret_scope.serves_routed_profile()`` turns
+    False and that turn's MCP connections fall back to bare, cross-profile names; the sibling
+    launch-home checks (``secret_scope._is_process_home``, ``tools.environments.local._is_routed_home``,
+    ``hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
+
+    Process-global on purpose: it names the process's own identity, not a per-task value. It is NOT
+    folded into :func:`get_process_hermes_home`: :func:`get_hermes_home` falls back to that for
+    tasks carrying no override, and the host's mirror exists precisely so those readers see the
+    served profile. Hosts that never mutate ``HERMES_HOME`` need not call this (no-op).
+    """
+    global _PINNED_PROCESS_HERMES_HOME
+    _PINNED_PROCESS_HERMES_HOME = None if path is None else str(path)
+
+
+def process_hermes_home_is_pinned() -> bool:
+    return _PINNED_PROCESS_HERMES_HOME is not None
+
+
+def get_routing_process_hermes_home() -> Path:
+    """Launch home for routed-profile decisions: the pinned home, else :func:`get_process_hermes_home`."""
+    pinned = _PINNED_PROCESS_HERMES_HOME
+    return _expand_hermes_home(pinned) if pinned else get_process_hermes_home()
 
 
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
@@ -647,8 +687,9 @@ def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
     """
     import time
 
-    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
-    node_arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "x86": "x86"}.get(arch)
+    from hermes_platform.host import facts
+
+    node_arch = {"amd64": "x64", "arm64": "arm64", "x86": "x86"}.get(facts.native_arch())
     if node_arch is None:
         return False
     home = home or get_hermes_home()
@@ -1000,10 +1041,15 @@ def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
 # --- Scratch dir: Hermes' own temp space, never the system /tmp ---
 # System temp is tmpfs on most Linux distros and containers, so browser profiles, PTY probes,
 # download spools and every ``tempfile.mkdtemp()`` a Hermes-launched script performs eat RAM
-# and vanish on reboot. ``HERMES_HOME/cache/scratch`` is real storage with a fixed retention.
+# and vanish on reboot. ``HERMES_HOME/cache/scratch`` is real storage with an IDLE retention:
+# an entry lives while anything inside it is still being written and goes 24h after the last
+# write anywhere in its subtree. A fixed age was wrong both ways — a directory's own mtime only
+# moves when a direct child is added or removed, so a lane writing deep inside a tree looked
+# untouched and lost its worktree at the deadline, while finished trees (a 7 GB clone with its
+# own venv per campaign lane) sat for three days and filled the disk.
 SCRATCH_TMP_ENV_VARS = ("TMPDIR", "TMP", "TEMP")
 SCRATCH_DIR_MARKER_ENV = "HERMES_SCRATCH_DIR"
-SCRATCH_MAX_AGE_HOURS = 72
+SCRATCH_MAX_IDLE_HOURS = 24
 _SCRATCH_PRUNE_STAMP = ".last_prune"
 _SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
 _scratch_pruned_once = False
@@ -1043,13 +1089,17 @@ _IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
 _MANAGED_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 
 
-def get_managed_system() -> str | None:
+def get_managed_system(home: str | Path | None = None) -> str | None:
     """Return the package manager owning this install, if any.
     Signals: HERMES_MANAGED env var (systemd service) or a ``.managed`` marker file in
     HERMES_HOME (NixOS activation script — interactive shells don't see the service env).
-    An unreadable or empty marker still counts as managed (the legacy NixOS shape)."""
+    An unreadable or empty marker still counts as managed (the legacy NixOS shape).
+
+    ``home`` names the home whose marker file is read, for callers that already resolved it
+    (:func:`get_scratch_dir` at boot, before ``--profile`` re-homes the process).
+    Defaults to the effective home."""
     marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
-    managed_marker = get_hermes_home() / ".managed"
+    managed_marker = (Path(home) if home is not None else get_hermes_home()) / ".managed"
     if marker is None and managed_marker.exists():
         try:
             marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
@@ -1111,7 +1161,7 @@ def _chown_to_hermes_uid(path) -> None:
         pass
 
 
-def apply_secure_dir_policy(path) -> None:
+def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     """Apply the canonical Hermes home-directory permission policy to *path*.
 
     Owner-only ``0700`` by default, but the operator's explicit and managed sharing choices
@@ -1121,10 +1171,14 @@ def apply_secure_dir_policy(path) -> None:
     ``HERMES_HOME_MODE`` (e.g. ``0701``, ``2770``) overrides the mode. ``HERMES_UID`` /
     ``HERMES_GID`` ownership is applied when those env vars are set (#34107).
 
+    ``home`` (keyword-only: both arguments are path-likes) names the home whose managed-mode
+    marker is read, for callers that already resolved it; without it the effective home is
+    consulted.
+
     Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
     outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.
     """
-    if get_managed_system() is not None:
+    if get_managed_system(home) is not None:
         return
     explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
     if _container_or_chmod_skipped() and not explicit_mode:
@@ -1146,7 +1200,7 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
 
     Every Hermes process and child gets ``TMPDIR``/``TMP``/``TEMP`` pointed here at boot (see
     :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
-    knowing. Entries older than ``SCRATCH_MAX_AGE_HOURS`` are pruned at most once per process
+    knowing. Entries idle for ``SCRATCH_MAX_IDLE_HOURS`` are pruned at most once per process
     and once per hour across processes (stamp file), so a fan-out of children stays cheap.
 
     Permissions follow :func:`apply_secure_dir_policy`, so an explicit ``HERMES_HOME_MODE`` or
@@ -1157,7 +1211,9 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     try:
         scratch.mkdir(parents=True, exist_ok=True)
         if sys.platform != "win32":
-            apply_secure_dir_policy(scratch)
+            # The caller's home decides the policy: re-reading the effective home here would
+            # warn about a profile the CLI has not switched to yet (boot scratch setup).
+            apply_secure_dir_policy(scratch, home=base)
     except OSError:
         pass
     if prune:
@@ -1165,30 +1221,14 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     return scratch
 
 
-def prune_scratch_dir(scratch: Path | None = None, max_age_hours: float = SCRATCH_MAX_AGE_HOURS) -> int:
-    """Delete top-level scratch entries untouched for *max_age_hours*; return the count removed."""
-    import time
+def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRATCH_MAX_IDLE_HOURS) -> int:
+    """Delete top-level scratch entries with no write anywhere in their subtree for
+    *max_idle_hours*, reaping processes and git worktree registrations rooted in them
+    first (``hermes_constants_scratch``); return the count removed."""
+    from hermes_constants_scratch import prune_idle_entries
+
     root = scratch if scratch is not None else get_scratch_dir(prune=False)
-    cutoff = time.time() - max_age_hours * 3600
-    removed = 0
-    try:
-        entries = list(root.iterdir())
-    except OSError:
-        return 0
-    for entry in entries:
-        if entry.name == _SCRATCH_PRUNE_STAMP:
-            continue
-        try:
-            if entry.lstat().st_mtime >= cutoff:
-                continue
-            if entry.is_dir() and not entry.is_symlink():
-                shutil.rmtree(entry, ignore_errors=True)
-            else:
-                entry.unlink()
-            removed += 1
-        except OSError:
-            continue
-    return removed
+    return prune_idle_entries(root, max_idle_hours, frozenset({_SCRATCH_PRUNE_STAMP}))
 
 
 def _prune_scratch_dir_once(scratch: Path) -> None:
@@ -1398,27 +1438,6 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     return result
 
 
-def is_termux() -> bool:
-    """True inside Termux (Android): ``TERMUX_VERSION`` or the Termux-specific ``PREFIX`` path."""
-    prefix = os.getenv("PREFIX", "")
-    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
-
-
-_wsl_detected: bool | None = None
-
-
-def is_wsl() -> bool:
-    """True inside WSL1/WSL2 (``microsoft`` marker in ``/proc/version``); cached per process."""
-    global _wsl_detected
-    if _wsl_detected is None:
-        try:
-            with open("/proc/version", "r", encoding="utf-8") as f:
-                _wsl_detected = "microsoft" in f.read().lower()
-        except Exception:
-            _wsl_detected = False
-    return _wsl_detected
-
-
 def windows_path_to_wsl(path: str) -> str | None:
     """Convert a Windows drive path (``C:\\...``) to its ``/mnt/<drive>/...`` form."""
     match = re.match(r"^([A-Za-z]):[\\/](.*)$", str(path or "").strip())
@@ -1444,54 +1463,6 @@ def translate_cwd_for_wsl_backend(cwd: str) -> str:
         if translated is not None:
             return translated
     return cwd
-
-
-_container_detected: bool | None = None
-
-
-def is_container() -> bool:
-    """True inside a container (Docker/Podman/LXC/Kubernetes markers); cached per process.
-
-    See: NousResearch/hermes-agent#47111
-    """
-    global _container_detected
-    if _container_detected is None:
-        _container_detected = _detect_container()
-    return _container_detected
-
-
-def _read_proc(path: str) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return ""
-
-
-def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
-    content = _read_proc(path)
-    return any(marker in content for marker in markers)
-
-
-def _detect_container() -> bool:
-    if (
-        os.path.exists("/.dockerenv")
-        or os.path.exists("/run/.containerenv")
-        or os.environ.get("KUBERNETES_SERVICE_HOST")
-        or _proc_file_has_marker("/proc/1/cgroup", ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio"))
-    ):
-        return True
-    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo — but ONLY on
-    # the root ("/") mount line. A host that merely *runs* containers exposes every container's
-    # overlay lowerdir (``lowerdir=/var/lib/containerd/...``) at non-root mount points, which a
-    # whole-file scan misread as "inside a container" and flipped subprocess HOME (#58135).
-    return _root_mount_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
-
-
-def _root_mount_has_marker(path: str, markers: tuple[str, ...]) -> bool:
-    """mountinfo field 5 (index 4) is the mount point; only the root ("/") line is the process's own rootfs."""
-    root_lines = [line for line in _read_proc(path).splitlines() if len(f := line.split()) >= 5 and f[4] == "/"]
-    return any(marker in line for line in root_lines for marker in markers)
 
 
 def get_config_path() -> Path:

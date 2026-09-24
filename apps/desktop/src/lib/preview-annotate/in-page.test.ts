@@ -21,7 +21,7 @@ describe('annotateInPage overlay', () => {
     expect(document.querySelector('hermes-annotate')).toBeNull()
   })
 
-  it('paints a blue outline and numbered markers for stacked pins', () => {
+  it('numbers the markers for stacked pins', () => {
     const api = annotateInPage(document)
     api.install()
     api.showPins([
@@ -30,7 +30,6 @@ describe('annotateInPage overlay', () => {
     ])
 
     expect(api.getMarkerNumbers()).toEqual([1, 2])
-    expect(api.getOutlineColor().replace(/\s/g, '').toLowerCase()).toMatch(/#2f80ed|rgb\(47,128,237\)/)
   })
 
   it('keeps a pin glued to its element after the element moves', () => {

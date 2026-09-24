@@ -14,6 +14,7 @@ Covers the follow-up wave after PR #72170:
 """
 
 import os
+from pathlib import Path
 
 
 from gateway.platforms.base import (
@@ -80,7 +81,9 @@ class TestHistoryMediaDedupe:
         tmp_path,
         monkeypatch,
     ):
+        # USERPROFILE too: ntpath.expanduser (Windows) reads it before HOME.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         history = [
             {
                 "role": "assistant",
@@ -90,7 +93,9 @@ class TestHistoryMediaDedupe:
 
         paths = _collect_history_media_paths(history)
 
-        assert str(tmp_path / "audio cache" / "old.ogg") in paths
+        # Compare as paths: expanduser keeps the remainder after "~" verbatim,
+        # so on Windows the collected string mixes separators.
+        assert (tmp_path / "audio cache" / "old.ogg") in {Path(p) for p in paths}
 
     def test_empty_history_empty_set(self):
         assert _collect_history_media_paths([]) == set()

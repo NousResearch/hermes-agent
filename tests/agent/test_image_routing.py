@@ -365,12 +365,16 @@ class TestExtractImageRefs:
         assert urls == []
 
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
-        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file.
+        # USERPROFILE too: ntpath.expanduser (Windows) reads it before HOME.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
-        assert paths == [str(img)]
+        # Compare as paths: expanduser keeps the "/" after "~" verbatim, so the
+        # Windows result mixes separators while naming the same file.
+        assert [Path(p) for p in paths] == [img]
         assert urls == []
 
 

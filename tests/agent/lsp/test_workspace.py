@@ -92,10 +92,13 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
     assert _short_path(str(file_path)) == str(file_path)
 
 
-def test_normalize_path_expands_tilde(monkeypatch):
-    monkeypatch.setenv("HOME", "/home/user")
+def test_normalize_path_expands_tilde(monkeypatch, tmp_path):
+    # USERPROFILE as well as HOME: ntpath.expanduser (Windows) reads
+    # USERPROFILE first, so a HOME-only patch leaves ~ at the real profile.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     p = normalize_path("~/x.py")
-    assert p == os.path.abspath("/home/user/x.py")
+    assert p == os.path.abspath(str(tmp_path / "x.py"))
 
 
 def test_find_git_worktree_cache_is_capped(tmp_path: Path, monkeypatch):

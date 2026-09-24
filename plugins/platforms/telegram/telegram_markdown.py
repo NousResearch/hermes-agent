@@ -4,7 +4,8 @@ import bisect
 import re
 
 from gateway.platforms.helpers import convert_table_to_bullets as _wrap_markdown_tables
-from plugins.platforms.telegram.rich_code_regions import map_outside_code
+from plugins.platforms.telegram.rich_code_regions import map_outside_code, rich_code_regions
+from plugins.platforms.telegram.rich_markdown import RICH_PIPE_TABLE_RE
 from plugins.platforms.telegram.telegram_latex import normalize_latex_macros, replace_macros_outside
 
 # Stands in for the ** of a line-start **> expandable-quote opener while emphasis is resolved.
@@ -790,3 +791,54 @@ def _escape_prose_dollars(prose: str) -> str:
     if '$' not in prose:
         return prose
     return _RICH_DOLLAR_RE.sub(lambda m: m.group(0) if m.group('keep') else '\\$', prose)
+
+
+def _rich_non_prose_spans(text: str) -> list[tuple[int, int]]:
+    """Sorted, merged ``(start, end)`` spans of code and GFM pipe-table blocks in *text*."""
+    code_spans = rich_code_regions(text)
+    table_spans = [m.span() for m in RICH_PIPE_TABLE_RE.finditer(text)]
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(code_spans + table_spans):
+        if merged and start <= merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def has_rich_math(text: str) -> bool:
+    """True when *text* contains ``$$...$$``, ``\\[...\\]``, or ``\\(...\\)`` outside code and tables."""
+    if '$$' not in text and '\\[' not in text and '\\(' not in text:
+        return False
+    pos = 0
+    for start, end in _rich_non_prose_spans(text):
+        seg = text[pos:start]
+        if '$$' in seg or _RICH_BRACKET_MATH_RE.search(seg):
+            return True
+        pos = end
+    tail = text[pos:]
+    return '$$' in tail or bool(_RICH_BRACKET_MATH_RE.search(tail))
+
+
+def _bracket_math_to_dollars(match: re.Match[str]) -> str:
+    raw = match.group(0)
+    delim = '$$' if raw[1] == '[' else '$'
+    # rich_normalize_linebreaks turns lone newlines into Markdown hard-break spaces before this pass.
+    body = raw[2:-2].replace('  \n', '\n').strip()
+    return f'{delim}{body}{delim}' if body else raw
+
+
+def rich_math_to_dollar_delimiters(text: str) -> str:
+    """Rewrite ``\\[...\\]`` and ``\\(...\\)`` outside code and pipe-table rows into dollar math."""
+    if '\\[' not in text and '\\(' not in text:
+        return text
+    out: list[str] = []
+    pos = 0
+    for start, end in _rich_non_prose_spans(text):
+        out.append(_RICH_BRACKET_MATH_RE.sub(_bracket_math_to_dollars, text[pos:start]))
+        out.append(text[start:end])
+        pos = end
+    out.append(_RICH_BRACKET_MATH_RE.sub(_bracket_math_to_dollars, text[pos:]))
+    return ''.join(out)
+

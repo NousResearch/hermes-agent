@@ -227,11 +227,13 @@ def escape_literal_hash_prefixes(text: str) -> str:
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
-_RICH_PROTECTED_REGION_RE = re.compile(
-    r'(?:```[^\n]*\n[\s\S]*?```)'                       # fenced code block
-    r'|(?:^[^\n]*\|[^\n]*\n'                            # table header row (has a pipe)
+RICH_PIPE_TABLE_RE = re.compile(
+    r'^[^\n]*\|[^\n]*\n'                            # table header row (has a pipe)
     r'[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*'  # delimiter
-    r'(?:\n[^\n]*\|[^\n]*)*)',                          # data rows (newline-led, trailing \n left for prose)
+    r'(?:\n[^\n]*\|[^\n]*)*',                          # data rows (newline-led, trailing \n left for prose)
+    re.MULTILINE)
+_RICH_PROTECTED_REGION_RE = re.compile(
+    r'(?:```[^\n]*\n[\s\S]*?```)|(?:' + RICH_PIPE_TABLE_RE.pattern + r')',
     re.MULTILINE)
 
 

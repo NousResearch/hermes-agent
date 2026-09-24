@@ -109,6 +109,14 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/login')).not.toBeNull()
   })
 
+  it('surfaces /skills so pending write-approval review is reachable', () => {
+    rememberDesktopCommandsCatalog(undefined)
+
+    expect(isDesktopSlashSuggestion('/skills')).toBe(true)
+    expect(isDesktopSlashCommand('/skills')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/skills')).toBeNull()
+  })
+
   it('routes /compress through the session-compression action', () => {
     // /compress must be an action (session.compress RPC), not exec: the slash
     // worker route times out on large sessions (#44456).

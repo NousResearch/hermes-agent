@@ -478,6 +478,12 @@ function DropdownMenuSubContent({
     // `overflow` clip. Without this, a submenu opening from a scrollable menu
     // gets visually cut off at the parent's edges. Radix Popper still anchors
     // it to the SubTrigger and handles collision/flip, so portaling is safe.
+    //
+    // `updatePositionStrategy="always"` makes Floating UI's autoUpdate use a
+    // continuous rAF loop instead of passive scroll listeners. Without this,
+    // portaled submenus visibly lag behind their trigger when the parent
+    // Content scrolls (the scroll → getBoundingClientRect → reposition pipeline
+    // can't keep pace with fast wheel events).
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
         // Fixed `max-h-80` rather than the Radix available-height variable:
@@ -500,6 +506,10 @@ function DropdownMenuSubContent({
           onPointerMove?.(event)
         }}
         {...props}
+        // Placed after spread to prevent callers from overriding — the rAF
+        // loop is load-bearing for scroll-tracked submenus and must not revert
+        // to the default "optimized" passive-listener strategy.
+        updatePositionStrategy="always"
       />
     </DropdownMenuPrimitive.Portal>
   )

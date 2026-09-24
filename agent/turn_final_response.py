@@ -101,6 +101,17 @@ def finish_text_response(
                 len(_promoted), agent.model, agent.provider, api_call_count,
                 sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
             )
+            _note_clean_stop = getattr(
+                getattr(agent, "context_compressor", None), "note_reasoning_only_clean_stop", None
+            )
+            if callable(_note_clean_stop):
+                _note_clean_stop()
+    else:
+        _note_success = getattr(
+            getattr(agent, "context_compressor", None), "note_successful_text_response", None
+        )
+        if callable(_note_success):
+            _note_success()
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.

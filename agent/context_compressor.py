@@ -1140,6 +1140,7 @@ _MAX_KEEP_TOOL_IMAGES = 3
 # floor eats the reclaimed headroom and compaction re-fires every 1-2 turns.
 _SMALL_CTX_WINDOW_LIMIT = 512_000
 _SMALL_CTX_THRESHOLD_PERCENT = 0.75
+_REASONING_ONLY_CLEAN_STOP_WINDOW_SECONDS = 15 * 60
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -2196,6 +2197,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._verify_compaction_cleared_threshold = False
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
         self._last_compression_made_progress = False
+        self._reasoning_only_clean_stop_count = 0
+        self._last_reasoning_only_clean_stop_at = 0.0
         # Transient summary errors must not block a fresh session.
         self._summary_failure_cooldown_until = 0.0
         # True while the local cooldown failed to persist: an empty durable row then means unknown, not cleared.
@@ -2842,11 +2845,33 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
         ``"ineffective"``. Callers should surface a warning when it is non-None."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        forced_by_clean_stops = bool(
+            tokens > 0 and getattr(self, "_reasoning_only_clean_stop_count", 0) >= 2
+        )
+        if not forced_by_clean_stops and tokens < self.threshold_tokens:
             return False, None
         if self._automatic_compression_blocked():
             return False, self._compression_block_reason() or "blocked"
         return True, None
+
+    def note_reasoning_only_clean_stop(self, now: float | None = None) -> None:
+        """Record a runtime context-pressure signal without trusting a catalog window.
+
+        Two reasoning-only ``stop`` responses in a short interval force the next
+        eligible preflight compaction. The ordinary cooldown and anti-thrash
+        guards still apply, so this signal cannot create a compression loop.
+        """
+        now = time.monotonic() if now is None else now
+        previous = getattr(self, "_last_reasoning_only_clean_stop_at", 0.0)
+        if now - previous > _REASONING_ONLY_CLEAN_STOP_WINDOW_SECONDS:
+            self._reasoning_only_clean_stop_count = 0
+        self._reasoning_only_clean_stop_count = getattr(self, "_reasoning_only_clean_stop_count", 0) + 1
+        self._last_reasoning_only_clean_stop_at = now
+
+    def note_successful_text_response(self) -> None:
+        """Clear the transient degeneration signal after a normal final response."""
+        self._reasoning_only_clean_stop_count = 0
+        self._last_reasoning_only_clean_stop_at = 0.0
 
     def _compression_block_reason(self) -> "str | None":
         """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
@@ -4961,6 +4986,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compress_aborted = False
         self._last_compress_refused_would_grow = False
         self._last_compression_made_progress = False
+        self._reasoning_only_clean_stop_count = 0
+        self._last_reasoning_only_clean_stop_at = 0.0
         # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
         # reset would fall through to the destructive static fallback (#29559). Success clears them.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)

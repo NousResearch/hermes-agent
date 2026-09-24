@@ -80,7 +80,9 @@ describe('readProjectDir', () => {
     const result = await readProjectDir('C:\\repo\\src', 'C:\\repo')
 
     expect(result.entries.map(entry => entry.name)).toEqual(['keep.ts'])
-    expect(gitRoot).toHaveBeenCalledWith('C:/repo')
+    // The rule lookup anchors at the nearest git root of the LISTED directory,
+    // so the bridge is asked about dirPath first (the mock answers with the repo root).
+    expect(gitRoot).toHaveBeenCalledWith('C:/repo/src')
     expect(readFileDataUrl).toHaveBeenCalledWith('C:/repo/.gitignore')
   })
 
@@ -174,5 +176,104 @@ describe('readProjectDir', () => {
     const result = await readProjectDir('/other/src', '/other')
 
     expect(result.entries.map(entry => entry.name)).toEqual(['keep.ts'])
+  })
+
+  it('keeps nested repository roots visible when the parent gitignores them', async () => {
+    // The bridge strips .git from listings, so repo-ness is detected via gitRoot:
+    // a nested repo resolves to itself, an ordinary ignored dir to the parent's root.
+    gitRoot.mockImplementation(async path => {
+      if (path === '/repo/dev/ownward-studio') {
+        return '/repo/dev/ownward-studio'
+      }
+
+      return '/repo'
+    })
+    readDir.mockImplementation(async path => {
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
+
+      if (path === '/repo/dev') {
+        return ok([
+          { name: 'ownward-studio', path: '/repo/dev/ownward-studio', isDirectory: true },
+          { name: 'scratch', path: '/repo/dev/scratch', isDirectory: true },
+          { name: 'notes.txt', path: '/repo/dev/notes.txt', isDirectory: false },
+          { name: 'README.md', path: '/repo/dev/README.md', isDirectory: false }
+        ])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('dev/*\n!dev/README.md\n'))
+
+    const result = await readProjectDir('/repo/dev', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['ownward-studio', 'README.md'])
+  })
+
+  it('keeps worktree roots (a .git file, not a directory) visible', async () => {
+    // A linked worktree is its own toplevel too, so the same git check covers it.
+    gitRoot.mockImplementation(async path => {
+      if (path === '/repo/dev/wt-feature') {
+        return '/repo/dev/wt-feature'
+      }
+
+      return '/repo'
+    })
+    readDir.mockImplementation(async path => {
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
+
+      if (path === '/repo/dev') {
+        return ok([{ name: 'wt-feature', path: '/repo/dev/wt-feature', isDirectory: true }])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('dev/*\n'))
+
+    const result = await readProjectDir('/repo/dev', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['wt-feature'])
+  })
+
+  it('inside a nested repo, only that repo’s own .gitignore governs', async () => {
+    // The parent's dev/* must NOT empty the nested repo: the rule chain re-anchors
+    // at the nested repo's own root, so only its own .gitignore applies.
+    gitRoot.mockImplementation(async path => {
+      if (path === '/repo/dev/ownward-studio') {
+        return '/repo/dev/ownward-studio'
+      }
+
+      return '/repo'
+    })
+    readDir.mockImplementation(async path => {
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
+
+      if (path === '/repo/dev/ownward-studio') {
+        return ok([
+          { name: '.gitignore', path: '/repo/dev/ownward-studio/.gitignore', isDirectory: false },
+          { name: 'company-memory', path: '/repo/dev/ownward-studio/company-memory', isDirectory: true },
+          { name: 'coverage', path: '/repo/dev/ownward-studio/coverage', isDirectory: true },
+          { name: 'README.md', path: '/repo/dev/ownward-studio/README.md', isDirectory: false }
+        ])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockImplementation(async path => {
+      if (path === '/repo/.gitignore') {
+        return dataUrl('dev/*\n')
+      }
+
+      return dataUrl('coverage/\n')
+    })
+
+    const result = await readProjectDir('/repo/dev/ownward-studio', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['.gitignore', 'company-memory', 'README.md'])
   })
 })

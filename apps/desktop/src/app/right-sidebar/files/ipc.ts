@@ -16,6 +16,7 @@ interface GitignoreRule {
 
 const gitRootCache = new Map<string, Promise<string | null>>()
 const gitignoreCache = new Map<string, Promise<GitignoreRule | null>>()
+const nestedRepoCache = new Map<string, Promise<boolean>>()
 
 function decodeDataUrl(dataUrl: string) {
   const match = dataUrl.match(/^data:[^,]*,(.*)$/)
@@ -106,6 +107,42 @@ async function gitignoreFor(dir: string) {
   return cached
 }
 
+/**
+ * A directory that is the root of its OWN repository is a nested repo (or worktree) root.
+ * Never hide those behind the parent's .gitignore: ignoring them there is exactly how the
+ * common repo-inside-repo layout keeps a superproject clean, and hiding them makes real,
+ * version-controlled work vanish from the tree with no way to reveal it.
+ *
+ * Ask git, not the directory listing: the readDir bridge strips `.git` entries
+ * (FS_READDIR_HIDDEN in electron/fs-read-dir.ts), so a listing probe finds them in tests
+ * (mocked listings) but never in production. `git rev-parse --show-toplevel` answers for
+ * any directory, ignored or not: a nested repo resolves to itself, an ordinary ignored
+ * directory resolves to the parent's root.
+ */
+async function isNestedRepoRoot(entry: HermesReadDirEntry): Promise<boolean> {
+  if (!entry.isDirectory) {
+    return false
+  }
+
+  const key = `${desktopFsCacheKey()}:${cleanPath(entry.path)}`
+  let cached = nestedRepoCache.get(key)
+
+  if (!cached) {
+    cached = (async () => {
+      try {
+        const root = await desktopGitRoot(cleanPath(entry.path))
+
+        return root !== null && comparisonPath(root) === comparisonPath(entry.path)
+      } catch {
+        return false
+      }
+    })()
+    nestedRepoCache.set(key, cached)
+  }
+
+  return cached
+}
+
 function ignoredBy(rules: GitignoreRule[], entry: HermesReadDirEntry) {
   return rules.some(rule => {
     const rel = relativeTo(rule.base, entry.path)
@@ -126,7 +163,13 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
     return entries
   }
 
-  const root = await gitRootFor(rootPath)
+  // Anchor the rule lookup at the nearest repository root of the LISTED directory,
+  // not the project root. A parent repo's .gitignore stops at a nested repo's
+  // boundary (git applies ignore rules only within their own repository), so
+  // inside dev/<repo> only <repo>'s own .gitignore chain governs. Without this,
+  // the parent's `dev/*` pattern matches every entry inside the nested repo and
+  // the tree shows an empty folder one level down.
+  const root = (await gitRootFor(dirPath)) ?? (await gitRootFor(rootPath))
 
   if (!root) {
     return entries
@@ -136,7 +179,23 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
     Boolean(r)
   )
 
-  return rules.length > 0 ? entries.filter(entry => !ignoredBy(rules, entry)) : entries
+  if (rules.length === 0) {
+    return entries
+  }
+
+  // Probe only entries the rules would hide: a nested repo root stays visible,
+  // everything else the parent ignores is filtered as before.
+  const visible = await Promise.all(
+    entries.map(async entry => {
+      if (!ignoredBy(rules, entry)) {
+        return entry
+      }
+
+      return (await isNestedRepoRoot(entry)) ? entry : null
+    })
+  )
+
+  return visible.filter((entry): entry is HermesReadDirEntry => entry !== null)
 }
 
 export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {
@@ -154,6 +213,7 @@ export function clearProjectDirCache(rootPath?: string) {
   if (!rootPath) {
     gitRootCache.clear()
     gitignoreCache.clear()
+    nestedRepoCache.clear()
 
     return
   }
@@ -161,4 +221,5 @@ export function clearProjectDirCache(rootPath?: string) {
   const key = `${desktopFsCacheKey()}:${cleanPath(rootPath)}`
   gitRootCache.delete(key)
   gitignoreCache.delete(key)
+  nestedRepoCache.delete(key)
 }

@@ -147,8 +147,10 @@ def _check_memory_file(f: Finding, path: Path, limit: int) -> None:
         f.issues.append(f"{path.name} has {len(blocked)} blocked memory entries ({names})")
     if drift:
         check_warn(f"{path.name} does not round-trip through the memory store",
-                   "(memory writes will be refused; rewrite as a clean §-delimited list without losing entries)")
-        f.issues.append(f"{path.name} has external drift — reconcile its entries before writing memory")
+                   "(replace/remove/batch may refuse; add can still rewrite this file without a drift backup — "
+                   "reconcile its entries before writing memory)")
+        f.issues.append(f"{path.name} has external drift — reconcile its entries before any memory write "
+                        "(add may rewrite without a backup)")
     if count > limit:
         check_warn(f"{path.name} exceeds its configured char limit ({count}/{limit} chars)",
                    "(further additions will be refused until entries are consolidated)")

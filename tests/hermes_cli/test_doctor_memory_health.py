@@ -42,7 +42,28 @@ def test_doctor_reports_drift_and_configured_cap_without_modifying_memory(tmp_pa
     finding = doctor_state._check_directory_structure(False)
     output = capsys.readouterr().out
     assert "USER.md does not round-trip" in output
+    assert "replace/remove/batch may refuse" in output
+    assert "add can still rewrite this file without a drift backup" in output
     assert "USER.md exceeds its configured char limit" in output
     assert len([issue for issue in finding.issues if "USER.md" in issue]) == 2
+    assert any("add may rewrite without a backup" in issue for issue in finding.issues)
     assert path.read_text(encoding="utf-8") == raw
     assert list(memories.iterdir()) == [path]  # doctor must not create a drift backup
+
+def test_doctor_reports_unreadable_memory_file(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    memories = home / "memories"
+    memories.mkdir(parents=True)
+    path = memories / "USER.md"
+    raw = b"\xff\xfe"
+    path.write_bytes(raw)
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+
+    finding = doctor_state._check_directory_structure(False)
+    output = capsys.readouterr().out
+    assert "USER.md exists but cannot be read" in output
+    assert "USER.md exists (" not in output
+    assert any("USER.md is unreadable" in issue for issue in finding.issues)
+    assert path.read_bytes() == raw
+    assert list(memories.iterdir()) == [path]

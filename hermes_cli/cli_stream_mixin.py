@@ -428,6 +428,8 @@ class CLIStreamMixin:
             if not text:
                 return
             self._stream_box_opened = True
+            # Turn-level: survives _reset_stream_state at tool-call boundaries (#65666).
+            self._response_streamed_this_turn = True
             self._stream_box_live = True  # header drawn; cleared at the footer
             try:
                 from hermes_cli.skin_engine import get_active_skin

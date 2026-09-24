@@ -74,3 +74,14 @@ def test_status_line_prints_immediately_outside_a_box(cli_stub):
     cli._agent_status_print("  ✓ [set 1 · 1/1] worker  (3.0s)")
     assert [_plain(e) for e in emitted] == ["  ✓ [set 1 · 1/1] worker  (3.0s)"]
     assert not getattr(cli, "_held_status_lines", [])
+
+
+def test_streamed_flag_survives_tool_call_boundary(cli_stub):
+    """#65666: the chat-turn 'already streamed' guard must still see the reply after a tool-call
+    boundary resets per-segment stream state, or an interrupted reply is re-rendered as a Panel."""
+    cli, _ = cli_stub
+    cli._response_streamed_this_turn = False
+    cli._stream_delta("Partial answer.\n")
+    cli._stream_delta(None)  # tool-call boundary: flush + per-segment reset
+    assert cli._stream_box_opened is False
+    assert cli._response_streamed_this_turn is True

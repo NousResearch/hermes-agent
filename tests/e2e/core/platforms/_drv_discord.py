@@ -56,6 +56,9 @@ class DiscordDriver:
             "require_mention": True,
             # replies land inline in the group channel (contract parity); threads are implemented too
             "auto_thread": False,
+            # history backfill deliberately feeds recent unmentioned chatter into a mentioned turn as
+            # context; off here so the require-mention contract measures the trigger gate alone
+            "history_backfill": False,
         }}}}
 
     def gateway_env(self) -> Dict[str, str]:

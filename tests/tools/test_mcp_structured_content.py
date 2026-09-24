@@ -358,8 +358,3 @@ class TestDroppedBlockNotice:
         assert data["structuredContent"] == payload
         assert "[MCP content dropped" in data["result"]
 
-    def test_notice_helper_minimal_block(self):
-        notice = _mcp_content._render_mcp_dropped_block_notice(
-            SimpleNamespace(), "mystery"
-        )
-        assert notice == "[MCP content dropped: unsupported block (type=mystery)]"

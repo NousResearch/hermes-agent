@@ -218,7 +218,8 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     if not api_key:
         # Fallback for env-only deployments — scope-aware: under multiplex
         # os.environ may hold another profile's key, so honor the installed
-        # scope's verdict before touching the env.
+        # scope's verdict. Only the unscoped default-profile path
+        # (UnscopedSecretError) reads the env; any other failure stays empty.
         try:
             from agent.secret_scope import UnscopedSecretError, get_secret
 
@@ -227,7 +228,7 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
             except UnscopedSecretError:
                 api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
         except Exception:
-            api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+            pass
     if not api_key:
         return {"available": False, "voices": []}
 

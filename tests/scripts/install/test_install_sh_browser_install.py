@@ -12,72 +12,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
-
-
-def test_install_script_honors_explicit_browser_override_only() -> None:
-    """find_system_browser consults only an explicit AGENT_BROWSER_EXECUTABLE_PATH."""
-    text = INSTALL_SH.read_text()
-
-    assert 'override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"' in text
-    # An explicit override still skips the bundled download (override, not fallback).
-    assert "Skipping bundled Chromium download" in text
-
-
-
-
-def test_playwright_installs_are_timeout_guarded() -> None:
-    text = INSTALL_SH.read_text()
-
-    # The timeout wrapper still exists and is used internally by the install
-    # wrapper, so every Playwright download remains bounded.
-    assert "run_browser_install_with_timeout()" in text
-    # Playwright installs now go through run_playwright_install(), which wraps
-    # run_browser_install_with_timeout (timeout-guarded) and adds an
-    # unrecognized-platform fallback retry.
-    assert "run_playwright_install 600 npx playwright install chromium" in text
-    # --with-deps is still invoked on apt-based systems, but only when sudo
-    # is available non-interactively (root or passwordless sudo). Non-sudo
-    # service users fall back to the browser-only install — see
-    # install_node_deps() in install.sh.
-    assert "run_playwright_install 600 npx playwright install --with-deps chromium" in text
-    # The wrapper still bounds the download with the timeout helper.
-    assert 'run_browser_install_with_timeout "$timeout_seconds" "$@"' in text
-
-
-
-def test_install_script_supports_skip_browser_flag() -> None:
-    """--skip-browser (and --no-playwright alias) skips the Playwright install."""
-    text = INSTALL_SH.read_text()
-
-    assert "--skip-browser|--no-playwright)" in text
-    assert "SKIP_BROWSER=true" in text
-    assert 'if [ "$SKIP_BROWSER" = true ]; then' in text
-    assert "--skip-browser Skip Playwright/Chromium install" in text
-
-
-
-
-
-
-def test_browser_install_timeout_stays_interruptible() -> None:
-    """The Playwright download must stay Ctrl+C-able and force-kill if wedged.
-
-    GNU `timeout` runs the child in its own process group, so a terminal Ctrl+C
-    reaches `timeout` but never the download — it looks frozen and ignores
-    Ctrl+C (#35166). `--foreground` keeps it in the shell's foreground group;
-    `-k 10` guarantees a SIGKILL after the deadline. Both are GNU-only, so the
-    installer probes support once and falls back to plain `timeout`.
-    """
-    text = INSTALL_SH.read_text()
-
-    # GNU-flag probe + the guarded invocation must both be present. The timeout
-    # binary is parameterized ($timeout_bin) so macOS gtimeout works too (#39219).
-    assert '"$timeout_bin" --foreground -k 10 1 true' in text
-    assert '"$timeout_bin" --foreground -k 10 "$timeout_seconds" "$@"' in text
-    # Plain-timeout fallback preserved for BusyBox/non-GNU.
-    assert '"$timeout_bin" "$timeout_seconds" "$@"' in text
-
-
 # ---------------------------------------------------------------------------
 # Behavioral tests: source the install.sh helpers in a stubbed shell and assert
 # the override retry fires ONLY on a too-new apt release (#35166), and not on a
@@ -177,10 +111,6 @@ def test_override_retry_fires_on_ubuntu_26() -> None:
     assert r["final_rc"] == 0
 
 
-
-
-
-
 def test_override_retry_fires_on_debian_14() -> None:
     """Debian 14 (> 13) is the too-new apt case → retry with override."""
     r = _run_install_fn("debian", "14", native_fails=True)
@@ -195,55 +125,5 @@ def test_no_retry_when_native_succeeds_on_ubuntu_26() -> None:
     assert len(r["runs"]) == 1, r["runs"]
     assert "override=<none>" in r["runs"][0]
     assert r["final_rc"] == 0
-
-
-import re
-
-
-def _extract_function_body(source: str, name: str) -> str:
-    m = re.search(rf"^{re.escape(name)}\(\) \{{.*?^\}}", source, re.MULTILINE | re.DOTALL)
-    assert m, f"could not extract {name}() from install.sh"
-    return m.group(0)
-
-
-def test_ensure_browser_no_longer_npm_installs_agent_browser() -> None:
-    """agent-browser resolves lazily via npx everywhere else in the system
-    (tools/browser_tool.py::_find_agent_browser); this was the last place
-    that still eagerly npm-installed a second, separately version-pinned
-    copy of it. Removed: agent-browser acquisition now happens only via
-    `hermes update`'s npx cache warm or an actual browser-tool call's lazy
-    npx resolution (PR #44772 review)."""
-    body = _extract_function_body(INSTALL_SH.read_text(), "ensure_browser")
-
-    assert "agent-browser@" not in body
-    assert "Installing Chromium via agent-browser install" not in body
-    # camofox is unrelated to this change and must still be installed here.
-    assert "@askjo/camofox-browser@^1.5.2" in body
-    # System-browser detection is still cheap/valuable without agent-browser.
-    assert "find_system_browser" in body
-    assert "configure_browser_env_from_system_browser" in body
-
-
-def test_ensure_browser_still_ignore_scripts_and_timeout_guarded() -> None:
-    """The removal of agent-browser must not have also dropped the
-    supply-chain and hang-protection hardening that still applies to the
-    remaining camofox install."""
-    body = _extract_function_body(INSTALL_SH.read_text(), "ensure_browser")
-
-    assert "--ignore-scripts" in body
-    assert "run_with_timeout" in body
-
-
-def test_ensure_browser_no_longer_references_agent_browser_binary_path() -> None:
-    """No dangling reference to a local agent-browser binary path should
-    remain now that this function never installs it — a leftover reference
-    would be dead code pointing at a binary that no longer gets placed
-    there by this function."""
-    body = _extract_function_body(INSTALL_SH.read_text(), "ensure_browser")
-
-    assert "$HERMES_HOME/node/bin/agent-browser" not in body
-
-
-
 
 

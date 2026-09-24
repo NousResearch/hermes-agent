@@ -176,7 +176,7 @@ export const mainComposerScope = createComposerAttachmentScope($composerAttachme
 // localStorage; attachments are memory-only (blobs, upload state).
 export const SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v3'
 
-const NEW_SESSION_DRAFT_KEY = '__new__'
+export const NEW_SESSION_DRAFT_KEY = '__new__'
 const MAX_PERSISTED_DRAFTS = 50
 const EMPTY_SESSION_DRAFT: SessionDraft = { attachments: [], text: '' }
 

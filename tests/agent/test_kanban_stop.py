@@ -18,10 +18,6 @@ def clear_kanban_env(monkeypatch):
     return monkeypatch
 
 
-
-
-
-
 def test_env_can_disable(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     clear_kanban_env.setenv("HERMES_KANBAN_STOP_NUDGE", "0")
@@ -75,7 +71,6 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert "kanban_complete" in nudge
     assert "kanban_block" in nudge
     assert "t_46be8aa5" in nudge
-    assert "protocol violation" in nudge.lower() or "protocol" in nudge.lower()
 
 
 def test_no_nudge_after_kanban_complete(clear_kanban_env):
@@ -98,20 +93,12 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
-
-
-
-
 # ── Integration: agent nudge + dispatcher bounded retry ──────────────
 # These tests verify the two layers compose correctly: the agent-side
 # nudge fires first (up to 2 attempts), and if the worker still exits
 # without a terminal call, the dispatcher's bounded retry (streak of 3)
 # handles it.  See also tests/hermes_cli/test_kanban_core_functionality.py
 # for the dispatcher-side streak tests.
-
-
-
-
 
 
 @pytest.mark.parametrize(

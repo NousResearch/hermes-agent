@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _normalized_base_url(value: Any) -> str:
@@ -115,3 +118,27 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
                 seen.add(identity)
                 chain.append(entry)
     return chain
+
+
+def scoped_fallback_chain(
+    inherited: list[dict[str, Any]] | None, declared: Any, *, pinned: bool, owner: str,
+) -> list[dict[str, Any]] | None:
+    """Fallback chain for a route owner that can pin its own primary (delegated child, cron job).
+
+    A pinned owner (explicit provider, endpoint or model) never borrows the *inherited* chain: the
+    operator chose that route, and a chain entry is a different provider and usually a different
+    model. Predictability beats liveness for an explicit pin. An unpinned owner inherits the chain
+    when *declared* is absent/None. An explicit ``[]`` disables fallback either way; any other
+    *declared* value is the owner's own chain, normalized by :func:`get_fallback_chain` (malformed
+    entries are dropped; nothing usable left falls back to the pinned/inherited default).
+    """
+    default = None if pinned else (inherited or None)
+    if declared is None:
+        return default
+    if declared == []:
+        return None
+    normalized = get_fallback_chain({"fallback_providers": declared})
+    if not normalized:
+        logger.warning("%s fallback_providers has no usable routes; using the %s default",
+                       owner, "pinned" if pinned else "inherited")
+    return normalized or default

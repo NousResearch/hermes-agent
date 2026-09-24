@@ -7,6 +7,13 @@ import pytest
 from hermes_cli import gateway, main, update_cmd_fleet as fleet, update_receipt
 
 
+@pytest.fixture(autouse=True)
+def _units_belong_to_this_update(monkeypatch):
+    """The fake ``hermes-gateway-one/two`` units carry no home; ownership (#93349,
+    ``test_update_fleet_home_scope.py``) is pinned so this file keeps testing the catch-up contract."""
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope_cmd, svc_name: True)
+
+
 @pytest.mark.linux_only
 @pytest.mark.parametrize("failure", ["listing", "timeout", "missing", "restart", "inactive", "running", "missing-owned", None])
 def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path, failure):

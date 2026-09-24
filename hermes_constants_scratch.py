@@ -28,14 +28,15 @@ def subtree_touched_since(path: Path, cutoff: float) -> bool:
     Stops at the first recent entry, so a live tree costs one hit and only a truly idle
     tree pays for the full walk (once, right before it is deleted). Symlinks are never
     followed: a link into the repo would make the target's activity keep the entry alive.
+    An unreadable entry is kept: an incomplete scan cannot establish that it is idle.
     """
     try:
         if os.lstat(path).st_mtime >= cutoff:
             return True
+        if not path.is_dir() or path.is_symlink():
+            return False
     except OSError:
-        return False
-    if not path.is_dir() or path.is_symlink():
-        return False
+        return True
     stack = [str(path)]
     while stack:
         try:
@@ -45,11 +46,11 @@ def subtree_touched_since(path: Path, cutoff: float) -> bool:
                         if child.stat(follow_symlinks=False).st_mtime >= cutoff:
                             return True
                     except OSError:
-                        continue
+                        return True
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
         except OSError:
-            continue
+            return True
     return False
 
 

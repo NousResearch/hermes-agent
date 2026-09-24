@@ -332,11 +332,17 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
+    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS
+    # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
+    shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
+
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
+        def _one(session_id):
+            return _redact(db.export_session(session_id, include_compacted=shown))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
-            data = _redact(db.export_session(resolved)) if resolved else None
+            data = _one(resolved) if resolved else None
             if not data:
                 _not_found(args.session_id)
                 return None
@@ -345,10 +351,10 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
-            return [s for s in (_redact(db.export_session(row["id"])) for row in candidates) if s]
+            return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
-        return [_redact(s) for s in db.export_all(source=None)]
+        return [_redact(s) for s in db.export_all(source=None, include_compacted=shown)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
     if args.format == "trace":
@@ -472,13 +478,20 @@ def _export_markdown(db, args, filters, redact):
     output_dir = _export_dir(args.output)
 
     def _export_one(session_id: str, *, include_lineage: bool = False):
-        data = db.export_session_lineage(session_id) if include_lineage else db.export_session(session_id)
-        if not data:
-            return None, None
-        data = redact(data)
+        # The history the user sees, not only the live rows: in-place compaction archives earlier turns under
+        # the same id, and --delete-after-verified removes every row of it.
+        export = db.export_session_lineage if include_lineage else db.export_session
+        raw_data = export(session_id, include_compacted=True)
+        if not raw_data:
+            return None, None, None
+        snapshots = {
+            segment["id"]: segment.get("messages") or []
+            for segment in (raw_data.get("segments") or [raw_data]) if segment.get("id")
+        }
+        data = redact(raw_data)
         path = write_session_markdown(data, output_dir, fmt=args.format, force=args.force)
         append_manifest_entry(output_dir, data, path, fmt=args.format)
-        return data, path
+        return data, path, snapshots
     if args.delete_after_verified and not args.yes:
         print("--delete-after-verified requires --yes.")
         return
@@ -498,7 +511,7 @@ def _export_markdown(db, args, filters, redact):
     exported = 0
     for row in candidates:
         try:
-            data, exported_path = _export_one(row["id"], include_lineage=lineage_is_logical)
+            data, exported_path, _ = _export_one(row["id"], include_lineage=lineage_is_logical)
         except FileExistsError as e:
             print(f"Skipping existing export: {e}. Pass --force to overwrite.")
             continue
@@ -520,7 +533,7 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
     exported_items = []
     for target_id in delete_target_ids:
         try:
-            data, exported_path = export_one(
+            data, exported_path, snapshots = export_one(
                 target_id, include_lineage=(target_id == resolved_session_id and lineage_is_logical),
             )
         except FileExistsError as e:
@@ -529,22 +542,28 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         if not data or not exported_path:
             print(f"Session '{target_id}' disappeared during export; nothing was deleted.")
             return
-        exported_items.append((data, exported_path))
-    message_count = sum(len(data.get("messages") or []) for data, _path in exported_items)
+        exported_items.append((data, exported_path, snapshots))
+    message_count = sum(len(data.get("messages") or []) for data, _path, _ in exported_items)
     n = len(exported_items)
     print(f"Exported {n} session{'' if n == 1 else 's'} ({message_count} message{'' if message_count == 1 else 's'}) "
           f"to {exported_items[0][1] if n == 1 else output_dir}")
     if not args.delete_after_verified:
         return
-    for data, exported_path in exported_items:
+    # verify_export_file proves file == dict; store == dict is decided inside delete_session's transaction
+    # (expected_display_messages), where no writer can slip between the check and the delete.
+    expected_messages = {}
+    for data, exported_path, snapshots in exported_items:
         ok, reason = verify_export_file(exported_path, data)
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return
+        expected_messages.update(snapshots)
     if not db.delete_session(
-        resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids
+        resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
+        expected_display_messages=expected_messages,
     ):
-        print(f"Exported, but session '{resolved_session_id}' was not deleted because its delegate set changed.")
+        print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
+              "changed after export.")
         return
     delegates = len(delete_target_ids) - 1
     delegate_suffix = f" and {delegates} delegate session{'' if delegates == 1 else 's'}" if delegates else ""

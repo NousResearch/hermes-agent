@@ -193,7 +193,12 @@ class MemoryProvider(ABC):
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:
-        memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name)."""
+        memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name).
+        For replace/remove, ``metadata["previous_content"]`` is the full entry selected
+        under the native-store lock. Notifications follow a successful complete write
+        or batch; each batch operation sees the preceding operation's result. Older
+        callers may omit this field: ``old_text`` alone is not authoritative identity.
+        """
 
     def backup_paths(self) -> List[str]:
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``

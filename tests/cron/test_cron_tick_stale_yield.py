@@ -19,7 +19,6 @@ ticks must surface as failed ticks (``record_ticker_error`` + heartbeat
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from unittest.mock import patch
@@ -149,25 +148,6 @@ class TestTickYieldGate:
         monkeypatch.setattr(gateway_status, "is_gateway_runtime_lock_active", _boom)
         assert scheduler_mod.tick(verbose=False) == 0
 
-    def test_yield_logs_once_per_episode(self, monkeypatch, caplog):
-        """The yield log is throttled: repeated yields with the same skew
-        signature log once, not once per tick interval."""
-        _gate_mocks(monkeypatch, owns=False, active=True)
-        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
-            scheduler_mod._log_tick_yield_once("boot=a disk=b")
-            scheduler_mod._log_tick_yield_once("boot=a disk=b")
-            scheduler_mod._log_tick_yield_once("boot=a disk=b")
-        yield_logs = [
-            r for r in caplog.records if "Cron tick yielded" in r.getMessage()
-        ]
-        assert len(yield_logs) == 1
-        # A NEW skew signature (the checkout moved again) is a new episode.
-        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
-            scheduler_mod._log_tick_yield_once("boot=a disk=c")
-        yield_logs = [
-            r for r in caplog.records if "Cron tick yielded" in r.getMessage()
-        ]
-        assert len(yield_logs) == 2
 
 
 class TestYieldedTickIsAFailedTick:

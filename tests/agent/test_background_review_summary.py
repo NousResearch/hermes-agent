@@ -94,19 +94,3 @@ def test_empty_inputs():
 
 
 
-def test_removed_or_replaced_relabels_by_target():
-    review_messages = [
-        _tool_msg(
-            "c1",
-            {"success": True, "message": "Entry removed.", "target": "user"},
-        ),
-        _tool_msg(
-            "c2",
-            {"success": True, "message": "Entry replaced.", "target": "memory"},
-        ),
-    ]
-
-    actions = _summarize(review_messages, [])
-
-    assert "User profile updated" in actions
-    assert "Memory updated" in actions

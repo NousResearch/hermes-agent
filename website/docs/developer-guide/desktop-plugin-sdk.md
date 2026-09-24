@@ -177,6 +177,12 @@ interface PluginContext {
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
   onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
+  /** Any other cleanup to run on unload/reload/disable (store subscriptions, injected DOM). */
+  onDispose: (fn: () => void) => void
+  /** Scoped timers and DOM listeners — cleared with the plugin. Each returns a disposer. */
+  setTimeout: (fn: () => void, ms: number) => () => void
+  setInterval: (fn: () => void, ms: number) => () => void
+  addEventListener: (target: EventTarget, type: string, listener: EventListener, options?: AddEventListenerOptions | boolean) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -401,10 +407,95 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 
-`COMPOSER_AREAS` (`top`, `bottom`, `leading`, `actions`, `attachments`,
-`middleware`) let a plugin add controls around the message composer, provide an
-attachment source, or transform a draft before it is sent (`ComposerMiddleware`
-with a `handler(draft) => draft | null`).
+`COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
+`attachments`, `middleware`) let a plugin add controls around the message
+composer, provide an attachment source, or transform a draft before it is sent
+(`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
+banner strip above the input and `bottom` a row below the input grid, both
+inside the composer chrome; `underside` is the floating strip BELOW the whole
+composer with no chrome of its own — the seat for a suggestion pill or a status
+hint that should sit outside the input frame (the next-prompt plugin renders its
+"next prompt" pill there).
+
+### Composer draft API — read and write the live input
+
+For everything the composer areas can't do — put text INTO the input, replace
+what's there, read the current draft, or send it — use `host.composer`. This
+is the supported door; reaching for the ProseMirror DOM, `[data-composer-target]`
+lookups, or synthetic `InputEvent`s is out of the plugin surface (catalog rule 8)
+and breaks the moment the app's markup moves. Addressing: `null` = the composer
+the user is typing in; a session id (stored or runtime) = that session's
+composer, in the primary pane or a tile; `'new'` = the fresh draft that has no
+session id yet.
+
+```javascript
+import { host } from '@hermes/plugin-sdk'
+
+// Append to the active composer (modes: 'block' | 'inline' | 'prefix';
+// 'prefix' seats a slash command at the start). Acknowledged like setDraft:
+// true when a mounted surface applied the text, false when the text is blank
+// or no live surface answers for the address.
+const inserted = await host.composer.insertText(null, 'draft note', { mode: 'inline' })
+
+// Replace a session's whole draft — '@'-ref and '/command' tokens hydrate
+// into chips exactly like an official paste. False when no mounted surface
+// answers (an unmounted session is never half-written).
+const ok = await host.composer.setDraft('sess-1', 'plan:\n- @file:src/app.ts')
+
+// Read the live draft: the mounted surface's in-DOM text (unsaved keystrokes
+// included), falling back to the debounced persisted stash. Null when nothing
+// holds it.
+const text = await host.composer.getDraft('sess-1')
+
+// Send as if the user typed + pressed Enter. Fail-closed like the app's own
+// panels: no visible surface for the address → false, never a broadcast.
+const sent = host.composer.submit('sess-1', 'ship it')
+
+// Put the caret in a composer (same addressing). insertText/setDraft already
+// focus a visible surface they paint; use this to return the caret after a
+// plugin popover closes or from a "go to input" keybind.
+host.composer.focus(null)
+```
+
+```ts
+host.composer: {
+  getDraft(sessionId: string | null): Promise<string | null>
+  setDraft(sessionId: string | null, text: string): Promise<boolean>
+  insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
+  submit(sessionId: string | null, text: string): boolean
+  focus(sessionId: string | null): void
+}
+```
+
+**Arbitration.** Every verb is fail-closed on its address: a request is
+answered only by the mounted composer that owns that session (its tile, or the
+primary pane when it shows that session); `null` is answered only by the surface
+the app's focus bus currently routes to; `'new'` only by the primary pane while it
+shows no session — it never falls through to the active composer. No exact
+surface → `null`/`false`, never
+a broadcast into whichever pane happens to be mounted. Writes go through the
+app's own paint path, so `@`-ref / `/`-command tokens hydrate as chips and the
+result is byte-for-byte what the user would get by pasting. These are discrete,
+user-triggered actions with the same authority as typing — no plugin "owns" the
+draft afterwards, so there is **nothing to tear down** on disable; a plugin that
+wants a persistent presence around the input uses a `COMPOSER_AREAS` slot instead.
+
+A multi-session plugin keeps its per-session state on its side (which session
+its panel is editing) and passes that id here; the bus guarantees one
+plugin write can never land in another session's composer.
+
+**Migrating off DOM reach-in** (the held catalog plugins that motivated this API):
+
+| Plugin | Was | Now |
+|---|---|---|
+| next-prompt (#120660) | `window.dispatchEvent(new CustomEvent('hermes:composer-insert', …))` + a `setTimeout` `hermes:composer-focus`; `[data-composer-target]`/`[data-pane-hidden]` scan for the visible target | `await host.composer.insertText(null, suggestion.text, { mode: 'block' })`, then `host.composer.focus(null)` if the pill lost the caret |
+| prompt-snippets (#116030) | same `hermes:composer-insert` event; `[data-slot="composer-input"]`/ProseMirror `textContent` + synthetic `InputEvent` fallback; `surfaceEditorEl().focus()` | `host.composer.insertText(sid, text, { mode: 'block' })`; `setDraft(sid, (await getDraft(sid) ?? '') + '\n' + text)` replaces the fallback; `host.composer.focus(sid)` — `sid = host.state.focusedSessionId.get()` |
+| prompt-enhancer (#116031) | walks the editor's child nodes to serialize, rebuilds chip DOM, `replaceChildren` + synthetic `InputEvent` | `const draft = await host.composer.getDraft(sid)` → transform → `await host.composer.setDraft(sid, enhanced)` (chips hydrate app-side); revert is another `setDraft` |
+| memory-review (#115966) | `host.request('slash.exec', { session_id, command })` for `/memory …` — already SDK-only | optional: `host.composer.insertText(sid, '/memory pending', { mode: 'prefix' })` to seat the command for the user instead of executing it |
+| intelligent-tool-break (#115964) | "Message" button only toasts "type /break" (no composer write) | `host.composer.setDraft(host.state.focusedSessionId.get(), '/break ')` then `host.composer.focus(null)` restores the intended behaviour |
+
+`sessionId` in the table is the id the plugin's UI is bound to; for a composer
+slot render it is `host.state.focusedSessionId.get()`.
 
 ### Transcript directives — inline components the model addresses
 
@@ -533,7 +624,7 @@ host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
 host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
-host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
+host.requestProfile<T>(route, method, params?, timeoutMs?, { spawnPriority? })   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
@@ -544,6 +635,13 @@ cron, kanban, …). `host.requestProfile` accepts a descriptor from
 profile without changing the active chat or gateway. The profile-only overload is
 retained only for the sole-local/legacy topology; registry-aware plugins should pass
 the descriptor so two sources exposing the same profile name cannot collide.
+
+A call that may cold-start a pooled profile backend dials at background priority by
+default, and background dials never get the slot the pool keeps free for user actions.
+When the call IS a user action (a save, a button press, a dialog opening), pass
+`host.requestProfile(route, method, params, undefined, { spawnPriority: 'foreground' })`;
+otherwise, with the pool full of warm backends, it waits out the 30-second slot timeout
+and fails. Keep the background default for polling and roster warming.
 
 `host.openWorkspace(id, { render, title?, minWidth?, onClose? })` docks a
 plugin-rendered view into the **main workspace zone** — the same center area
@@ -934,6 +1032,17 @@ pipeline as a trust boundary.
   the canvas (width/height attributes, not just CSS) — panes resize constantly.
 - **Don't poll faster than a few seconds** with `host.request`; prefer
   `host.onEvent` / `ctx.socket` and let React Query dedupe.
+- **Bare globals are not tracked.** `window.setInterval`, `window.addEventListener`,
+  a `<style>` you append — the host never sees them, so they survive disable and
+  every hot-reload (ES modules can't be unloaded; a hot-edit loop stacks live
+  copies). Use `ctx.setTimeout` / `ctx.setInterval` / `ctx.addEventListener`, and
+  wire anything else to `ctx.onDispose`. Module-scope state is yours to reset.
+- **Module evaluation has a 10 s deadline.** A top-level `await` that never
+  settles (waiting for a gateway that isn't up) fails the load as `import timed
+  out` instead of stalling the plugin scan; do the waiting inside `register()`.
+- **One id, one file.** Two folders exporting the same `id` (a standalone install
+  beside a unified-package copy) load first-wins in folder-name order; the later
+  one shows `duplicate id` on its own row in Capabilities ▸ Plugins.
 - **`ctx.socket` is a no-op on OAuth remotes.** Always have a polling fallback.
 
 ## Reference
@@ -942,7 +1051,7 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

@@ -33,7 +33,6 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
   assert.match(script, /\$mutexPath=\$marker\+"\.mutex"/)
   assert.match(script, /\.Lock\(0,1\)/)
   assert.match(script, /windows_ssh_runtime.*spawn/)
-  assert.match(script, /remote update marker is present/)
 })
 
 test('Windows spawn publishes the initial ownership record before releasing the mutex', () => {

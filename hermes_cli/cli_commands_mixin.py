@@ -1410,10 +1410,17 @@ class CLICommandsMixin:
         # user is still on open, not ended with end_reason="branched" and no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions
         # even after the parent is re-ended with a different end_reason.
+        # The child sends the parent's exact system prompt: a row without one makes the branch's first
+        # turn rebuild (re-probing the workspace), so the warm cache the copied transcript buys is
+        # lost at byte 0 whenever the repo moved since the parent's session start.
+        parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
+        if not isinstance(parent_prompt, str) or not parent_prompt:
+            with suppress(Exception):
+                parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
         try:
             self._session_db.create_session(
                 session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model, parent_session_id=parent_session_id,
+                model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,
                 model_config={"max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
                               "_branched_from": parent_session_id})
         except Exception as e:
@@ -1981,6 +1988,7 @@ class CLICommandsMixin:
                     **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
                                                    "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
+                    side_agent=True,
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),

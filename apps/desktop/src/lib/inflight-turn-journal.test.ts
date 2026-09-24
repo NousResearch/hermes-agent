@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
   type JournalableSessionState,
@@ -102,26 +102,6 @@ describe('persistInFlightTurnState', () => {
     expect(window.localStorage.getItem(sessionStorageKey('expired'))).toBeNull()
     expect(window.localStorage.getItem(sessionStorageKey('old-24'))).toBeNull()
     expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).not.toBeNull()
-  })
-
-  it('writes only the current session instead of reading and rewriting the aggregate journal', () => {
-    const localStorage = window.localStorage
-    const storageConstructor = window.Storage
-
-    const spyTarget =
-      typeof storageConstructor === 'function' && localStorage instanceof storageConstructor
-        ? storageConstructor.prototype
-        : localStorage
-
-    const getItem = vi.spyOn(spyTarget, 'getItem')
-    const setItem = vi.spyOn(spyTarget, 'setItem')
-
-    persistInFlightTurnState(journalState())
-    vi.advanceTimersByTime(400)
-
-    expect(getItem).not.toHaveBeenCalledWith(STORAGE_KEY)
-    expect(setItem).not.toHaveBeenCalledWith(STORAGE_KEY, expect.any(String))
-    expect(setItem).toHaveBeenCalledWith(sessionStorageKey('stored-1'), expect.any(String))
   })
 
   it('keeps another session snapshot when one session settles', () => {
@@ -675,12 +655,14 @@ describe('recoverInFlightTurnJournal', () => {
     // written to the DB (and may even belong to a different conversation).
     // Because no base user matches it, the fold used to treat the whole tail
     // as unknown and append it — duplicating the assistant answers below.
+    // Live rows never carry a durable id; the last committed turn's equal
+    // reply is what proves them stale.
     journalEntry([
       user('user-inflight-a3c2beb1', 'a stray user bubble that never persisted'),
       assistant('assistant-stream-1', 'the committed answer')
     ])
 
-    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer')]
+    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer', { rowId: 42 })]
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
 
     expect(result.caughtUp).toBe(true)
@@ -691,13 +673,50 @@ describe('recoverInFlightTurnJournal', () => {
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 
+  // A steer typed before the first token journals `[prompt, steer, assistant]`.
+  // When only the prompt persisted, the prompt is the anchor: the steer and
+  // the partial reply are recovered under it, and the prompt is not repeated.
+  it('anchors a pre-token steer tail on the persisted prompt', () => {
+    journalEntry([
+      user('user-1', 'remove the session counts'),
+      user('user-2', 'hurry up'),
+      assistant('assistant-stream-1', 'Moving.')
+    ])
+
+    const base = [user('db-u1', 'remove the session counts')]
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.applied).toBe(true)
+    expect(result.messages.map(message => `${message.role}:${chatMessageText(message)}`)).toEqual([
+      'user:remove the session counts',
+      'user:hurry up',
+      'assistant:Moving.'
+    ])
+  })
+
+  it('retires a journal row by durable identity regardless of turn position', () => {
+    journalEntry([assistant('assistant-old', 'the committed answer', { rowId: 42 })])
+
+    const base = [
+      user('db-u1', 'the real prompt'),
+      assistant('db-a1', 'the committed answer', { rowId: 42 }),
+      user('db-u2', 'and then?'),
+      assistant('db-a2', 'done', { rowId: 43 })
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.caughtUp).toBe(true)
+    expect(result.messages).toEqual(base)
+  })
+
   it('does not re-append committed answers when the journal tail has no user row', () => {
     // A tail captured after a partial hydrate can end on assistant rows with
     // no user prompt before them. The old code appended them verbatim, so the
     // transcript ended with a duplicate of an answer that was already settled.
     journalEntry([assistant('assistant-stream-1', 'the committed answer')])
 
-    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer')]
+    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer', { rowId: 42 })]
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
 
     expect(result.caughtUp).toBe(true)

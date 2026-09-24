@@ -317,6 +317,20 @@ def _config_base_url_for_provider(model_cfg: Dict[str, Any], provider: str) -> s
     return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
 
 
+def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:
+    """True when ``base_url`` is another built-in provider's canonical endpoint, not ``provider``'s.
+
+    A persisted session route that pairs one provider with another's endpoint is left over from a
+    switch that kept the old URL (openai-codex + the Nous Portal URL sent the Codex slug to the Portal).
+    Only registered providers are judged: a custom or proxy URL is never another provider's canonical one.
+    """
+    pconfig = PROVIDER_REGISTRY.get(str(provider or "").strip().lower())
+    url = str(base_url or "").strip().rstrip("/")
+    if pconfig is None or not url or url == (pconfig.inference_base_url or "").rstrip("/"):
+        return False
+    return any(url == (other.inference_base_url or "").rstrip("/") for other in PROVIDER_REGISTRY.values())
+
+
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
     """Whether a configured ``model.base_url`` plausibly speaks the Anthropic Messages protocol:
     official Anthropic/Claude hosts, Azure Foundry, or ``/anthropic`` / Kimi ``/coding`` proxies

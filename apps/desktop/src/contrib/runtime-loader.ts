@@ -7,8 +7,11 @@
  *   -> blob `import()` -> validate default HermesPlugin -> register(ctx)
  *
  * Loading the same plugin id again disposes the previous registrations first
- * (agent rewrites a plugin file -> clean reload). Failures toast + log; a
- * broken plugin can never take the app down.
+ * (agent rewrites a plugin file -> clean reload) — everything taken out
+ * through `ctx` (contributions, events, sockets, `ctx.setInterval`/
+ * `ctx.addEventListener`); bare globals and module-scope state are the
+ * plugin's own. Failures toast + log; a broken plugin can never take the app
+ * down, and a module whose evaluation never settles times out on its own row.
  *
  * Sources today: the in-repo runtime example (`?raw`, proves the pipeline)
  * and the two on-disk doors — `<hermes home>/desktop-plugins/<name>/plugin.js`
@@ -55,6 +58,11 @@ interface LoadOptions {
 
 /** Live runtime plugins: id -> disposers (unload/reload support). */
 const loaded = new Map<string, (() => void)[]>()
+
+/** Module evaluation deadline. A top-level `await` that never settles (a dead
+ *  host, a gateway that is not up) would otherwise hang `import()` forever —
+ *  and, through the disk scan's sequential loop, every plugin listed after it. */
+const IMPORT_TIMEOUT_MS = 10_000
 
 // Matches the specifier of a static `from '…'`, a side-effect `import '…'`, or
 // a dynamic `import('…')`. Deliberately loose — a sentence ending in `from`, a
@@ -265,10 +273,23 @@ export async function loadRuntimePlugin(
     const url = URL.createObjectURL(new Blob([rewriteSpecifiers(source)], { type: 'text/javascript' }))
 
     let mod: { default?: HermesPlugin }
+    let deadline: ReturnType<typeof setTimeout> | undefined
 
     try {
-      mod = await import(/* @vite-ignore */ url)
+      mod = await Promise.race([
+        import(/* @vite-ignore */ url) as Promise<{ default?: HermesPlugin }>,
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(
+            () =>
+              reject(
+                new Error(`import timed out after ${IMPORT_TIMEOUT_MS / 1000}s — module evaluation never settled`)
+              ),
+            IMPORT_TIMEOUT_MS
+          )
+        })
+      ])
     } finally {
+      clearTimeout(deadline)
       URL.revokeObjectURL(url)
     }
 
@@ -298,6 +319,16 @@ export async function loadRuntimePlugin(
       })
 
       return null
+    }
+
+    // Two files claiming one id (a standalone install beside a unified-package
+    // copy): the FIRST loaded owns the id. Silently letting the second win
+    // disposed the first's registrations and made each file's hot-reload flip
+    // ownership; instead the later file errors on its own folder row.
+    const owner = $pluginRecords.get()[plugin.id]
+
+    if (owner && owner.file !== options.file) {
+      throw new Error(`duplicate id "${plugin.id}", already loaded from ${owner.file ?? owner.kind}`)
     }
 
     const record = {
@@ -536,15 +567,18 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
       packageOrigin: entry.packageOrigin
     })
 
-    // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
-    // NEW id, so unload the previous incarnation here or its contributions +
-    // inventory row orphan.
-    if (id && prevId && prevId !== id) {
+    // loadRuntimePlugin only disposes the NEW id, so the previous incarnation
+    // is unloaded here when the file no longer yields it: a hot-edit that
+    // changes `plugin.id`, or a save that no longer loads at all (syntax
+    // error, timeout, duplicate). Otherwise the old module's contributions and
+    // its activate handle stay live beside the error row — the Plugins tab
+    // would show a broken file as "loaded" and re-enable stale code.
+    if (prevId && prevId !== id) {
       unloadRuntimePlugin(prevId)
       dropPlugin(prevId)
     }
 
-    entry.id = id ?? entry.id
+    entry.id = id
 
     // A fixing save under a different plugin id — drop the folder-named
     // error record so the inventory shows one row, not a ghost.
@@ -660,7 +694,11 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
         continue // Root missing (no plugins yet) — the poll/watch reconciles.
       }
 
-      for (const dir of entries.filter(e => e.isDirectory)) {
+      // Listing order is filesystem order; sorted so duplicate-id ownership
+      // (first loaded wins) is the same on every launch.
+      const folders = entries.filter(e => e.isDirectory).sort((a, b) => a.name.localeCompare(b.name))
+
+      for (const dir of folders) {
         let file: string | null
 
         try {

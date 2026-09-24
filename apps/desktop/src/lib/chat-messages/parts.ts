@@ -206,48 +206,70 @@ export function collectUnspokenTurnSpeech(
   return { id, pending, text: parts.join('\n\n') }
 }
 
-const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
+export const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
-/**
- * Drop earlier text parts that a later text part repeats verbatim (after
- * whitespace normalization). Providers that continue a turn after a tool
- * call sometimes re-send the previous assistant text as the next message's
- * prefix (tool_calls row, then a stop row with identical prose) — the turn
- * merge then holds the same paragraph twice and everything in it renders
- * twice, most visibly ::preview frames. The LAST occurrence is the
- * authoritative one; keep it.
- */
-export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
-  const lastByText = new Map<string, number>()
+type TextPart = Extract<ChatMessagePart, { type: 'text' }>
+const isTextPart = (part: ChatMessagePart): part is TextPart => part.type === 'text'
+
+/** The same physical row delivered twice is one occurrence; keep its last copy. */
+function dedupeRepeatedRowText(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const occurrence = (part: TextPart) => `${part.sourceRowId}:${normalizeWs(part.text)}`
+  const lastByOccurrence = new Map<string, number>()
 
   parts.forEach((part, index) => {
-    if (part.type === 'text') {
-      const key = normalizeWs(part.text)
-
-      if (key) {
-        lastByText.set(key, index)
-      }
+    if (part.type === 'text' && part.sourceRowId !== undefined) {
+      lastByOccurrence.set(occurrence(part), index)
     }
   })
 
-  const dropped = parts.filter((part, index) => {
-    if (part.type !== 'text') {
-      return true
-    }
+  const kept = parts.filter(
+    (part, index) =>
+      part.type !== 'text' || part.sourceRowId === undefined || lastByOccurrence.get(occurrence(part)) === index
+  )
 
-    const key = normalizeWs(part.text)
+  return kept.length === parts.length ? parts : kept
+}
 
-    return !key || lastByText.get(key) === index
-  })
+/**
+ * Collapse duplicate deliveries of the same text without touching authored
+ * repeats. Providers that continue a turn after a tool call sometimes re-send
+ * the previous assistant text verbatim as the stop row (tool_calls row, then a
+ * stop row with identical prose) — the turn merge then holds the same
+ * paragraph twice and everything in it renders twice, most visibly ::preview
+ * frames. Only that shape folds across rows: the bubble's final text (no tool
+ * call after it) equal to the text directly before it across a tool call.
+ * Equal commentary in earlier tool rounds is authored twice and must hydrate
+ * in step with the live stream.
+ */
+export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const rowDeduped = dedupeRepeatedRowText(parts)
+  const texts = rowDeduped.flatMap((part, index) => (isTextPart(part) ? [{ index, part }] : []))
+  const [previous, last] = texts.slice(-2)
 
-  return dropped.length === parts.length ? parts : dropped
+  if (!last || !previous || rowDeduped.slice(last.index + 1).some(part => part.type === 'tool-call')) {
+    return rowDeduped
+  }
+
+  const key = normalizeWs(last.part.text)
+
+  if (
+    !key ||
+    key !== normalizeWs(previous.part.text) ||
+    !rowDeduped.slice(previous.index + 1, last.index).some(part => part.type === 'tool-call')
+  ) {
+    return rowDeduped
+  }
+
+  return rowDeduped.filter((_, index) => index !== previous.index)
 }
 
 /**
  * Merge the final assistant text into a message's parts.
  *
- * - Removes all existing `text` parts (they were streamed deltas, now superseded
- *   by the authoritative final response).
+ * - Preserves earlier tool-delimited responses: a missed interim frame must
+ *   not make their public text disposable.
+ * - Replaces provisional text only in the latest response with its authoritative
+ *   final text, retaining confirmed text/reasoning boundaries.
  * - Keeps `reasoning` parts, but drops one that the final text fully covers
  *   (reasoning ⊆ final) — the final restates it. A short final ("Done.") must
  *   NOT swallow a longer reasoning block that merely starts with it (#61447).
@@ -280,14 +302,41 @@ export function mergeFinalAssistantText(
     return parts
   }
 
+  // A tool call is an explicit model-response boundary even when no
+  // message.interim frame sealed the earlier text into a separate bubble.
+  // Only the suffix after the last call belongs to this authoritative final.
+  const lastToolIndex = parts.findLastIndex(part => part.type === 'tool-call')
+
+  if (lastToolIndex >= 0) {
+    const earlier = parts.slice(0, lastToolIndex + 1)
+
+    const earlierText = earlier
+      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+      .map(part => part.text)
+      .join('')
+
+    // Some terminal frames carry cumulative text. Strip only an exact prefix;
+    // fuzzy similarity is not proof that two assistant messages are the same.
+    const responseText =
+      earlierText && finalText.startsWith(earlierText) ? finalText.slice(earlierText.length) : finalText
+
+    const suffix = parts.slice(lastToolIndex + 1)
+
+    // A cumulative final can stop exactly at the pre-tool update. The suffix
+    // draft is still provisional; the ordinary empty-final path keeps drafts.
+    if (earlierText && finalText === earlierText) {
+      return [...earlier, ...suffix.filter(part => part.type !== 'text')]
+    }
+
+    return [...earlier, ...mergeFinalAssistantText(suffix, responseText, fallbackTimestamp)]
+  }
+
   const previousText = parts.findLast(part => part.type === 'text')
 
   const kept = parts.filter(part => {
     if (part.type === 'text') {
-      // Sealed text parts were already finalized into their own bubbles —
-      // this filter only runs on the LAST streaming bubble, so there are no
-      // sealed parts here. All text parts are streamed deltas that get
-      // replaced by the authoritative final text.
+      // The tool-delimited prefix was retained above. This suffix is
+      // provisional text from the response being finalized.
       return false
     }
 

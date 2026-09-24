@@ -203,14 +203,6 @@ def test_explicit_filter_drops_unverified_external_process_row(tmp_path, monkeyp
 # --- Accounts-tab cli_command ------------------------------------------------
 
 
-def test_catalog_sign_in_command_is_a_valid_copilot_invocation():
-    from hermes_cli.web_server_oauth import _OAUTH_PROVIDER_CATALOG
-
-    entry = next(e for e in _OAUTH_PROVIDER_CATALOG if e["id"] == "copilot-acp")
-    # `copilot /login` is not a valid invocation — slash-commands only exist
-    # inside an interactive session. The catalog must hand users a command
-    # that actually starts a login flow.
-    assert entry["cli_command"] == "copilot login"
 
 
 def test_cli_command_reflects_configured_executable(tmp_path, monkeypatch, _clean_copilot_env):

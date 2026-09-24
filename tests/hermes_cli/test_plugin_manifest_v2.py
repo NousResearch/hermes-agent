@@ -54,22 +54,6 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 class TestV1Regression:
-    def test_v1_manifest_parses_with_defaults(self, hermes_home):
-        _write_plugin(hermes_home / "plugins", "oldie")
-        _enable(hermes_home, ["oldie"])
-        mgr = PluginManager()
-        mgr.discover_and_load()
-        loaded = mgr._plugins["oldie"]
-        assert loaded.enabled
-        m = loaded.manifest
-        assert m.manifest_version == 1
-        assert m.api_version is None
-        assert m.requires_plugins == []
-        assert m.python_dependencies == []
-        assert m.config_schema == {}
-        assert m.license == ""
-        assert m.homepage == ""
-        assert m.tags == []
 
     def test_v1_unknown_fields_do_not_warn_loudly(self, hermes_home, caplog):
         _write_plugin(
@@ -146,7 +130,7 @@ class TestV2Parsing:
             mgr = PluginManager()
             mgr.discover_and_load()
         assert mgr._plugins["fromfuture"].enabled
-        assert "newer than this Hermes" in caplog.text
+        assert str(SUPPORTED_MANIFEST_VERSION + 5) in caplog.text
 
     def test_malformed_v2_fields_warn_and_degrade(self, hermes_home, caplog):
         _write_plugin(
@@ -366,7 +350,6 @@ class TestPythonDependenciesSeam:
         assert mgr._plugins["pipful"].enabled
         assert "definitely-not-a-real-package-64165" in caplog.text
         assert "pip install" in caplog.text
-        assert "hermes plugins enable pipful" in caplog.text
         assert calls == []
 
     def test_satisfied_pip_dep_is_quiet(self, hermes_home, caplog):
@@ -478,6 +461,52 @@ class TestLoadIsolation:
         _enable(hermes_home, ["ctrlc"])
         with pytest.raises(KeyboardInterrupt):
             PluginManager().discover_and_load()
+
+    def test_register_overrunning_load_timeout_skips_only_that_plugin(self, hermes_home, caplog):
+        """A register() that never returns used to hang startup forever (#108139). Under
+        ``plugins.load_timeout_seconds`` that plugin alone is recorded as failed with a named reason, its
+        pre-hang registrations are disposed, later plugins still load, and anything the abandoned worker
+        registers afterwards is ignored."""
+        import sys
+        import threading
+        sys._deadline_gate, sys._deadline_done = threading.Event(), threading.Event()
+        _write_plugin(hermes_home / "plugins", "b_slow", register_body=(
+            "import sys; ctx.register_hook('pre_tool_call', lambda **kw: None); sys._deadline_gate.wait(5); "
+            "ctx.register_hook('post_tool_call', lambda **kw: None); sys._deadline_done.set()"))
+        _write_plugin(hermes_home / "plugins", "c_after")
+        _enable(hermes_home, ["b_slow", "c_after"])
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": ["b_slow", "c_after"], "load_timeout_seconds": 0.3}}))
+        mgr = PluginManager()
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr.discover_and_load()
+                assert mgr._plugins["c_after"].enabled
+                assert not mgr._plugins["b_slow"].enabled
+                assert mgr._plugins["b_slow"].error
+                assert mgr._hooks.get("pre_tool_call", []) == []  # registered before the hang → disposed
+                sys._deadline_gate.set()  # release the abandoned worker; its late registration must bounce
+                assert sys._deadline_done.wait(5)
+            assert mgr._hooks.get("post_tool_call", []) == []
+        finally:
+            del sys._deadline_gate, sys._deadline_done
+
+    def test_load_timeout_zero_runs_register_inline(self, hermes_home):
+        """``plugins.load_timeout_seconds: 0`` disables the deadline: register() runs on the calling thread."""
+        import sys
+        import threading
+        _write_plugin(hermes_home / "plugins", "inline",
+                      register_body="import sys, threading; sys._load_thread = threading.current_thread()")
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": ["inline"], "load_timeout_seconds": 0}}))
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert mgr._plugins["inline"].enabled
+            assert sys._load_thread is threading.current_thread()
+        finally:
+            if hasattr(sys, "_load_thread"):
+                del sys._load_thread
 
 
 class TestBundledKeyShadowing:

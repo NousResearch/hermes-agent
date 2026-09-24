@@ -150,6 +150,10 @@ User plugins at `~/.hermes/plugins/model-providers/<name>/` override bundled mod
 
 **General plugins and user-installed backends are disabled by default** — discovery finds them (so they show up in `hermes plugins` and `/plugins`), but nothing with hooks or tools loads until you add the plugin's name to `plugins.enabled` in `~/.hermes/config.yaml`. This stops third-party code from running without your explicit consent.
 
+:::note `plugins.enabled` governs plugins only
+[Gateway event hooks](./hooks.md#gateway-event-hooks) under `~/.hermes/hooks/<name>/` are not plugins and are **not** gated by `plugins.enabled` or `plugins.disabled`. That directory is trusted by placement: any subdirectory holding a valid `HOOK.yaml` + `handler.py` is imported by the gateway at startup, and placing the files there is the opt-in. See the [gateway hook trust model](./hooks.md#gateway-hook-trust).
+:::
+
 ```yaml
 plugins:
   enabled:
@@ -157,6 +161,11 @@ plugins:
     - disk-cleanup
   disabled:       # optional deny-list — always wins if a name appears in both
     - noisy-plugin
+  # Optional: deadline (seconds) for each Git clone, fetch or checkout
+  # during plugin installation, including automatic memory-provider migration.
+  # Default 300; values above 3600 are clamped. A subdirectory install
+  # (owner/repo/path/to/plugin) downloads only that folder's files.
+  clone_timeout_seconds: 300
   # Optional: wall-clock cap (seconds) for timeout-bounded in-process Python
   # plugin hook callbacks (hot-path observers + pre_tool_call). Default 30;
   # set 0 to disable; values above 600 are clamped. Timed-out pre_tool_call
@@ -164,6 +173,13 @@ plugins:
   # subagent_stop are never moved onto a timeout worker.
   # Shell hooks keep their own per-entry timeout under the top-level hooks: key.
   hook_callback_timeout: 30
+  # Optional: deadline (seconds) for one plugin's import + register() at load.
+  # A plugin that overruns it is skipped with the reason "load timed out after
+  # Ns" (reported like any other load failure: the startup warning and the
+  # in-session `/plugins` listing) and the remaining plugins keep loading; the
+  # stuck thread is abandoned. Default 10; set 0 to disable; values above 600
+  # are clamped.
+  load_timeout_seconds: 10
 ```
 
 Three ways to flip state:
@@ -306,7 +322,7 @@ Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.p
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -371,16 +387,19 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 
 ```bash
 hermes plugins                               # unified interactive UI
-hermes plugins list                          # table: enabled / disabled / not enabled
+hermes plugins list                          # table: enabled / disabled / not enabled (bundled backends,
+                                             # platforms and the live memory.provider count as enabled)
 hermes plugins search <term>                 # search the Hermes plugin catalog
 hermes plugins install <name>                # install a catalog entry (repo @ reviewed pinned SHA)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
 hermes plugins install user/repo --enable    # install AND enable (no prompt)
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
-hermes plugins remove my-plugin              # uninstall
+hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
+                                             # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
-hermes plugins disable my-plugin             # remove from allow-list + add to disabled
+hermes plugins disable my-plugin             # remove from allow-list + add to disabled (bundled platforms:
+                                             # either spelling works, e.g. photon-platform or platforms/photon)
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
 ```
 
@@ -454,7 +473,12 @@ gracefully.
 **Update re-consent:** if a plugin update declares capabilities you haven't
 granted, `hermes plugins update` surfaces the additions and asks again. New
 capabilities stay off until you consent — a plugin update can never silently
-widen its access.
+widen its access. Catalog re-pins go one step further: when the new pin adds
+tools, hooks, Python dependencies, host capabilities or a Desktop UI half the
+installed version did not have, the CLI shows the delta and asks `y/N` before
+anything moves, and the Desktop / dashboard **Update** button opens the same
+confirmation. Declining (or a non-interactive session) leaves the plugin at
+the old pin.
 
 **Non-interactive sessions fail closed:** installing or updating without a
 TTY completes the install, but declared capabilities are *not* granted. Run

@@ -1028,9 +1028,12 @@ def _issue(issues: List["ConfigIssue"], severity: str, message: str, hint: str) 
 def _require_fields(
     issues: List["ConfigIssue"], entry: Dict[str, Any], label: str,
     fields: Tuple[Tuple[str, str], ...], suffix: str = "") -> None:
-    """Append a warning for every falsy ``field`` of *entry* (message: ``<label> is missing '<f>' field``)."""
+    """Append a warning for every blank ``field`` of *entry* (message: ``<label> is missing '<f>' field``).
+
+    Blank means ``str(value or "").strip()`` is empty, the check ``_iter_fallback_entries`` drops an
+    entry on; the custom_providers runtime also drops a whitespace-only name or base_url."""
     for field, hint in fields:
-        if not entry.get(field):
+        if not str(entry.get(field) or "").strip():
             _issue(issues, "warning", f"{label} is missing '{field}' field{suffix}", hint)
 
 
@@ -1141,6 +1144,26 @@ def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
+_FBP_LIST_HINT = "Change to:\n  fallback_providers:\n    - provider: openrouter\n      model: anthropic/claude-sonnet-4"
+
+
+def _validate_fallback_providers(fbp: Any, issues: List[ConfigIssue]) -> None:
+    """fallback_providers: list of dicts (chain) OR one dict. ``_iter_fallback_entries`` silently
+    drops non-dict and half-filled entries, and reads any other type as an empty chain. A blank
+    string means no chain; a quoted chain is ``_validate_quoted_containers``' finding (list slot)."""
+    if isinstance(fbp, list):
+        _validate_entry_list(fbp, "fallback_providers", issues, _FB_REQUIRED_FIELDS, non_dict=(
+            "error", "fallback_providers[{i}] should be a dict, got {type}", "Each entry needs provider + model"))
+    elif isinstance(fbp, dict):
+        if fbp:
+            _require_fields(issues, fbp, "fallback_providers", _FB_SINGLE_REQUIRED_FIELDS,
+                            suffix=" — this entry is dropped from the fallback chain")
+    elif not (isinstance(fbp, str) and (not fbp.strip() or _looks_structured_value(fbp))):
+        _issue(issues, "error",
+               f"fallback_providers should be a list of provider entries, got {type(fbp).__name__}",
+               _FBP_LIST_HINT)
+
+
 def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
     call with a generic "no registered provider" error; warn at startup instead."""
@@ -1223,7 +1246,9 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     _validate_timezone(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
-    for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
+    fbp = config.get("fallback_providers")
+    for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model),
+                             (fbp, _validate_fallback_providers)):
         if value is not None:
             validator(value, issues)
 

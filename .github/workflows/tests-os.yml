@@ -268,3 +268,23 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+      - name: No leftover Python / Hermes processes
+        # Backstop for the per-test ownership checks: a file killed by its 900 s timeout,
+        # or a detached grandchild some test's cleanup missed, leaves an interpreter behind
+        # (Windows never re-parents, so nothing reaps it). The runner itself runs no
+        # python.exe / hermes.exe once the suite is done.
+        if: always()
+        shell: pwsh
+        run: |
+          $names = 'python.exe', 'pythonw.exe', 'hermes.exe'
+          $deadline = (Get-Date).AddSeconds(20)
+          do {
+            $left = @(Get-CimInstance Win32_Process | Where-Object { $names -contains $_.Name.ToLower() })
+            if ($left.Count -eq 0) { 'no leftover python/hermes processes'; exit 0 }
+            Start-Sleep -Milliseconds 500
+          } while ((Get-Date) -lt $deadline)
+          foreach ($p in $left) {
+            "::error::leftover pid=$($p.ProcessId) ppid=$($p.ParentProcessId): $($p.CommandLine)"
+          }
+          exit 1

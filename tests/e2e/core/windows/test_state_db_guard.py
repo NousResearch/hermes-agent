@@ -10,6 +10,7 @@ once the gateway is stopped, so a refusal is about the holder and nothing else.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -64,7 +65,8 @@ def test_optimize_storage_refuses_while_gateway_holds_store(tmp_path: Path) -> N
             gw.wait(timeout=60)
             quiet = hermes(home, "sessions", "optimize-storage")
             assert quiet.returncode == 0, f"optimize-storage fails even with no holder:\n{quiet.tail()}"
-            named = any(str(p.pid) in held.stdout for p in tree)  # venv launcher OR its interpreter child
+            # venv launcher OR its interpreter child; whole-number match (pid 12 is not in 4123).
+            named = any(re.search(rf"\b{p.pid}\b", held.stdout) for p in tree)
             expect(refused and named,
                    f"optimize-storage ran under a live gateway (pid {gw.pid}) instead of refusing:\n{held.tail()}")
         finally:

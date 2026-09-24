@@ -6,11 +6,13 @@
   printed, the prompt reached the wire, and both messages persisted to ``state.db`` under
   the session id the CLI announced.
 * ``hermes serve`` (the Desktop backend) — announces its port on stdout, and after the
-  Desktop's Windows quit path (``taskkill /T /F``) leaves no process of its tree behind
-  and a fresh backend boots again over the leftover host records.
+  Desktop's Windows quit path (``taskkill /T /F``) leaves no process behind that it
+  spawned (found by ownership of the scratch profile, not by parent links, which a
+  detached grandchild does not keep) and a fresh backend boots again over the leftover
+  host records.
 * ``hermes gateway run`` + ``hermes gateway stop`` — the Windows graceful-stop IPC (stop
   marker, not TerminateProcess) drains the gateway: it exits on its own, records
-  ``stopped``, removes its pid file, and nothing of its tree survives.
+  ``stopped``, removes its pid file, and nothing it spawned survives.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import re
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -32,13 +35,13 @@ from tests.e2e.core.windows._helpers import (
     hermes,
     hermes_argv,
     hermes_exe,
-    kill_tree,
+    kill_owned,
     last_user,
     make_home,
     nonce,
-    process_tree,
+    owned_processes,
+    owned_survivors,
     run,
-    survivors,
     taskkill_tree,
     wait_until,
 )
@@ -127,22 +130,27 @@ def _serve_ready(home: WinHome) -> tuple[subprocess.Popen, int]:
 def test_serve_tree_kill_leaves_no_orphans_and_reboots(tmp_path: Path) -> None:
     with FakeLLMServer() as srv:
         home = make_home(tmp_path, srv.base_url)
-        first, port = _serve_ready(home)
-        tree = process_tree(first.pid)
-        second = None
+        started = time.time()
         try:
+            first, port = _serve_ready(home)
+            # Positive control: the ownership scan must see the backend itself, or an empty
+            # scan after the kill would prove nothing.
+            owned = {p.pid for p in owned_processes(home, since=started)}
+            assert first.pid in owned, f"ownership scan cannot see serve pid {first.pid} (saw {owned})"
+
             killed = taskkill_tree(first.pid)
             assert killed.returncode == 0, killed.stderr
-            left = survivors(tree, timeout=30)
-            assert not left, f"processes of the killed backend tree survived taskkill /T /F: {left}"
+            # Ownership, not ancestry: anything the backend spawned detached (a broken
+            # parent link taskkill /T cannot follow) still carries this profile's
+            # HERMES_HOME / cwd, and is an orphan the Desktop quit leaves behind.
+            left = owned_survivors(home, since=started, timeout=30)
+            assert not left, f"processes of the killed backend outlived taskkill /T /F: {left}"
             wait_until(lambda: not _port_open(port), 30, f"port {port} to be released")
 
             second, port2 = _serve_ready(home)
             assert second.poll() is None and _port_open(port2)
         finally:
-            kill_tree(tree)
-            if second is not None:
-                kill_tree(process_tree(second.pid))
+            kill_owned(home, since=started)
 
 
 def _gateway_state(home: WinHome) -> dict:
@@ -157,15 +165,14 @@ def test_gateway_stop_drains_gracefully(tmp_path: Path) -> None:
     with FakeLLMServer() as srv:
         home = make_home(tmp_path, srv.base_url)
         log = tmp_path / "gateway.log"
+        started = time.time()
         with log.open("wb") as fh:
             gw = subprocess.Popen(hermes_argv("gateway", "run"), cwd=home.project, env=home.env(),
                                   stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT)
-        tree: list = []
         try:
             wait_until(lambda: _gateway_state(home).get("gateway_state") == "running" or gw.poll() is not None,
                        READY_TIMEOUT, "gateway_state.json to report running")
             assert gw.poll() is None, f"gateway exited {gw.returncode} during boot:\n{log.read_text(errors='replace')}"
-            tree = process_tree(gw.pid)
 
             res = hermes(home, "gateway", "stop")
             assert res.returncode == 0 and "Stopped" in res.stdout, res.tail()
@@ -175,6 +182,7 @@ def test_gateway_stop_drains_gracefully(tmp_path: Path) -> None:
                 f"gateway did not drain through its graceful path (rc={code}); last state {state}\n"
                 f"{log.read_text(errors='replace')[-3000:]}")
             assert not (home.hermes_home / "gateway.pid").exists(), "gateway.pid left behind after stop"
-            assert not survivors(tree, timeout=30), "processes of the gateway tree survived stop"
+            left = owned_survivors(home, since=started, timeout=30)
+            assert not left, f"processes of the gateway survived stop: {left}"
         finally:
-            kill_tree(tree or process_tree(gw.pid))
+            kill_owned(home, since=started)

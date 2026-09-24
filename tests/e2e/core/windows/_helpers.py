@@ -229,21 +229,6 @@ def process_tree(pid: int) -> list[Any]:
         return []
 
 
-def survivors(procs: Iterable[Any], timeout: float) -> list[str]:
-    """Wait until every handle is gone; describe the ones still running at the deadline."""
-    import psutil
-
-    procs = list(procs)
-    _gone, alive = psutil.wait_procs(procs, timeout=timeout)
-    out = []
-    for p in alive:
-        try:
-            out.append(f"{p.pid} {' '.join(p.cmdline())[:200]}")
-        except psutil.Error:
-            continue
-    return out
-
-
 def kill_tree(procs: Iterable[Any]) -> None:
     """Test cleanup only: hard-kill whatever this test spawned that is still alive."""
     import psutil
@@ -253,6 +238,77 @@ def kill_tree(procs: Iterable[Any]) -> None:
             p.kill()
         except psutil.Error:
             pass
+
+
+def _under(path: str, root: str) -> bool:
+    path = os.path.normcase(os.path.normpath(path))
+    return path == root or path.startswith(root + os.sep)
+
+
+def _owned_by(proc: Any, root: str, home: str) -> bool:
+    """One process belongs to the fake profile if its HERMES_HOME is that home, or its
+    cwd or any argv element lives under the profile root. Environment and cwd are
+    inherited by detached grandchildren, so they survive a broken parent link."""
+    import psutil
+
+    try:
+        env = {k.upper(): v for k, v in proc.environ().items()}
+        if "HERMES_HOME" in env and os.path.normcase(os.path.normpath(env["HERMES_HOME"])) == home:
+            return True
+        if _under(proc.cwd(), root):
+            return True
+        return any(_under(arg, root) or root + os.sep in os.path.normcase(arg) for arg in proc.cmdline())
+    except (psutil.Error, OSError):
+        return False
+
+
+def owned_processes(home: WinHome, *, since: float) -> list[Any]:
+    """Every live process created at/after ``since`` (epoch s) that belongs to ``home``,
+    whatever its parent. Windows never re-parents: a child of a killed process keeps a
+    dangling ppid, so ``Process.children()`` (and ``taskkill /T``) cannot see it. Finding
+    orphans needs ownership, not ancestry."""
+    import psutil
+
+    root = os.path.normcase(os.path.normpath(str(home.root)))
+    hermes_home = os.path.normcase(os.path.normpath(str(home.hermes_home)))
+    me = os.getpid()
+    owned = []
+    for proc in psutil.process_iter():
+        try:
+            if proc.pid == me or proc.create_time() < since - 1.0:  # 1 s: create_time rounding
+                continue
+        except psutil.Error:
+            continue
+        if _owned_by(proc, root, hermes_home):
+            owned.append(proc)
+    return owned
+
+
+def describe(procs: Iterable[Any]) -> list[str]:
+    import psutil
+
+    out = []
+    for p in procs:
+        try:
+            out.append(f"pid={p.pid} ppid={p.ppid()} {' '.join(p.cmdline())[:200]}")
+        except psutil.Error:
+            continue
+    return out
+
+
+def owned_survivors(home: WinHome, *, since: float, timeout: float) -> list[str]:
+    """Poll until nothing owned by ``home`` is alive; describe what is left at the deadline."""
+    deadline = time.monotonic() + timeout
+    while True:
+        left = describe(owned_processes(home, since=since))
+        if not left or time.monotonic() >= deadline:
+            return left
+        time.sleep(0.25)
+
+
+def kill_owned(home: WinHome, *, since: float) -> None:
+    """Test cleanup only: hard-kill every process this test's profile still owns."""
+    kill_tree(owned_processes(home, since=since))
 
 
 def taskkill_tree(pid: int) -> subprocess.CompletedProcess:

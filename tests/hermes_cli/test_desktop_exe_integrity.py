@@ -265,10 +265,85 @@ def test_gate_fails_clearly_without_backup(tmp_path, capsys):
     assert "No usable backup" in out
 
 
-# ─── end-to-end: `hermes desktop --build-only` exits nonzero on corrupt exe ─
+# ─── launch-time re-verification (#119223) ──────────────────────────────────
+#
+# The content-hash stamp covers the SOURCE tree and the post-build gate only
+# verifies the STAGED exe: an exe corrupted after its build (interrupted
+# in-place replace while locked, antivirus stub) still reports "up to date"
+# and launches straight into an Electron shell / blank window (#119223,
+# #70825). The launch path must re-verify the exe itself instead.
+
+
+@pytest.mark.windows_only
+def test_skip_build_refuses_to_launch_corrupt_exe(tmp_path, monkeypatch, capsys):
+    """``--skip-build`` promises the on-disk artifact; a corrupt Hermes.exe
+    must fail loudly instead of launching a broken app into a blank window.
+
+    ``windows_only``: the launch-time check mirrors the build-time gate and
+    is a no-op off Windows.
+    """
+    root = tmp_path / "hermes-agent"
+    desktop_dir = root / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+
+    exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+    make_pe(exe, PE_AMD64, truncate_to=0x300)  # corrupt after its build
+
+    launch_ok = subprocess.CompletedProcess(["Hermes.exe"], 0)
+    with patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"), \
+         patch("hermes_cli.main_desktop.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code != 0
+    # The broken exe must never be launched.
+    mock_run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "integrity check" in out
+
+
+@pytest.mark.windows_only
+def test_up_to_date_launch_rebuilds_corrupt_exe(tmp_path, monkeypatch, capsys):
+    """Stamp-current normal path: a corrupt Hermes.exe triggers rollback or
+    rebuild, and the launch uses the repaired exe — never the corrupt one.
+
+    ``windows_only``: same gate scoping as above.
+    """
+    root = tmp_path / "hermes-agent"
+    desktop_dir = root / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+
+    exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+    make_pe(exe, PE_AMD64, truncate_to=0x300)  # corrupt after its build
+
+    def fake_rebuild(desktop_dir_arg, *, source_mode, npm, env):
+        assert source_mode is False
+        make_pe(exe, PE_AMD64)  # rebuild repairs the exe in place
+        return exe
+
+    launch_ok = subprocess.CompletedProcess(["Hermes.exe"], 0)
+    with patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="npm.cmd"), \
+         patch("hermes_cli.main_desktop._build_desktop_app", side_effect=fake_rebuild) as mock_build, \
+         patch("hermes_cli.main_desktop.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(build_only=False))
+
+    assert exc.value.code == 0
+    mock_build.assert_called_once()
+    # Launched exactly once, with the repaired exe.
+    mock_run.assert_called_once()
+    assert mock_run.call_args[0][0][0] == str(exe)
+    assert main_desktop._parse_pe_machine(exe) == PE_AMD64
 
 
 def _ns(**kw):
+    """Namespace defaults shared by the cmd_gui tests in this file."""
     defaults = dict(
         skip_build=False,
         build_only=True,

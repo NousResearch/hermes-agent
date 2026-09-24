@@ -1655,6 +1655,43 @@ def _check_desktop_skip_build(
         desktop_launch_notice(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
 
 
+def _verify_packaged_exe_for_launch(
+    desktop_dir: Path, packaged_executable: Path, *, env: dict, allow_rebuild: bool
+) -> Path:
+    """Re-verify the on-disk Hermes.exe before launching it (Windows).
+
+    The content-hash stamp covers the SOURCE tree and the post-build gate
+    only verifies the STAGED exe: an exe corrupted after its build
+    (interrupted in-place replace while locked, antivirus stub) still
+    reports "up to date" and launches into an Electron shell / blank
+    window (#119223, #70825). A failure restores the backup or rebuilds
+    instead of launching a broken app. No-op off Windows, mirroring the
+    build-time gate.
+    """
+    if sys.platform != "win32":
+        return packaged_executable
+    error = _desktop_exe_integrity_error(packaged_executable)
+    if error is None:
+        return packaged_executable
+    print(f"✗ The packaged Hermes.exe failed its integrity check: {error}\n    at: {packaged_executable}")
+    restored = _rollback_desktop_from_backup(packaged_executable)
+    if restored is not None:
+        print("  ↩ Restored the previous working Hermes.exe from backup.")
+        return restored
+    if not allow_rebuild:
+        print("  Rebuild it:  hermes desktop --force-build")
+        print("  (Or drop --skip-build to rebuild automatically.)")
+        sys.exit(1)
+    from hermes_cli.main_install_repair import _resolve_node_runtime_npm
+    npm = _resolve_node_runtime_npm()
+    if not npm:
+        print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
+        print("Install Node.js, then run:  hermes gui")
+        sys.exit(1)
+    print("→ Rebuilding the desktop app to replace it...")
+    return _build_desktop_app(desktop_dir, source_mode=False, npm=npm, env=env)
+
+
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
     launch_command = [str(packaged_executable)]
@@ -1696,6 +1733,7 @@ def cmd_gui(args: argparse.Namespace):
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
+    freshly_built = False
     needs_build = not skip_build and (
         force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
     )
@@ -1713,12 +1751,22 @@ def cmd_gui(args: argparse.Namespace):
         )
     elif needs_build:
         # --force-build overrides the content-hash stamp and always rebuilds.
+        freshly_built = True
         built = _build_desktop_app(desktop_dir, source_mode=source_mode, npm=npm, env=env)
         if not source_mode:
             packaged_executable = built
     else:
         build_label = "source build" if source_mode else "packaged app"
         desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)
+
+    if not source_mode and packaged_executable is not None and not freshly_built:
+        # The stamp covers the source tree, not the packaged output: an exe
+        # corrupted after its build still reports "up to date" above. A
+        # freshly-built exe just passed the same gate in
+        # _promote_staged_desktop_app, so only re-verify the rest.
+        packaged_executable = _verify_packaged_exe_for_launch(
+            desktop_dir, packaged_executable, env=env, allow_rebuild=not skip_build,
+        )
 
     # Best-effort and idempotent; a failure must never stop the app from launching.
     # An app-grid launch (DESKTOP_STARTUP_ID) must not write its own entry while the

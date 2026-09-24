@@ -96,17 +96,21 @@ def _strip_shell_comments(command: str) -> str:
     """Strip shell comments before LLM assessment.
 
     This is a word/quote-aware heuristic, not a full shell or heredoc parser.
-    Quote state carries across lines. Commands containing expansion/special-quote
+    Quote state carries across lines. Commands containing expansion/extglob/special-quote
     markers, or a heredoc, are preserved verbatim: the shared scanner cannot
-    establish word boundaries reliably for nested expansions or dollar quotes,
+    establish word boundaries reliably for expansions, extglobs or dollar quotes,
     and a heredoc body is data (``execute_code`` wraps its Python script as one).
     """
     # Even quoted/escaped markers take this conservative path. Trying to classify
     # them here could miss nested or multiline substitutions and hide executable
     # suffixes. The guardian's untrusted-input instructions still apply to comments.
     # Detect markers split by line continuations without changing the input.
+    # Extglob may be enabled by an earlier line or inherited shell state; its
+    # closing ')' belongs to the word, so a following '#' can still be data.
     marker_text = command.replace("\\\n", "")
-    if any(marker in marker_text for marker in ("<(", ">(", "$(", "${", "$'", '$"', "`")):
+    if any(marker in marker_text for marker in (
+        "<(", ">(", "$(", "${", "$'", '$"', "`", "@(", "?(", "*(", "+(", "!(",
+    )):
         return command
 
     spans = _comment_spans(command)

@@ -145,9 +145,10 @@ class FanoutTransport:
 
     One slow socket must not stop the emitting turn or any healthy subscriber.
     Each peer has at most one daemon writer and a bounded backlog. On overflow
-    it loses its subscription and that peer's transport is closed so reconnect
-    plus history/replay can run; other subscribers are left alone. A write
-    already in the OS cannot be revoked.
+    it loses its subscription and that peer's transport is closed so the client
+    notices, reconnects and replays history. Closing the socket also drops any
+    other sessions multiplexed on it; the same reconnect + replay recovers them.
+    Other sockets are unaffected. A write already in the OS cannot be revoked.
     """
 
     _MAX_PENDING_FRAMES = 256

@@ -97,13 +97,25 @@ class PipeClient:
         return self.frames.get(timeout=5)
 
 
+class _SocketWS:
+    """ASGI-ws stand-in for SocketClient: send goes to the socketpair, close is a no-op."""
+    def __init__(self, client):
+        self.client = client
+
+    async def send_text(self, payload):
+        await self.client.send_text(payload)
+
+    async def close(self, code=1000):
+        return None
+
+
 class SocketClient(WSTransport):
     """Real WSTransport with its ASGI send backed by a kernel socketpair."""
     def __init__(self, stack, *, reading=True):
         self.reader, self.writer = socket.socketpair()
         self.writer.setblocking(False)
         loop = asyncio.new_event_loop()
-        super().__init__(self, loop)
+        super().__init__(_SocketWS(self), loop)
         self.writes = 0
         self.loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
         self.loop_thread.start()

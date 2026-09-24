@@ -6,6 +6,7 @@ after accept). Mount as ``@app.websocket("/api/ws") async def ws(ws): await hand
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import concurrent.futures
 import json
 import logging
@@ -223,8 +224,7 @@ class WSTransport:
             self._token_flush_handle = None
             if handle is not None:
                 handle.cancel()
-            # SocketClient tests pass ``self`` as the ASGI ws; skip that stand-in.
-            if self._ws is not None and self._ws is not self:
+            if self._ws is not None:
                 self._loop.create_task(self._close_stalled_socket())
 
         try:
@@ -234,10 +234,9 @@ class WSTransport:
         if on_loop:
             _finish_close()
             return
-        try:
+        # A loop that already shut down has nothing left to cancel or close.
+        with contextlib.suppress(RuntimeError):
             self._loop.call_soon_threadsafe(_finish_close)
-        except RuntimeError:
-            pass
 
     async def _close_stalled_socket(self) -> None:
         """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its

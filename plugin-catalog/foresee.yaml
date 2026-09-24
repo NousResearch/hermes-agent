@@ -1,0 +1,19 @@
+name: foresee
+title: Foresee
+repo: https://github.com/Foresee-Tech/foresee
+sha: 18361bd74ffce667fbceb2a60a57d3eabff11854
+subdir: plugins/foresee
+description: 'Let AI assistants shop for home and auto insurance: compare instant quotes across every carrier.
+  Connects to the hosted Foresee MCP server (Streamable HTTP at agents.go-foresee.com), with three workflow
+  skills bundled. Portable Agent Plugins v1 package (mcp.json + skills/).'
+maintainer: Foresee-Tech
+tier: community
+category: tools
+version: "0.4.1"
+docs_url: https://go-foresee.com/docs
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

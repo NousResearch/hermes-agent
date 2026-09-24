@@ -73,13 +73,46 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
 
 # Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), double-quoted terms,
-# single-quoted terms, then "X aka Y" (both sides).
-_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
+# single-quoted terms, then "X aka Y" (both sides). Word matching is Unicode-aware; capitalized phrases are
+# assembled from adjacent words so every Unicode script uses the same case rules.
+_RE_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+_RE_QUOTED_ENTITY = (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
 _RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).
 _ENTITY_LOOKUPS = ("SELECT entity_id FROM entities WHERE name LIKE ?",
                    "SELECT entity_id FROM entities WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'")
+
+
+def _extract_capitalized_phrases(text: str) -> list[str]:
+    """Return adjacent multi-word phrases whose words use Unicode title case."""
+    phrases: list[str] = []
+    current: list[str] = []
+    previous_end: int | None = None
+
+    for match in _RE_WORD.finditer(text):
+        word = match.group(0)
+        is_capitalized = word[0].isupper() and word[1:].islower()
+        adjacent = previous_end is not None and text[previous_end:match.start()].isspace()
+        if is_capitalized and adjacent:
+            current.append(word)
+        else:
+            if len(current) > 1:
+                phrases.append(" ".join(current))
+            current = [word] if is_capitalized else []
+        previous_end = match.end()
+
+    if len(current) > 1:
+        phrases.append(" ".join(current))
+    return phrases
+
+
+def _is_entity_candidate(name: str) -> bool:
+    """Reject command/configuration fragments while keeping natural-language terms."""
+    if len(name) < 2 or name.startswith("-") or "=" in name:
+        return False
+    letters = sum(char.isalpha() for char in name)
+    return letters >= len(name) / 2
 
 
 def _clamp_trust(value: float) -> float:
@@ -214,13 +247,15 @@ class MemoryStore:
             return {"fact_id": fact_id, "old_trust": old_trust, "new_trust": new_trust, "helpful_count": row["helpful_count"] + increment}
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""
-        raw = [m.group(1) for pattern in _RE_SINGLE_ENTITY for m in pattern.finditer(text)]
-        for m in _RE_AKA.finditer(text):
-            raw += [m.group(1), m.group(2)]
-        uniq: dict[str, str] = {}  # lower-cased key -> first-seen spelling, insertion-ordered
-        for name in filter(None, (n.strip() for n in raw)):
-            uniq.setdefault(name.lower(), name)
+        """Extract Unicode-aware entity candidates, deduplicated case-insensitively in first-seen order."""
+        raw = _extract_capitalized_phrases(text)
+        for pattern in _RE_QUOTED_ENTITY:
+            raw.extend(match.group(1) for match in pattern.finditer(text))
+        for match in _RE_AKA.finditer(text):
+            raw.extend((match.group(1), match.group(2)))
+        uniq: dict[str, str] = {}  # case-folded key -> first-seen spelling, insertion-ordered
+        for name in filter(_is_entity_candidate, (candidate.strip() for candidate in raw)):
+            uniq.setdefault(name.casefold(), name)
         return list(uniq.values())
 
     def _link_entities(self, fact_id: int, content: str) -> None:

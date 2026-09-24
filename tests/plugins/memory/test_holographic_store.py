@@ -45,6 +45,35 @@ def db_path(tmp_path):
     return tmp_path / "memory_store.db"
 
 
+class TestEntityExtraction:
+    def test_capitalized_phrases_support_unicode_scripts(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities(
+                "Иван Петров met John Doe and Љуба Петровић"
+            ) == ["Иван Петров", "John Doe", "Љуба Петровић"]
+
+    def test_cyrillic_fact_links_entities(self, db_path):
+        with MemoryStore(db_path) as store:
+            store._hrr_available = False
+            fact_id = store.add_fact("Мария Кюри discovered radium", category="science")
+            rows = store._conn.execute(
+                "SELECT e.name FROM entities e JOIN fact_entities fe"
+                " ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?",
+                (fact_id,),
+            ).fetchall()
+            assert [row["name"] for row in rows] == ["Мария Кюри"]
+
+    def test_quoted_lowercase_entities_still_extract(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities("call it 'hermes agent'") == ["hermes agent"]
+
+    def test_command_and_numeric_noise_is_rejected(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities(
+                "run redis-cli with '--tls-max-v1.2', 'X=5', '192.168.1.1', and '1.2.3'"
+            ) == []
+
+
 class TestSharedConnection:
     def test_same_path_shares_one_connection(self, db_path):
         a = MemoryStore(db_path)

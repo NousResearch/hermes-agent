@@ -1995,7 +1995,15 @@ def _external_process_spec(
                or str(getattr(profile, "process_command", "") or ""))
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
-    return command, args, base_url, shutil.which(command) if command else None, command_env_vars
+    if command:
+        from hermes_platform.resolver import locate_command
+        from hermes_platform.resolver.known_dirs import user_local_bin
+
+        resolution = locate_command(command, known_dirs=user_local_bin())
+        resolved_command = resolution.command[0] if resolution.command else None
+    else:
+        resolved_command = None
+    return command, args, base_url, resolved_command, command_env_vars
 
 
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:

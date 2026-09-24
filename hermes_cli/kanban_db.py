@@ -3001,7 +3001,15 @@ def _merge_completion_prose_artifacts(
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict,
 ) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    """Copy durable completion artifacts into the task attachments directory.
+
+    Scratch-workspace artifacts need copying before workspace cleanup.  Workers
+    can also intentionally declare a regular file elsewhere in their current
+    ``HERMES_HOME``; that home is managed state and may be cleaned independently
+    of the task workspace, so preserve it through the same attachment path.
+    Paths outside both trusted roots retain the legacy fail-open behavior: they
+    remain metadata only and are never copied into the board.
+    """
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
         return
@@ -3017,6 +3025,11 @@ def _persist_scratch_completion_artifacts(
         workspace_root = workspace.resolve()
     except OSError:
         return
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home().resolve()
+    except OSError:
+        hermes_home = None
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
@@ -3037,16 +3050,18 @@ def _persist_scratch_completion_artifacts(
             persisted.append(artifact)
             continue
 
-        if not resolved_src.is_relative_to(workspace_root):
+        in_workspace = resolved_src.is_relative_to(workspace_root)
+        in_hermes_home = hermes_home is not None and resolved_src.is_relative_to(hermes_home)
+        if not in_workspace and not in_hermes_home:
             persisted.append(artifact)
             continue
 
         problem = None
-        if not src.is_file():
-            problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
+        if not resolved_src.is_file():
+            problem = f"declared completion artifact is unavailable or not a regular file: {artifact}"
         elif resolved_src.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
             problem = (
-                f"declared scratch artifact exceeds the "
+                f"declared completion artifact exceeds the "
                 f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
             )
         if problem:
@@ -3066,7 +3081,7 @@ def _persist_scratch_completion_artifacts(
             if isinstance(exc, ArtifactPreservationError):
                 raise
             raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
+                f"could not preserve declared completion artifact {artifact}: {exc}"
             ) from exc
         used_destinations.add(dest)
         persisted.append(str(dest.resolve()))

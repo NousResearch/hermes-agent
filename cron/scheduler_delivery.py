@@ -1294,7 +1294,8 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
 
 def _record_delivery_fallback(job: dict, fallback_reasons: list) -> None:
     """Keep the last run's per-target lane downgrade reasons, including successful fallbacks."""
-    value = list(fallback_reasons) or None
+    value = [_redact_cron_payload(reason, "delivery fallback reason")
+             for reason in fallback_reasons] or None
     if (job.get("last_delivery_fallback") or None) == value:
         return
     job["last_delivery_fallback"] = value

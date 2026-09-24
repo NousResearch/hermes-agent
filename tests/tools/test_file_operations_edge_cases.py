@@ -212,6 +212,93 @@ class TestSearchContextParsing:
 
 
 # =========================================================================
+# BusyBox grep fallback (#27724): GNU-only --exclude-dir/--include break on
+# BusyBox grep (Alpine, musl, embedded). The fallback feature-detects GNU
+# grep once and, when absent, routes through the same find-driven pruned
+# path already used for macOS-protected/hidden-root roots.
+# =========================================================================
+
+
+class TestGrepCapabilityDetection:
+
+    def test_detects_busybox_usage_text_as_non_gnu(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        usage = (
+            "grep: unrecognized option: exclude-dir=.git\n"
+            "BusyBox v1.36.1 (2024-01-01 00:00:00 UTC) multi-call binary.\n"
+            "Usage: grep [-HhnlLoqvsrRiwFE] ...\n"
+        )
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(exit_code=2, stdout=usage)
+            assert ops._grep_supports_exclude_dir() is False
+
+    def test_silent_grep_is_gnu(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(exit_code=1, stdout="")
+            assert ops._grep_supports_exclude_dir() is True
+
+    def test_result_is_cached_across_calls(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(exit_code=1, stdout="")
+            ops._grep_supports_exclude_dir()
+            ops._grep_supports_exclude_dir()
+
+        assert mock_exec.call_count == 1
+
+
+class TestSearchWithGrepBusyBoxRouting:
+
+    @staticmethod
+    def _ops():
+        env = MagicMock()
+        env.cwd = "/tmp"
+        return ShellFileOperations(env)
+
+    def test_busybox_grep_never_receives_gnu_only_flags(self):
+        ops = self._ops()
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            mock_exec.return_value = MagicMock(exit_code=1, stdout="")
+            ops._search_with_grep(
+                "needle", path=".", file_glob="*.py",
+                limit=10, offset=0, output_mode="content", context=0,
+            )
+
+        sent_cmd = mock_exec.call_args[0][0]
+        assert "--exclude-dir" not in sent_cmd
+        assert "--include" not in sent_cmd
+        # Routed through find instead, which supplies the eligible file set.
+        assert "find " in sent_cmd
+        assert "-name '*.py'" in sent_cmd
+
+    def test_gnu_grep_keeps_the_fast_path(self):
+        ops = self._ops()
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=True):
+            mock_exec.return_value = MagicMock(exit_code=1, stdout="")
+            ops._search_with_grep(
+                "needle", path=".", file_glob="*.py",
+                limit=10, offset=0, output_mode="content", context=0,
+            )
+
+        sent_cmd = mock_exec.call_args[0][0]
+        assert "--exclude-dir" in sent_cmd
+        assert "--include" in sent_cmd
+        assert "find " not in sent_cmd
+
+
+# =========================================================================
 # total_lines for files without a trailing newline (#3907)
 # =========================================================================
 

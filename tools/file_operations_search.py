@@ -915,16 +915,39 @@ class SearchMixin:
         parts.append(self._escape_shell_arg(pattern))
         return parts
 
+    # Markers a BusyBox grep (Alpine, musl, embedded) prints on stdout/stderr
+    # when handed a GNU-only flag or run with --help. Used only to feature-detect
+    # the host grep once, up front — the fallback below never sends BusyBox an
+    # unsupported flag, so these never need to be scanned for in real output.
+    _BUSYBOX_GREP_MARKERS = ("unrecognized option", "BusyBox v", "Usage: grep")
+
+    def _grep_supports_exclude_dir(self) -> bool:
+        """Whether the host ``grep`` understands GNU-only flags (``--exclude-dir``,
+        ``--include``). BusyBox grep rejects them with usage text instead of erroring
+        quietly, which is what the probe below distinguishes. Cached in
+        ``_command_cache`` (bool cache shared with ``_has_command``) under a
+        sentinel key, once per instance."""
+        key = "__grep_gnu__"
+        if key not in self._command_cache:
+            result = self._exec("grep --exclude-dir=.git -q xyzzy /dev/null 2>&1")
+            out = result.stdout or ""
+            self._command_cache[key] = not any(marker in out for marker in self._BUSYBOX_GREP_MARKERS)
+        return self._command_cache[key]
+
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
-        """Fallback search using grep."""
+        """Fallback search using grep. GNU grep gets the fast ``--exclude-dir``/
+        ``--include`` path below; BusyBox grep (Alpine, musl, embedded) rejects both
+        flags, so it routes through the same find-driven path used for path-scoped
+        pruning (``_search_with_grep_pruned``), which never sends them."""
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
         protected_paths = self._protected_prune_paths(path)
+        gnu_grep = self._grep_supports_exclude_dir()
         # grep applies --exclude-dir='.*' to the command-line root too (GNU grep: to
         # every component of it), so a search rooted under a hidden dir such as
         # ~/.hermes returns nothing (#18473); find's -prune only sees descendants.
-        if protected_paths or self._root_under_hidden_dir(path):
+        if protected_paths or self._root_under_hidden_dir(path) or not gnu_grep:
             return self._search_with_grep_pruned(
                 pattern, path, file_glob, limit, offset, output_mode, context, protected_paths)
         # -H forces filenames; -E matches rg regex behavior; --exclude-dir='.*'
@@ -947,9 +970,11 @@ class SearchMixin:
                                  limit: int, offset: int, output_mode: str, context: int,
                                  protected_paths: List[str]) -> SearchResult:
         """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
-        path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
-        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
-        grep's exit code, so a hard grep error surfaces as an empty result."""
+        path-scoped pruning (macOS protected dirs), is itself under a dot-directory
+        (#18473: grep's ``--exclude-dir='.*'`` would drop the root), or the host grep
+        is not GNU (BusyBox rejects ``--exclude-dir``/``--include`` outright; find
+        supplies the same eligible file set instead, so grep never sees them). Trade-off:
+        find folds grep's exit code, so a hard grep error surfaces as an empty result."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
         q_root = self._escape_shell_arg(path or ".")
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without

@@ -188,6 +188,8 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+    auto_decline_exec: bool = False
+    auto_decline_apply_patch: bool = False
 
 
 class CodexThreadResumeError(CodexAppServerError):
@@ -710,14 +712,18 @@ class CodexAppServerSession:
         "mcpServer/elicitation/request": _respond_elicitation,
     }
 
-    def _run_approval_callback(self, auto_approve: bool, prompt: Callable[[], tuple[str, str]], log_label: str) -> str:
-        """Protocol routing only: auto-approve, fail-closed without a callback, else ask via ``prompt()``.
+    def _run_approval_callback(
+        self, auto_approve: bool, auto_decline: bool, prompt: Callable[[], tuple[str, str]], log_label: str,
+    ) -> str:
+        """Protocol routing only: resolve explicit policy, fail-closed without a callback, else ask via ``prompt()``.
 
         Approval mode/timeout resolution lives upstream (codex_runtime.py derives the
         auto flags; the callback runs the shared gate). Do not re-read config here.
         """
         if auto_approve:
             return "accept"
+        if auto_decline:
+            return "decline"
         if self._approval_callback is None:
             return "decline"
         command, description = prompt()
@@ -736,7 +742,9 @@ class CodexAppServerSession:
                 description += f" — {params['reason']}"
             return params.get("command") or "", description
 
-        return self._run_approval_callback(self._routing.auto_approve_exec, prompt, "exec request")
+        return self._run_approval_callback(
+            self._routing.auto_approve_exec, self._routing.auto_decline_exec, prompt, "exec request",
+        )
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
         def prompt() -> tuple[str, str]:
@@ -750,7 +758,9 @@ class CodexAppServerSession:
                 "; ".join(parts) if parts else "Codex requests to apply a patch",
             )
 
-        return self._run_approval_callback(self._routing.auto_approve_apply_patch, prompt, "apply_patch")
+        return self._run_approval_callback(
+            self._routing.auto_approve_apply_patch, self._routing.auto_decline_apply_patch, prompt, "apply_patch",
+        )
 
     def _track_pending_file_change(self, note: dict) -> None:
         """Track fileChange items (item/started -> item/completed) so the apply_patch prompt can show the changeset."""

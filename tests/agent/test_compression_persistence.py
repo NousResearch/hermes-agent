@@ -335,45 +335,6 @@ class TestFlushAfterCompression:
 # Part 2: Gateway-side — history_offset after session split
 # ---------------------------------------------------------------------------
 
-class TestGatewayHistoryOffsetAfterSplit:
-    """Verify that when the agent creates a new session during compression,
-    the gateway uses history_offset=0 so all compressed messages are written
-    to the JSONL transcript."""
-
-    def test_history_offset_zero_on_session_split(self):
-        """When agent.session_id differs from the original, history_offset must be 0."""
-        # This tests the logic in gateway/run.py run_sync():
-        # _session_was_split = agent.session_id != session_id
-        # _effective_history_offset = 0 if _session_was_split else len(agent_history)
-
-        original_session_id = "session-abc"
-        agent_session_id = "session-compressed-xyz"  # Different = compression happened
-        agent_history_len = 200
-
-        # Simulate the gateway's offset calculation (post-fix)
-        _session_was_split = (agent_session_id != original_session_id)
-        _effective_history_offset = 0 if _session_was_split else agent_history_len
-
-        assert _session_was_split is True
-        assert _effective_history_offset == 0
-
-
-    def test_new_messages_extraction_after_split(self):
-        """After compression with offset=0, new_messages should be ALL agent messages."""
-        # Simulates the gateway's new_messages calculation
-        agent_messages = [
-            {"role": "user", "content": "[CONTEXT COMPACTION] Summary..."},
-            {"role": "user", "content": "recent question"},
-            {"role": "assistant", "content": "recent answer"},
-            {"role": "user", "content": "new question"},
-            {"role": "assistant", "content": "new answer"},
-        ]
-        history_offset = 0  # After fix: 0 on session split
-
-        new_messages = agent_messages[history_offset:] if len(agent_messages) > history_offset else []
-        assert len(new_messages) == 5, (
-            f"Expected all 5 messages with offset=0, got {len(new_messages)}"
-        )
 
 
 

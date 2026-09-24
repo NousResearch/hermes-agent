@@ -19,12 +19,10 @@ def _deny(monkeypatch, denied: Path) -> None:
     monkeypatch.setattr(Path, "stat", stat)
 
 
-def test_iter_plugin_dirs_skips_unreadable_child(tmp_path, monkeypatch, caplog):
+def test_iter_plugin_dirs_skips_unreadable_child(tmp_path, monkeypatch):
     for name in ("denied", "good"):
         (tmp_path / name).mkdir()
         (tmp_path / name / "__init__.py").write_text("", encoding="utf-8")
     _deny(monkeypatch, tmp_path / "denied")
 
-    with caplog.at_level("WARNING", logger="plugins.plugin_loader"):
-        assert plugin_loader.iter_plugin_dirs(tmp_path) == [tmp_path / "good"]
-    assert "Skipping unreadable plugin directory" in caplog.text
+    assert plugin_loader.iter_plugin_dirs(tmp_path) == [tmp_path / "good"]

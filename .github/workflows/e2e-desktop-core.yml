@@ -1,0 +1,109 @@
+name: E2E Desktop core
+
+# The core Desktop suite (apps/desktop/e2e/core): a small, deterministic lane
+# that drives a real Electron build against a real `hermes serve` and a
+# scripted loopback model. It guards the failures users must never see:
+# duplicated / reordered / lost transcript text, a backend that never becomes
+# ready or leaves orphans, and broken clarify/approval round trips.
+#
+# Unlike the legacy visual lane (e2e-desktop.yml, disabled for flakiness) this
+# one runs with retries: 0 and one worker; every wait is event-driven, and the
+# suite was held to 10/10 consecutive green full runs on a loaded host before
+# it was wired in.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-desktop-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Desktop core E2E (Linux)
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install system dependencies for Electron
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: grab npm 12
+        run: npm i -g npm@12
+
+      # Full npm ci (not --ignore-scripts): electron's postinstall downloads
+      # the binary we launch.
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: '0.9.28'
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install Python dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Build the desktop app
+        working-directory: apps/desktop
+        run: npm run build
+
+      # Package the Linux app the way users get it (electron-builder --dir; no
+      # installer formats, no publish). Reuses the npm-installed Electron dist,
+      # so no download. packaged-smoke.spec.ts asserts the asarUnpack contract
+      # on this output (#121097) and boots the packaged binary to a first chat.
+      - name: Package the desktop app (electron-builder --dir)
+        working-directory: apps/desktop
+        run: npm run builder -- --dir --publish never --linux
+
+      - name: Run the core suite under xvfb
+        working-directory: apps/desktop
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            npx playwright test -c e2e/core/playwright.config.ts
+        env:
+          CI: 'true'
+          # The pack step above ran: a missing release/linux-unpacked is a failure, not a skip.
+          HERMES_E2E_REQUIRE_PACKAGED: '1'
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+          ANTHROPIC_API_KEY: ''
+
+      - name: Upload failure artifacts
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-core-e2e-${{ github.sha }}
+          path: |
+            apps/desktop/test-results/core
+            apps/desktop/playwright-report/core
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: ignore

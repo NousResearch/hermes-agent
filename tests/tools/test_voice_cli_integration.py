@@ -227,7 +227,9 @@ class TestMaxRecordingSecondsConfigReal:
         # become a 1-second cap; it falls back to the documented 120 default,
         # mirroring the silence-param corruption handling.
         recorder = self._start_with_voice_cfg({"max_recording_seconds": True})
-        assert recorder._max_recording_seconds == 120.0
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert recorder._max_recording_seconds == DEFAULT_CONFIG["voice"]["max_recording_seconds"]
 
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
@@ -472,7 +474,6 @@ class TestVoiceBargeCaptureSubmit:
         cli._voice_submit_barge_utterance(str(wav))
 
         queued = cli._pending_input.get_nowait()
-        from cli import _VoiceInputMessage
         assert str(queued) == "actually can you check my calendar for tomorrow"
 
     def test_generation_phase_transcript_not_echo_checked(self, tmp_path, monkeypatch):
@@ -493,7 +494,6 @@ class TestVoiceBargeCaptureSubmit:
         cli._voice_submit_barge_utterance(str(wav))
 
         queued = cli._pending_input.get_nowait()
-        from cli import _VoiceInputMessage
         assert str(queued) == "stop, do it differently"
 
 

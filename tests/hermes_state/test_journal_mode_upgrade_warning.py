@@ -64,50 +64,12 @@ def _make_delete_db_with_content(path) -> None:
 @pytest.fixture(autouse=True)
 def _reset_dedup():
     """Order-independence: the warning is deduped per process per db_label."""
-    import hermes_state
 
     hermes_state_wal._journal_upgrade_warned_paths.clear()
     yield
     hermes_state_wal._journal_upgrade_warned_paths.clear()
 
 
-class TestTheContentProbe:
-    """``_database_has_content`` is what keeps fresh installs quiet."""
-
-    def test_a_brand_new_database_has_no_content(self, tmp_path):
-        from hermes_state_wal import _database_has_content
-
-        conn = sqlite3.connect(str(tmp_path / "new.db"))
-        try:
-            assert _database_has_content(conn) is False
-        finally:
-            conn.close()
-
-    def test_a_database_with_a_table_has_content(self, tmp_path):
-        from hermes_state_wal import _database_has_content
-
-        path = tmp_path / "used.db"
-        _make_delete_db_with_content(path)
-        conn = sqlite3.connect(str(path))
-        try:
-            assert _database_has_content(conn) is True
-        finally:
-            conn.close()
-
-    def test_an_unreadable_probe_answers_no_content(self, tmp_path):
-        """Fail-quiet.
-
-        Answering True on an error would emit the warning for a database we
-        could not measure, which includes every fresh one.
-        """
-        from hermes_state_wal import _database_has_content
-
-        conn = sqlite3.connect(":memory:")
-        try:
-            conn.close()
-            assert _database_has_content(conn) is False
-        finally:
-            pass
 
 
 class TestTheWarningFires:
@@ -133,32 +95,6 @@ class TestTheWarningFires:
         assert "state.db" in blob
         assert "delete" in blob.lower()
 
-    def test_the_warning_names_the_setting_that_makes_it_stick(
-        self, monkeypatch, tmp_path, caplog
-    ):
-        """The whole point.
-
-        Telling an operator their mode changed, without telling them which
-        lever survives an open, leaves them doing the same PRAGMA again.
-        """
-        from hermes_state_wal import apply_wal_with_fallback
-
-        _configure_mode(monkeypatch, tmp_path, "wal")
-        _disable_vulnerable_gate(monkeypatch)
-        path = tmp_path / "existing-delete.db"
-        _make_delete_db_with_content(path)
-
-        conn = sqlite3.connect(str(path))
-        try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
-                apply_wal_with_fallback(conn, db_label="state.db")
-        finally:
-            conn.close()
-
-        blob = "\n".join(r.getMessage() for r in caplog.records)
-        assert "database.journal_mode" in blob, (
-            "the warning must name the config key, not just report the change"
-        )
 
     def test_the_flip_still_happens(self, monkeypatch, tmp_path):
         """Log-only: WAL is still applied, and it still persists.

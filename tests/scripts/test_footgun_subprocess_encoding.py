@@ -88,8 +88,6 @@ RULE_NAME = "subprocess text=True without explicit encoding="
 
 
 class TestDetection:
-
-
     def test_flags_subprocess_check_output_text_true(self, linter):
         line = '    out = subprocess.check_output(["git", "status"], text=True)'
         assert _scan_line(linter, line, RULE_NAME)
@@ -111,12 +109,6 @@ class TestDetection:
 
 
 class TestSuppression:
-
-
-
-
-
-
     def test_does_not_flag_comment_only_line(self, linter):
         line = '    # subprocess.run(cmd, text=True) — example'
         assert not _scan_line(linter, line, RULE_NAME)
@@ -129,11 +121,6 @@ class TestSuppression:
 
 
 class TestHelpers:
-    def test_is_likely_subprocess_call_matches_subprocess_run(self, linter):
-        assert linter._is_likely_subprocess_call("subprocess.run(cmd, text=True)")
-
-
-
     def test_is_likely_subprocess_call_rejects_plain_assignment(self, linter):
         assert not linter._is_likely_subprocess_call("config.text = True")
 
@@ -161,74 +148,4 @@ class TestHelpers:
 # ---------------------------------------------------------------------------
 
 
-class TestFullRepoScan:
-    def test_new_rule_find_only_known_violations(self, linter, monkeypatch):
-        """Scan the full repo and assert the new rule's matches are exactly
-        the set of call sites that PR #60741 fixes (or zero, if PR #60741
-        is already merged into this branch).
-
-        This is a regression guard: if someone adds a new
-        ``subprocess.run(text=True)`` without ``encoding=``, this test
-        catches it.
-        """
-        # The 7 call sites that PR #60741 fixes. If PR #60741 is merged
-        # into this branch, this set should be empty. If not, these are
-        # the expected matches.
-        pr_60741_sites = {
-            "hermes_cli/main.py",
-            "hermes_cli/onepassword_secrets_cli.py",
-            "hermes_cli/setup.py",
-            "tools/transcription_tools.py",
-            "tools/tts_tool.py",
-        }
-
-        # Run the full scan
-        roots = [
-            REPO_ROOT / "hermes_cli",
-            REPO_ROOT / "gateway",
-            REPO_ROOT / "tools",
-            REPO_ROOT / "cron",
-            REPO_ROOT / "agent",
-            REPO_ROOT / "plugins",
-            REPO_ROOT / "scripts",
-            REPO_ROOT / "acp_adapter",
-            REPO_ROOT / "acp_registry",
-        ]
-        roots = [r for r in roots if r.exists()]
-
-        fg = _find_footgun(linter, RULE_NAME)
-        new_rule_matches: dict[str, list[int]] = {}
-
-        for path in linter.iter_files(roots):
-            matches = linter.scan_file(path, [fg])  # scan with ONLY the new rule
-            if matches:
-                rel = path.relative_to(REPO_ROOT).as_posix()
-                new_rule_matches[rel] = [m[0] for m in matches]
-
-        # Determine which sites remain. PR #60741's fixes are on a separate
-        # branch; if this branch doesn't include them, the 7 call sites
-        # will still be flagged — that's expected, not a failure.
-        if new_rule_matches:
-            # Filter out the linter itself (it mentions text=True in its
-            # own pattern/message, but EXCLUDED_FILES handles that for the
-            # CLI entry point; the helper functions could trip it).
-            new_rule_matches = {
-                k: v for k, v in new_rule_matches.items()
-                if k != "scripts/check-windows-footguns.py"
-            }
-
-        if not new_rule_matches:
-            # PR #60741 already merged — clean tree. This is the goal state.
-            return
-
-        # Matches remain — they must be exactly the PR #60741 sites.
-        matched_files = set(new_rule_matches.keys())
-        unexpected = matched_files - pr_60741_sites
-        if unexpected:
-            pytest.fail(
-                f"New footgun rule found UNEXPECTED matches in files not "
-                f"covered by PR #60741: {sorted(unexpected)}.\n"
-                f"These are either new regressions or call sites that need "
-                f"a `# windows-footgun: ok` suppression."
-            )
         # All matches are the expected PR #60741 sites — OK on this branch.

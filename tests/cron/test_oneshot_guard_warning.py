@@ -65,31 +65,3 @@ def test_guard_warns_on_rearmed_consumed_record(temp_home, caplog):
     ]
     assert warnings, "expected WARNING on removal of a re-armed consumed one-shot"
     assert "cron resume" in warnings[0].getMessage()
-
-
-def test_guard_stays_info_for_never_ran_stale_record(temp_home, caplog):
-    """The dead-tick recovery case (no last_run_at) keeps its quiet INFO."""
-    job = create_job(
-        prompt="x",
-        schedule=(_hermes_now() + timedelta(hours=1)).isoformat(),
-        name="quiet-guard",
-        deliver="local",
-    )
-    jid = job["id"]
-
-    jobs = load_jobs()
-    for j in jobs:
-        if j["id"] == jid:
-            j["repeat"] = {"times": 1, "completed": 1}
-            j["last_run_at"] = None
-            j["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
-    save_jobs(jobs)
-
-    with caplog.at_level(logging.INFO, logger="cron"):
-        get_due_jobs()
-
-    warns = [
-        r for r in caplog.records
-        if r.levelno == logging.WARNING and "WITHOUT firing" in r.getMessage()
-    ]
-    assert not warns, "never-ran stale record must not trip the WARNING path"

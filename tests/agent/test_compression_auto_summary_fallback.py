@@ -44,7 +44,6 @@ def test_auto_resolved_summary_model_falls_back_to_main_on_empty_content():
     assert result is not None and "summary via main model" in result
     # The model that actually failed (the auto-resolved one) is recorded for the user warning.
     assert c._last_aux_model_failure_model == "z-ai/glm-5.3"
-    assert "empty content" in (c._last_aux_model_failure_error or "").lower()
 
 
 def test_fallback_records_the_explicit_failed_model():

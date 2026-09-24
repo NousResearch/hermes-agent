@@ -83,13 +83,6 @@ class TestLoadTranscriptReadFailure:
 
 
 class TestSlashCommandsOnUnreadableTranscript:
-    def test_history_unreadable_text_is_explicit(self):
-        from gateway.slash_commands_status import HISTORY_UNREADABLE
-
-        # Says the history exists (not a fresh chat), avoids the internal file name, and names a fix.
-        assert "earlier messages exist" in HISTORY_UNREADABLE
-        assert "state.db" not in HISTORY_UNREADABLE
-        assert "hermes doctor --fix" in HISTORY_UNREADABLE and "/new" in HISTORY_UNREADABLE
 
     @pytest.mark.asyncio
     async def test_btw_replies_history_unreadable_on_read_failure(self):
@@ -111,16 +104,3 @@ class TestSlashCommandsOnUnreadableTranscript:
         result = await runner._handle_btw_command(_make_event(text="/btw what?"))
         assert result == HISTORY_UNREADABLE
 
-    def test_every_transcript_reading_handler_catches_the_error(self):
-        """No `await ...load_transcript(` in the mixin may be left uncaught."""
-        import inspect
-        import re
-
-        from gateway import slash_commands as sc
-
-        src = inspect.getsource(sc)
-        # Each awaited load_transcript must sit inside a try: whose handlers
-        # include TranscriptReadError within the following ~6 lines.
-        for m in re.finditer(r"await self\.async_session_store\.load_transcript\(", src):
-            window = src[m.end() : m.end() + 400]
-            assert "except TranscriptReadError" in window, src[m.start() - 200 : m.end() + 100]

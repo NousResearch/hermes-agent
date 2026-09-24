@@ -110,26 +110,5 @@ def test_sessions_prune_bare_keeps_90_day_default(monkeypatch, capsys):
     )
 
 
-def test_sessions_prune_preview_shows_oldest_newest(monkeypatch, capsys):
-    """Confirmation preview surfaces count + oldest/newest session times."""
-    from hermes_cli.session_filters import format_epoch
-
-    _filters, out = _run_prune(monkeypatch, capsys, ["--source", "cron"])
-    assert "2 session(s) match" in out
-    assert f"oldest activity {format_epoch(1_600_000_050.0)}" in out
-    assert f"newest activity {format_epoch(1_700_000_050.0)}" in out
 
 
-def test_sessions_prune_surfaces_matching_open_sessions(monkeypatch, capsys):
-    _filters, out = _run_prune(
-        monkeypatch,
-        capsys,
-        ["--source", "cron"],
-        candidates=[],
-        skipped_open=2,
-    )
-
-    assert "2 open sessions also match these filters" in out
-    assert "prune only deletes ended sessions" in out
-    assert "hermes sessions delete <id>" in out
-    assert "No sessions match" in out

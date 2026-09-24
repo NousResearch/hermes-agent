@@ -332,7 +332,8 @@ def _default_profile_secret_scope():
     if not is_multiplex_active():
         yield
         return
-    token = set_secret_scope(build_profile_secret_scope(Path(get_hermes_home())))
+    token = set_secret_scope(
+        build_profile_secret_scope(Path(get_hermes_home())), profile_home=str(get_hermes_home()))
     try:
         yield
     finally:

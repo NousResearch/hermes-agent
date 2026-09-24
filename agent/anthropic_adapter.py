@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Iterable
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +25,7 @@ from agent.anthropic_endpoints import (
 from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
 )
+from agent.errors import EmptyStreamError
 
 from hermes_cli import __version__ as _HERMES_VERSION
 
@@ -91,7 +91,6 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
 _MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
-_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-8", "opus-4.8", "opus-5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -195,11 +194,11 @@ def _forbids_sampling_params(model: str) -> bool:
 
 
 def _supports_fast_mode(model: str) -> bool:
-    """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5, Claude API only). Explicit
-    allowlist, not a version floor: Opus 4.6 had fast mode and lost it (requests silently run and
-    bill at standard speed), Opus 4.7 hard-400s on the param. Dedicated ``...-fast`` ids select
-    fast inference via the model field and must NOT also receive the speed parameter."""
-    return "-fast" not in model and any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+    """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5 / Opus 5.5, Claude API only).
+    The list lives in ``agent.model_metadata`` so the wire gate and the ``/fast`` toggle agree."""
+    from agent.model_metadata import is_anthropic_fast_mode_model
+
+    return is_anthropic_fast_mode_model(model)
 
 
 # Beta headers safe on ordinary/native Anthropic requests. GA on Claude 4.6+ (harmless no-op
@@ -711,10 +710,54 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
         tool["eager_input_streaming"] = False
 
 
+class _UsageNormalizingStream:
+    """Raw SSE iterator proxy that fills ``usage: null`` before the SDK accumulates it (#60683)."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __iter__(self):
+        # Lazy: the SDK import is deliberately kept off module import (see _anthropic_sdk).
+        from anthropic.types import MessageDeltaUsage, Usage
+        output_tokens = 0
+        for event in self._inner:
+            etype = getattr(event, "type", None)
+            if etype == "message_start":
+                message = getattr(event, "message", None)
+                usage = getattr(message, "usage", None)
+                if message is not None and usage is None:
+                    message.usage = Usage(input_tokens=0, output_tokens=0)
+                elif usage is not None:
+                    output_tokens = getattr(usage, "output_tokens", 0) or 0
+            elif etype == "message_delta" and getattr(event, "usage", None) is None:
+                # accumulate_event() assigns delta output_tokens unconditionally; carry
+                # message_start's count forward instead of clobbering it with 0.
+                event.usage = MessageDeltaUsage(output_tokens=output_tokens)
+            yield event
+
+
+def normalize_stream_usage(message_stream: Any) -> Any:
+    """Patch ``usage: null`` on raw SSE events before the SDK accumulates them.
+
+    Anthropic-compatible providers (MiniMax) send ``usage: null`` on message_start and/or
+    message_delta; the SDK's accumulate_event() then dies on ``usage.output_tokens`` mid-
+    iteration (#60683). Wraps ``MessageStream._raw_stream`` in place; no-op for other shapes."""
+    raw = getattr(message_stream, "_raw_stream", None)
+    if raw is None or not hasattr(raw, "__iter__"):
+        return message_stream
+    message_stream._raw_stream = _UsageNormalizingStream(raw)
+    return message_stream
+
+
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
     if "stream" in err_lower and "not supported" in err_lower:
+        return True
+    if "unexpected event order" in err_lower:
         return True
     if "invokemodelwithresponsestream" not in err_lower:
         return False
@@ -725,6 +768,7 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
 def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
     """``messages.stream()`` -> final Message, ticking the best-effort callbacks."""
     with stream_fn(**{k: v for k, v in api_kwargs.items() if k != "stream"}) as stream:
+        stream = normalize_stream_usage(stream)  # MiniMax usage:null (#60683), same as the main turn
         if callable(on_response):
             try:
                 on_response(getattr(stream, "response", None))
@@ -735,9 +779,12 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
         # Some SDK versions drop optional message_delta metadata from the final snapshot.
-        # Non-iterable shims (get_final_message-only) skip straight to the snapshot.
+        # The stream must end in message_stop; anything else is a retryable incomplete response.
         stop_details = None
-        for event in (stream if isinstance(stream, Iterable) else ()):
+        saw_message_stop = False
+        for event in stream:
+            if getattr(event, "type", None) == "message_stop":
+                saw_message_stop = True
             if getattr(event, "type", None) == "message_delta":
                 details = getattr(getattr(event, "delta", None), "stop_details", None)
                 if details is not None:
@@ -753,6 +800,10 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
                 raise
             except Exception:
                 logger.debug("%son_stream_event callback failed", log_prefix, exc_info=True)
+        if not saw_message_stop:
+            raise EmptyStreamError(
+                "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
+            )
         message = stream.get_final_message()
         if stop_details is not None:
             message.stop_details = stop_details

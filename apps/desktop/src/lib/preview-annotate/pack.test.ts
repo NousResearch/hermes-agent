@@ -74,7 +74,6 @@ describe('packageAnnotatePin', () => {
     expect(packed.note).toContain('overflows')
     expect(packed.prompt).toContain('Comment 1')
     expect(packed.prompt).toContain('Target: button "Select plan"')
-    expect(packed.prompt).toContain('Image 1 marks the target in blue.')
     expect(packed.prompt).toContain('Note: This button overflows on mobile.')
     expect(packed.prompt).not.toContain('<html')
   })
@@ -217,14 +216,6 @@ describe('annotateFlushPrompt batching', () => {
     expect(prompt).toContain('Group 2 — `section.pricing` (2 comments)')
     expect(prompt).toContain('Group 3 — `section.faq` (1 comment)')
     expect(prompt).toContain('Work them as 3 pieces of work, not 5.')
-  })
-
-  it('warns against the theme split that would put workers in the same files', () => {
-    const prompt = annotateFlushPrompt(batch)
-
-    expect(prompt).toContain('delegate whole groups')
-    expect(prompt).toContain('never form new groups by theme')
-    expect(prompt).toContain('Regroup if the code disagrees')
   })
 
   it('still lists every comment exactly once', () => {

@@ -4,7 +4,6 @@ Split out of ``hermes_cli/doctor.py``."""
 from __future__ import annotations
 
 import os
-import shutil
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,
@@ -308,14 +307,9 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
     elif (PROJECT_ROOT / 'cli-config.yaml').exists():
         check_ok("cli-config.yaml exists (in project directory)")
     elif should_fix:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        example_config = PROJECT_ROOT / 'cli-config.yaml.example'
-        if example_config.exists():
-            shutil.copy2(str(example_config), str(config_path))
-        else:
-            from hermes_cli.config import DEFAULT_CONFIG, save_config
-            save_config(DEFAULT_CONFIG)
-        check_ok(f"Created {_DHH}/config.yaml from {'cli-config.yaml.example' if example_config.exists() else 'defaults'}")
+        from hermes_cli.config import seed_config_file
+        from_template = seed_config_file(config_path, PROJECT_ROOT / 'cli-config.yaml.example')
+        check_ok(f"Created {_DHH}/config.yaml from {'cli-config.yaml.example' if from_template else 'defaults'}")
         f.fixed += 1
     else:
         check_warn("config.yaml not found", "(using defaults)")

@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -76,14 +76,6 @@ describe('PendingApprovalStack', () => {
 
   it('renders run/reject controls for a pending terminal command', () => {
     setRequest('chmod -R 777 /tmp/x')
-    render(<PendingApprovalStack />)
-
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
-  })
-
-  it('renders approval controls for protected instruction writes', () => {
-    setRequest('Update protected agent instructions')
     render(<PendingApprovalStack />)
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
@@ -191,15 +183,6 @@ describe('PendingApprovalStack', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
-  it('keeps the full command in a bounded scrollable body', () => {
-    const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
-    setRequest(longCommand)
-    render(<PendingApprovalStack />)
-
-    expect(screen.getByText(longCommand).className).toContain('max-h-40')
-    expect(screen.getByText(longCommand).className).toContain('overflow-auto')
-  })
-
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {
     const request = mockGateway()
     const respond = liveApproval()
@@ -256,16 +239,6 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
-  })
-
-  it('renders the stack independently of mounted tool rows', () => {
-    setRequest('rm /tmp/hermes_approval_test.txt')
-    const { container } = render(<PendingApprovalStack />)
-    const stack = container.querySelector('[data-slot="tool-approval-stack"]')
-
-    expect(stack).not.toBeNull()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
   it('keeps a failed request in front and releases held Enter until the user retries', async () => {

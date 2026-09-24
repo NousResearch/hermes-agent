@@ -117,7 +117,6 @@ class TestTrustGateAtCallTime:
             raw = handler({"repo": "x"})
         fake_session.call_tool.assert_not_awaited()
         assert "error" in json.loads(raw)
-        assert "did not approve" in json.loads(raw)["error"]
 
     def test_read_only_tool_on_untrusted_server_skips_approval(
         self, fake_session

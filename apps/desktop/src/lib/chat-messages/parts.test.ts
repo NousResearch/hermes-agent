@@ -31,3 +31,31 @@ describe('renderMediaTags with interior spaces', () => {
     )
   })
 })
+
+describe('inline-code MEDIA paths', () => {
+  const card = (path: string) => `[File: ${path.split(/[/\\]/).pop()}](#media:${encodeURIComponent(path)})`
+
+  it('does not swallow a trailing backtick on relative or unknown-extension paths', () => {
+    expect(mediaTagValues('MEDIA:report.md` prose')).toEqual(['report.md'])
+    expect(mediaTagValues('MEDIA:/tmp/file.unknown` prose')).toEqual(['/tmp/file.unknown'])
+    expect(mediaTagValues('`MEDIA:notes.log` prose')).toEqual(['notes.log'])
+    expect(mediaTagValues('MEDIA:draft.md`，打开复制')).toEqual(['draft.md'])
+    expect(renderMediaTags('MEDIA:report.md` prose')).toBe(`${card('report.md')} prose`)
+    expect(renderMediaTags('MEDIA:/tmp/file.unknown`，打开')).toBe(`${card('/tmp/file.unknown')}，打开`)
+    expect(renderMediaTags('MEDIA:report.md`')).toBe(card('report.md'))
+    expect(renderMediaTags('`MEDIA:/tmp/file.unknown`')).toBe(card('/tmp/file.unknown'))
+    expect(mediaTagValues("MEDIA:/tmp/john's.unknown x")).toEqual(["/tmp/john's.unknown"])
+    expect(renderMediaTags('MEDIA:"/tmp/a b.md" x')).toBe(`${card('/tmp/a b.md')} x`)
+    expect(mediaTagValues('MEDIA:/tmp/file.unknown" prose')).toEqual(['/tmp/file.unknown'])
+  })
+
+  it('keeps absolute markdown backtick wraps and leaves the anchored branch intact', () => {
+    expect(mediaTagValues('MEDIA:/Users/a/report.md` followed by prose')).toEqual(['/Users/a/report.md'])
+    expect(mediaTagValues('MEDIA:/Users/a/draft.md`，打开复制')).toEqual(['/Users/a/draft.md'])
+    expect(mediaTagValues('`MEDIA:/Users/a/report.md` prose')).toEqual(['/Users/a/report.md'])
+    expect(renderMediaTags('`MEDIA:/dir with space/f.md`')).toBe(card('/dir with space/f.md'))
+    expect(mediaTagValues("MEDIA:/tmp/john's.md x")).toEqual(["/tmp/john's.md"])
+    expect(renderMediaTags("MEDIA:'/tmp/a b.md' x")).toBe(`${card('/tmp/a b.md')} x`)
+    expect(renderMediaTags('MEDIA:/tmp/a.png')).toBe('[Image: a.png](#media:%2Ftmp%2Fa.png)')
+  })
+})

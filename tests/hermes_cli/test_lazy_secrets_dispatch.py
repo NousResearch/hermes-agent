@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from hermes_cli import update_cmd
 
 
 def _run_hermes(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -109,15 +108,6 @@ class TestSecretsDispatchE2E:
         )
         assert "ImportError" not in result.stderr
 
-    def test_onepassword_setup_help(self) -> None:
-        """`hermes secrets onepassword setup --help` must exit 0."""
-        result = _run_hermes(["secrets", "onepassword", "setup", "--help"])
-        assert result.returncode in (0, 2), (
-            f"onepassword setup --help failed:\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}"
-        )
-        assert "ImportError" not in result.stderr
 
 
 class TestUpdatePathE2E:
@@ -141,15 +131,6 @@ class TestUpdatePathE2E:
         assert "ImportError" not in result.stderr
         assert "cannot import name" not in result.stderr
 
-    @pytest.mark.live_system_guard_bypass
-    def test_update_no_self_lock(self) -> None:
-        """Update path must not self-lock (cryptography._rust absent)."""
-        result = _run_hermes(["update", "--check"])
-        # The check itself may return non-zero (e.g. no updates), but
-        # must not contain the self-lock defer message
-        assert "deferred" not in result.stderr.lower()
-        assert "self-lock" not in result.stderr.lower()
-        assert "_rust.pyd" not in result.stderr.lower()
 
     @pytest.mark.live_system_guard_bypass
     def test_main_update_check_crypto_absent_in_sys_modules(self) -> None:

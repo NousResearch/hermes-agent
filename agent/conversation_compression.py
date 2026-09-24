@@ -1692,8 +1692,16 @@ def _adopt_live_compression_child(
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
     agent._session_db_created = True
-    if child.get("system_prompt"):
-        agent._cached_system_prompt = child["system_prompt"]
+    child_prompt = child.get("system_prompt")
+    if child_prompt:
+        # The tip's stored bytes are seeded straight into the cache slot the turn gates on
+        # (``turn_context``: restore runs only while it is None), so they must pass the same
+        # runtime-identity check the restore path applies. Route commits no longer NULL the row,
+        # so a tip whose model moved since its last persist still carries the old ``Model:``
+        # trailer; left unseeded, the next restore rebuilds for the current runtime.
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+        if _stored_prompt_matches_runtime(agent, child_prompt):
+            agent._cached_system_prompt = child_prompt
     agent._last_flushed_db_idx = len(recovered)
     agent._flushed_db_message_session_id = child_session_id
     agent._flushed_db_message_ids = {id(message) for message in recovered if isinstance(message, dict)}

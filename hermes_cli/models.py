@@ -614,8 +614,12 @@ def fetch_openrouter_models(
         _openrouter_reasoning_caps_cache = seeded
 
     curated: list[tuple[str, str]] = []
+    seen_ids: set[str] = set()
     silent_default = get_preferred_silent_default_model("openrouter")
     for preferred_id, _ in fallback:
+        normalized_id = preferred_id.casefold()
+        if normalized_id in seen_ids:
+            continue
         live_item = live_by_id.get(preferred_id)
         # Hide models without tool-calling support — selecting one fails at the first tool call.
         if live_item is None or not _openrouter_model_supports_tools(live_item):
@@ -628,6 +632,27 @@ def fetch_openrouter_models(
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
+        seen_ids.add(normalized_id)
+
+    # The hosted manifest is curated and can intentionally retain paid or recommended choices,
+    # but OpenRouter's free tier rotates more quickly. Surface any missing live free tool model
+    # after the curated rows; sorting additions keeps the picker stable across API response order.
+    live_free_items = sorted(
+        (
+            (model_id, item)
+            for item in live_items
+            if isinstance(item, dict)
+            and (model_id := str(item.get("id") or "").strip())
+            and _openrouter_model_is_free(item.get("pricing"))
+            and _openrouter_model_supports_tools(item)
+        ),
+        key=lambda pair: (pair[0].casefold(), pair[0]),
+    )
+    for model_id, _item in live_free_items:
+        normalized_id = model_id.casefold()
+        if normalized_id not in seen_ids:
+            curated.append((model_id, "free"))
+            seen_ids.add(normalized_id)
 
     if not curated:
         return list(cached or fallback)

@@ -21,6 +21,38 @@ from hermes_cli import models_validate
 
 class TestFetchOpenRouterModels:
 
+    def test_adds_live_free_tool_models_missing_from_manifest(self, monkeypatch):
+        """A rotating free model remains selectable before the manifest catches up."""
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(
+            _models_mod,
+            "_fetch_live_catalog_index",
+            lambda *args: (
+                [
+                    {"id": "vendor/paid-tool", "pricing": {"prompt": "1", "completion": "1"},
+                     "supported_parameters": ["tools"]},
+                    {"id": "stealth/z-free-tool", "pricing": {"prompt": "0", "completion": "0"},
+                     "supported_parameters": ["tools"]},
+                    {"id": "stealth/a-free-tool", "pricing": {"prompt": "0", "completion": "0"},
+                     "supported_parameters": ["tools"]},
+                    {"id": "stealth/no-tools", "pricing": {"prompt": "0", "completion": "0"},
+                     "supported_parameters": ["temperature"]},
+                ],
+                {
+                    "vendor/paid-tool": {"id": "vendor/paid-tool", "pricing": {"prompt": "1", "completion": "1"},
+                                          "supported_parameters": ["tools"]},
+                },
+            ),
+        )
+        with patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[("vendor/paid-tool", "recommended")]):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == [
+            ("vendor/paid-tool", "recommended"),
+            ("stealth/a-free-tool", "free"),
+            ("stealth/z-free-tool", "free"),
+        ]
+
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)

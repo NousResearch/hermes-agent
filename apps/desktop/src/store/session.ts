@@ -16,7 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
-import { isSessionRemovalPending } from './session-removal'
+import { $removedSessionIds, isSessionRemovalPending } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -704,12 +704,27 @@ export function mergeSessionPage(
     merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
   )
 
+  // The tombstone set is re-read here, not at the caller: optimistic removal
+  // can land between `previous` being captured and this merge committing (a
+  // messaging "Load more" holds its slice for a long time), and a row the
+  // user archived or deleted must not survive through the keep set — the
+  // settle grace keeps a just-archived chat "recently settled" for 30s, which
+  // is exactly the window the survivor path used to resurrect it (#118156).
+  // Same bare-id + lineage-root match as dropTombstoned applies to incoming
+  // rows; a failed RPC untombstones immediately, so the filter is only ever
+  // as sticky as the removal itself.
+  const tombstones = $removedSessionIds.get()
+  const tombstoned = (session: SessionInfo): boolean =>
+    tombstones.size > 0 &&
+    (tombstones.has(session.id) || (session._lineage_root_id != null && tombstones.has(session._lineage_root_id)))
+
   const survivors = previous.filter(
     session =>
       // The keep-list answers "live, not listed yet" — a hidden row (canonical
       // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
       // open tab must not resurrect it into the sidebar (#113273).
       !session.hidden &&
+      !tombstoned(session) &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       !incomingLineageIdMembers.has(identity(session)) &&

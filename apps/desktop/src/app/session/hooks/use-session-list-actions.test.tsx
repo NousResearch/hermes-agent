@@ -302,6 +302,36 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
+  it('never resurrects a just-archived row the keep set still names (#118156)', async () => {
+    // The archive race: the RPC landed (so the in-flight pin released and the
+    // projects.tree prune dropped the tombstone — hence EMPTY tombstones
+    // here), but the row is still inside the 30s settle grace, so
+    // sessionsToKeep() names it. A refresh whose `previous` still holds the
+    // row must not carry it back through the survivor path. The map from
+    // tombstone→epoch keeps the exclusion alive exactly as long as the
+    // tombstone stood, so it must reproduce with the tombstone still set.
+    removed.ids = new Set(['just-archived'])
+
+    // Seed $sessions with the row still present, as a refresh racing the
+    // optimistic drop would see it.
+    setSessions([row('just-archived'), row('mine')])
+    // And make the settle grace name it: simulate a turn that just ended.
+    const { getRecentlySettledSessionIds } = await import('@/store/session-states')
+    const settled = vi.spyOn({ getRecentlySettledSessionIds }, 'getRecentlySettledSessionIds')
+
+    settled.mockReturnValue(['just-archived'])
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('mine', { message_count: 3 })] }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['mine'])
+  })
+
   it('keeps idle recents when the sidebar returns an empty page plus profile errors', async () => {
     // Backend contract on disk I/O / lock: HTTP 200, recents=[], errors=[{profile}].
     // mergeSessionPage only keeps working/pinned/selected, so Yesterday/This-week

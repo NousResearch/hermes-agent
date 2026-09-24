@@ -27,7 +27,6 @@ KNOWN = {
     "q_approval": "#121296 approval in `chat -q` waits the full approvals.timeout instead of single_query_mode",
     "permissions": "#121297 reply to item/permissions/requestApproval omits required `permissions`",
     "orphan": "#121298 `chat -q` exit never closes the codex session; own-session descendants orphaned",
-    "failed_hidden": "#121299 failed turn after an agentMessage prints the message and hides the reason",
 }
 
 YOLO = ["--yolo"]
@@ -103,12 +102,10 @@ def test_will_retry_error_notification_is_not_terminal(runs):
     assert _assistant_texts(run) == ["RETRY-OK"]
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["failed_hidden"])
 def test_failed_turn_after_agent_message_surfaces_reason(runs):
     run = runs["failed_hidden"]
     assert run.results[0].returncode != 0 and "PARTIAL-B" in run.results[0].stdout, run.results[0].describe()
-    if "FAIL-MARKER-89" not in run.output:
-        raise KnownSymptom(f"turn failure reason never shown to the user: {run.output!r}")
+    assert "FAIL-MARKER-89" in run.output, run.results[0].describe()
 
 
 @pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["q_approval"])

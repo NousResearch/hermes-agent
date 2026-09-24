@@ -16,11 +16,13 @@
 #
 # Triggers:
 #   - push to main (PR-critical findings)
+#   - pull_request targeting main (gate PRs against the same findings)
 #   - weekly cron on Monday 06:00 UTC (one slow scan per week, catches
 #     findings between push events without blocking every PR)
 #
 # Minutes cost (rough, depends on repo size):
 #   - per-push: ~3-6 min
+#   - per-PR: ~3-6 min (gates against the same findings before merge)
 #   - weekly scheduled: ~3-6 min
 # Branch protections: the per-push block can be skipped on a docs-only
 # change via `[skip ci]` in the commit message.
@@ -29,6 +31,8 @@ name: "CodeQL"
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   schedule:
     - cron: "0 6 * * 1"

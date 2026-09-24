@@ -28,6 +28,9 @@ class ActivityProvenance(str, Enum):
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
     AGENT_COMPRESSION_TURNHOLD = "agent.compression_turnhold"
+    # A durable-session lease is held by another process.  The waiting turn is queued work,
+    # not an agent or provider stall; gateway watchdogs consume this shared activity snapshot.
+    AGENT_SESSION_TURN_LEASE = "agent.session_turn_lease"
 
 
 def bound_activity_description(description: Optional[str]) -> str:

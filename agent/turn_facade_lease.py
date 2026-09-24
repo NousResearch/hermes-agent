@@ -263,10 +263,21 @@ def admit_durable_turn_lease(
         f"pid={os.getpid()}:turn={relay_turn_id}:platform={task_context['platform'] or 'unknown'}"
     )
     waited = False
+    last_wait_status_at = -15.0
 
     def _on_wait(elapsed: float) -> None:
-        nonlocal waited
+        nonlocal waited, last_wait_status_at
         waited = True
+        # This bounded wait is observable queued work.  Refresh the shared activity clock so
+        # gateway watchdogs neither call it inactivity nor interrupt it before its own timeout.
+        from agent.session_activity import ActivityProvenance
+        agent._touch_activity(
+            "waiting for session turn lease",
+            provenance=ActivityProvenance.AGENT_SESSION_TURN_LEASE,
+        )
+        if elapsed >= 1.0 and elapsed - last_wait_status_at < 15.0:
+            return
+        last_wait_status_at = elapsed
         agent._emit_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
@@ -276,7 +287,8 @@ def admit_durable_turn_lease(
 
     if not db.acquire_session_turn_lease(
         session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
-        on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
+        on_wait=_on_wait, wait_notice_interval_seconds=1.0,
+        should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
         return admission

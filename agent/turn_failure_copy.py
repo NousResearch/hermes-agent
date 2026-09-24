@@ -382,6 +382,10 @@ def oauth_relogin_command(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
+    if slug == "copilot-acp":
+        # This provider delegates authentication to its ``copilot --acp`` subprocess;
+        # Hermes has no OAuth flow for the placeholder credential.
+        return "copilot login"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
 
 

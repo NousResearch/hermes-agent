@@ -1411,7 +1411,6 @@ TERMINAL_SCHEMA = {
             },
             "heartbeat": {
                 "type": "integer",
-                "minimum": 60,
                 "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
@@ -1445,6 +1444,11 @@ def _handle_terminal(args, **kw):
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (min 60).")
     if not args.get("background", False):
+        # Models (e.g. Gemini) often auto-fill optional integer schema fields with defaults/minima
+        # even for foreground calls where background=false and notify=false. Ignore stray heartbeat
+        # when notifications were not requested on foreground.
+        if not notify and not watch_patterns and not notify_on_complete and (args.get("background") is False or heartbeat == 60):
+            heartbeat = 0
         if notify or watch_patterns or notify_on_complete or heartbeat:
             return tool_error(
                 "notify/heartbeat only apply to background commands (foreground "

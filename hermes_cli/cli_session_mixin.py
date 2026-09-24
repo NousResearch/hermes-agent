@@ -59,10 +59,12 @@ def _dim_notice(cli, msg: str, quiet: bool) -> None:
 
 
 def _reset_model_to_config_default(cli, silent: bool) -> None:
-    """/new is a full boundary: re-derive model/provider from config.yaml so a
-    session-only ``/model --session`` switch never leaks into the next session.
-    Best-effort — an unreachable default must never block /new. Module-level helper (like
-    ``_apply_new_session_title``): tests drive ``new_session`` unbound on a SimpleNamespace."""
+    """/new is a full boundary: restore the startup selection (``--model`` /
+    ``--provider`` when the process was launched with them, else config.yaml)
+    so a session-only ``/model --session`` switch never leaks into the next
+    session. Best-effort — an unreachable default must never block /new.
+    Module-level helper (like ``_apply_new_session_title``): tests drive
+    ``new_session`` unbound on a SimpleNamespace."""
     from cli import CLI_CONFIG, _cprint, _split_model_config_default, logger
     _model_config = CLI_CONFIG.get("model", {})
     if isinstance(_model_config, dict):
@@ -71,19 +73,26 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
     else:
         _raw_default, _config_provider = (_model_config or ""), ""
     _config_model, _ = _split_model_config_default(_raw_default)
-    if not _config_model or _config_model == getattr(cli, "model", None):
+    # Launch flags are the baseline the boundary resets TO, not an override it
+    # resets away (#74329). getattr: unbound test doubles may lack these.
+    _desired_model = getattr(cli, "_startup_model", None) or _config_model
+    _desired_provider = getattr(cli, "_startup_provider", None) or _config_provider
+    # Whole-route comparison: a provider-only difference must still switch.
+    if not _desired_model or (
+            _desired_model == getattr(cli, "model", None)
+            and (not _desired_provider or _desired_provider == getattr(cli, "provider", None))):
         return
     try:
         from hermes_cli.model_switch import switch_model as _switch_model
 
         r = _switch_model(
-            raw_input=_config_model,
+            raw_input=_desired_model,
             current_provider=cli.provider or "",
             current_model=cli.model or "",
             current_base_url=cli.base_url or "",
             current_api_key=cli.api_key or "",
             is_global=False,
-            explicit_provider=_config_provider or "")
+            explicit_provider=_desired_provider or "")
         if not r.success:
             return
         if cli.agent:

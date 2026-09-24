@@ -190,6 +190,17 @@ class CLIInitMixin:
         if not (self.base_url and base_url_host_matches(self.base_url, "openrouter.ai")):
             _keys = _keys[::-1]
         self.api_key = api_key or os.getenv(_keys[0]) or os.getenv(_keys[1])
+        # Startup-level selection outlives session boundaries: --model/--provider
+        # describe how the process was launched, so /new and wake-word sessions
+        # reset TO them, not away from them (#74329). Stored resolved (not raw
+        # flags) so a bare --provider keeps its startup resolution; absent flags
+        # stay None so the boundary keeps re-deriving from config.yaml.
+        if model or provider:
+            self._startup_model = self.model or None
+            self._startup_provider = self.requested_provider or None
+        else:
+            self._startup_model = None
+            self._startup_provider = None
 
     def _init_turn_limits(self, max_turns, run_budget):
         """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""

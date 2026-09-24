@@ -10,6 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hermes_cli import model_switch as _model_switch_mod
+from hermes_cli.cli_session_mixin import (
+    CLISessionMixin,
+    _reset_model_to_config_default,
+)
 from hermes_state import SessionDB
 from tools.todo_tool import TodoStore
 
@@ -308,5 +313,128 @@ def test_new_session_with_title(capsys):
 
     captured = capsys.readouterr()
     assert "My Test Session" in captured.out
+
+
+# --- Startup --model/--provider survive session boundaries (#74329) ---
+
+def _startup_reset_stub(
+    *, startup_model=None, startup_provider=None,
+    current_model="session-picked-model", current_provider="session-provider",
+    with_startup_attrs=True,
+):
+    """Minimal stand-in for driving the /new model reset unbound.
+
+    ``current_*`` is the session-scoped route (e.g. after ``/model --session``);
+    ``startup_*`` is the launch-time selection ``HermesCLI.__init__`` captured.
+    """
+    from types import SimpleNamespace
+
+    stub = SimpleNamespace(
+        model=current_model, provider=current_provider,
+        requested_provider=current_provider, base_url="", api_key="",
+        _explicit_api_key=None, _explicit_base_url=None,
+        api_mode="chat_completions", agent=None,
+    )
+    if with_startup_attrs:
+        stub._startup_model = startup_model
+        stub._startup_provider = startup_provider
+    return stub
+
+
+def _patch_model_config_default(monkeypatch, model="config-default-model", provider="config-provider"):
+    import cli as _cli_mod
+
+    monkeypatch.setitem(
+        _cli_mod.CLI_CONFIG, "model", {"default": model, "provider": provider})
+
+
+def _patch_switch_model(monkeypatch, calls):
+    # Patch the module object imported at file top: it is fully initialized on
+    # the main thread at collection, so a mid-test import here can never
+    # observe a half-executed module left by another test's worker threads.
+
+    def _fake_switch(**kwargs):
+        calls.append(kwargs)
+        return _model_switch_mod.ModelSwitchResult(
+            success=True, new_model=kwargs["raw_input"],
+            target_provider=kwargs.get("explicit_provider") or "resolved-provider",
+            api_key="sk-new", base_url="https://new/v1",
+            api_mode="chat_completions")
+
+    monkeypatch.setattr(_model_switch_mod, "switch_model", _fake_switch)
+
+
+@pytest.mark.parametrize(
+    "startup_model,startup_provider,want_model,want_provider",
+    [
+        ("startup-model", None, "startup-model", "config-provider"),
+        ("config-default-model", "other-provider",
+         "config-default-model", "other-provider"),
+        ("startup-model", "other-provider", "startup-model", "other-provider"),
+    ],
+)
+def test_new_session_boundary_restores_startup_selection(
+        monkeypatch, startup_model, startup_provider, want_model, want_provider):
+    """Regression for #74329: launch flags are the baseline /new resets TO.
+
+    Without the fix the reset re-derives from config.yaml only, so a process
+    started with ``--model``/``--provider`` answers post-boundary turns with
+    ``model.default`` instead of its startup route.
+    """
+    _patch_model_config_default(monkeypatch)
+    calls = []
+    _patch_switch_model(monkeypatch, calls)
+    cli = _startup_reset_stub(
+        startup_model=startup_model, startup_provider=startup_provider)
+
+    _reset_model_to_config_default(cli, True)
+
+    assert calls, "expected the boundary reset to go through switch_model"
+    assert calls[0]["raw_input"] == want_model
+    assert (calls[0]["explicit_provider"] or "") == want_provider
+    assert cli.model == want_model
+    assert cli.provider == want_provider
+
+
+def test_new_session_boundary_without_startup_flags_uses_config_default(monkeypatch):
+    """No launch flags: the boundary keeps re-deriving from config.yaml."""
+    _patch_model_config_default(monkeypatch)
+    calls = []
+    _patch_switch_model(monkeypatch, calls)
+    cli = _startup_reset_stub(with_startup_attrs=False)
+
+    _reset_model_to_config_default(cli, True)
+
+    assert calls[0]["raw_input"] == "config-default-model"
+    assert cli.model == "config-default-model"
+
+
+def test_wake_path_new_session_silent_restores_startup_selection(monkeypatch):
+    """The wake-word path (``new_session(silent=True)``) resets like ``/new``."""
+    _patch_model_config_default(monkeypatch)
+    monkeypatch.setitem(__import__("cli").CLI_CONFIG, "agent", {})
+    calls = []
+    _patch_switch_model(monkeypatch, calls)
+    cli = _startup_reset_stub(
+        startup_model="startup-model", startup_provider="other-provider")
+    cli.session_id = "old-session"
+    cli.session_start = datetime.now()
+    cli.conversation_history = []
+    cli.agent = None
+    cli._session_db = None
+    cli._pending_title = None
+    cli._resumed = False
+    cli._explicit_model_override = False
+    cli._pending_one_turn_model_restore = None
+    cli.reasoning_config = None
+    cli.service_tier = None
+
+    CLISessionMixin.new_session(cli, silent=True)
+
+    assert calls, "expected the silent boundary reset to go through switch_model"
+    assert calls[0]["raw_input"] == "startup-model"
+    assert (calls[0]["explicit_provider"] or "") == "other-provider"
+    assert cli.model == "startup-model"
+    assert cli.provider == "other-provider"
 
 

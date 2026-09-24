@@ -933,6 +933,9 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert d["ok"] is True
     new_tid = d["task_id"]
     assert d["subscribed"] is True, d
+    assert d["status"] == "ready"
+    assert d["execution"] == {
+        "owner": "dispatcher", "state": "ready", "run_id": None}
 
     subs = _sub_index(_list_subs_for_task(new_tid))
     assert len(subs) == 1

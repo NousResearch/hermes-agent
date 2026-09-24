@@ -121,9 +121,31 @@ class TurnRunner:
 
     # ── progress_callback (agent thread → progress queue) ───────────────────────────────────
 
+    def _publish_todo_progress(self, event_type: str, tool_name: str, kwargs: dict) -> None:
+        """Forward only committed todo snapshots to the serialized Telegram owner.
+
+        ``tool.completed`` is emitted by the real tool executor after the canonical tool
+        result has been appended and flushed. The owner only stores the newest snapshot;
+        this callback never performs transport I/O on the agent worker thread.
+        """
+        if event_type != "tool.completed":
+            return
+        owner = getattr(self._ctx, "_todo_progress_owner", None)
+        if owner is None:
+            return
+        try:
+            if tool_name in {"todo", "todo_list"} and not kwargs.get("is_error"):
+                owner.publish(kwargs.get("todo_snapshot"), kwargs.get("todo_incarnation"))
+        except Exception:
+            logger.debug("todo progress producer callback failed", exc_info=True)
+
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # The real executor emits tool.completed only after the canonical result append/flush.
+        # Publish before the onboarding early-return so the first completed tool cannot lose its
+        # structured todo snapshot.
+        self._publish_todo_progress(event_type, tool_name, kwargs)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":

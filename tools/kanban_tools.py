@@ -687,6 +687,11 @@ def _handle_complete(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
+        from hermes_cli.kanban_publication import prepare_update
+        run_id = _worker_run_id(tid)
+        publication = prepare_update(
+            conn, tid, expected_run_id=run_id, presentation=args.get("presentation"),
+            steps=args.get("steps") or ())
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
@@ -695,7 +700,7 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=run_id, publication=publication)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -762,6 +767,11 @@ def _handle_block(args: dict, **kw) -> str:
         _require_text(args, "reason", "reason is required — explain what input you need"))
     kind = args.get("kind")
     with _board(args.get("board")) as (kb, conn):
+        from hermes_cli.kanban_publication import prepare_update
+        run_id = _worker_run_id(tid)
+        publication = prepare_update(
+            conn, tid, expected_run_id=run_id, presentation=args.get("presentation"),
+            steps=args.get("steps") or ())
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
         # The goal loop treats ANY blocked status as terminal, so kanban_block
@@ -780,7 +790,8 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=run_id,
+                           publication=publication)
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
@@ -862,11 +873,16 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_heartbeat", args)
     from hermes_cli import kanban_db_dispatch as kbd
     with _board(args.get("board")) as (kb, conn):
+        from hermes_cli.kanban_publication import prepare_update
+        run_id = _worker_run_id(tid)
+        publication = prepare_update(
+            conn, tid, expected_run_id=run_id, presentation=args.get("presentation"),
+            steps=args.get("steps") or ())
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
         ok = kbd.heartbeat_worker(
-            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
+            conn, tid, note=args.get("note"), expected_run_id=run_id, publication=publication)
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
         return _ok(task_id=tid)
 
@@ -1050,6 +1066,10 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
+        from hermes_cli.kanban_publication import prepare_create
+        publication = prepare_create(
+            conn, presentation=args.get("presentation"), steps=args.get("steps") or (),
+            creator_task_id=self_tid, creator_run_id=_worker_run_id(self_tid) if self_tid else None)
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
@@ -1065,13 +1085,29 @@ def _handle_create(args: dict, **kw) -> str:
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
+            publication=publication,
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
+        proposal_linked = False
+        if publication is not None and self_tid is None:
+            try:
+                from hermes_cli.plugins import get_plugin_manager
+                from hermes_cli.kanban_db_surface import get_task_source
+                service = getattr(get_plugin_manager(), "_work_presentation_registration", None)
+                identity = get_task_source(conn, new_tid)
+                proposal_linked = bool(service and service.link_current_task(
+                    board=args.get("board") or kb.get_current_board(), task_id=new_tid,
+                    task_incarnation=identity.task_incarnation))
+            except (ValueError, OSError, RuntimeError):
+                # The task commit is authoritative. A stale/missing proposal
+                # cannot turn a successful create into a retryable duplicate.
+                proposal_linked = False
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+        return _ok(task_id=new_tid, proposal_linked=proposal_linked, **landed, **gate,
+                   subscribed=_maybe_auto_subscribe(conn, new_tid),
+                   execution={"owner": "dispatcher", "state": landed["status"], "run_id": None})
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:

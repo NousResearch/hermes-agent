@@ -26,13 +26,19 @@ from utils import fast_safe_load
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
 _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
-# path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
-_EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
+# (path, fail_closed) -> (*user_signature, *managed_signature, effective, env_snapshot).
+# Strict overlays retain nulls, whereas ordinary overlays may inherit through them.
+_EFFECTIVE_CACHE: Dict[Tuple[str, bool], Tuple[Any, ...]] = {}
+# Active-home good-config backups are an ordinary loader side effect. Keep the signature that has
+# already been considered by that side effect separate from the effective-value cache so a
+# side-effect-free reader cannot suppress the next ordinary backup after a valid edit.
+_GOOD_BACKUP_SIGNATURE: Dict[str, Tuple[int, int, int, int]] = {}
 
 
-def _effective(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _effective(raw: Dict[str, Any], *, fail_closed: bool = False) -> Dict[str, Any]:
     expanded = _config._expand_env_vars(raw)
-    merged = managed_scope.apply_managed_overlay(expanded if isinstance(expanded, dict) else {})
+    merged = managed_scope.apply_managed_overlay(expanded if isinstance(expanded, dict) else {},
+                                                fail_closed=fail_closed)
     return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
 
 
@@ -49,7 +55,18 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> Dict[
     return copy.deepcopy(raw) if raw is not None else {}
 
 
-def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False) -> Dict[str, Any]:
+def _maybe_backup_good(config_path: Path, path_key: str, user_sig, *, side_effect_free: bool) -> None:
+    """Preserve the ordinary active-home backup without making policy reads write."""
+    if (side_effect_free or user_sig is None or config_path != _config.get_config_path()
+            or _GOOD_BACKUP_SIGNATURE.get(path_key) == user_sig):
+        return
+    from hermes_cli.config_backups import backup_config
+    backup_config(config_path, "good")
+    _GOOD_BACKUP_SIGNATURE[path_key] = user_sig
+
+
+def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False,
+                               side_effect_free: bool = False) -> Dict[str, Any]:
     """User ``config.yaml`` → ``${VAR}`` expansion → managed overlay → model-key canonicalization.
     NO ``DEFAULT_CONFIG`` merge: a key absent from the file (and from the managed layer) is absent
     here, so ``{}`` sentinels and presence-sensitive bridges keep working. An absent file is an
@@ -59,15 +76,25 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     last-good state); otherwise the last successfully parsed user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
-    Cached on the user + managed file signatures and the values of every referenced env var."""
+    ``side_effect_free=True`` keeps the same lock/cache/effective-config behavior but suppresses
+    the ordinary active-home ``good`` backup write; a later ordinary call still performs that
+    backup for the same parsed file signature. Cached on the user + managed file signatures and
+    the values of every referenced env var. Strict overlays retain explicit nulls for the
+    permission reader to reject; their effective cache is separate from ordinary reads."""
     if config_path is None:
         config_path = _config.get_config_path()
     path_key = str(config_path)
+    effective_key = (path_key, fail_closed)
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
-        cached = _EFFECTIVE_CACHE.get(path_key)
+        # An ordinary read may have cached a result with a broken overlay ignored.
+        # Validate the current managed layer before trusting that effective cache.
+        if fail_closed:
+            managed_scope.load_managed_config(fail_closed=True)
+        cached = _EFFECTIVE_CACHE.get(effective_key)
         if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
             if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
+                _maybe_backup_good(config_path, path_key, user_sig, side_effect_free=side_effect_free)
                 return copy.deepcopy(cached[8])
 
         raw: Dict[str, Any] = {}
@@ -88,22 +115,19 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                 raw = loaded if isinstance(loaded, dict) else {}
                 _config._RAW_CONFIG_CACHE[path_key] = (*user_sig, copy.deepcopy(raw))
                 _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)
-                # Same copy load_config keeps: a fresh process recovers from it (see _recover_user_raw).
-                # Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup)
-                # must not create backups/ inside that profile.
-                if config_path == _config.get_config_path():
-                    from hermes_cli.config_backups import backup_config
-                    backup_config(config_path, "good")
-
+                # Ordinary callers retain the historical active-home good backup. Policy/read
+                # callers opt out without changing parse, overlay, expansion or caching.
+        if not recovered:
+            _maybe_backup_good(config_path, path_key, user_sig, side_effect_free=side_effect_free)
         env_snapshot = _config._env_ref_snapshot(raw)
-        managed = managed_scope.load_managed_config()
+        managed = managed_scope.load_managed_config(fail_closed=fail_closed)
         if managed:
             _config._env_ref_snapshot(managed, env_snapshot)
-        effective = _effective(raw)
+        effective = _effective(raw, fail_closed=fail_closed)
         # A recovered result is never cached under the corrupt file's signature: a later
         # ``fail_closed`` caller must still see the parse error, not a cache hit.
         if cache_sig is not None and not recovered:
-            _EFFECTIVE_CACHE[path_key] = (*cache_sig, copy.deepcopy(effective), env_snapshot)
+            _EFFECTIVE_CACHE[effective_key] = (*cache_sig, copy.deepcopy(effective), env_snapshot)
         else:
-            _EFFECTIVE_CACHE.pop(path_key, None)
+            _EFFECTIVE_CACHE.pop(effective_key, None)
         return effective

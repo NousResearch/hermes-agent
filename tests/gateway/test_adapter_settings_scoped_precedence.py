@@ -99,7 +99,7 @@ def test_secondary_reads_own_yaml_and_never_the_launch_env(homes, monkeypatch):
         with patch.object(tg, "HTTPXRequest", lambda **kw: built.append(kw) or types.SimpleNamespace()), \
                 patch.object(t, "_instrument_polling_request", side_effect=lambda r: r):
             asyncio.run(t._build_ptb_requests())
-        assert [kw.get("proxy") for kw in built] == ["http://127.0.0.1:18080"] * 2
+        assert [str(kw["httpx_kwargs"]["transport"].proxy.url) for kw in built] == ["http://127.0.0.1:18080"] * 2
 
 
 def test_explicit_env_beats_yaml_for_the_owning_profile(homes, monkeypatch):

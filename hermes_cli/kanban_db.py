@@ -1057,10 +1057,84 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     notifier_profile TEXT,
     delivery_mode TEXT NOT NULL DEFAULT 'notify',
     delivery_metadata TEXT,
+    binding_token TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- A delivery receipt is transport metadata, not another task authority.  The
+-- creation-event id is the immutable incarnation of a task id; it prevents a
+-- deleted task id that is later reused from inheriting an old message receipt.
+-- ``pending`` with an expired owner is deliberately reconciled as ``unknown``
+-- by the surface layer rather than replayed blindly after a crash.
+CREATE TABLE IF NOT EXISTS kanban_delivery_receipts (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id               TEXT NOT NULL,
+    task_incarnation      INTEGER NOT NULL,
+    desired_revision      INTEGER NOT NULL,
+    delivered_revision    INTEGER,
+    platform              TEXT NOT NULL,
+    chat_id               TEXT NOT NULL,
+    thread_id             TEXT NOT NULL DEFAULT '',
+    notifier_profile      TEXT,
+    routing_metadata      TEXT,
+    destination_message_id TEXT,
+    destination_profile   TEXT,
+    renderer_version      TEXT,
+    renderer_hash         TEXT,
+    control_hash          TEXT,
+    owner_epoch           INTEGER NOT NULL DEFAULT 0,
+    owner_id              TEXT,
+    lease_expires_at      INTEGER,
+    attempt_id            TEXT,
+    attempted_revision    INTEGER,
+    attempt_owner_id      TEXT,
+    retry_at              REAL NOT NULL DEFAULT 0,
+    failure_count         INTEGER NOT NULL DEFAULT 0,
+    binding_token         TEXT,
+    profile_key           TEXT NOT NULL DEFAULT '',
+    surface_kind          TEXT NOT NULL DEFAULT 'task_card',
+    attempt_count          INTEGER NOT NULL DEFAULT 0,
+    state                 TEXT NOT NULL DEFAULT 'pending',
+    retry_disposition     TEXT,
+    last_error            TEXT,
+    replacement_budget    INTEGER NOT NULL DEFAULT 1,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    UNIQUE (profile_key, task_id, task_incarnation, platform, chat_id, thread_id, surface_kind),
+    CHECK (state IN ('pending', 'sent', 'unknown', 'failed', 'deleted'))
+);
+
+CREATE TABLE IF NOT EXISTS kanban_action_records (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    token                 TEXT NOT NULL UNIQUE,
+    task_id               TEXT NOT NULL,
+    task_incarnation      INTEGER NOT NULL,
+    expected_revision     INTEGER NOT NULL,
+    expected_task_status  TEXT NOT NULL,
+    board_identity        TEXT NOT NULL,
+    profile               TEXT NOT NULL,
+    telegram_principal    INTEGER NOT NULL,
+    origin_chat_id        TEXT NOT NULL,
+    origin_thread_id      TEXT NOT NULL DEFAULT '',
+    origin_message_id     TEXT NOT NULL,
+    action_kind           TEXT NOT NULL,
+    action_payload        TEXT NOT NULL,
+    conflict_key          TEXT,
+    expires_at            INTEGER NOT NULL,
+    idempotency_key       TEXT NOT NULL,
+    state                 TEXT NOT NULL DEFAULT 'pending',
+    claim_epoch           INTEGER NOT NULL DEFAULT 0,
+    claim_owner           TEXT,
+    claim_attempt_id      TEXT,
+    claim_expires_at      INTEGER,
+    result                TEXT,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    UNIQUE (board_identity, idempotency_key),
+    CHECK (state IN ('pending', 'claimed', 'completed', 'failed', 'unknown', 'expired', 'rejected'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
@@ -1072,6 +1146,10 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_receipts_lane          ON kanban_delivery_receipts(task_id, task_incarnation, platform, chat_id, thread_id);
+CREATE INDEX IF NOT EXISTS idx_receipts_state         ON kanban_delivery_receipts(state, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_actions_task           ON kanban_action_records(task_id, task_incarnation, expected_revision);
+CREATE INDEX IF NOT EXISTS idx_actions_conflict       ON kanban_action_records(board_identity, conflict_key, state);
 """
 
 
@@ -1260,6 +1338,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    publication: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1374,25 +1453,30 @@ def create_task(
                 )
                 for pid in parents:
                     _link(conn, pid, task_id)
+                created_payload = {
+                    "assignee": assignee,
+                    "status": task_status,
+                    "parents": list(parents),
+                    "creator_task_id": creator_task_id,
+                    "tenant": tenant,
+                    "workspace_kind": workspace_kind,
+                    "workspace_path": workspace_path,
+                    "branch_name": branch_name,
+                    "project_id": project_id,
+                    "skills": list(skills_list) if skills_list else None,
+                    "goal_mode": bool(goal_mode) or None,
+                    "model_override": model_override,
+                    "provider_override": provider_override,
+                }
+                if publication is not None:
+                    if publication.get("run_id") is not None:
+                        raise ValueError("created task publication cannot bind a worker run")
+                    created_payload["publication"] = publication
                 _append_event(
                     conn,
                     task_id,
                     "created",
-                    {
-                        "assignee": assignee,
-                        "status": task_status,
-                        "parents": list(parents),
-                        "creator_task_id": creator_task_id,
-                        "tenant": tenant,
-                        "workspace_kind": workspace_kind,
-                        "workspace_path": workspace_path,
-                        "branch_name": branch_name,
-                        "project_id": project_id,
-                        "skills": list(skills_list) if skills_list else None,
-                        "goal_mode": bool(goal_mode) or None,
-                        "model_override": model_override,
-                        "provider_override": provider_override,
-                    },
+                    created_payload,
                 )
                 if task_status == "blocked":
                     _append_event(
@@ -2725,6 +2809,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    publication: Optional[dict] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2811,9 +2896,14 @@ def complete_task(
         event_summary = handoff_summary
         if prior_status == "review" and not event_summary:
             event_summary = _REVIEW_APPROVED_NOTE
+        completed_payload = _completed_event_payload(result, event_summary, verified_cards, metadata)
+        if publication is not None:
+            if run_id is None or publication.get("run_id") != run_id:
+                raise ValueError("completion publication does not match the closing run")
+            completed_payload["publication"] = publication
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            completed_payload,
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -3208,6 +3298,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    publication: Optional[dict] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3249,6 +3340,8 @@ def block_task(
             ).rowcount
             if classified != 1:
                 return False
+            if publication is not None:
+                raise ValueError("parked task classification cannot publish worker progress")
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
@@ -3289,6 +3382,10 @@ def block_task(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
+        if publication is not None:
+            if run_id is None or publication.get("run_id") != run_id:
+                raise ValueError("block publication does not match the closing run")
+            payload["publication"] = publication
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
         if kind == "dependency":
@@ -3641,11 +3738,11 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(conn: sqlite3.Connection, task_id: str, *, allow_nested: bool = False) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=allow_nested):
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"

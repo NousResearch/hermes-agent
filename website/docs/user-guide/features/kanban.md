@@ -318,6 +318,11 @@ kanban:
                                    # claims. Fail-closed: an empty list, `null`
                                    # or a bare `dispatch_profiles:` claims
                                    # nothing, and so does an unreadable config.
+  # dispatch_boards: [product]      # optional embedded-dispatcher board
+                                   # allowlist. Omit the key to preserve the
+                                   # historical all-board sweep. Once present,
+                                   # invalid, empty or unresolved values admit
+                                   # no boards.
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
@@ -999,6 +1004,7 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
+| `kanban.dispatch_boards` | unset (all active boards) | Optional exact allowlist for the embedded dispatcher. Only a non-empty list of active board slugs is accepted; a present empty, malformed, unreadable or unresolved value admits none. The fence applies before board open, recovery, promotion, dispatch and auto-decomposition. Scoped dispatch also refuses `HERMES_KANBAN_DB`, because that override could redirect an admitted slug to another database. Cross-board capacity is counted read-only and an unreadable admitted board fails closed. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 

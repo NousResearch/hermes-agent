@@ -4212,6 +4212,26 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return False
         return True
 
+    def create_http_application(self):
+        """Construct the native router/middleware without starting a listener.
+
+        Used by connect and listener-free HTTP integration tests. Plugin factories
+        run at the same final registration point, before aiohttp freezes routes.
+        """
+        mws = [mw for mw in (
+            self._make_profile_prefix_middleware(), cors_middleware, body_limit_middleware,
+            security_headers_middleware) if mw is not None]
+        app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
+        for method, path, handler in self._http_route_table():
+            app.router.add_route(method, path, handler)
+            app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+        app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
+        app["api_server_adapter"] = self
+        if self.gateway_runner is not None:
+            app["gateway_runner"] = self.gateway_runner
+        self._wire_plugin_handlers(app)
+        return app
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the aiohttp web server."""
         if not AIOHTTP_AVAILABLE:
@@ -4240,24 +4260,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 retryable=False)
             return False
         try:
-            mws = [mw for mw in (
-                self._make_profile_prefix_middleware(), cors_middleware, body_limit_middleware,
-                security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
-            assert self._app is not None
-            # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
-            # scopes config/credentials when multiplexing is on).
-            for method, path, handler in self._http_route_table():
-                self._app.router.add_route(method, path, handler)
-                self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
-            # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
-            # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
-            self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
-            # After native routes: Relay bootstrap shims feature-detect on this key and must
-            # no-op rather than shadow the native session-control handlers.
-            self._app["api_server_adapter"] = self
-            if self.gateway_runner is not None:
-                self._app["gateway_runner"] = self.gateway_runner
+            self._app = self.create_http_application()
             self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
             # Network-accessible + unsandboxed local terminal backend = host-user RCE surface;
             # warn, don't refuse (the operator may have a firewall / strong key).
@@ -4276,8 +4279,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         "firewalling this port to trusted networks only.",
                         self.name, self._host)
 
-            # Plugin-registered native handlers, wired before AppRunner.setup() freezes the router.
-            self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
             # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the

@@ -375,6 +375,38 @@ class TestPluginDiscovery:
         ]
         assert mgr.has_middleware("llm_request") is True
 
+    def test_failed_scoped_surface_registration_disposes_prior_todo(
+        self, tmp_path, monkeypatch
+    ):
+        """A later fail-closed scope error cannot leave an earlier surface active."""
+        home = tmp_path / "hermes_test"
+        scope = {
+            "routes": [{
+                "profile": "default", "platform": "telegram",
+                "chat_id": "-1000000000001", "thread_id": None,
+            }],
+            "task_resources": [],
+        }
+        _make_plugin_dir(
+            home / "plugins",
+            "scoped-surfaces",
+            register_body=(
+                f"scope = {scope!r}\n"
+                "    ctx.register_live_todo(lambda handle: None, scope=scope)\n"
+                "    ctx.register_task_cards(lambda handle: None, scope=scope)"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        state = manager._plugins["scoped-surfaces"]
+        assert state.error is not None
+        assert "at least one exact task resource" in state.error
+        assert not manager._live_todo_registration.active
+        assert getattr(manager, "_task_card_registration", None) is None
+
 
     def test_middleware_helpers_skip_no_listener_work(self, monkeypatch):
         manager = types.SimpleNamespace(_middleware={})
@@ -416,14 +448,16 @@ class TestPluginDiscovery:
         def _boom(self_inner):
             raise RuntimeError("sweep failed")
 
-        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", _boom)
-        with pytest.raises(RuntimeError, match="sweep failed"):
-            mgr.discover_and_load()
-        assert mgr._discovered is False, "failed sweep was cached as discovered"
+        # This directory-recovery assertion must not count independently installed
+        # distributions (e.g. the real plugin used by integration suites).
+        monkeypatch.setattr(mgr, "_scan_entry_points", lambda: [])
+        with monkeypatch.context() as broken_scan:
+            broken_scan.setattr(PluginManager, "_discover_and_load_inner", _boom)
+            with pytest.raises(RuntimeError, match="sweep failed"):
+                mgr.discover_and_load()
+            assert mgr._discovered is False, "failed sweep was cached as discovered"
 
         # A later call (with discovery healthy again) must do the real scan.
-        monkeypatch.undo()
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
         mgr.discover_and_load()
         assert mgr._discovered is True
         non_bundled = {

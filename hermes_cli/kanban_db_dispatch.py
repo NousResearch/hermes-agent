@@ -613,6 +613,7 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    publication: Optional[dict] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -637,9 +638,14 @@ def heartbeat_worker(
         )
         if run_id is not None:
             conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
+        payload = {"note": note} if note else {}
+        if publication is not None:
+            if run_id is None or publication.get("run_id") != run_id:
+                raise ValueError("heartbeat publication does not match the current run")
+            payload["publication"] = publication
         _kb._append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            payload or None,
             run_id=run_id,
         )
     return True
@@ -1688,7 +1694,10 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
             type(exc).__name__, exc,
         )
         return frozenset()
-    if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
+    if not isinstance(kanban, Mapping):
+        # Strict overlays retain malformed sections; presence is not an absent allowlist.
+        return frozenset()
+    if "dispatch_profiles" not in kanban:
         return None
     raw = kanban["dispatch_profiles"]
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -1860,13 +1869,20 @@ def count_running_tasks(conn: sqlite3.Connection) -> int:
         return 0
 
 
-def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
+def count_running_tasks_other_boards(
+    board: Optional[str] = None, *, strict_read_only: bool = False,
+) -> Optional[int]:
     """Total ``running`` tasks across every board EXCEPT ``board``.
 
     Caps bound the HOST, but each board's tick only sees its own DB; without
     this a derived cap of N gets multiplied by the number of active boards.
     Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
-    board to one file) yields 0. Fails open per board.
+    board to one file) yields 0. The historical path fails open per board.
+
+    ``strict_read_only`` is used by a board-scoped embedded gateway. It reads
+    every active board for the host-wide cap without calling ``connect()``
+    (which may initialize or migrate a board). Any missing or unreadable board
+    returns ``None`` so uncertainty cannot silently create capacity.
     """
     try:
         current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
@@ -1875,7 +1891,7 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     try:
         boards = _kb.list_boards(include_archived=False)
     except Exception:
-        return 0
+        return None if strict_read_only else 0
     total = 0
     for meta in boards:
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
@@ -1885,14 +1901,27 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
             if current_path is not None and resolved == current_path:
                 continue
             if not path.exists():
+                if strict_read_only:
+                    return None
                 continue
-            other = _kbc.connect(board=slug)
+            if strict_read_only:
+                other = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+                other.execute("PRAGMA query_only = ON")
+            else:
+                other = _kbc.connect(board=slug)
             try:
-                total += count_running_tasks(other)
+                if strict_read_only:
+                    total += int(other.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                    ).fetchone()[0])
+                else:
+                    total += count_running_tasks(other)
             finally:
                 with contextlib.suppress(Exception):
                     other.close()
         except Exception:
+            if strict_read_only:
+                return None
             continue
     return total
 
@@ -1930,6 +1959,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    dispatch_boards: Optional[frozenset[str]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1953,6 +1983,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            dispatch_boards=dispatch_boards,
         )
 
     try:
@@ -2165,6 +2196,7 @@ def _tick_spawn_budget(
     max_spawn: Optional[int],
     max_in_progress: Optional[int],
     board: Optional[str],
+    strict_capacity_read: bool = False,
 ) -> tuple[bool, Optional[int]]:
     """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
 
@@ -2189,7 +2221,16 @@ def _tick_spawn_budget(
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
-        total_running = running_count + count_running_tasks_other_boards(board)
+        other_running = count_running_tasks_other_boards(
+            board, strict_read_only=strict_capacity_read,
+        )
+        if other_running is None:
+            _kb._log.warning(
+                "kanban dispatch: cannot read every board for the host-wide "
+                "capacity cap; spawning no new workers this tick"
+            )
+            return False, None
+        total_running = running_count + other_running
         if total_running >= max_in_progress:
             return False, None
         remaining = max_in_progress - total_running
@@ -2292,6 +2333,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    dispatch_boards: Optional[frozenset[str]] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2305,6 +2347,7 @@ def _dispatch_once_locked(
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
+        strict_capacity_read=dispatch_boards is not None,
     )
     if not may_spawn:
         return result

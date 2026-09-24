@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import time
 from pathlib import Path
@@ -99,7 +100,7 @@ def add_notify_sub(
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
-            "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            "SELECT * FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             key,
         ).fetchone()
         existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
@@ -139,6 +140,12 @@ def add_notify_sub(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
             )
+        current = conn.execute("SELECT * FROM kanban_notify_subs " + _SUB_KEY_WHERE, key).fetchone()
+        route_fields = ("notifier_profile", "delivery_metadata", "delivery_mode", "chat_type")
+        if (not current["binding_token"] or existing is None
+                or any(existing[f] != current[f] for f in route_fields)):
+            conn.execute("UPDATE kanban_notify_subs SET binding_token=? " + _SUB_KEY_WHERE,
+                         (secrets.token_hex(16), *key))
 
 
 def _notify_profile_filter(

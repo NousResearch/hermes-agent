@@ -86,6 +86,11 @@ class TestRegisterPlatformHandlerAPI:
         with pytest.raises(ValueError, match="empty platform"):
             ctx.register_platform_handler("  ", lambda n, a: None)
 
+    def test_reload_safe_must_be_boolean(self):
+        _, ctx = _make_ctx()
+        with pytest.raises(ValueError, match="non-boolean reload_safe"):
+            ctx.register_platform_handler("telegram", lambda n, a: None, reload_safe=1)
+
     def test_platform_scoping(self):
         """Factories for platform A never appear in platform B's list."""
         mgr, ctx = _make_ctx()
@@ -139,6 +144,43 @@ class TestTelegramAlias:
 # ===========================================================================
 
 class TestAdapterPluginWiring:
+    def test_reload_safe_generation_rewires_after_owned_unload_only(self):
+        adapter = _make_adapter()
+        calls = []
+
+        def factory(native, adp):
+            calls.append((native, adp))
+
+        mgr, ctx = _make_ctx()
+        ctx.register_platform_handler("telegram", factory, reload_safe=True)
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            adapter._wire_plugin_handlers(adapter._app)
+            adapter._wire_plugin_handlers(adapter._app)
+            assert len(calls) == 1
+            assert mgr.unload("test_plugin")
+            assert mgr.get_platform_handler_factories("telegram") == []
+            PluginContext(ctx.manifest, mgr).register_platform_handler(
+                "telegram", factory, reload_safe=True,
+            )
+            adapter._wire_plugin_handlers(adapter._app)
+            assert len(calls) == 2
+
+    def test_legacy_factory_keeps_qualname_deduplication_after_reload(self):
+        adapter = _make_adapter()
+        calls = []
+
+        def factory(native, adp):
+            calls.append((native, adp))
+
+        mgr, ctx = _make_ctx()
+        ctx.register_platform_handler("telegram", factory)
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            adapter._wire_plugin_handlers(adapter._app)
+            assert mgr.unload("test_plugin")
+            PluginContext(ctx.manifest, mgr).register_platform_handler("telegram", factory)
+            adapter._wire_plugin_handlers(adapter._app)
+            assert len(calls) == 1
+
     def test_factory_invoked_with_native_and_adapter(self):
         adapter = _make_adapter()
         calls = []
@@ -205,4 +247,3 @@ class TestAdapterPluginWiring:
 # ===========================================================================
 # Every adapter calls _wire_plugin_handlers in connect() — source invariant
 # ===========================================================================
-

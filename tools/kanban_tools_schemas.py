@@ -40,6 +40,47 @@ def _schema(name: str, description: str, properties: dict[str, Any], required: l
     }
 
 
+_WORK_SOURCE = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"label": {"type": "string", "maxLength": 160},
+                   "url": {"type": "string", "maxLength": 2048}},
+    "required": ["label", "url"],
+}
+_WORK_SOURCES = {"type": "array", "maxItems": 12, "items": _WORK_SOURCE}
+_WORK_PRESENTATION = {
+    "type": "object", "additionalProperties": False,
+    "description": "Explicit content safe to publish to the task's approved Telegram group.",
+    "properties": {
+        "summary": {"type": "string", "maxLength": 4000},
+        "current_step": {"type": "string", "maxLength": 4000},
+        "blocker": {"type": "string", "maxLength": 4000},
+        "input_acknowledgement": {"type": "string", "maxLength": 4000},
+        "findings": {"type": "array", "maxItems": 12, "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"title": {"type": "string", "maxLength": 240},
+                           "detail": {"type": "string", "maxLength": 4000},
+                           "sources": _WORK_SOURCES}, "required": ["title", "detail"]}},
+        "result": {"type": "object", "additionalProperties": False,
+                   "properties": {"summary": {"type": "string", "maxLength": 4000},
+                                  "sources": _WORK_SOURCES}, "required": ["summary"]},
+    },
+    "required": ["summary"],
+}
+_WORK_STEPS = {"type": "array", "maxItems": 32, "items": {
+    "type": "object", "additionalProperties": False,
+    "properties": {"content": {"type": "string", "maxLength": 500},
+                   "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}},
+    "required": ["content", "status"],
+}}
+
+
+def _publication_fields() -> dict[str, Any]:
+    return {
+        "presentation": _WORK_PRESENTATION,
+        "steps": _WORK_STEPS,
+    }
+
+
 KANBAN_SHOW_SCHEMA = _schema(
     "kanban_show",
     (
@@ -105,6 +146,7 @@ KANBAN_COMPLETE_SCHEMA = _schema(
         "instead of being a path they have to fetch by hand."
     ),
     {
+        **_publication_fields(),
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
         "summary": _prop("string", (
                 "Human-readable handoff, 1-3 sentences. Appears in "
@@ -179,6 +221,7 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "block on things you can resolve yourself."
     ),
     {
+        **_publication_fields(),
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
         "reason": _prop("string", (
                 "What you need answered or what stopped you, in one or "
@@ -280,6 +323,7 @@ KANBAN_HEARTBEAT_SCHEMA = _schema(
         "effect — no work changes."
     ),
     {
+        **_publication_fields(),
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
         "note": _prop("string", (
                 "Optional short note describing current progress. "
@@ -374,10 +418,13 @@ KANBAN_CREATE_SCHEMA = _schema(
         "one (pass the current task id in ``parents``). Used by "
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
-        "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "then complete your own task. Creation delegates execution: the "
+        "foreground caller receives no task run authority. The result reports "
+        "the exact canonical task state; the dispatcher claims an eligible task "
+        "on a later tick and spawns the assigned profile."
     ),
     {
+        **_publication_fields(),
         "title": _prop("string", "Short task title (required)."),
         "assignee": _prop("string", (
                 "Profile name that should execute this task "
@@ -449,8 +496,9 @@ KANBAN_CREATE_SCHEMA = _schema(
             "description": (
                 "Initial card status. Use 'blocked' for tasks that "
                 "require immediate human ops (R3 gate) to skip the "
-                "brief running-to-blocked transition. Defaults to "
-                "'running', which preserves the usual dispatch path."
+                "brief queued-to-blocked transition. The legacy value "
+                "'running' means queue for dispatcher and is returned as "
+                "'ready'; it does not give the foreground caller a run."
             ),
         },
         "skills": {

@@ -1521,20 +1521,23 @@ def _merge_partial_save(raw: dict, override: dict) -> dict:
     return result
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+def _deep_merge(base: dict, override: dict, *, preserve_null: bool = False) -> dict:
     """Recursively merge *override* into *base*: dict-over-dict recurses (so overriding one leaf
     keeps sibling defaults), and ``None`` over a dict section is ignored.
 
     An empty section key in config.yaml (``terminal:`` with no value) parses as YAML ``None``; treating that
     as an override would replace the entire default dict with ``None`` and crash every downstream consumer
     that expects a mapping (#58277).
+
+    Strict policy overlays set ``preserve_null`` so a present invalid section reaches the
+    permission reader instead of silently restoring lower-priority authority.
     """
     result = base.copy()
     for key, value in override.items():
         over_dict = isinstance(result.get(key), dict)
         if over_dict and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        elif not (over_dict and value is None):
+            result[key] = _deep_merge(result[key], value, preserve_null=preserve_null)
+        elif preserve_null or not (over_dict and value is None):
             result[key] = value
     return result
 

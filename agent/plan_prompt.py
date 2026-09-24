@@ -54,6 +54,9 @@ Interaction style:
 - After saving the plan, reply briefly with what you planned and the saved
   path, and offer to execute it (e.g. via subagent-driven development) —
   but do not start executing in this turn.
+- If a `publish_plan_brief` tool is available, call it after saving the plan
+  with the saved path and an explicitly authored audience-safe summary. Never
+  copy the raw plan, transcript, private paths, or secrets into that summary.
 """
 
 

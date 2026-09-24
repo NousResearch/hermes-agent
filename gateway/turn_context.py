@@ -39,6 +39,8 @@ class TurnContext:
     _cleanup_msg_ids: List[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
+    _todo_progress_owner: Any = None
+    _todo_progress_task: Any = None
     message: Optional[str] = None  # the only rebindable field
     # turn parameters / config snapshots (read-only in run_sync)
     history: Any = None

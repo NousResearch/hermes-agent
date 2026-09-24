@@ -1142,9 +1142,14 @@ def _commit_tool_result(
     if not blocked:
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
         # reconstruct the result even if the UI bridge dies mid-projection.
+        todo_data = {}
+        store = getattr(agent, "_todo_store", None)
+        if function_name in {"todo", "todo_list"} and not is_error and store is not None:
+            todo_data = {"todo_snapshot": store.snapshot(), "todo_incarnation": store.incarnation}
         _safe_callback(
             agent.tool_progress_callback, "Tool progress",
             "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
+            **todo_data,
         )
     if isinstance(function_result, str) and len(function_result) >= _LARGE_TOOL_RESULT_TRIM_CHARS:
         agent._trim_after_tool_batch = True

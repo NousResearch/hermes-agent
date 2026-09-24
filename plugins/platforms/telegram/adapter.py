@@ -151,6 +151,7 @@ _UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.live_todo import LiveTodoTransportMixin
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -473,7 +474,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(BasePlatformAdapter):
+class TelegramAdapter(LiveTodoTransportMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -542,6 +543,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
+        self._init_live_todo_transport()
         extra = self.config.extra
         self._app: Optional[Application] = None
         self._seen_update_ids: dict = {}
@@ -2968,6 +2970,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _build_ptb_requests(self) -> tuple:
         """Build the (general, getUpdates) HTTPXRequest pair: fallback-IP transport, explicit proxy, or
         direct DNS; the getUpdates request is instrumented for polling-progress tracking."""
+        from .transport_admission import AdmissionHTTPTransport
         # PTB's pool_timeout=1s default trips "Pool timeout" on flaky networks; safer defaults + env overrides.
         request_kwargs = {
             "connection_pool_size": env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
@@ -3001,14 +3004,6 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # pragma: no cover — httpx always present alongside PTB
             _pool_limits = _updates_limits = None
 
-        def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
-            """Merge tuned limits into httpx client kwargs (proxy/direct branches only; the fallback-IP
-            branch must pass limits straight into the transport — httpx ignores client `limits` then)."""
-            kwargs = dict(httpx_kwargs or {})
-            if _pool_limits is not None and "limits" not in kwargs:
-                kwargs["limits"] = _pool_limits
-            return kwargs
-
         disable_fallback = os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}
         fallback_ips = [] if disable_fallback else self._fallback_ips()
         if not fallback_ips and not disable_fallback:
@@ -3036,27 +3031,30 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("[%s] Telegram fallback IPs active: %s", self.name, ", ".join(fallback_ips))
             # Separate request/update pools reduce contention during polling reconnect + bootstrap calls.
             _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options()}
-            # Keep request/update pools separate to reduce contention during polling reconnect + bot API
-            # bootstrap/delete_webhook calls. httpx ignores the client-level `limits` kwarg when a custom
-            # `transport` is supplied (#58790). Unlike the proxy/direct branches (which inject limits at the
-            # client level via `_with_limits`), this branch MUST pass the tuned limits directly into
-            # TelegramFallbackTransport so its inner AsyncHTTPTransport instances honour keepalive_expiry —
-            # do not route this through `_with_limits`, httpx would discard it.
+            # httpx ignores client-level limits with a custom transport (#58790).
+            # All branches tune the adapter-owned pools directly, including each
+            # lazily constructed fallback pool and the non-reusing updates pool.
             if _pool_limits is not None:
                 _transport_kwargs["limits"] = _pool_limits
             _updates_transport_kwargs = dict(_transport_kwargs)
             if _updates_limits is not None:
                 _updates_transport_kwargs["limits"] = _updates_limits
             request, get_updates_request = _pair(
-                {"transport": TelegramFallbackTransport(fallback_ips, **_transport_kwargs)},
-                {"transport": TelegramFallbackTransport(fallback_ips, **_updates_transport_kwargs)})
+                {"transport": TelegramFallbackTransport(
+                    fallback_ips, transport_factory=AdmissionHTTPTransport, **_transport_kwargs)},
+                {"transport": TelegramFallbackTransport(
+                    fallback_ips, transport_factory=AdmissionHTTPTransport, **_updates_transport_kwargs)})
         elif proxy_url:
-            logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-            request, get_updates_request = _pair(_with_limits(), {"limits": _updates_limits}, proxy=proxy_url)
+            logger.info("[%s] Proxy detected; passing explicitly to adapter transport: %s", self.name, proxy_url)
+            request, get_updates_request = _pair(
+                {"transport": AdmissionHTTPTransport(proxy=proxy_url, limits=_pool_limits)},
+                {"transport": AdmissionHTTPTransport(proxy=proxy_url, limits=_updates_limits)})
         else:
             if disable_fallback:
                 logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-            request, get_updates_request = _pair(_with_limits(), {"limits": _updates_limits})
+            request, get_updates_request = _pair(
+                {"transport": AdmissionHTTPTransport(limits=_pool_limits)},
+                {"transport": AdmissionHTTPTransport(limits=_updates_limits)})
         return request, self._instrument_polling_request(get_updates_request)
 
     async def _initialize_app_with_retries(self, builder) -> None:
@@ -3403,6 +3401,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
+        todo_sources = self._fence_live_todo_transport()
         # Mark disconnected first so the drop guard short-circuits any flush that wins the race.
         self._mark_disconnected()
         self._polling_teardown_started = True
@@ -3425,6 +3424,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._await_disconnect_step(
                 asyncio.gather(*lifecycle_tasks, return_exceptions=True), _DISCONNECT_STEP_TIMEOUT, "lifecycle-task cancel")
         self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task")
+        await self._drain_live_todo_transport(todo_sources)
         # Cancellation callbacks may have run while awaited; the fence stays authoritative.
         self._polling_progress_accepting = False
         self._send_path_degraded = True

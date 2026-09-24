@@ -136,3 +136,24 @@ def test_diagnostics_reports_resolved_allowlist(kanban_home, capsys, config, exp
     payload = json.loads(capsys.readouterr().out)
     assert payload == [{"task_id": None, "dispatch_profiles": payload[-1]["dispatch_profiles"], "diagnostics": []}]
     assert payload[-1]["dispatch_profiles"].startswith(expected)
+
+
+@pytest.mark.parametrize('body', ['kanban: null', 'kanban: []', 'kanban: invalid'])
+@pytest.mark.parametrize('warm', [False, True])
+def test_malformed_managed_section_never_widens_claim_scope(
+    kanban_home, all_assignees_spawnable, monkeypatch, body, warm,
+):
+    from hermes_cli.config_effective import load_user_config_effective
+    (kanban_home / 'config.yaml').write_text('kanban: {dispatch_profiles: []}')
+    managed = kanban_home / 'managed'
+    managed.mkdir()
+    monkeypatch.setenv('HERMES_MANAGED_DIR', str(managed))
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title='synthetic foreign card', assignee='default')
+        assert kbd.has_spawnable_ready(conn) is False
+        (managed / 'config.yaml').write_text(body)
+        if warm:
+            load_user_config_effective()
+        assert kbd.has_spawnable_ready(conn) is False
+        result = kbd.dispatch_once(conn, dry_run=True)
+    assert result.spawned == [] and result.skipped_nonspawnable == [tid]

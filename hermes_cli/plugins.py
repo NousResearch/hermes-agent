@@ -854,28 +854,107 @@ class PluginContext:
         logger.debug("Plugin %s registered Slack action handler: %s", self.manifest.name, action_id)
         return handle
 
-    def register_platform_handler(self, platform: str, factory: Callable) -> None:
+    def register_platform_handler(
+        self, platform: str, factory: Callable, *, reload_safe: bool = False,
+    ) -> None:
         """Register ``factory(native, adapter)``, invoked at ``connect()`` before/as the core handlers
         register (``adapter`` read-only). ``native``: telegram PTB ``Application``, discord
         ``commands.Bot``, slack ``AsyncApp``, matrix client, teams ``App``, dingtalk
         ``DingTalkStreamClient``, line aiohttp ``web.Application``, others ``None``. Keep SDK imports
         inside the factory; exceptions are logged and the platform still connects. Scope handlers in
         first-match dispatch tables so core flows keep working. Raises ``ValueError`` when not callable
-        or platform is empty."""
+        or platform is empty. ``reload_safe=True`` opts into a new wiring generation after unload;
+        use it only when the plugin's unload callback removes the prior native handlers."""
         if not callable(factory):
             raise self._refuse("a platform handler factory with a non-callable factory")
+        if type(reload_safe) is not bool:
+            raise self._refuse("a platform handler factory with a non-boolean reload_safe value")
         key = (platform or "").strip().lower()
         if not key:
             raise self._refuse("a platform handler factory with an empty platform name")
-        self._manager._platform_handler_factories.setdefault(key, []).append((factory, self.manifest.name))
+        factories = self._manager._platform_handler_factories.setdefault(key, [])
+        entry = (factory, self.manifest.name)
+        factories.append(entry)
+        generation = object() if reload_safe else None
+        if generation is not None:
+            self._manager._platform_handler_reload_generations[id(entry)] = generation
+
+        def release() -> None:
+            self._manager._remove_identity(factories, entry)
+            if self._manager._platform_handler_reload_generations.get(id(entry)) is generation:
+                self._manager._platform_handler_reload_generations.pop(id(entry), None)
+
+        factory_name = getattr(factory, "__qualname__", None) or repr(factory)
+        self._track("platform_handler", f"{key}:{factory_name}", release)
         logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
                      getattr(factory, "__name__", repr(factory)))
 
-    def register_telegram_handler(self, factory: Callable) -> None:
+    live_todo_capability = 2
+
+    task_card_capability = 2
+
+    task_decision_capability = 2
+
+    task_read_capability = 2
+
+    work_presentation_capability = 1
+
+    def register_work_presentation(self, *, scope):
+        """Register authored proposal/task publication for this profile."""
+        from gateway.work_presentation import register_work_presentation
+        return register_work_presentation(self, scope=scope)
+
+    def get_work_presentation(self):
+        """Return the registered service only on its current trusted route."""
+        from gateway.work_presentation import get_work_presentation
+        return get_work_presentation(self)
+
+    def register_task_detail(self, *, scope):
+        """Host-owned Telegram principal, exact read grant and canonical projection.
+
+        The returned service binds to the existing native API app; it never grants
+        dashboard/API-key authority or task mutation rights. Unload fences reads.
+        """
+        from gateway.task_read import register_task_detail
+        return register_task_detail(self, scope=scope)
+
+    def register_task_decisions(self, *, callback_prefix="task:"):
+        """Default-off bounded task service; native updates, not payload actors."""
+        from gateway.task_decisions import TaskDecisions
+        reg = getattr(self._manager, "_task_card_registration", None)
+        if reg is None or not reg.active or reg.plugin_id != self.plugin_id:
+            raise ValueError("task decisions require this plugin's active task cards")
+        if getattr(reg, "decisions", None) is None:
+            reg.decisions = TaskDecisions(reg, callback_prefix=callback_prefix)
+        elif reg.decisions.callback_prefix != callback_prefix:
+            raise ValueError("task decision callback prefix is already bound")
+        return reg.decisions
+
+    def register_task_cards(self, factory: Callable, *, scope):
+        """Register one subscription-scoped durable task-card consumer per profile.
+
+        Factory(handle) -> consumer with publish(snapshot), run(), close(). The
+        handle only exposes admitted() and deliver(snapshot, plain_text). Canonical
+        snapshot, subscription generation, receipts and reconciliation are host-owned.
+        """
+        from gateway.kanban_surfaces import register_task_cards
+        return register_task_cards(self, factory, scope=scope)
+
+    def register_live_todo(self, factory: Callable, *, scope):
+        """Register the profile's live-run todo consumer (source/transport contract v2).
+
+        The factory receives a host-owned source with publish/run/close supervision and
+        a route-bound deliver(text) method. No adapter or credentials are exposed.
+        Unload revokes transport admission immediately; config-only disable needs restart.
+        """
+        from gateway.live_todo import register_live_todo
+        return register_live_todo(self, factory, scope=scope)
+
+    def register_telegram_handler(self, factory: Callable, *, reload_safe: bool = False) -> None:
         """``register_platform_handler("telegram", factory)``. PTB dispatches only the FIRST matching
         handler per group and core registers a catch-all ``CallbackQueryHandler`` — always scope with
         ``pattern=`` or you swallow the core button flows."""
-        self.register_platform_handler("telegram", factory)
+        self.register_platform_handler("telegram", factory, reload_safe=reload_safe)
 
     @_serialized_replacement
     def register_auxiliary_task(
@@ -1215,6 +1294,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
+        # Opted-in factory entry id -> opaque wiring generation. The public accessor remains
+        # ``(factory, plugin_name)`` pairs for compatibility.
+        self._platform_handler_reload_generations: Dict[int, object] = {}
         # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().
         self._plugin_loaded_listeners: List[Callable] = []
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
@@ -1539,6 +1621,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """``(factory, plugin_name)`` tuples for one platform; adapters call ``factory(native,
         adapter)`` at connect (see :meth:`PluginContext.register_platform_handler`)."""
         return list(self._platform_handler_factories.get((platform or "").strip().lower(), []))
+
+    def get_platform_handler_factory_generation(self, registration: tuple) -> object | None:
+        """Opaque rewire generation for an opted-in live factory registration."""
+        return self._platform_handler_reload_generations.get(id(registration))
 
     def get_telegram_handler_factories(self) -> List[tuple]:
         """Back-compat alias for ``get_platform_handler_factories("telegram")``."""

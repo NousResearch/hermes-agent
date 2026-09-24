@@ -4,6 +4,7 @@ a monotonic revision so UI clients can reject stale updates. One ``todo_list`` t
 ``todos`` to write, omit to read; every call returns the full list. No system-prompt mutation."""
 
 import json
+from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
@@ -28,6 +29,7 @@ class TodoStore:
     ``{id, content, status, parent?}`` — ``parent`` nests a subtask."""
 
     def __init__(self):
+        self.incarnation = uuid4().hex
         self._items: List[Dict[str, str]] = []
         self._revision = 0
 

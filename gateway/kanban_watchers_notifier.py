@@ -297,16 +297,19 @@ class _Collector:
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
+        from gateway.kanban_surfaces import subscription_registration, collect_surface
+        registration = subscription_registration(self.runner, sub, slug)
+        surface = collect_surface(conn, slug, sub, registration) if registration is not None else None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
         )
-        if not events:
+        if not events and surface is None:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug, "surface": surface}
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -754,6 +757,11 @@ class _KanbanNotification:
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.
         async with self._owner_scope():
+            from gateway.kanban_surfaces import offer_surface
+            if await offer_surface(self.runner, self.d, adapter):
+                # Card ownership replaces only passive pings/artifacts. Existing
+                # wake admission and its cursor remain canonical and independent.
+                self.send_passive = False
             if not await self._send_pings():
                 return
             # All text pings delivered (or skipped for non-push / wake-only).

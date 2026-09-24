@@ -881,8 +881,87 @@ class GatewayInboundMixin:
         from agent.plan_prompt import build_plan_prompt
 
         task = event.get_command_args().strip()
+        if task in {"approve", "reject", "discard"}:
+            return True, await asyncio.to_thread(self._native_plan_transition, source, task)
+        await asyncio.to_thread(self._native_plan_begin, source)
         _ack = f"Planning: {task[:80]}{'…' if len(task) > 80 else ''}" if task else "Planning from this conversation's context…"
         return await self._hm_rewrite_turn_to_prompt(event, source, "plan", _ack, lambda: build_plan_prompt(task))
+
+    def _hm_bind_work_presentation_ingress(self, source):
+        """Retain only the admitted native route's fenced proposal transport."""
+        from gateway.session_identity import identity_of
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_cli.plugins import get_plugin_manager
+
+        identity = identity_of(source)
+        adapter = self._delivery_adapter_for(source)
+        if identity is None or adapter is None:
+            return False
+        token = set_hermes_home_override(identity.runtime_home)
+        try:
+            service = getattr(get_plugin_manager(), "_work_presentation_registration", None)
+            return bool(service is not None
+                        and service.bind_transport_from_ingress(source, adapter))
+        except (AttributeError, TypeError, ValueError, OSError, RuntimeError):
+            return False
+        finally:
+            reset_hermes_home_override(token)
+
+    @staticmethod
+    def _native_plan_transition(source, action):
+        """Exact command only; ordinary assent and tool completion never approve."""
+        from gateway.session_context import scoped_work_audience
+        from gateway.session_identity import identity_of
+        from gateway.work_presentation import trusted_audience_for_source
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_cli.plugins import get_plugin_manager
+
+        identity, audience = identity_of(source), trusted_audience_for_source(source)
+        if identity is None or audience is None:
+            return "No published plan is available in this conversation."
+        token = set_hermes_home_override(identity.runtime_home)
+        try:
+            with scoped_work_audience(audience):
+                service = getattr(get_plugin_manager(), "_work_presentation_registration", None)
+                if service is None or not service.available_current_route():
+                    return "No published plan is available in this conversation."
+                ref = service.current_proposal()
+                if ref is None:
+                    return "Publish the current plan brief before changing its state."
+                status = {"approve": "approved", "reject": "rejected", "discard": "discarded"}[action]
+                service.transition_proposal(ref, expected_revision=ref.revision, status=status)
+        except (ValueError, OSError, RuntimeError):
+            return "The published plan changed or is unavailable. Review and publish it again."
+        finally:
+            reset_hermes_home_override(token)
+        return {
+            "approve": "Plan approved. It is awaiting task creation and execution.",
+            "reject": "Plan changes requested. Publish a revised brief before approval.",
+            "discard": "Plan discarded.",
+        }[action]
+
+    @staticmethod
+    def _native_plan_begin(source):
+        """Best-effort publication boundary for one exact native /plan event."""
+        from gateway.session_context import scoped_work_audience
+        from gateway.session_identity import identity_of
+        from gateway.work_presentation import trusted_audience_for_source
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_cli.plugins import get_plugin_manager
+
+        identity, audience = identity_of(source), trusted_audience_for_source(source)
+        if identity is None or audience is None:
+            return
+        token = set_hermes_home_override(identity.runtime_home)
+        try:
+            with scoped_work_audience(audience):
+                service = getattr(get_plugin_manager(), "_work_presentation_registration", None)
+                if service is not None and service.available_current_route():
+                    service.begin_proposal()
+        except (ValueError, OSError, RuntimeError):
+            pass
+        finally:
+            reset_hermes_home_override(token)
 
     async def _hm_cmd_init(self, event, source, _quick_key):
         # /init builds the prompt first: the ack wording depends on whether AGENTS.md exists.
@@ -1062,12 +1141,23 @@ class GatewayInboundMixin:
                 if plugin_handler:
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
-                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
+                    # foreign (cron agent's os.environ) session (#108698). Resolve the exact persisted
+                    # session from its authoritative route mapping; never mint one for a command.
+                    # Sync handlers run on the gateway pool
                     # (contextvars carried), never the loop thread: blocking I/O there starves the
                     # liveness watchdog and the process exits 75 mid-handler (#105279).
                     _plugin_context = build_session_context(source, self.config)
                     _plugin_context.session_key = self._session_key_for_source(source)
+                    _session_id = self.session_store.peek_session_id(_plugin_context.session_key)
+                    if not isinstance(_session_id, str) or not _session_id:
+                        _session_entry = await asyncio.to_thread(
+                            self.session_store.get_or_create_session, source)
+                        if getattr(_session_entry, "session_key", None) != _plugin_context.session_key:
+                            raise RuntimeError("plugin command session route changed during creation")
+                        _session_id = getattr(_session_entry, "session_id", None)
+                    if not isinstance(_session_id, str) or not _session_id:
+                        raise RuntimeError("plugin command session identity is unavailable")
+                    _plugin_context.session_id = _session_id
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):
@@ -1291,6 +1381,8 @@ class GatewayInboundMixin:
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
             return _paused_notice
+
+        self._hm_bind_work_presentation_ingress(source)
 
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)

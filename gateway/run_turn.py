@@ -3032,7 +3032,7 @@ class GatewayTurnMixin:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
-        return self._RunAgentDisplay(
+        display = self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
@@ -3045,6 +3045,10 @@ class GatewayTurnMixin:
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
         )
+        # The dataclass is shared with older display surfaces; keep provenance as a dynamic
+        # field so task progress can distinguish a built-in tier default from explicit quiet.
+        display._tool_progress_explicit = _tool_progress_explicit
+        return display
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
@@ -3936,44 +3940,45 @@ class GatewayTurnMixin:
     ) -> None:
         """``finally`` half of a turn: cancel background tasks, flush stream, release the session slot."""
         stream_consumer_holder, session_key = turn_ctx.stream_consumer_holder, turn_ctx.session_key
-        for task in (progress_task, log_task, interrupt_monitor, _notify_task):
-            if task:
-                task.cancel()
-
-        if stream_task:
-            # No stream consumer was created: nothing to flush, cancel instead of waiting out 5s.
-            if not (stream_consumer_holder and stream_consumer_holder[0] is not None):
-                stream_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await stream_task
-            else:
-                await self._await_stream_task(stream_task)
-
-        # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
-        _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
-        # See #60671.
-        if _stts_finally is not None and not _stts_finally.done:
-            _stts_finally.abort("cleanup")
-            with suppress(Exception):
-                await _stts_finally.wait_complete(timeout=2.0)
-
-        tracking_task.cancel()
-        if session_key:
-            # Release the slot only if this run's generation still owns it (/stop or /new may have
-            # installed its own state).
-            self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
-        if self._draining:
-            self._update_runtime_status("draining")
-
-        for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task):
-            if task:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    # A background task that died of a real error must not abort the cleanup path.
-                    logger.debug("background turn task failed during cleanup", exc_info=True)
+        from gateway.live_todo import finish_live_todo
+        try:
+            try:
+                await finish_live_todo(turn_ctx)
+            except Exception:
+                logger.exception("Optional live todo cleanup failed")
+        finally:
+            # Core cleanup is host-owned, including when extension cleanup is cancelled.
+            for task in (progress_task, log_task, interrupt_monitor, _notify_task):
+                if task:
+                    task.cancel()
+            try:
+                if stream_task:
+                    if not (stream_consumer_holder and stream_consumer_holder[0] is not None):
+                        stream_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await stream_task
+                    else:
+                        await self._await_stream_task(stream_task)
+                # Abort + bounded wait where normal streaming TTS finalisation was skipped.
+                _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
+                if _stts_finally is not None and not _stts_finally.done:
+                    _stts_finally.abort("cleanup")
+                    with suppress(Exception):
+                        await _stts_finally.wait_complete(timeout=2.0)
+            finally:
+                tracking_task.cancel()
+                if session_key:
+                    self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
+                if self._draining:
+                    self._update_runtime_status("draining")
+                for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task):
+                    if task:
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            logger.debug("background turn task failed during cleanup", exc_info=True)
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
@@ -4214,6 +4219,11 @@ class GatewayTurnMixin:
             except Exception as _ne:
                 logger.debug("Long-running notification error: %s", _ne)
 
+    def _run_agent_create_todo_progress_owner(self, disp, turn_ctx):
+        """Bind the opt-in native consumer to this canonical run and transport."""
+        from gateway.live_todo import open_live_todo
+        return open_live_todo(self, disp, turn_ctx)
+
     async def _run_agent_inner(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: SessionSource, session_id: str, session_key: str = None,
@@ -4265,6 +4275,9 @@ class GatewayTurnMixin:
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
+        todo_owner = self._run_agent_create_todo_progress_owner(disp, turn_ctx)
+        # The owner is separate from the generic progress queue and final-answer stream.
+        # Only its asyncio task may touch the Telegram adapter.
         # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
         if not (scheduled_heartbeat or turn_ctx.mute_notification_reply):
             self._run_agent_start_streaming_tts(
@@ -4288,6 +4301,7 @@ class GatewayTurnMixin:
         )
 
         try:
+            turn_ctx._todo_progress_task = asyncio.create_task(todo_owner.run()) if todo_owner is not None else None
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
@@ -4302,6 +4316,9 @@ class GatewayTurnMixin:
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
+                # Recursive queued turns must not share a still-live projection owner.
+                from gateway.live_todo import finish_live_todo
+                await finish_live_todo(turn_ctx)
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )

@@ -13,7 +13,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
 
@@ -42,6 +42,66 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    dispatch_boards: Optional[frozenset[str]] = None
+
+
+def _resolve_dispatch_boards(kb: Any) -> Optional[frozenset[str]]:
+    """Resolve the presence-sensitive embedded-dispatcher board policy."""
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        config = load_user_config_effective(
+            fail_closed=True, side_effect_free=True,
+        ) or {}
+    except Exception as exc:
+        logger.warning(
+            "kanban dispatcher: cannot read kanban.dispatch_boards (%s: %s); "
+            "admitting no boards", type(exc).__name__, exc,
+        )
+        return frozenset()
+    kanban = config.get("kanban", {}) if isinstance(config, Mapping) else {}
+    if not isinstance(kanban, Mapping):
+        return frozenset()
+    if "dispatch_boards" not in kanban:
+        return None
+    raw = kanban.get("dispatch_boards")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        logger.warning(
+            "kanban dispatcher: kanban.dispatch_boards is present but not a "
+            "non-empty list; admitting no boards"
+        )
+        return frozenset()
+    if any(not isinstance(value, str) or not value.strip() for value in raw):
+        logger.warning(
+            "kanban dispatcher: every kanban.dispatch_boards entry must be a "
+            "non-empty string; admitting no boards"
+        )
+        return frozenset()
+    if os.environ.get("HERMES_KANBAN_DB", "").strip():
+        logger.warning(
+            "kanban dispatcher: kanban.dispatch_boards cannot be combined with "
+            "HERMES_KANBAN_DB; admitting no boards"
+        )
+        return frozenset()
+    try:
+        requested = frozenset(kb._normalize_board_slug(value) for value in raw)
+        active = frozenset(
+            kb._normalize_board_slug(meta.get("slug") or kb.DEFAULT_BOARD)
+            for meta in kb.list_boards(include_archived=False)
+        )
+    except Exception as exc:
+        logger.warning(
+            "kanban dispatcher: kanban.dispatch_boards could not be resolved "
+            "(%s: %s); admitting no boards", type(exc).__name__, exc,
+        )
+        return frozenset()
+    unresolved = requested - active
+    if unresolved:
+        logger.warning(
+            "kanban dispatcher: kanban.dispatch_boards names inactive or missing "
+            "boards %s; admitting no boards", sorted(unresolved),
+        )
+        return frozenset()
+    return requested
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -115,6 +175,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        dispatch_boards=_resolve_dispatch_boards(kb),
     )
 
 
@@ -135,7 +196,22 @@ class _KanbanDispatcher:
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
 
     def _board_slugs(self) -> list:
-        return _board_slugs(self.kb)
+        allowed = self.settings.dispatch_boards
+        if allowed is not None and os.environ.get("HERMES_KANBAN_DB", "").strip():
+            return []
+        slugs = _board_slugs(self.kb)
+        return slugs if allowed is None else [slug for slug in slugs if slug in allowed]
+
+    def _board_allowed(self, slug: str) -> bool:
+        allowed = self.settings.dispatch_boards
+        if allowed is None:
+            return True
+        if os.environ.get("HERMES_KANBAN_DB", "").strip():
+            return False
+        try:
+            return self.kb._normalize_board_slug(slug) in allowed
+        except Exception:
+            return False
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
         path = self.kb.kanban_db_path(slug)
@@ -177,6 +253,11 @@ class _KanbanDispatcher:
         The per-board DB is opened explicitly so boards never share a
         connection or claim across each other.
         """
+        # Guard the direct entry before path lookup, fingerprinting or connect:
+        # excluded boards cannot be reclaimed, promoted, recovered, dispatched
+        # or migrated even when a caller bypasses tick_once().
+        if not self._board_allowed(slug):
+            return None
         conn = None
         fingerprint = self.board_db_fingerprint(slug)
         if not self._quarantine_lifted(slug, fingerprint):

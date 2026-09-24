@@ -120,3 +120,18 @@ def _reset_caches_keep_last_good():
 
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
+
+
+def test_side_effect_free_read_defers_active_home_good_backup(homes):
+    """Authorization reads keep the normal effective-loader cache but do not create backups."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    _write(home / "config.yaml", USER_YAML)
+    assert not (home / "backups").exists()
+    load_user_config_effective(home / "config.yaml", side_effect_free=True)
+    assert not list((home / "backups" / "config").glob("config.yaml.good.*"))
+
+    # A normal loader call over the same cache entry still performs its historical backup.
+    load_user_config_effective(home / "config.yaml")
+    assert list((home / "backups" / "config").glob("config.yaml.good.*"))

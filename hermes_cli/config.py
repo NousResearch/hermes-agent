@@ -1307,17 +1307,14 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Auto-migration support floor (v12): an EXPLICIT on-disk ``_config_version`` below the
     # floor is NOT migrated and NOT rewritten — surface a message and leave the file untouched
-    # (deep-merge supplies defaults at read time). A config with NO version key is a fresh
-    # minimal config, not an ancient install: it gets the normal ladder and a version stamp.
+    # (deep-merge supplies defaults at read time). A config with NO version key is not an
+    # ancient install: it gets only the legacy-key steps and a version stamp.
     # Missing/unparseable files never trip the floor gate.
     # Imported lazily because the steps call back into this module.
     from hermes_cli.config_migrations import (
-        SUPPORT_FLOOR_VERSION, run_migrations, support_floor_message)
+        SUPPORT_FLOOR_VERSION, has_version_stamp, run_migrations, support_floor_message)
 
-    try:
-        has_explicit_version = "_config_version" in read_user_config_raw()
-    except Exception:
-        has_explicit_version = False
+    has_explicit_version = has_version_stamp()
     floor_refused = (
         has_explicit_version and current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver)
     if floor_refused:
@@ -1328,7 +1325,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if not quiet:
             print(f"  ⚠ {msg}")
     else:
-        run_migrations(current_ver, results, quiet)
+        run_migrations(current_ver, results, quiet, unversioned=not has_explicit_version)
 
     _disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)

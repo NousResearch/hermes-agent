@@ -36,6 +36,16 @@ def support_floor_message() -> str:
         "after reviewing the changelog.")
 
 
+def has_version_stamp() -> bool:
+    """Whether config.yaml carries a ``_config_version`` key. ``check_config_version()`` reads a
+    missing one as 0, but such a file is never-stamped current-schema content, not an ancient
+    install: the floor must not refuse it and only :data:`LEGACY_KEY_STEPS` may run on it."""
+    try:
+        return "_config_version" in _cfg().read_user_config_raw()
+    except Exception:
+        return False
+
+
 def _cfg():
     """Return the live ``hermes_cli.config`` module (lazy, cycle-free, monkeypatch-friendly)."""
     from hermes_cli import config
@@ -755,15 +765,26 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (46, _migrate_to_46),
 )
 
+#: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
+#: toolset, the plugin-era SOUL.md section): they carry its setting to where the runtime reads it
+#: or drop what nothing reads, which is right however old the file is. A config.yaml with no
+#: ``_config_version`` is current-schema content that was never stamped (installers seed it from
+#: cli-config.yaml.example; targeted writers never stamp), so it gets only these: every other step
+#: decides by a value or an absence that, in such a file, is the user's own choice. v13 is left
+#: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 41, 42, 43, 46})
 
-def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> None:
-    """Apply every registered migration whose target version exceeds *current_ver*.
+
+def run_migrations(
+    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    """Apply every registered migration whose target version exceeds *current_ver*; a config
+    with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
     """
     for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver:
+        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
             try:
                 migration_fn(results, quiet)
             except Exception as exc:

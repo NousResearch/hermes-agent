@@ -419,6 +419,68 @@ def _reoffer_unanswered(root: Path | str, base: Path, ttl: float, now: float) ->
     return out
 
 
+def read_claimed_envelope(root: Path | str, envelope_id: str) -> dict:
+    """The claimed envelope for ``envelope_id`` (``{}`` when absent or unreadable). The reply RPC
+    carries only the failure text, so this is how the sender learns WHICH target failed."""
+    safe = str(envelope_id or "").strip()
+    if not re.match(r"^[0-9a-f]{32}$", safe):
+        return {}
+    with contextlib.suppress(OSError, ValueError):
+        data = json.loads((relay_root(root) / CLAIMED_DIR / f"{safe}.json").read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def relayed_failure_error(error: str, envelope: Optional[dict] = None) -> str:
+    """Rewrite a target-scope failure that came back FROM a relay target into honest, actionable copy.
+
+    ``served_profile_child_env`` fails closed with the same "run ``hermes gateway restart``" text no
+    matter WHERE it raised — but a relayed delivery runs on the TARGET install (the Desktop serves
+    ``bot_relay.deliver`` on the target's route and only posts the error back), so restarting the
+    SENDER's gateway cannot fix it and the generic advice sends every reader down the wrong path.
+    Fires only for a cross-connection envelope carrying that failure class; a local delivery failure
+    and every other error are returned unchanged.
+    """
+    from tools.bot_failure_reasons import TARGET_SCOPE_UNRESOLVED, classify_agent_error
+
+    raw = str(error or "")
+    env = envelope if isinstance(envelope, dict) else {}
+    connection = str(env.get("target_connection") or "").strip()
+    if not connection or classify_agent_error(raw) != TARGET_SCOPE_UNRESOLVED:
+        return raw
+    profile = str(env.get("target_profile") or "").strip() or "default"
+    handle = str(env.get("target_handle") or "").strip()
+    who = f"@{handle} " if handle else ""
+    return (
+        f"Delivery to {who}on '{connection}' failed on THAT install, not on this one: its relay "
+        f"delivery into profile '{profile}' could not resolve that profile's secret scope, so no turn "
+        f"was created there and nothing was sent to a model. Restarting this gateway cannot fix it — "
+        f"the delivery turn runs on the target. Update that install (its relay delivery must resolve "
+        f"its own launch profile's home), or address a NAMED profile on it, which resolves a home and "
+        f"works today."
+    )
+
+
+def target_scope_refusal(profile: str, home: "str | Path | None" = None) -> str:
+    """The honest refusal a TARGET install returns when ITS OWN relay delivery cannot resolve the
+    target profile's secret scope.
+
+    The generic ``served_profile_child_env`` copy tells the reader to restart their gateway — but the
+    refusal happened HERE, on the install the profile actually lives on, and the sender may be a
+    different machine entirely, so that advice cannot work. Answer with this install's own truth.
+    """
+    name = str(profile or "").strip() or "default"
+    where = f" ({home})" if home else ""
+    return (
+        f"Delivery into profile '{name}' failed on THIS install{where} before a turn was created: this "
+        f"install's relay delivery could not resolve that profile's secret scope, so nothing was sent "
+        f"to a model and there is no reply. Restarting the SENDER's gateway cannot fix it. Update this "
+        f"install (its relay delivery must resolve its own launch profile's home), or address a NAMED "
+        f"profile here — a named profile resolves a home and works today."
+    )
+
+
 def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "") -> Path:
     """Persist the relayed reply (or delivery error) for the waiter. ``reason`` (typed
     code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted.

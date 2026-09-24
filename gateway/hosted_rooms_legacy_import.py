@@ -33,6 +33,7 @@ _TABLE_ORDER = (
     "hosted_rooms", "hosted_room_replicas", "hosted_room_events", "hosted_room_replica_events",
     "hosted_room_retired_ids", "hosted_room_quarantine", "hosted_room_links",
     "hosted_room_remote_runs", "hosted_room_peer_reservations", "hosted_room_history_imports",
+    "hosted_room_history_source_reservations",
     "hosted_room_disband_fences", "hosted_room_id_reservations", "hosted_room_revoked_grants",
     "hosted_room_revoked_grant_ids", "hosted_room_revoked_grant_tokens", "hosted_room_driver_tasks",
 )
@@ -117,6 +118,50 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
                 if ((room_id in authority_ids and owner_kind != "authority")
                         or (room_id in replica_ids and owner_kind != "replica")):
                     raise sqlite3.IntegrityError("legacy room reservation owner differs from source parent")
+        # Runtime owns the compact table and initializes the destination before this
+        # importer. A pruned source has no parent or marker left to qualify its claim.
+        history_reservations = "hosted_room_history_source_reservations"
+        claim_columns = ("source_id", "source_kind", "content_sha256", "room_id")
+        source_claims: list[tuple[str, str, str, str]] = []
+        matching_claim_rooms: set[str] = set()
+        if history_reservations in names:
+            if not set(claim_columns).issubset(table_columns(target, history_reservations)):
+                raise sqlite3.DatabaseError("recognized legacy history reservations have no target schema")
+            source_claims = [tuple(row) for row in legacy.execute(
+                f"SELECT source_id, source_kind, content_sha256, room_id FROM {history_reservations}")]
+            # Read destination namespace independently of the source; no source-supplied
+            # DDL or conflict-ignore may silently rebind a durable source identity.
+            target_occupied = {
+                str(row[0]) for table in (
+                    "hosted_rooms", "hosted_room_replicas", "hosted_room_retired_ids",
+                    "hosted_room_id_reservations") if table_exists(target, table)
+                for row in target.execute(f"SELECT room_id FROM {table}")}
+            for claim in source_claims:
+                source_id, _, _, room_id = claim
+                existing = target.execute(
+                    f"SELECT source_id, source_kind, content_sha256, room_id FROM {history_reservations} "
+                    "WHERE source_id=? OR room_id=?", (source_id, room_id)).fetchall()
+                if existing and (len(existing) != 1 or tuple(existing[0]) != claim):
+                    raise sqlite3.IntegrityError("legacy history source reservation conflicts with target identity")
+                if room_id in target_occupied and not existing:
+                    raise sqlite3.IntegrityError("legacy history source reservation conflicts with target room namespace")
+                if existing:
+                    matching_claim_rooms.add(room_id)
+        if table_exists(target, history_reservations) and "hosted_room_history_imports" in names:
+            claims_by_source = {claim[0]: claim for claim in source_claims}
+            claims_by_room = {claim[3]: claim for claim in source_claims}
+            for source_id, source_kind, digest, room_id in legacy.execute(
+                "SELECT source_id, source_kind, content_sha256, room_id FROM hosted_room_history_imports"
+            ):
+                marker = (source_id, source_kind, digest, room_id)
+                if ((source_id in claims_by_source and claims_by_source[source_id] != marker)
+                        or (room_id in claims_by_room and claims_by_room[room_id] != marker)):
+                    raise sqlite3.IntegrityError("legacy history marker differs from source reservation")
+                existing = target.execute(
+                    f"SELECT source_id, source_kind, content_sha256, room_id FROM {history_reservations} "
+                    "WHERE source_id=? OR room_id=?", (source_id, room_id)).fetchall()
+                if existing and (len(existing) != 1 or tuple(existing[0]) != marker):
+                    raise sqlite3.IntegrityError("legacy history marker conflicts with target source identity")
         source_namespaces = (
             authority_ids | replica_ids | source_ids("hosted_room_retired_ids")
             | source_ids("hosted_room_id_reservations"))
@@ -124,6 +169,10 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
             str(row[0]) for row in target.execute("SELECT room_id FROM hosted_room_id_reservations")}
         target_namespaces.update(
             str(row[0]) for row in target.execute("SELECT room_id FROM hosted_room_retired_ids"))
+        if table_exists(target, history_reservations):
+            target_namespaces.update(
+                str(row[0]) for row in target.execute(f"SELECT room_id FROM {history_reservations}")
+                if str(row[0]) not in matching_claim_rooms)
         blocked = source_namespaces & target_namespaces
         admitted_authority = authority_ids - blocked
         admitted_replica = replica_ids - blocked
@@ -139,13 +188,14 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
                 continue
             if not table_exists(target, name):
                 raise sqlite3.DatabaseError(f"recognized legacy table has no current target schema: {name}")
-            pairs = _select_expressions(legacy, target, name)
+            pairs = ([(column, column) for column in claim_columns] if name == history_reservations
+                     else _select_expressions(legacy, target, name))
             if not pairs:
                 continue
             columns = [column for column, _ in pairs]
             rows = legacy.execute(f"SELECT {', '.join(expr for _, expr in pairs)} FROM {name}")
             room_index = columns.index("room_id") if "room_id" in columns else None
-            if room_index is not None:
+            if room_index is not None and name != history_reservations:
                 allowed = (admitted_authority if name == "hosted_rooms" or name in _AUTHORITY_ONLY_TABLES
                            else admitted_replica if name == "hosted_room_replicas" or name in _REPLICA_ONLY_TABLES
                            else admitted_namespaces)
@@ -159,6 +209,10 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
                 reserved = {
                     str(row[0]) for row in target.execute("SELECT room_id FROM hosted_room_id_reservations")}
                 rows = (row for row in rows if str(row[room_index]) not in reserved)
+            if name == history_reservations:
+                # The preflight above compares all four immutable columns; only an
+                # identical existing claim can be treated as an idempotent retry.
+                rows = (row for row in rows if str(row[columns.index("room_id")]) not in matching_claim_rooms)
             verb = "INSERT OR IGNORE" if name in _GLOBAL_IDEMPOTENT_TABLES else "INSERT"
             target.executemany(
                 f"{verb} INTO {name} ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})", rows)

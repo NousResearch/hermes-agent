@@ -320,8 +320,10 @@ ones — waits for your yes/no before it ever enters your profile.
 A staged `replace` or `remove` (the background review stages these even with the
 gate off) records the full entry it targets, and `/memory pending` shows it.
 Approval applies to exactly that entry: if it changed after the write was staged,
-the write is refused and stays pending for you to reject. `/memory approve` lists
-the full text of every entry it overwrote or removed.
+the write is refused and stays pending for you to reject. A `replace`/`remove`
+staged before this pinning existed has no verifiable target and is refused too:
+reject it and recreate the change. `/memory approve` lists the full text of
+every entry it overwrote or removed.
 
 ## Background review notifications (`display.memory_notifications`)
 

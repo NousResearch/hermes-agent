@@ -116,8 +116,10 @@ def _matched_entries(payload) -> List[str]:
     if not isinstance(payload, dict):
         return []
     ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
-    return [f"{op['action']}s entry: {op['matched_entry']}" for op in (ops if isinstance(ops, list) else [])
-            if isinstance(op, dict) and op.get("action") in ("replace", "remove") and op.get("matched_entry")]
+    return [f"{op['action']}s entry: {op['matched_entry']}" if op.get("matched_entry")
+            else f"{op['action']}: unpinned legacy target \u2014 reject and recreate before approving"
+            for op in (ops if isinstance(ops, list) else [])
+            if isinstance(op, dict) and op.get("action") in ("replace", "remove")]
 
 
 def _apply_one(subsystem: str, rec, memory_store):

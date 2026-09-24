@@ -178,7 +178,8 @@ def test_handle_approve_surfaces_overwritten_entry(hermes_home):
     entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
     store.add("memory", entry)
     wa.stage_write("memory", {"action": "batch", "target": "memory", "operations": [
-        {"action": "replace", "old_text": "RULE B: ci per HEAD.", "content": "RULE B: CI is per-head."}]},
+        {"action": "replace", "old_text": "RULE B: ci per HEAD.", "content": "RULE B: CI is per-head.",
+         "matched_entry": entry}]},
         summary="batch", origin="background_review")
     out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
     assert "Approved 1" in out and entry in out
@@ -231,8 +232,9 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
 
 @pytest.mark.parametrize("shape,legacy", [("single", False), ("batch", False), ("single", True)])
 def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape, legacy):
-    """Approve listed what a replace overwrote but was silent about what a remove deleted,
-    including a record staged before removes were pinned to their full entry."""
+    """Approve listed what a replace overwrote but was silent about what a remove deleted. A
+    record staged before removes were pinned to their full entry has no verifiable target, so
+    approve refuses it (keeping the record) instead of replaying its old_text search."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import load_on_disk_store
     from tools import write_approval as wa
@@ -242,9 +244,15 @@ def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape, legacy):
         record = json.loads(path.read_text(encoding="utf-8"))
         record["payload"].pop("matched_entry", None)
         path.write_text(json.dumps(record), encoding="utf-8")
+        assert "unpinned legacy target" in handle_pending_subcommand(wa.MEMORY, ["pending"])
 
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
 
+    if legacy:
+        assert "Approved 0" in out and "predates entry pinning" in out, out
+        assert _REVIEWED in load_on_disk_store().memory_entries
+        assert wa.get_pending(wa.MEMORY, pid) is not None
+        return
     assert _REVIEWED not in load_on_disk_store().memory_entries, out
     assert _REVIEWED in out
 

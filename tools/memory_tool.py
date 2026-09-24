@@ -281,12 +281,18 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve). A
-    replace/remove pinned to its ``matched_entry`` applies to that exact entry or is refused;
-    records staged before pinning still replay by old_text (approve lists what they removed)."""
+    replace/remove applies to exactly its pinned ``matched_entry`` or is refused; a record
+    staged before pinning has no verifiable target, so it is refused rather than replayed by
+    old_text (which could hit a newer entry the approver never saw)."""
     action, target = payload.get("action"), payload.get("target", "memory")
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
+    ops = payload.get("operations") or [] if action == "batch" else [payload]
+    if any(isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS and not op.get("matched_entry")
+           for op in ops):
+        return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
+                                           "verified; nothing was applied. Reject it and recreate the change."}
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action not in _STORE_ACTIONS:

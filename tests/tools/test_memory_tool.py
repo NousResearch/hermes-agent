@@ -223,7 +223,7 @@ class TestMemoryStoreReplace:
                 ("single", lambda s: s.replace("memory", op["old_text"], op["content"])),
                 ("batch", lambda s: s.apply_batch("memory", [op])),
                 ("replay", lambda s: apply_memory_pending({"action": "batch", "target": "memory",
-                                                           "operations": [op]}, s))):
+                                                           "operations": [{**op, "matched_entry": entry}]}, s))):
             store_dir = tmp_path / surface
             store_dir.mkdir()
             monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda d=store_dir: d)

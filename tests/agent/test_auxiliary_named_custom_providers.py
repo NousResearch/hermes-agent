@@ -37,7 +37,7 @@ def test_quarantined_fallback_log_redacts_candidate_and_exception(caplog):
         )
 
     assert "fallback candidate has stale/unrefreshable credentials" in caplog.text
-    assert secret not in caplog.text
+    assert secret.lower() not in caplog.text.lower()
 
 
 def test_halt_blocks_auxiliary_main_fallback_chain(tmp_path):

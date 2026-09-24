@@ -3115,6 +3115,7 @@ _AUX_UNHEALTHY_PAYMENT_REASON = "payment / credit error"
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
     reason: str = _AUX_UNHEALTHY_PAYMENT_REASON, level: int = logging.WARNING,
+    redact_log: bool = False,
 ) -> None:
     """Hide one provider endpoint until the TTL expires. ``reason`` is what the log says and what the
     skip line echoes: absent credentials are an expected state (DEBUG), a confirmed 402 is a fault
@@ -3127,12 +3128,20 @@ def _mark_provider_unhealthy(
     expires_at = time.time() + ttl
     _aux_unhealthy_until[key] = expires_at
     _aux_unhealthy_reason[key] = reason
-    logger.log(
-        level,
-        "Auxiliary: marking %s unhealthy for %ds (%s). "
-        "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
-    )
+    if redact_log:
+        logger.log(
+            level,
+            "Auxiliary: marking a fallback candidate unhealthy for %ds. "
+            "Subsequent auxiliary calls will skip it until %s.",
+            int(ttl), time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        )
+    else:
+        logger.log(
+            level,
+            "Auxiliary: marking %s unhealthy for %ds (%s). "
+            "Subsequent auxiliary calls will skip it until %s.",
+            label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        )
 
 
 def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
@@ -4043,7 +4052,7 @@ def _quarantine_fallback_candidate(
     the next entry. Transient classes get a short hold, payment/quota and dead tokens the long one."""
     _mark_provider_unhealthy(
         fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
-        base_url=base_url, reason=reason or "stale fallback credential")
+        base_url=base_url, reason=reason or "stale fallback credential", redact_log=True)
     why = "out of capacity" if reason else "stale/unrefreshable credentials"
     logger.warning(
         "Auxiliary %s: fallback candidate has %s (%s) — skipping to the next fallback",

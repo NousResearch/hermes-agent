@@ -3275,6 +3275,11 @@ def _is_connection_error(exc: Exception) -> bool:
     ))
 
 
+def _exc_http_status(exc: Exception) -> Any:
+    """HTTP status on the exception itself or on its ``response`` (None when neither carries one)."""
+    return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """One-off transport blip worth retrying on the SAME provider: connection/stream-close errors plus pure 5xx/408.
 
@@ -3282,7 +3287,7 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     """
     if _is_connection_error(exc):
         return True
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    status = _exc_http_status(exc)
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
@@ -3468,18 +3473,19 @@ def _is_statusless_structured_provider_error(exc: Exception) -> bool:
     """Detect a structured provider failure that has no HTTP status.
 
     OpenAI-compatible relays may commit SSE with status 200, then send an
-    OpenAI-style ``error`` event. The SDK raises a status-less ``APIError`` and
-    preserves the event only on ``exc.body``. Any non-empty structured error in
+    OpenAI-style ``error`` event. The SDK raises a status-less ``APIError`` with
+    ``body=data["error"]`` — the INNER error object or a bare string (an
+    ``{"error": ...}`` wrapper is accepted too). Any non-empty structured error in
     that status-less shape is a route failure; ordinary HTTP errors keep their
     existing status-based classifiers, and message text alone is insufficient.
     """
-    status = getattr(exc, "status_code", None) or getattr(
-        getattr(exc, "response", None), "status_code", None
-    )
-    if status is not None:
+    if _exc_http_status(exc) is not None:
         return False
     body = getattr(exc, "body", None)
-    return isinstance(body, dict) and bool(body.get("error"))
+    err = body.get("error") if isinstance(body, dict) and "error" in body else body
+    if isinstance(err, str):
+        return bool(err.strip())
+    return isinstance(err, dict) and any(err.get(k) for k in ("type", "code", "message"))
 
 
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision

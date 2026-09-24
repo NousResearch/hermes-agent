@@ -694,6 +694,174 @@ function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage):
   )
 }
 
+const isOptimisticTurnUser = (message: ChatMessage): boolean =>
+  message.role === 'user' && message.id.startsWith('user-') && !message.id.startsWith('user-queued-')
+
+function currentOptimisticTurnUsers(previousMessages: ChatMessage[]): Set<ChatMessage> {
+  const users = new Set<ChatMessage>()
+  const newest = [...previousMessages].reverse().find(isOptimisticTurnUser)
+
+  if (!newest) {
+    return users
+  }
+
+  for (let index = previousMessages.indexOf(newest); index >= 0; index -= 1) {
+    const message = previousMessages[index]
+
+    if (isOptimisticTurnUser(message)) {
+      users.add(message)
+
+      continue
+    }
+
+    if (message.role === 'assistant' && isLiveTailRow(message)) {
+      continue
+    }
+
+    break
+  }
+
+  return users
+}
+
+function durableIdsOf(message: ChatMessage): number[] {
+  return [...transcriptRowIds(message), ...(message.persistedTurn?.row_ids ?? [])]
+}
+
+function sameDurableOccurrence(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.id === b.id) {
+    return true
+  }
+
+  const aIds = durableIdsOf(a)
+  const bIds = new Set(durableIdsOf(b))
+
+  return aIds.some(id => bIds.has(id))
+}
+
+function localOccurrenceCoveredByPage(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  index: number,
+  storedRowIds: Set<number>
+): boolean {
+  const local = previousMessages[index]
+
+  if (
+    nextMessages.some(message => sameDurableOccurrence(local, message)) ||
+    durableIdsOf(local).some(id => storedRowIds.has(id))
+  ) {
+    return true
+  }
+
+  if (local.role !== 'assistant') {
+    return false
+  }
+
+  const candidates = nextMessages.filter(message => !conflictingTranscriptIdentity(local, message))
+  const folds = committedFoldsOfLocalTurn(candidates, previousMessages, index)
+
+  if (durableFoldCoversLiveResponse(folds, local)) {
+    return true
+  }
+
+  // A still-running local bubble is not sealed yet, so the fold-coverage
+  // helper intentionally refuses it. Shared tool ids are nevertheless durable
+  // evidence for this latest turn once the loaded page contains no foreign
+  // user occurrence.
+  if (local.pending === true) {
+    const localToolIds = toolCallIdsOf(local)
+    const foldedToolIds = new Set(folds.flatMap(toolCallIdsOf))
+
+    return localToolIds.length > 0 && localToolIds.every(id => id && foldedToolIds.has(id))
+  }
+
+  return false
+}
+
+/**
+ * A 120-row latest-page read can begin inside the CURRENT tool-heavy turn,
+ * after one or more already-acknowledged user occurrences. Those rows are not
+ * stale merely because their durable ids are older than the page; the warm
+ * renderer still owns their exact placement and attachment chips.
+ *
+ * Restore only the contiguous optimistic/live prefix of that latest turn, and
+ * only when a later row from the SAME local turn is proven present on the
+ * loaded page. Durable row identity is required: prose and clocks are never
+ * enough to resurrect a cached user occurrence. A page containing a foreign
+ * user occurrence is never repaired here.
+ */
+function restorePageOmittedLivePrefix(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
+  if (!nextMessages.length || !previousMessages.length) {
+    return nextMessages
+  }
+
+  const liveUsers = currentOptimisticTurnUsers(previousMessages)
+
+  if (!liveUsers.size) {
+    return nextMessages
+  }
+
+  const pageUsers = nextMessages.filter(isPrompt)
+
+  if (pageUsers.some(pageUser => ![...liveUsers].some(localUser => sameDurableOccurrence(localUser, pageUser)))) {
+    return nextMessages
+  }
+
+  const storedRowIds = new Set(nextMessages.flatMap(transcriptRowIds))
+  const rowIds = [...storedRowIds]
+  const firstStoredRowId = rowIds.length ? Math.min(...rowIds) : undefined
+
+  const pageStartsAfterUser =
+    firstStoredRowId !== undefined &&
+    [...liveUsers].some(
+      user => user.rowId !== undefined && !storedRowIds.has(user.rowId) && user.rowId < firstStoredRowId
+    )
+
+  if (!pageStartsAfterUser) {
+    return nextMessages
+  }
+
+  const startIndex = Math.min(...[...liveUsers].map(user => previousMessages.indexOf(user)))
+  let overlapIndex = -1
+
+  for (let index = startIndex + 1; index < previousMessages.length; index += 1) {
+    const message = previousMessages[index]
+
+    if (message.role === 'user' && !liveUsers.has(message) && !message.id.startsWith('user-queued-')) {
+      break
+    }
+
+    if (localOccurrenceCoveredByPage(nextMessages, previousMessages, index, storedRowIds)) {
+      overlapIndex = index
+
+      break
+    }
+  }
+
+  if (overlapIndex < 0) {
+    return nextMessages
+  }
+
+  const prefix = previousMessages.slice(startIndex, overlapIndex).filter((message, offset) => {
+    const index = startIndex + offset
+    const belongsToLivePrefix = liveUsers.has(message) || (message.role === 'assistant' && isLiveTailRow(message))
+
+    return belongsToLivePrefix && !localOccurrenceCoveredByPage(nextMessages, previousMessages, index, storedRowIds)
+  })
+
+  if (!prefix.length) {
+    return nextMessages
+  }
+
+  const nextIds = new Set(nextMessages.map(message => message.id))
+  const restored = prefix.filter(
+    message => !nextIds.has(message.id) && !durableIdsOf(message).some(id => storedRowIds.has(id))
+  )
+
+  return restored.length ? [...restored, ...nextMessages] : nextMessages
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -701,6 +869,8 @@ export function preserveLocalPendingTurnMessages(
   if (!previousMessages.length) {
     return nextMessages
   }
+
+  nextMessages = restorePageOmittedLivePrefix(nextMessages, previousMessages)
 
   const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
   const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)
@@ -981,7 +1151,13 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
-export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
+export function appendLiveSessionProjection(
+  messages: ChatMessage[],
+  projection: LiveSessionProjection,
+  previousMessages: ChatMessage[] = []
+): ChatMessage[] {
+  messages = restorePageOmittedLivePrefix(messages, previousMessages)
+
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)

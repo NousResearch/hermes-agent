@@ -273,7 +273,9 @@ function reconcileAuthoritativeChatMessages(
   }
 
   return reconcileDurableHistory(
-    liveProjection ? appendLiveSessionProjection(authoritativeMessages, liveProjection) : authoritativeMessages,
+    liveProjection
+      ? appendLiveSessionProjection(authoritativeMessages, liveProjection, previousMessages)
+      : authoritativeMessages,
     previousMessages
   )
 }

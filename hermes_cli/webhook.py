@@ -1,22 +1,42 @@
 """hermes webhook — manage dynamic webhook subscriptions from the CLI."""
 
+import errno
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
+import stat
+import tempfile
 import time
 import urllib.request
+from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_json_write
 from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 _SUBSCRIPTIONS_FILE_MODE = 0o600
+
+
+class PublishedButNotDurable(OSError):
+    """The registry rename succeeded, but directory durability was not confirmed."""
+
+    published = True
+
+
+# Replacement routes keep plugin/custom metadata, but omitted optional fields
+# from the old command/form must not remain active after an update.
+_ROUTE_FORM_FIELDS = frozenset({
+    "description", "events", "prompt", "skills", "deliver", "created_at",
+    "secret", "profile", "deliver_only", "mirror_to_session", "cron_job",
+    "script", "deliver_extra",
+})
 
 
 def _subscriptions_path() -> Path:
@@ -36,9 +56,141 @@ def _load_subscriptions() -> Dict[str, dict]:
 
 
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
-    # The file holds per-route HMAC secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
-    # rename (no umask window) and re-asserts the mode on the destination afterwards.
-    atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
+    _replace_registry(_subscriptions_path(), subs)
+
+
+def _replace_registry(path: Path, subs: Dict[str, dict]) -> None:
+    """Publish a fully synced private registry, never using the shared copy fallback.
+
+    EBUSY/EXDEV on a bind-mounted registry cannot safely fall back to an
+    in-place rewrite: the plugin and gateway can observe a partial JSON file.
+    Transactions hold the persistent sibling lock through this operation.
+    """
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
+    payload = json.dumps(subs, indent=2, ensure_ascii=True).encode("utf-8")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), _SUBSCRIPTIONS_FILE_MODE)
+            else:
+                os.chmod(tmp, _SUBSCRIPTIONS_FILE_MODE)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # No fallback: only a successful rename can publish these secrets.
+        os.replace(tmp, path)
+        # The temp starts 0600 even under a permissive umask; its final
+        # private permissions are set before publication on every platform.
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+def _existing_route(subs: dict, name: str) -> dict:
+    """A writer must not silently replace a damaged route it is targeting."""
+    route = subs[name]
+    if not isinstance(route, dict):
+        raise ValueError(f"Webhook subscription '{name}' is not an object.")
+    for field in ("events", "skills"):
+        value = route.get(field)
+        if value is not None and (not isinstance(value, list)
+                                  or any(not isinstance(item, str) for item in value)):
+            raise ValueError(f"Webhook subscription '{name}' has invalid {field}.")
+    return route
+
+
+def _read_subscriptions_strict() -> Dict[str, dict]:
+    """Administrative reads must not turn corruption into an empty registry."""
+    try:
+        data = json.loads(_subscriptions_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise ValueError("Webhook subscriptions registry is invalid JSON.") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Webhook subscriptions registry is not an object.")
+    return data
+
+def _replace_route(existing: dict, route: dict) -> dict:
+    return {**{key: value for key, value in existing.items()
+               if key not in _ROUTE_FORM_FIELDS}, **route}
+
+
+def _sync_registry_directory(path: Path) -> None:
+    """Surface POSIX parent-directory fsync errors to the transaction writer.
+
+    The shared atomic_json_write(fsync_dir=True) helper is best-effort.
+    Windows has no equivalent directory open here; its file fsync still applies.
+    """
+    if os.name == "nt":
+        return
+    fd = os.open(path.resolve(strict=False).parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _subscription_transaction():
+    """Serialize the entire mutation with plugin writers on a persistent sibling inode.
+
+    Readers retain their permissive legacy loader; writers must never interpret a
+    damaged or unreadable registry as empty and then overwrite it.
+    """
+    path = _subscriptions_path()
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
+    lock_path = path.with_name(path.name + ".lock")
+    # The POSIX plugin uses this persistent sibling inode. Windows locks only
+    # coordinate native writers; the plugin's fcntl lock is POSIX-only.
+    # Never follow a planted symlink or chmod a multiply-linked regular file.
+    if not hasattr(os, "O_NOFOLLOW") and lock_path.is_symlink():
+        raise ValueError("Webhook subscriptions lock must not be a symlink.")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        lock_stat = os.fstat(fd)
+        if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1:
+            raise ValueError("Webhook subscriptions lock must be a singly-linked regular file.")
+        if os.name == "nt":
+            import msvcrt
+            # LK_LOCK retries only ten times. Retry the nonblocking primitive
+            # until ownership is available, matching POSIX flock's blocking
+            # behavior without imposing an arbitrary writer timeout.
+            while True:
+                os.lseek(fd, 0, os.SEEK_SET)
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN) and getattr(exc, "winerror", None) not in (33, 36):
+                        raise
+                    time.sleep(0.05)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            os.fchmod(fd, 0o600)
+        try:
+            data = _read_subscriptions_strict()
+            original = deepcopy(data)
+            yield data
+            if data != original:
+                _replace_registry(path, data)
+                try:
+                    _sync_registry_directory(path)
+                except OSError as exc:
+                    raise PublishedButNotDurable(
+                        f"Webhook registry was published, but directory sync failed: {exc}"
+                    ) from exc
+        finally:
+            if os.name == "nt":
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _get_webhook_config() -> dict:
@@ -104,45 +256,38 @@ def webhook_command(args):
         return
     if not _is_webhook_enabled():
         print(_setup_hint())
-        return
+        return 1
     handler = _ACTIONS.get(sub)
     if handler is not None:
-        handler(args)
+        return handler(args)
 
 
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
-        return
+        return 1
 
-    subs = _load_subscriptions()
-    is_update = name in subs
-    existing = subs.get(name, {})
     profile_arg = getattr(args, "route_profile", None)
-    if profile_arg is None:
-        profile = existing.get("profile", "default")
-    else:
+    profile = "default"
+    if profile_arg is not None:
         from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
         try:
             profile = normalize_profile_name(profile_arg)
             validate_profile_name(profile)
         except ValueError as exc:
             print(f"Error: {exc}")
-            return
+            return 1
         if not profile_exists(profile):
             print(f"Error: Profile '{profile}' does not exist.")
-            return
-    secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
+            return 1
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
-        "secret": secret,
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
-        "profile": profile,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -153,12 +298,12 @@ def _cmd_subscribe(args):
                 "--cron-job fires an existing cron job (which handles its own "
                 "delivery)."
             )
-            return
+            return 1
         if route["deliver"] == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
-            return
+            return 1
         route["deliver_only"] = True
     if getattr(args, "mirror_to_session", False):
         route["mirror_to_session"] = True
@@ -170,23 +315,41 @@ def _cmd_subscribe(args):
             job = resolve_job_ref(cron_job)
         except AmbiguousJobReference as e:
             print(f"Error: {e}")
-            return
+            return 1
         if job is None:
             print(f"Error: no cron job matches '{cron_job}'. List jobs with: hermes cron list")
-            return
+            return 1
         route["cron_job"] = job["id"]
     script = (getattr(args, "script", "") or "").strip()
     if script:
         route["script"] = script
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
-    subs[name] = route
-    _save_subscriptions(subs)
+    is_update = False
+    secret = ""
+    try:
+        with _subscription_transaction() as subs:
+            is_update = name in subs
+            existing = _existing_route(subs, name) if is_update else {}
+            profile = existing.get("profile", "default") if profile_arg is None else profile
+            secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
+            route["profile"] = profile
+            route["secret"] = secret
+            subs[name] = _replace_route(existing, route)
+    except PublishedButNotDurable:
+        durable = False
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not update webhook subscriptions: {exc}")
+        return 1
+    else:
+        durable = True
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
     print(f"  Profile: {profile}")
     print(f"  Secret: {secret}")
+    if not durable:
+        print("  WARNING: Route was published, but directory sync failed; crash durability is unconfirmed.")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
@@ -206,7 +369,13 @@ def _cmd_subscribe(args):
 
 
 def _cmd_list(args):
-    subs = _load_subscriptions()
+    try:
+        subs = _read_subscriptions_strict()
+        for name in subs:
+            _existing_route(subs, name)
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not read webhook subscriptions: {exc}")
+        return 1
     if not subs:
         print("  No dynamic webhook subscriptions.")
         print("  Create one with: hermes webhook subscribe <name>")
@@ -236,25 +405,44 @@ def _cmd_list(args):
 
 def _cmd_remove(args):
     name = args.name.strip().lower()
-    subs = _load_subscriptions()
-    if name not in subs:
-        print(f"  No subscription named '{name}'.")
-        print("  Note: Static routes from config.yaml cannot be removed here.")
-        return
-    del subs[name]
-    _save_subscriptions(subs)
+    try:
+        with _subscription_transaction() as subs:
+            if name not in subs:
+                print(f"  No subscription named '{name}'.")
+                print("  Note: Static routes from config.yaml cannot be removed here.")
+                return
+            _existing_route(subs, name)
+            del subs[name]
+    except PublishedButNotDurable:
+        print(f"  Removed webhook subscription: {name}")
+        print("  WARNING: Removal was published, but directory sync failed; crash durability is unconfirmed.")
+        return 0
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not update webhook subscriptions: {exc}")
+        return 1
     print(f"  Removed webhook subscription: {name}")
 
 
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
     name = args.name.strip().lower()
-    subs = _load_subscriptions()
+    try:
+        subs = _read_subscriptions_strict()
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not read webhook subscriptions: {exc}")
+        return 1
     if name not in subs:
         print(f"  No subscription named '{name}'.")
-        return
-    secret = subs[name].get("secret", "")
-    url = _route_url(name, subs[name])
+        return 1
+    try:
+        route = _existing_route(subs, name)
+        secret = route.get("secret", "")
+        if not isinstance(secret, str):
+            raise ValueError(f"Webhook subscription '{name}' has an invalid secret.")
+        url = _route_url(name, route)
+    except ValueError as exc:
+        print(f"Error: Could not read webhook subscriptions: {exc}")
+        return 1
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
     sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     print(f"  Sending test POST to {url}")
@@ -270,6 +458,7 @@ def _cmd_test(args):
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+        return 1
 
 
 _ACTIONS = {

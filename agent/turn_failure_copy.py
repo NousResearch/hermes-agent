@@ -43,6 +43,19 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# ``messages.display_kind`` of that row: display-only (stripped before every provider request),
+# so renderers show a Hermes notice and room pollers never read it as the model's reply.
+FAILED_TURN_DISPLAY_KIND = "failed_turn"
+
+
+def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
+    """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
+    (exact notice text, so a real reply quoting it stays a reply); read-side only."""
+    if role == "assistant" and isinstance(content, str) and content.strip() in (
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+    ):
+        return FAILED_TURN_DISPLAY_KIND
+    return None
 
 
 def failed_turn_notice(turn_messages: Any) -> str:

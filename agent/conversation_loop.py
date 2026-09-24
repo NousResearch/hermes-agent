@@ -40,7 +40,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import failed_turn_notice, site_copy
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -1693,7 +1693,9 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         # hedge over the whole list rather than under-report a possible side effect.
         start = result.get("current_turn_user_idx")
         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
-        append_message(messages, {"role": "assistant", "content": failed_turn_notice(turn_messages)})
+        append_message(messages, {
+            "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
+        })
         agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)

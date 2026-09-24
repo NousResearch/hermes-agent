@@ -450,6 +450,18 @@ describe('toChatMessages', () => {
     ])
   })
 
+  // Hermes closes a failed turn with an assistant-role row (agent/turn_failure_copy.py);
+  // painted as the model's reply it read as the assistant refusing the request.
+  it('renders the failed-turn boundary as a Hermes notice, not a model reply', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      { role: 'assistant', content: 'Your request was not processed.', display_kind: 'failed_turn', timestamp: 2 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'system'])
+    expect(chatMessageText(messages[1])).toBe('Your request was not processed.')
+  })
+
   // A backend older than this app serves display_metadata as unparsed JSON
   // text. Indexing into that string used to throw and fail the whole resume.
   it.each([

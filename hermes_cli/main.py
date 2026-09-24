@@ -2402,7 +2402,11 @@ def _update_preflight_handled(args) -> bool:
 
     if getattr(args, "check", False):
         # --check honors --branch so its answer matches what update would pull.
-        branch = _resolve_update_branch(args)
+        try:
+            branch = _resolve_update_branch(args)
+        except ValueError as exc:
+            print(exc)
+            sys.exit(2)
         from hermes_cli.update_cmd import _cmd_update_check
 
         _cmd_update_check(

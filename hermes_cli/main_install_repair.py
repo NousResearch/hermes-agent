@@ -1301,6 +1301,50 @@ def _resolve_node_runtime_npm() -> str | None:
     return None
 
 
+def _validate_update_branch_name(branch: str) -> str:
+    """Return a safe branch shorthand or reject it before any update work.
+
+    The updater interpolates this value into fetch and local-ref names. Git's
+    ref grammar is stricter than a refspec, so explicitly reject the refspec
+    separators and option-looking forms before constructing any command. The
+    remaining checks mirror ``git check-ref-format`` for the branch-name
+    restrictions that matter here; all commands below use generated full refs,
+    never the raw value as a refspec.
+    """
+    if not isinstance(branch, str) or not branch:
+        raise ValueError("invalid update branch name")
+    if branch.startswith("-") or ":" in branch:
+        raise ValueError(f"invalid update branch name: {branch!r}")
+    if branch in {".", "..", "@", "HEAD"}:
+        raise ValueError(f"invalid update branch name: {branch!r}")
+    if ".." in branch or "@{" in branch or "//" in branch:
+        raise ValueError(f"invalid update branch name: {branch!r}")
+    if branch.startswith("/") or branch.endswith("/") or branch.endswith("."):
+        raise ValueError(f"invalid update branch name: {branch!r}")
+    if any(
+        char.isspace() or ord(char) < 0x20 or char in "~^?*[\\"
+        for char in branch
+    ):
+        raise ValueError(f"invalid update branch name: {branch!r}")
+    components = branch.split("/")
+    if any(
+        not component
+        or component.startswith(".")
+        or component.endswith(".lock")
+        for component in components
+    ):
+        raise ValueError(f"invalid update branch name: {branch!r}")
+    return branch
+
+
 def _resolve_update_branch(args) -> str:
-    """Normalize ``args.branch`` to a non-empty name (default ``main``; blank/whitespace = default)."""
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    """Normalize ``args.branch`` to a safe, non-empty branch name.
+
+    Default ``main``; blank/whitespace falls back to the default. Invalid
+    refspec/option-looking forms raise ``ValueError`` BEFORE any git command
+    runs, so a crafted ``--branch`` can never be interpolated into a fetch or
+    local-ref name.
+    """
+    raw_branch = getattr(args, "branch", None)
+    branch = (raw_branch or "main").strip() if isinstance(raw_branch, str) else "main"
+    return _validate_update_branch_name(branch or "main")

@@ -1645,7 +1645,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     try:
         # Scoped fetch: a bare `git fetch origin` pulls thousands of branches and can stall.
-        branch = _m()._resolve_update_branch(args)
+        try:
+            branch = _m()._resolve_update_branch(args)
+        except ValueError as exc:
+            # User-controlled --branch is rejected BEFORE any git command runs.
+            print(exc)
+            sys.exit(2)
 
         # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
         from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs

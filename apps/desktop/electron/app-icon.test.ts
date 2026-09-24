@@ -54,23 +54,44 @@ test('decodingFileProbe rejects a directory', () => {
 
 // #96857: on a packaged build every path inside app.asar is stat'ed through Electron's asar
 // fs.Stats shim, which emits Node's DEP0180 ("fs.Stats constructor is deprecated") on every launch.
-// dist/** is asarUnpack'ed, so the real on-disk copy must be tried before any in-archive rung;
-// resolveAppIcon stops at the first decodable candidate and never reaches the archive.
-test('the unpacked on-disk icon precedes every in-archive PNG rung', () => {
+// A packaged tree always has real on-disk icons (dist/** is asarUnpack'ed; extraResources copies
+// icon.ico to resources/), so resolving the ladder must never probe inside the archive, even though
+// the packed copies exist too.
+test('resolving a packaged icon never probes a path inside app.asar', () => {
+  const resources = path.join('/opt', 'Hermes', 'resources')
+  const appRoot = path.join(resources, 'app.asar')
+  const unpackedPathFor = (p: string) => p.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
+  const unpackedIcon = path.join(unpackedPathFor(appRoot), 'dist', 'apple-touch-icon.png')
+
+  const resourcesIco = path.join(resources, 'icon.ico')
+
+  // package.json build: files (packed) + asarUnpack dist/** + extraResources icon.ico.
+  const shipped = new Set([
+    resourcesIco,
+    path.join(appRoot, 'assets', 'icon.ico'),
+    path.join(appRoot, 'public', 'apple-touch-icon.png'),
+    path.join(appRoot, 'dist', 'apple-touch-icon.png'),
+    unpackedIcon
+  ])
+
   for (const isWindows of [false, true]) {
-    const appRoot = path.join('/opt/Hermes/resources', 'app.asar')
+    const probed: string[] = []
 
-    const candidates = appIconCandidates({
-      isWindows,
-      appRoot,
-      resourcesPath: '/opt/Hermes/resources',
-      unpackedPathFor: p => p.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
-    })
+    const picked = resolveAppIcon(
+      appIconCandidates({ isWindows, appRoot, resourcesPath: resources, unpackedPathFor }),
+      p => {
+        probed.push(p)
 
-    const pngs = candidates.filter(c => c.endsWith('.png'))
-    const firstInArchive = pngs.findIndex(c => c.startsWith(appRoot + path.sep))
-    const unpacked = pngs.findIndex(c => c.includes('app.asar.unpacked'))
-    assert.ok(unpacked !== -1 && unpacked < firstInArchive, `unpacked first (isWindows=${isWindows}): ${pngs.join(', ')}`)
+        return shipped.has(p)
+      }
+    )
+
+    assert.equal(picked, isWindows ? resourcesIco : unpackedIcon)
+    assert.deepEqual(
+      probed.filter(p => p.startsWith(appRoot + path.sep)),
+      [],
+      `isWindows=${isWindows}`
+    )
   }
 })
 

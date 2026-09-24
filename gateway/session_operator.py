@@ -11,6 +11,18 @@ from hermes_state_runtime import RuntimeStoreError
 def check_local_input(authority, ref, row):
     payload = row['payload']
     allowed = {'text', 'attachments_v1', 'finite', 'surface_v1'}
+    if 'classic_export_v1' in payload:
+        from gateway.classic_output_exports import (
+            CANONICAL_BINDING_VERSION,
+            CANONICAL_MARKER_FIELDS,
+        )
+
+        marker = payload['classic_export_v1']
+        if (not isinstance(marker, dict) or set(marker) != CANONICAL_MARKER_FIELDS
+                or marker.get('binding_version') != CANONICAL_BINDING_VERSION
+                or marker.get('principal_id') != row['principal_id']):
+            raise RuntimeStoreError('permission_denied')
+        allowed.add('classic_export_v1')
     if 'local_operator_v1' in payload:
         allowed.add('local_operator_v1')
         if payload['local_operator_v1'] != {

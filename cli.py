@@ -1010,7 +1010,11 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
 
-        Raises ``ValueError`` only when EVERY requested skill was unknown.
+        Raises ``ValueError`` only when EVERY requested skill was unknown — and
+        not for dispatched kanban workers (``HERMES_KANBAN_TASK`` set), which
+        degrade to the partial-success warning instead (machine-built argv:
+        a startup-fatal spawn retries identically every tick until gave_up
+        parks the card).
         """
         if getattr(self, "_preload_skills_finalized", False):
             return
@@ -1034,7 +1038,14 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
+            # A typo'd name must not crash a kanban worker; only a fully-missing
+            # set fails loudly — except on dispatched spawns: kanban workers get
+            # machine-built argv (the review lane force-loads sdlc-review; cards
+            # can pin task skills), and a startup-fatal spawn retries
+            # identically every tick until gave_up parks the card (live: 4 dead
+            # review-lane spawns on t_11f61c5a, 2026-09-23). A skill the profile
+            # cannot resolve must degrade the run, not kill it. Human CLI usage
+            # keeps the strict raise (typo protection).
             if loaded_skills:
                 logger.warning(
                     "Unknown skill(s) requested, skipping: %s. "
@@ -1042,6 +1053,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     "List available skills with `hermes skills list`.",
                     missing_display,
                     ", ".join(loaded_skills),
+                )
+            elif os.environ.get("HERMES_KANBAN_TASK"):
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. Continuing "
+                    "without preloaded skills (dispatched kanban worker).",
+                    missing_display,
                 )
             else:
                 raise ValueError(f"Unknown skill(s): {missing_display}")

@@ -37,6 +37,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_pre_verify_synthetic",
     "_kanban_stop_synthetic",  # kanban worker stop-guard
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
+    "_length_continuation_synthetic",  # continuation nudge right after a user row (turn_truncation)
 )
 
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
@@ -266,6 +267,10 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
+    for msg in batch_msgs:
+        # One write only: left set, the flag keeps exempting the carried row from the history skip,
+        # so every later in-place repair of it (a merge with the next prompt) is written again.
+        msg.pop(_PERSIST_AFTER_ADMISSION_INTERRUPT, None)
     if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
         # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
         # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:

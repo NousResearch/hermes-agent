@@ -553,6 +553,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from agent.session_persistence import _is_ephemeral_scaffolding
 
     repairs = 0
     merged: List[Dict] = []
@@ -561,6 +562,9 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
         if (
             prev is not None and prev.get("role") == "user"
             and isinstance(msg, dict) and msg.get("role") == "user"
+            # Request-only scaffolding merged with a real row would make its text durable (or the
+            # real row's text unpersisted); the wire copy merges them instead.
+            and not _is_ephemeral_scaffolding(prev) and not _is_ephemeral_scaffolding(msg)
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None

@@ -271,10 +271,16 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             agent._vprint(f"{agent.log_prefix}↻ Stream interrupted — requesting continuation ({n}/4)...", diagnostic=True)
         else:
             agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/4)...", diagnostic=True)
-        append_message(messages, {
+        nudge = {
             "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
             "_length_continuation_nudge": True,
-        })
+        }
+        if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+            # No visible fragment: the nudge would follow this turn's already-written user row, and the
+            # pre-request repair would merge it INTO that row, saved and replayed as the user's own
+            # words. Keep it request-only; the wire copy merges it for alternation.
+            nudge["_length_continuation_synthetic"] = True
+        append_message(messages, nudge)
         agent._session_messages = messages
         _retry.restart_with_length_continuation = True
         return st.done("break")

@@ -1,5 +1,5 @@
-"""Transcript repair for SessionDB batch appends: reconcile in-memory assistant rows with committed SQLite
-rows (blank-row in-place update, concurrent-winner adoption, watermark-compaction clone lookup) and sync
+"""Transcript repair for SessionDB batch appends: reconcile in-memory rows that already own a committed SQLite
+row (in-place rewrite, assistant concurrent-winner adoption, watermark-compaction clone lookup) and sync
 markers after commit."""
 
 from __future__ import annotations
@@ -28,22 +28,33 @@ def resolve_and_repair_transcript_batch(
     encode_content_fn: Callable[[Any], Any],
     decode_content_fn: Callable[[Any], Any],
 ) -> List[Dict[str, Any]]:
-    """Partition a message batch within an active write transaction. An assistant message carrying an
-    existing integer ``_row_id`` targets its active SQLite row (or the active clone a watermark compaction
-    made of it): a blank row is updated in place; a non-blank one (concurrent winner) has its canonical
-    content adopted without overwrite. Returns the messages that must be inserted as fresh rows."""
+    """Partition a message batch within an active write transaction. A message carrying an existing integer
+    ``_row_id`` targets its active SQLite row of the same role (or the active clone a watermark compaction
+    made of it) and is never inserted again. A non-assistant row is rewritten in place; an assistant row is
+    updated only when blank, otherwise (concurrent winner) its canonical content is adopted without
+    overwrite. Returns the messages that must be inserted as fresh rows."""
     inserted_rows: List[Dict[str, Any]] = []
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         target_row = None
-        if isinstance(existing_row_id, int) and msg.get("role", "unknown") == "assistant":
-            target_row = _active_assistant_row(conn, session_id, existing_row_id)
+        if isinstance(existing_row_id, int):
+            target_row = _active_row(conn, session_id, existing_row_id, msg.get("role", "unknown"))
         if target_row is None:
             inserted_rows.append(msg)
             continue
         target_id = int(target_row["id"])
-        decoded = decode_content_fn(target_row["content"])
         msg["_row_id"] = target_id
+        if msg.get("role") != "assistant":
+            # A dict that owns a live row reaches the flush only because an in-place repair popped
+            # its marker to get the change written (_DB_PERSISTED_MARKER contract): rewrite that
+            # row, since appending would save the message twice.
+            conn.execute(
+                "UPDATE messages SET content = ?, api_content = ? "
+                "WHERE id = ? AND session_id = ? AND active = 1",
+                (encode_content_fn(msg.get("content")), msg.get("api_content"), target_id, session_id),
+            )
+            continue
+        decoded = decode_content_fn(target_row["content"])
         if is_content_blank(decoded):
             conn.execute(
                 "UPDATE messages SET content = ? "
@@ -55,24 +66,24 @@ def resolve_and_repair_transcript_batch(
     return inserted_rows
 
 
-def _active_assistant_row(conn: sqlite3.Connection, session_id: str, row_id: int):
-    """The active assistant row for ``row_id``, or the active clone a watermark compaction made of it."""
+def _active_row(conn: sqlite3.Connection, session_id: str, row_id: int, role: str):
+    """The active ``role`` row for ``row_id``, or the active clone a watermark compaction made of it."""
     row = conn.execute(
         "SELECT id, role, active, timestamp, content FROM messages "
         "WHERE id = ? AND session_id = ?",
         (row_id, session_id),
     ).fetchone()
-    if row is None or row["role"] != "assistant":
+    if row is None or row["role"] != role:
         return None
     if int(row["active"] or 0) == 1:
         return row
     # Watermark compaction soft-archived the concurrent tail and cloned it.
     return conn.execute(
         "SELECT id, role, active, timestamp, content FROM messages "
-        "WHERE session_id = ? AND active = 1 AND role = 'assistant' "
+        "WHERE session_id = ? AND active = 1 AND role = ? "
         "AND timestamp IS ? AND id != ? "
         "ORDER BY id DESC LIMIT 1",
-        (session_id, row["timestamp"], row["id"]),
+        (session_id, role, row["timestamp"], row["id"]),
     ).fetchone()
 
 

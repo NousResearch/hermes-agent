@@ -210,9 +210,9 @@ class VoiceMixer(discord.AudioSource):
             appended behind its remaining audio, so concurrent replies never overlap.
         """
         with self._lock:
-            last = self._speech[-1] if self._speech else None
-            if isinstance(last, StreamingMixerChild) and not last._finished:
-                return last
+            latest_child = self._speech[-1] if self._speech else None
+            if isinstance(latest_child, StreamingMixerChild) and not latest_child._finished:
+                return latest_child
             child = StreamingMixerChild(
                 gain=self._speech_gain if gain is None else float(gain), fade_in_ms=fade_in_ms,
             )

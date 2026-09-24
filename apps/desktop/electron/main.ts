@@ -384,6 +384,7 @@ import {
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
+  isAllProfilesSessionListRequest,
   mergeProfileSessionWindow,
   type RegistrySessionSource,
   spliceRegistrySessionRows,
@@ -17356,6 +17357,18 @@ async function handleHermesApiRequest(request) {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (registryConnectionId) {
+    // The renderer attaches its active connection to every REST request. Do
+    // not let that pin collapse the all-profiles Sessions view to one gateway:
+    // Gateway & profile grouping depends on the aggregate path to splice all
+    // already-pooled registry sources, preserving each row's connection_id.
+    if (isAllProfilesSessionListRequest(request?.method, request?.path)) {
+      const aggregate = await interceptSessionRequestForRemote({ ...request, connectionId: undefined })
+
+      if (aggregate !== undefined) {
+        return aggregate
+      }
+    }
+
     return dispatchRegistryApiRequest(request, registryConnectionId)
   }
 

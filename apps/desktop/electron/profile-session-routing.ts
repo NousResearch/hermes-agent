@@ -12,6 +12,36 @@ type FetchJsonForProfile = (profile: string | null, path: string) => Promise<unk
 
 const REMOTE_SESSION_PAGE_LIMIT = 100
 
+/** Whether a request is asking for the all-profiles Sessions view.
+ *
+ * Registry-pinned requests normally stay on their selected gateway. The
+ * all-profiles list is different: it is the source for Gateway & profile
+ * grouping, so Electron must let the aggregate route add every already-pooled
+ * registered gateway rather than returning only the selected source.
+ */
+export function isAllProfilesSessionListRequest(method: string | undefined, path: string | undefined): boolean {
+  if ((method || 'GET').toUpperCase() !== 'GET' || !path) {
+    return false
+  }
+
+  let url: URL
+
+  try {
+    url = new URL(path, 'http://desktop.local')
+  } catch {
+    return false
+  }
+
+  if (url.pathname === '/api/profiles/sessions') {
+    return (url.searchParams.get('profile') || 'all').trim() === 'all'
+  }
+
+  return (
+    url.pathname === '/api/profiles/sessions/sidebar' &&
+    (url.searchParams.get('recents_profile') || 'all').trim() === 'all'
+  )
+}
+
 function rowsOf(data: unknown): unknown[] {
   if (!data || typeof data !== 'object' || !('sessions' in data)) {
     return []

@@ -158,3 +158,91 @@ def test_upstream_main_sha_ls_remote_fallback_disables_git_prompts(monkeypatch):
     assert kwargs["stdin"] is banner.subprocess.DEVNULL
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"
+
+def test_release_anchor_pins_target_to_latest_tagged_release(git_repo, monkeypatch):
+    """updates.anchor: release — the check compares HEAD to the latest release tag's
+    commit instead of the branch tip, so a fork on a fast-moving main only flags an
+    update when a tagged release exists that HEAD lacks."""
+    _stub_git(monkeypatch, head=SHA_A)
+    # Set the knob the way a user would — through the config file the reader loads.
+    (git_repo.parent / "config.yaml").write_text("updates:\n  anchor: release\n", encoding="utf-8")
+    release_tag = MagicMock(return_value="v2026.9.21")
+    monkeypatch.setattr(banner, "_github_latest_release_tag", release_tag)
+    tip = MagicMock(return_value=SHA_B)
+    monkeypatch.setattr(banner, "_github_branch_tip", tip)
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt: 0)
+
+    assert banner.check_for_updates() == 0
+    release_tag.assert_called_once_with("nousresearch/hermes-agent")
+    tip.assert_called_once_with("nousresearch/hermes-agent", "v2026.9.21")
+
+
+def test_release_anchor_falls_back_to_branch_tip_when_lookup_fails(git_repo, monkeypatch):
+    """A failed release lookup (offline, rate limit, non-version tag) degrades to the
+    branch-tip comparison — never to a fabricated "up to date"."""
+    _stub_git(monkeypatch, head=SHA_A)
+    monkeypatch.setattr(banner, "_release_anchor_enabled", lambda: True)
+    monkeypatch.setattr(banner, "_github_latest_release_tag", MagicMock(return_value=None))
+    tip = MagicMock(return_value=SHA_B)
+    monkeypatch.setattr(banner, "_github_branch_tip", tip)
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt: 61)
+
+    assert banner.check_for_updates() == 61
+    tip.assert_called_once_with("nousresearch/hermes-agent", "main")
+
+
+def test_release_anchor_off_keeps_tip_comparison(git_repo, monkeypatch):
+    """Default (updates.anchor absent) pins the existing contract: branch tip, no
+    release lookup at all."""
+    _stub_git(monkeypatch, head=SHA_A)
+    monkeypatch.setattr(banner, "_release_anchor_enabled", lambda: False)
+    release_tag = MagicMock(return_value="v2026.9.21")
+    monkeypatch.setattr(banner, "_github_latest_release_tag", release_tag)
+    tip = MagicMock(return_value=SHA_B)
+    monkeypatch.setattr(banner, "_github_branch_tip", tip)
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt: 61)
+
+    assert banner.check_for_updates() == 61
+    release_tag.assert_not_called()
+    tip.assert_called_once_with("nousresearch/hermes-agent", "main")
+
+
+def test_github_latest_release_tag_admits_only_version_shaped_tags(monkeypatch):
+    """Only dotted-numeric tag names may anchor a check — nightly/hash/prerelease
+    tags, empty payloads and non-dict JSON must resolve to None, never to a URL path."""
+    import urllib.request as urllib_request
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    cases = [
+        ({"tag_name": "v2026.9.21"}, "v2026.9.21"),
+        ({"tag_name": "refs/tags/v0.21.4"}, "v0.21.4"),
+        ({"tag_name": "2026.9.21"}, "2026.9.21"),
+        ({"tag_name": "nightly"}, None),
+        ({"tag_name": "v1.2.3-rc.1"}, None),
+        ({"tag_name": "release-2026"}, None),
+        ({"tag_name": ""}, None),
+        ({}, None),
+        (None, None),
+        ({"tag_name": 42}, None),
+    ]
+    for payload, expected in cases:
+        monkeypatch.setattr(urllib_request, "urlopen", lambda req, timeout=None: _Resp(payload))
+        assert banner._github_latest_release_tag("NousResearch/hermes-agent") == expected, payload
+
+    def _boom(req, timeout=None):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(urllib_request, "urlopen", _boom)
+    assert banner._github_latest_release_tag("NousResearch/hermes-agent") is None

@@ -25,6 +25,8 @@ export interface CachedUpdateCheck {
   fetchedAt: number
   currentSha: string
   branch: string
+  /** When the release-anchor lookup last ran (release mode only). */
+  releaseTagFetchedAt?: number
   status: Record<string, unknown> & { error?: string }
 }
 
@@ -45,6 +47,45 @@ export function compareApiUrl(slug: string, currentSha: string, targetSha: strin
 }
 
 /**
+ * Release-anchored checks (`updateRefAnchor: 'release'`) compare the local HEAD
+ * to the latest *tagged release* instead of the branch tip. Upstream main moves
+ * hundreds of commits a day, so a tip-anchored badge is effectively always on
+ * for fork installs; a release-anchored badge lights only when a new release
+ * exists that HEAD lacks, and clears again once an update merges it.
+ *
+ * The anchor (which release is latest) must itself stay fresh even while the
+ * 24h status cache would otherwise hold — otherwise a release published mid-day
+ * stays invisible until HEAD moves. So in release mode the cache also expires
+ * RELEASE_TAG_TTL_MS after the last anchor lookup.
+ */
+export const RELEASE_TAG_TTL_MS = 2 * 60 * 60 * 1000
+
+export function latestReleaseApiUrl(slug: string): string {
+  return `https://api.github.com/repos/${slug}/releases/latest`
+}
+
+/**
+ * Latest release payload → its tag name, or null. Only version-shaped names
+ * ("v2026.9.21", "v0.21.4", "2026.9.21") anchor a check; anything else (or a
+ * missing/preview payload) falls the caller back to the branch tip.
+ */
+export function parseReleaseTagName(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  const tag = (payload as { tag_name?: unknown }).tag_name
+
+  if (typeof tag !== 'string' || tag.length === 0) {
+    return null
+  }
+
+  const name = tag.replace(/^refs\/tags\//, '')
+
+  return /^v?\d+(\.\d+)*$/.test(name) ? name : null
+}
+
+/**
  * Whether a cached result still answers a passive check. The cache is keyed on
  * the local HEAD and branch: applying an update or switching branches changes
  * HEAD and invalidates it immediately, so a 24h TTL never shows a stale
@@ -52,7 +93,12 @@ export function compareApiUrl(slug: string, currentSha: string, targetSha: strin
  */
 export function cacheIsFresh(
   cached: CachedUpdateCheck | null | undefined,
-  { branch, currentSha, now }: { branch: string; currentSha: string; now: number }
+  {
+    branch,
+    currentSha,
+    now,
+    releaseAnchor
+  }: { branch: string; currentSha: string; now: number; releaseAnchor?: 'branch' | 'release' }
 ): boolean {
   if (!cached || cached.branch !== branch || cached.currentSha !== currentSha) {
     return false
@@ -60,7 +106,18 @@ export function cacheIsFresh(
 
   const ttl = cached.status.error ? UPDATE_CHECK_FAILURE_TTL_MS : UPDATE_CHECK_TTL_MS
 
-  return now - cached.fetchedAt < ttl
+  if (now - cached.fetchedAt >= ttl) {
+    return false
+  }
+
+  // Release-anchored mode must notice a release published after the last check
+  // even while the 24h status cache would otherwise hold — expire once the
+  // anchor lookup ages past RELEASE_TAG_TTL_MS so the next check re-resolves it.
+  if (releaseAnchor === 'release' && now - (cached.releaseTagFetchedAt ?? 0) >= RELEASE_TAG_TTL_MS) {
+    return false
+  }
+
+  return true
 }
 
 export interface CompareCommit {

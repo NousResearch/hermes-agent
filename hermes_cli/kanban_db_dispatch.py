@@ -2917,6 +2917,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # The child must not execute Hermes until PID registration commits. In
+    # particular, a dispatcher crash or failed COMMIT must leave an inert
+    # process that times out, not an untracked release worker.
+    cmd = [sys.executable, str(Path(__file__).with_name("kanban_worker_gate.py")), *cmd]
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

@@ -408,3 +408,56 @@ def test_restore_with_unknown_claimed_worker_fails_closed(github):
         assert kb.latest_run(conn, child).outcome == "reclaimed"
         assert any(e.kind == "archive_restore_worker_termination"
                    for e in kb.list_events(conn, child))
+
+
+def test_worker_launch_waits_for_durable_pid_registration(github, tmp_path):
+    """A rollback after OS launch must not let an unregistered worker publish."""
+    import time
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    marker = tmp_path / "published"
+    gate = Path(dispatch.__file__).with_name("kanban_worker_gate.py")
+    with connect() as conn:
+        task_id = kb.create_task(conn, title="release", assignee="forge")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        env = {**os.environ, "HERMES_KANBAN_DB": str(kb.kanban_db_path()),
+               "HERMES_KANBAN_TASK": task_id,
+               "HERMES_KANBAN_RUN_ID": str(claimed.current_run_id),
+               "HERMES_KANBAN_CLAIM_LOCK": claimed.claim_lock}
+        cmd = [sys.executable, str(gate), sys.executable, "-c",
+               "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text('published')", str(marker)]
+        procs = []
+        proc = None
+        try:
+            with pytest.raises(RuntimeError, match="simulated COMMIT failure"):
+                with kb.write_txn(conn):
+                    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
+                    procs.append(proc)
+                    assert dispatch._set_worker_pid(
+                        conn, task_id, proc.pid, expected_run_id=claimed.current_run_id,
+                        expected_claim_lock=claimed.claim_lock, allow_nested=True)
+                    assert not marker.exists()
+                    raise RuntimeError("simulated COMMIT failure")
+            task = kb.get_task(conn, task_id)
+            assert task is not None and task.worker_pid is None
+            assert proc is not None
+            time.sleep(0.5)
+            assert proc.poll() is None and not marker.exists()
+            # A later durable registration releases a fresh gated worker.
+            proc.kill()
+            proc.wait(timeout=5)
+            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            procs.append(proc)
+            assert dispatch._set_worker_pid(
+                conn, task_id, proc.pid, expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock)
+            assert proc.wait(timeout=5) == 0
+            assert marker.read_text() == "published"
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)

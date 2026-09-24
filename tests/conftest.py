@@ -27,6 +27,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -2075,3 +2076,41 @@ def _moa_caches_isolated():
     yield
     moa._preset_cache.clear()
     moa._runtime_cache.clear()
+
+
+@pytest.fixture
+def postgres_home(tmp_path, monkeypatch):
+    """A temporary profile using one isolated schema in the local test database."""
+    if os.environ.get("HERMES_TEST_POSTGRES") != "1":
+        pytest.skip("set HERMES_TEST_POSTGRES=1 to run PostgreSQL integration tests")
+
+    import psycopg
+    from psycopg import sql
+
+    database_url = "postgresql://hermes:hermes-test@127.0.0.1:55433/hermes_test"
+    schema = f"test_{uuid.uuid4().hex}"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DATABASE_URL", raising=False)
+    state_module = sys.modules.get("hermes_state")
+    if state_module is not None:
+        monkeypatch.setattr(state_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    (tmp_path / "config.yaml").write_text(
+        f"database:\n  backend: postgres\n  schema: {schema}\n", encoding="utf-8"
+    )
+    (tmp_path / ".env").write_text(f"HERMES_DATABASE_URL={database_url}\n", encoding="utf-8")
+
+    with psycopg.connect(database_url, autocommit=True, connect_timeout=5) as connection:
+        try:
+            yield tmp_path
+        finally:
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.fixture
+def postgres_db(postgres_home):
+    from hermes_state import SessionDB
+
+    with SessionDB(postgres_home / "state.db") as database:
+        assert database.backend == "postgres"
+        yield database
+    assert not (postgres_home / "state.db").exists()

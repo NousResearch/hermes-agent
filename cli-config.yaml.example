@@ -18,6 +18,11 @@ _config_version: 46
 # crash-safe, such as Linux containers bind-mounted through macOS virtiofs,
 # NFS, or SMB. Hermes will not live-downgrade a database already open in WAL.
 database:
+  # Session storage only. PostgreSQL requires HERMES_DATABASE_URL in this profile's .env.
+  backend: "sqlite"  # sqlite | postgres
+  # Set a stable, distinct schema per profile to share it across hosts. When omitted,
+  # the schema name includes a hash of the local database path to isolate stores.
+  # schema: "hermes_default"
   journal_mode: "wal"  # Supported values: "wal", "delete"
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints

@@ -274,6 +274,8 @@ def classify_persistence_error(exc_or_str) -> str:
     capture inspection."""
     if exc_or_str is None:
         return "unknown"
+    if getattr(exc_or_str, "sqlstate", None) == "55P03":
+        return "locked"
     # Lease refusals contain neither "locked" nor "busy": match by type first,
     # then by phrase for strings that survived RPC wrapping. Order matters:
     # StateDbReplacedError covers DeletedWalGenerationError; corruption comes

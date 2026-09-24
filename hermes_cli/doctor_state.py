@@ -412,10 +412,28 @@ def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
 
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
-    """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
+    """Session database health, plus SQLite repair, storage stats, and WAL size."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_state_backend import resolve_database_settings
     state_db_path = HERMES_HOME / "state.db"
-    # A read-only connect on the new generation is itself another opener, so nothing below may run.
+    # Resolve the configured backend before running SQLite-only WAL checks.
+    # Opening SQLite first would add another database holder.
+    try:
+        settings = resolve_database_settings(state_db_path)
+    except Exception as exc:
+        check_warn("Session database configuration is invalid", f"({type(exc).__name__})")
+        f.manual_issues.append("Check database settings in this profile's config.yaml and .env")
+        return
+    if settings.backend == "postgres":
+        try:
+            from hermes_state import SessionDB
+            with SessionDB(state_db_path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
+                count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            check_ok(f"PostgreSQL session database is reachable ({count} sessions)")
+        except Exception as exc:
+            check_warn("PostgreSQL session database is unavailable", f"({type(exc).__name__})")
+            f.manual_issues.append("Check PostgreSQL connectivity, database.schema, and this profile's HERMES_DATABASE_URL")
+        return
     if _retired_wal_holders(f, state_db_path, _DHH):
         return
     if state_db_path.exists():

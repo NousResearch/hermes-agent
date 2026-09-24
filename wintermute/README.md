@@ -252,12 +252,16 @@ conditions, pas des consignes.
 
 ## Plus tard : REVES (le subconscient)
 
-Un deuxième modèle, économe, qui la nuit écrit **un rêve** à partir de ce qu'il a vécu :
-les événements récents pèsent plus, les anciens reviennent déformés, et il ne se souvient
-pas de tout (des morceaux manquent au réveil). Wintermute le voit en se réveillant. À
-décider : REVES peut-il aussi, parfois, glisser une image pendant les éveils (le
-subconscient qui dicte au conscient) ? Matière première déjà là : `events.jsonl`,
-`history.jsonl`, `self.md`, les moments partagés.
+Le **même modèle** que Wintermute (un seul cerveau, deux régimes), dans un autre état : un
+appel séparé la nuit, sans outils ni SOUL complet, température haute. Il écrit **un rêve** à
+partir de ce qu'il a vécu, les événements récents pesant plus que les anciens. Wintermute le
+lit en entier au réveil : **pas d'oubli**.
+
+- Le rêve est **très abstrait** : images, glissements, associations, pas un résumé de la journée.
+- Mais les **actions rêvées sont précises** : ce qu'il s'imagine faire (écrire à quelqu'un,
+  ouvrir un fichier, partir quelque part) est décrit nettement, comme dans un vrai rêve.
+- À décider : REVES peut-il parfois glisser une image pendant les éveils ?
+- Matière première déjà là : `events.jsonl`, `history.jsonl`, `self.md`, moments partagés.
 
 ## Plus tard : Discord
 

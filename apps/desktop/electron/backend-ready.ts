@@ -1,5 +1,11 @@
 import fs from 'node:fs'
 
+import {
+  DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
+  MIN_PORT_ANNOUNCE_TIMEOUT_MS,
+  resolvePortAnnounceTimeoutMs
+} from '../../shared/src/desktop-boot-budget'
+
 // `hermes serve` announces HERMES_BACKEND_READY; the legacy `hermes dashboard`
 // backend announces HERMES_DASHBOARD_READY. Accept either so the desktop spawn
 // works against both the headless backend and old/dashboard runtimes.
@@ -17,28 +23,8 @@ export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_RE
 // uvicorn chain, and on Windows real-time AV (Defender) scans every freshly
 // written `.pyc`. That pre-bind cost can run 30-60s on a slow disk, so a tight
 // 45s deadline kills a *healthy but still-starting* backend and respawns it,
-// piling up orphaned processes (issue #50209). A roomier default absorbs the
-// cold-start cost; a warm start still announces in well under a second.
-const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 90_000
-// Never trust a deadline tighter than the warm-start path needs; floor at 45s
-// (the historical default) so a malformed override can't reintroduce the loop.
-const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
-
-/**
- * Resolve the port-announcement deadline. Honors the
- * HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS env override (for users on slow
- * disks / aggressive AV who need an even longer cold-start window), clamped
- * to a sane floor so a bad value can't make boot flakier than the default.
- */
-function resolvePortAnnounceTimeoutMs(env = process.env) {
-  const parsed = Number(env.HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS)
-
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return Math.max(MIN_PORT_ANNOUNCE_TIMEOUT_MS, Math.round(parsed))
-  }
-
-  return DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS
-}
+// piling up orphaned processes (issue #50209). The deadline and the renderer
+// connect timeout both come from apps/shared so they cannot drift.
 
 /**
  * Watch a child process's stdout for the `HERMES_(BACKEND|DASHBOARD)_READY

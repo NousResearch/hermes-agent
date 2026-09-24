@@ -183,7 +183,8 @@ async function assertHydrationBoundaries(page: Page, label: string): Promise<voi
     `${label}: canonical final markdown must not have a Thought ancestor`
   ).toBe(true)
 
-  const tool = surface.locator('[data-slot="tool-block"]:visible')
+  // ToolRunGroup and its child both have tool-block; count actual cards, not wrappers.
+  const tool = surface.locator('[data-tool-row]:visible')
   await expect(tool, `${label}: exactly one visible tool row should follow the canonical final`).toHaveCount(1)
 
   const thoughtHandle = await thought.elementHandle()

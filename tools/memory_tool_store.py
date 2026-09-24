@@ -69,6 +69,12 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
+def _stale_entry_message(entry: str) -> str:
+    return (f"Entry changed since it was staged, so this write was not applied: '{entry}' is no longer "
+            f"in memory as reviewed. Recreate the change against the current entry or reject it; the "
+            f"pending record has been preserved.")
+
+
 # Optional third value of an _apply closure: a dict merged into the success payload —
 # e.g. the full text an entry-level replace overwrote, so a whole-entry write is never
 # silent about the loss (#117952). Same convention as _error(**extra).
@@ -282,7 +288,8 @@ class MemoryStore:
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(self, target: str, old_text: str, new_content: str,
+                matched_entry: Optional[str] = None) -> Dict[str, Any]:
         """Find the entry containing old_text (whole-entry exact match first) and
         replace the WHOLE entry with new_content — old_text only locates the entry;
         the matched span is not spliced into it."""
@@ -293,25 +300,47 @@ class MemoryStore:
             return _error("new_content cannot be empty. Use 'remove' to delete entries.")
         if scan_error := _scan_memory_content(new_content):
             return _error(scan_error)
-        return self._edit(target, old_text.strip(), new_content)
+        return self._edit(target, old_text.strip(), new_content, matched_entry)
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
+    def remove(self, target: str, old_text: str, matched_entry: Optional[str] = None) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         if not old_text.strip():
             return _error("old_text cannot be empty.")
-        return self._edit(target, old_text.strip(), None)
+        return self._edit(target, old_text.strip(), None, matched_entry)
 
-    def _edit(self, target: str, old_text: str, new_content: Optional[str]) -> Dict[str, Any]:
+    def _locate(self, entries: List[str], old_text: str, verb: str, matched_entry: Optional[str] = None):
+        """Index of the entry *old_text* selects, or the error dict the edit returns. A write
+        staged for approval carries the FULL entry it was reviewed against (*matched_entry*):
+        only that exact entry qualifies, so replay never hits a newer entry that still
+        contains old_text."""
+        if matched_entry is not None:
+            return entries.index(matched_entry) if matched_entry in entries else _error(
+                _stale_entry_message(matched_entry))
+        idx, ambiguous = _find_unique_match(entries, old_text)
+        if ambiguous:
+            return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
+                          matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
+        if idx is None:
+            return self._consolidation_failure(_error(
+                f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
+                f"of the entry you want to {verb}.", current_entries=entries))
+        return idx
+
+    def resolve_entry(self, target: str, old_text: str, verb: str) -> Dict[str, Any]:
+        """``{"success": True, "matched_entry": <full entry>}`` for the entry *old_text* selects
+        now, read under the lock, or the error the direct edit would return."""
+        def _resolve(entries, limit):
+            idx = self._locate(entries, old_text.strip(), verb)
+            return idx if isinstance(idx, dict) else {"success": True, "matched_entry": entries[idx]}
+        return self._mutate(target, _resolve, skip_drift=True)
+
+    def _edit(self, target: str, old_text: str, new_content: Optional[str],
+              matched_entry: Optional[str] = None) -> Dict[str, Any]:
         """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
         def _apply(entries, limit):
-            idx, ambiguous = _find_unique_match(entries, old_text)
-            if ambiguous:
-                return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
-                              matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
-            if idx is None:
-                return self._consolidation_failure(_error(
-                    f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
-                    f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
+            idx = self._locate(entries, old_text, "replace" if new_content else "remove", matched_entry)
+            if isinstance(idx, dict):
+                return idx
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
                 return replaced, "Entry removed.", {"removed_entry": entries[idx]}
@@ -326,10 +355,11 @@ class MemoryStore:
 
     @staticmethod
     def _apply_batch_op(working: List[str], act: str, content: str, old_text: str,
-                        pos: str) -> Tuple[Optional[str], Optional[str]]:
+                        pos: str, matched_entry: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """Apply one batch op to *working*; return ``(error message, previous content)``.
         Previous content is captured before each replace/remove, under the store lock.
         It is published only after the entire batch has been validated and persisted.
+        A staged op's *matched_entry* selects exactly that entry, as in ``_locate``.
         """
         if act == "add":
             if not content:
@@ -343,7 +373,12 @@ class MemoryStore:
             return f"{pos}: old_text is required.", None
         if act == "replace" and not content:
             return f"{pos}: content is required (use action='remove' to delete).", None
-        idx, ambiguous = _find_unique_match(working, old_text)
+        if matched_entry is not None:
+            if matched_entry not in working:
+                return f"{pos}: {_stale_entry_message(matched_entry)}", None
+            idx, ambiguous = working.index(matched_entry), False
+        else:
+            idx, ambiguous = _find_unique_match(working, old_text)
         if ambiguous:
             return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None
         if idx is None:
@@ -374,7 +409,8 @@ class MemoryStore:
                 act = op.get("action")
                 msg, previous_content = self._apply_batch_op(
                     working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                    (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
+                    (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})",
+                    op.get("matched_entry"))
                 if msg:
                     return self._batch_failure(target, msg)
                 if previous_content is not None:
@@ -402,6 +438,23 @@ class MemoryStore:
                 replaced_fields["removed_entries"] = removed
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
         return self._mutate(target, _apply)
+
+    def resolve_batch_entries(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """``{"success": True, "matched_entries": [...]}``: per op, the FULL entry its
+        replace/remove selects now (None for add), in batch order and read under the lock,
+        or the error the direct batch would return for that op."""
+        def _resolve(entries, limit):
+            working, matched = list(entries), []
+            for i, op in enumerate(operations):
+                act = op.get("action")
+                msg, previous_content = self._apply_batch_op(
+                    working, act, (op.get("content") or op.get("new_text") or "").strip(),
+                    (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
+                if msg:
+                    return self._batch_failure(target, msg)
+                matched.append(previous_content)
+            return {"success": True, "matched_entries": matched}
+        return self._mutate(target, _resolve, skip_drift=True)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """Frozen load-time snapshot (NOT live state — mid-session writes don't touch

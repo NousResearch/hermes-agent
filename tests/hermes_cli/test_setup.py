@@ -159,6 +159,15 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
         ),
     )
     monkeypatch.setitem(sys.modules, "swe_rex", object())
+    # The direct-Modal branch runs _ensure_sdk("modal"): without a module stub the
+    # import miss drives the real installer — ensure_uv() downloads uv and the
+    # runtime repair provisions a managed CPython under the checkout (#121621).
+    monkeypatch.setitem(sys.modules, "modal", types.ModuleType("modal"))
+
+    def _fail_install(pkgs):
+        raise AssertionError(f"the setup wizard must not install SDKs in tests: {pkgs}")
+
+    monkeypatch.setattr("hermes_cli.tools_config._pip_install", _fail_install)
 
     from hermes_cli.setup import setup_terminal_backend
 

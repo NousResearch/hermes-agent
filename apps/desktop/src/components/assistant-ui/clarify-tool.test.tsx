@@ -131,6 +131,12 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
 }
 
 describe('ClarifyTool live card stays mounted across settle', () => {
+  it('marks the live choice surface as a native non-drag region', () => {
+    renderLiveClarify()
+
+    expect(document.querySelector('[data-clarify-choices]')?.className).toContain('[-webkit-app-region:no-drag]')
+  })
+
   it('keeps the question card while the gateway request is open and the turn reports not-running', () => {
     messageRunning = false
     renderLiveClarify()

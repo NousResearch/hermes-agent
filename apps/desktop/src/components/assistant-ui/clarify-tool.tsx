@@ -727,7 +727,7 @@ function ClarifyToolSinglePending({
     // The form is the outer element so the actions can sit OUTSIDE the card and
     // still submit it — the panel holds the question, the buttons ride below it.
     <form
-      className="my-1.5 grid gap-4"
+      className="my-1.5 grid gap-4 [-webkit-app-region:no-drag]"
       data-clarify-choices={hasChoices ? choices.length : undefined}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}

@@ -684,6 +684,80 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     assert exc_info.value.relogin_required is True
 
 
+def test_refresh_token_exchange_503_is_retryable_not_relogin():
+    """A Nous deployment outage must not be treated as a dead OAuth grant (#120976)."""
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 503
+
+        def json(self):
+            return {"error": "deployment_unavailable", "error_description": "The deployment is currently unavailable"}
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="refresh-still-valid",
+        )
+
+    assert exc_info.value.code == "temporarily_unavailable"
+    assert exc_info.value.relogin_required is False
+    assert exc_info.value.retryable is True
+
+
+def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):
+    """The real runtime resolver must not quarantine credentials during a Portal outage (#120976)."""
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.auth_nous as auth_nous
+
+    hermes_home = tmp_path / "hermes"
+    access_token = _invoke_jwt(seconds=3600)
+    refresh_token = "refresh-still-valid"
+    _setup_nous_auth(
+        hermes_home,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class _FakeResponse:
+        status_code = 503
+
+        def json(self):
+            return {"error": "deployment_unavailable"}
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr(auth_nous, "_nous_http_client", lambda *args: _FakeClient())
+
+    with pytest.raises(AuthError) as exc_info:
+        auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+
+    assert exc_info.value.code == "temporarily_unavailable"
+    assert exc_info.value.relogin_required is False
+    assert exc_info.value.retryable is True
+    state = auth_mod.get_provider_auth_state("nous")
+    assert state["access_token"] == access_token
+    assert state["refresh_token"] == refresh_token
+    assert "last_auth_error" not in state
+
+
 def test_refresh_token_exchange_sends_refresh_token_header():
     """Nous refresh tokens must be sent in a header so sandbox proxies can
     substitute placeholder credentials without parsing form bodies.
@@ -965,5 +1039,4 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
-
 

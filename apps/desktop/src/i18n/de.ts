@@ -3562,6 +3562,12 @@ export const de = defineLocale({
       switchTo: (name, gateway) => `Zu ${name} auf ${gateway} wechseln`,
       deleteOn: gateway => ` auf ${gateway}`
     },
+    status: {
+      unread: (count: number) => (count === 1 ? '1 ungelesene Sitzung' : `${count} ungelesene Sitzungen`),
+      needsInput: (count: number) =>
+        count === 1 ? '1 Sitzung wartet auf Ihre Antwort' : `${count} Sitzungen warten auf Ihre Antwort`,
+      working: (count: number) => (count === 1 ? '1 laufende Sitzung' : `${count} laufende Sitzungen`)
+    },
     remoteOverride: {
       menuItem: 'Mit Remote-Host verbinden…',
       badge: (host: string) => `Läuft auf ${host}`,

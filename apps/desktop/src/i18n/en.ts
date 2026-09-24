@@ -3097,6 +3097,12 @@ export const en: Translations = {
       switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
       deleteOn: gateway => ` on ${gateway}`
     },
+    status: {
+      unread: (count: number) => (count === 1 ? '1 unread session' : `${count} unread sessions`),
+      needsInput: (count: number) =>
+        count === 1 ? '1 session needs your answer' : `${count} sessions need your answer`,
+      working: (count: number) => (count === 1 ? '1 session running' : `${count} sessions running`)
+    },
     remoteOverride: {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,

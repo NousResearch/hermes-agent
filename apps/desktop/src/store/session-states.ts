@@ -525,17 +525,17 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // producer and a turn that ended while the socket was down would never
     // earn its dot.
     if (deferringReconcileUnread) {
-      unconfirmedReconnectSettles.add(storedId)
+      unconfirmedReconnectSettles.set(storedId, runtimeId)
 
       return
     }
 
-    lightUnreadCompletion(storedId)
+    lightUnreadCompletion(storedId, runtimeId)
   }
 }
 
 /** Mark a completed turn unread unless the user is already looking at it. */
-function lightUnreadCompletion(storedId: string) {
+function lightUnreadCompletion(storedId: string, runtimeId?: string) {
   // FOCUSED, not selected: a session finishing in the tile the user is
   // watching is already seen, and a tile is never the primary selection.
   if (storedId === $focusedStoredSessionId.get()) {
@@ -550,17 +550,27 @@ function lightUnreadCompletion(storedId: string) {
 
   if (Date.now() > lastReadAt) {
     // Flags the transient atom AND persists a marker, so the green dot
-    // survives an app restart (see session-unread.ts).
-    markSessionUnreadFinished(storedId)
+    // survives an app restart (see session-unread.ts). The marker's profile
+    // bucket comes from the loaded row when there is one; with no row, the
+    // socket-proven owner profile keeps a background profile's finish out of
+    // the ACTIVE profile's bucket — the per-profile rail unread (#91710)
+    // would otherwise light the wrong square.
+    const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
+
+    const profileHint =
+      typeof owner === 'string' ? owner : typeof owner?.profile === 'string' && owner.profile.trim() ? owner.profile : undefined
+
+    markSessionUnreadFinished(storedId, profileHint)
   }
 }
 
 /** Stored ids whose busy claim a PRIMARY reconnect reconcile retired without
- *  any proof the turn ended. The authoritative post-reconnect snapshot settles
- *  each one: `confirmReconnectSettlesExcept` when the runtime is idle or gone,
- *  a busy re-assert (stream event or `working` row) when the turn is still
- *  live. */
-const unconfirmedReconnectSettles = new Set<string>()
+ *  any proof the turn ended — mapped to their runtime id so a later confirm
+ *  can still consult the socket-proven owner (the unread marker's profile
+ *  bucket). The authoritative post-reconnect snapshot settles each one:
+ *  `confirmReconnectSettlesExcept` when the runtime is idle or gone, a busy
+ *  re-assert (stream event or `working` row) when the turn is still live. */
+const unconfirmedReconnectSettles = new Map<string, string>()
 let deferringReconcileUnread = false
 
 /** A fresh authoritative snapshot arrived: every parked completion whose
@@ -571,10 +581,10 @@ let deferringReconcileUnread = false
  *  parked completion with no confirm producer must fall back to lighting
  *  rather than never lighting. No-op when nothing is parked. */
 export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<string>) {
-  for (const storedId of unconfirmedReconnectSettles) {
+  for (const [storedId, runtimeId] of unconfirmedReconnectSettles) {
     if (!workingStoredIds.has(storedId)) {
       unconfirmedReconnectSettles.delete(storedId)
-      lightUnreadCompletion(storedId)
+      lightUnreadCompletion(storedId, runtimeId)
     }
   }
 }

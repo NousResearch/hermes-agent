@@ -57,7 +57,7 @@ else
     INSTALL_DIR_EXPLICIT=false
 fi
 PYTHON_VERSION="3.11"
-PYTHON_SUPPORTED_RANGE=">=3.11,<3.14"  # pyproject requires-python; keep in sync
+PYTHON_SUPPORTED_RANGE=">=3.11,<3.15"  # pyproject requires-python; keep in sync
 NODE_VERSION="26"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
@@ -649,16 +649,16 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
-        # Hermes currently declares requires-python >=3.11,<3.14.  Termux can
+        # Hermes currently declares requires-python >=3.11,<3.15.  Termux can
         # expose a newer default `python` before dependencies have compatible
         # wheels, so do not accept the default interpreter until the upper bound
         # is verified. Prefer the project's pinned minor when present, then
         # other explicit compatible interpreters.
-        for python_cmd in python3.11 python3.12 python3.13 python; do
+        for python_cmd in python3.11 python3.12 python3.13 python3.14 python; do
             if command -v "$python_cmd" >/dev/null 2>&1; then
                 local candidate_path
                 candidate_path="$(command -v "$python_cmd")"
-                if "$candidate_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                if "$candidate_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 15) else 1)' 2>/dev/null; then
                     PYTHON_PATH="$candidate_path"
                     PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
                     log_success "Python found: $PYTHON_FOUND_VERSION"
@@ -670,23 +670,23 @@ check_python() {
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
-        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 15) else 1)' 2>/dev/null; then
             PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
             log_success "Python installed: $PYTHON_FOUND_VERSION"
             return 0
         fi
 
         # Termux's default `python` package is outside the supported range
-        # (e.g. 3.14.x before Rust transitives ship cp314 wheels). The Termux
+        # (e.g. a 3.15.x default ahead of the requires-python window). The Termux
         # User Repository (TUR) publishes versioned CPython packages
         # (python3.13, python3.11), so try to provision a supported
         # interpreter from there before giving up.
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null || true)"
-        log_warn "Termux Python $PYTHON_FOUND_VERSION is outside the supported range (>=3.11,<3.14)"
+        log_warn "Termux Python $PYTHON_FOUND_VERSION is outside the supported range (>=3.11,<3.15)"
         log_info "Trying the Termux User Repository (TUR) for a supported Python..."
         pkg install -y tur-repo >/dev/null 2>&1 || true
         local tur_pkg
-        for tur_pkg in python3.13 python3.12 python3.11; do
+        for tur_pkg in python3.14 python3.13 python3.12 python3.11; do
             if ! pkg install -y "$tur_pkg" >/dev/null 2>&1; then
                 continue
             fi
@@ -695,7 +695,7 @@ check_python() {
             fi
             local tur_path
             tur_path="$(command -v "$tur_pkg")"
-            if "$tur_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            if "$tur_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 15) else 1)' 2>/dev/null; then
                 PYTHON_PATH="$tur_path"
                 PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
                 log_success "Python installed from TUR: $PYTHON_FOUND_VERSION"
@@ -703,7 +703,7 @@ check_python() {
             fi
         done
 
-        log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+        log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.15"
         log_info "Install a supported interpreter and re-run this script:"
         log_info "  pkg install tur-repo && pkg install python3.13"
         exit 1
@@ -719,7 +719,7 @@ check_python() {
         return 0
     fi
 
-    # No 3.11, but any interpreter inside requires-python (>=3.11,<3.14) works: reuse it rather
+    # No 3.11, but any interpreter inside requires-python (>=3.11,<3.15) works: reuse it rather
     # than downloading 3.11 — the download is a hard failure on hosts that cannot reach GitHub
     # releases, and the user already has a supported Python (#10778).
     # --system: with the install's own venv activated (a re-run), `uv python find` would return
@@ -1813,10 +1813,10 @@ setup_venv() {
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
     # later `uv sync` / `uv pip install` tiers, so without this it would
-    # silently delete this 3.11 venv and recreate it at the inherited
-    # version — building Rust transitives that have no wheel for that
-    # version from source via maturin, which fails. Pinning UV_PYTHON to the
-    # interpreter we just created forces every subsequent uv command onto it.
+    # silently delete this venv and recreate it at the inherited version —
+    # surprising the user with an interpreter they never asked for. Pinning
+    # UV_PYTHON to the interpreter we just created forces every subsequent
+    # uv command onto it.
     if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
         export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
     fi
@@ -1855,8 +1855,8 @@ install_deps() {
     # but the bootstrap runs install stages (`venv`, `python-deps`) as separate
     # processes, so an export from setup_venv does NOT survive into a separate
     # python-deps invocation. Re-deriving it here covers that path. Without it,
-    # an inherited UV_PYTHON=3.14 makes the uv sync/pip tiers below recreate the
-    # venv at 3.14 and fail the maturin source build (no cp314 wheels yet).
+    # an inherited UV_PYTHON (e.g. =3.14) makes the uv sync/pip tiers below
+    # silently recreate the venv at the inherited version.
     if [ "$DISTRO" != "termux" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
         export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
     fi

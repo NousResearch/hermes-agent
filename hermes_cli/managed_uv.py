@@ -567,11 +567,11 @@ def _install_safe_python_generation(
         return result
     # All patches on the current minor line are vulnerable or rejected. Fall forward to the next
     # supported minor (e.g. 3.11 → 3.12) so the user isn't stuck on every `hermes update`. The
-    # requires-python window (>=3.11,<3.14) and the import smoke-test gate compatibility.
+    # requires-python window (>=3.11,<3.15) and the import smoke-test gate compatibility.
     # See #76106.
     cur_major, cur_minor = current.python_version[:2]
     fb_tried: set[tuple[int, int, int]] = set(tried_versions)
-    for next_minor in range(cur_minor + 1, 14):  # up to 3.13
+    for next_minor in range(cur_minor + 1, 15):  # up to 3.14
         next_request = f"{cur_major}.{next_minor}"
         print(
             f"  → No fixed {cur_major}.{cur_minor} build available; "

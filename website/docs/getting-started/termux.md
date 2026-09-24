@@ -112,9 +112,10 @@ Why these packages?
 - `python` — runtime + venv support
 
 :::warning Supported Python range
-Hermes requires **Python >=3.11,&lt;3.14**. Current Termux ships `python`
-3.14.x, which is outside that range — the installer detects this, and will
-automatically try the [Termux User Repository (TUR)](https://github.com/termux-user-repository/tur)
+Hermes requires **Python >=3.11,&lt;3.15**. Current Termux ships `python`
+3.14.x, which is inside that range and works directly. If your `python`
+is outside the range, the installer detects this and automatically tries
+the [Termux User Repository (TUR)](https://github.com/termux-user-repository/tur)
 for a supported interpreter. For a manual install, get one yourself:
 
 ```bash

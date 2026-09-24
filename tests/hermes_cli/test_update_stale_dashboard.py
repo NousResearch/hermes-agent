@@ -160,6 +160,24 @@ class TestFindStaleDashboardPids:
         assert os.getpid() not in pids
         assert 12345 in pids
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")
+    def test_ignores_unrelated_argv_containing_hermes_serve_text(self):
+        """Only a Hermes entrypoint with the serve subcommand is stoppable (#121156)."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(12344, "python worker.py --note 'hermes serve'"),
+                    _ps_line(12343, "python worker.py hermes serve"),
+                    _ps_line(12345, "hermes serve --port 9119"),
+                    _ps_line(12346, "python hermes_cli/main.py dashboard"),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+
+        assert pids == [12345, 12346]
+
 
     def _assert_ps_timeout_returns_empty(self):
         import subprocess as sp

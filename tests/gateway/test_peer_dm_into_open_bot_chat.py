@@ -278,6 +278,36 @@ async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_a_peer_run_waiting_behind_a_live_bot_chat_turn_has_a_deadline(tmp_path, monkeypatch):
+    """A queued live-owner receipt cannot hold a ``peer run`` forever."""
+    home = tmp_path.resolve()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr("tools.bot_live_delivery._POLL_SECONDS", 0.001)
+    db = SessionDB(home / "state.db")
+    db.create_session("bot-chat", "desktop")
+    db.set_session_title("bot-chat", "Bot Chat")
+    from hermes_cli.active_sessions import try_acquire_active_session
+    lease, refusal = try_acquire_active_session(
+        session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
+        metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
+    assert lease is not None and refusal is None
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = db
+    try:
+        async with TestClient(TestServer(_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={"input": "queued", "session_id": "bot-chat", "author": AUTHOR})
+            run_id = (await response.json())["run_id"]
+            status = await _poll_terminal(cli, run_id)
+        assert status["status"] == "failed"
+        assert status["reason"] == "bot_chat_delivery_timeout"
+        assert "live Bot Chat owner" in status["error"]
+    finally:
+        lease.release()
+        db.close()
+
+
 @pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
 def test_peer_dm_reports_a_turn_queued_in_the_open_bot_chat_as_delivered(monkeypatch, capsys, as_json):
     """The queued answer means the message IS in the peer's open Bot Chat: say so, succeed, and tell

@@ -519,3 +519,179 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
     assert head == remote
+
+
+# ---------------------------------------------------------------------------
+# update_in_place + dirty tree: the configured strategy must not be inert
+# ---------------------------------------------------------------------------
+#
+# Live incident (2026-09-24): a maintained custom branch configured with
+# ``parked_branch_strategy: update_in_place`` sat 1330 commits behind
+# origin/main because the dirty check exited BEFORE the strategy was read —
+# uncommitted edits to files upstream never touched kept every update at
+# "CODE UPDATE SKIPPED". In-place never moves the checkout, so the hazard the
+# dirty check guards (work riding an autostash ACROSS branches) does not
+# apply; the remaining risk is a restore conflict, which the overlap check
+# rules out up front.
+
+
+def _commit_feature(repo):
+    (repo / "feature.txt").write_text("unmerged work\n")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-qm", "feature work")
+
+
+def _configure_in_place(monkeypatch):
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"parked_branch_strategy": "update_in_place"}},
+    )
+
+
+def _stop_after_pull(monkeypatch):
+    class _StopFlow(Exception):
+        pass
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_abort_dependency_sync_if_self_locked",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+    return _StopFlow
+
+
+def test_dirty_paths_disjoint_from_target_changes(repo_pair):
+    """Edits to a file upstream never touched are disjoint; an edit to a file
+    origin/main changed (a.txt in c2) or an untracked file origin/main adds
+    (b.txt in c3) overlaps."""
+    (repo_pair / "feature.txt").write_text("local only\n")
+    (repo_pair / "notes.md").write_text("untracked, upstream never adds it\n")
+    assert update_cmd._dirty_paths_overlapping_target(GIT, repo_pair, "main") == set()
+
+    (repo_pair / "a.txt").write_text("local edit\n")
+    (repo_pair / "b.txt").write_text("untracked, but upstream adds it\n")
+    assert update_cmd._dirty_paths_overlapping_target(GIT, repo_pair, "main") == {
+        "a.txt", "b.txt"}
+
+
+def test_dirty_overlap_is_unverifiable_without_target(repo_pair):
+    """No origin/<target> → None (unknown), never an empty 'safe' set."""
+    (repo_pair / "a.txt").write_text("local edit\n")
+    assert update_cmd._dirty_paths_overlapping_target(
+        GIT, repo_pair, "no-such-branch") is None
+
+
+def test_update_in_place_proceeds_with_disjoint_dirty_tree(
+    repo_pair, monkeypatch, capsys
+):
+    """update_in_place + unmerged commits + uncommitted edits upstream never
+    touched: the code update must happen, the checkout must not move, the
+    local commit must survive, and the uncommitted edit must be back in the
+    working tree afterwards (not silently lost, not left only in a stash)."""
+    _configure_in_place(monkeypatch)
+    _commit_feature(repo_pair)
+    (repo_pair / "feature.txt").write_text("unmerged work\nuncommitted edit\n")
+    (repo_pair / "notes.md").write_text("untracked wip\n")
+    _patch_update_flow(monkeypatch, repo_pair)
+    stop = _stop_after_pull(monkeypatch)
+    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+
+    with pytest.raises(stop):
+        hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "CODE UPDATE SKIPPED" not in out
+    assert (
+        _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "old-feature"
+    )
+    # origin/main's code arrived...
+    assert (repo_pair / "b.txt").exists()
+    assert (repo_pair / "a.txt").read_text() == "two\n"
+    # ...the branch's commit survived...
+    assert "feature work" in _git(repo_pair, "log", "--oneline").stdout
+    # ...and the uncommitted work is back in the tree.
+    assert (repo_pair / "feature.txt").read_text() == "unmerged work\nuncommitted edit\n"
+    assert (repo_pair / "notes.md").read_text() == "untracked wip\n"
+
+
+def test_update_in_place_still_skips_when_dirt_overlaps_target(
+    repo_pair, monkeypatch, capsys
+):
+    """Overlap between uncommitted edits and upstream changes: nothing is
+    touched — no stash, no merge, branch tip and edit byte-identical — and
+    the skip names the overlapping path so the operator knows what to do."""
+    _configure_in_place(monkeypatch)
+    _commit_feature(repo_pair)
+    tip = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    (repo_pair / "a.txt").write_text("local edit\n")
+    _patch_update_flow(monkeypatch, repo_pair)
+    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(args)
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "CODE UPDATE SKIPPED" in out
+    assert "a.txt" in out
+    assert _git(repo_pair, "rev-parse", "HEAD").stdout.strip() == tip
+    assert (repo_pair / "a.txt").read_text() == "local edit\n"
+    assert _git(repo_pair, "stash", "list").stdout.strip() == ""
+
+
+def test_switch_branch_flag_keeps_dirty_skip_under_in_place(
+    repo_pair, monkeypatch, capsys
+):
+    """--switch-branch asks to LEAVE the branch; with a dirty tree that is
+    the cross-branch hazard, so the skip must still fire."""
+    _configure_in_place(monkeypatch)
+    _commit_feature(repo_pair)
+    (repo_pair / "feature.txt").write_text("unmerged work\nuncommitted edit\n")
+    _patch_update_flow(monkeypatch, repo_pair)
+    args = SimpleNamespace(
+        branch=None, yes=False, force=False, force_venv=False, switch_branch=True)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(args)
+
+    assert exc_info.value.code == 1
+    assert "CODE UPDATE SKIPPED" in capsys.readouterr().out
+    assert (
+        _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "old-feature"
+    )
+    assert _git(repo_pair, "stash", "list").stdout.strip() == ""
+
+
+def test_discard_mode_keeps_dirty_skip_under_in_place(
+    repo_pair, monkeypatch, capsys
+):
+    """updates.non_interactive_local_changes: discard would drop the autostash
+    after the merge; the dirty in-place path must never become a way to lose
+    uncommitted work, so the skip still fires and the edit is untouched."""
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {
+            "parked_branch_strategy": "update_in_place",
+            "non_interactive_local_changes": "discard",
+        }},
+    )
+    _commit_feature(repo_pair)
+    (repo_pair / "feature.txt").write_text("unmerged work\nuncommitted edit\n")
+    _patch_update_flow(monkeypatch, repo_pair)
+    args = SimpleNamespace(branch=None, yes=True, force=False, force_venv=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(args)
+
+    assert exc_info.value.code == 1
+    assert "CODE UPDATE SKIPPED" in capsys.readouterr().out
+    assert (repo_pair / "feature.txt").read_text() == "unmerged work\nuncommitted edit\n"
+    assert _git(repo_pair, "stash", "list").stdout.strip() == ""

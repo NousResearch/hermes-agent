@@ -135,8 +135,31 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     return True, f"unmerged:{len(unmerged)}" if unmerged else ""
 
 
+def _dirty_paths_overlapping_target(git_cmd: list[str], cwd: Path, target_branch: str) -> "set[str] | None":
+    """Uncommitted paths (modified, staged, untracked, both sides of a rename) that ``origin/<target>``
+    changed since the merge base — exactly what an in-place merge could write over or a stash restore
+    could conflict on. Empty set = disjoint; None = git could not answer (callers treat as unsafe)."""
+    from hermes_cli.update_cmd import _git_run
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--untracked-files=all"], cwd)
+    changed = _git_run(
+        git_cmd, ["diff", "--name-only", "-z", "--no-renames", f"HEAD...origin/{target_branch}"], cwd)
+    if status.returncode != 0 or changed.returncode != 0:
+        return None
+    dirty: set[str] = set()
+    entries = iter(status.stdout.split("\0"))
+    for entry in entries:
+        if len(entry) < 4:
+            continue
+        dirty.add(entry[3:])
+        if entry[0] in "RC":  # -z puts a rename/copy source in the next field
+            dirty.add(next(entries, ""))
+    dirty.discard("")
+    return dirty & {path for path in changed.stdout.split("\0") if path}
+
+
 _PARKED_SKIP_WHY = {
     "dirty": "the working tree has uncommitted changes",
+    "dirty_overlap": "uncommitted changes touch files the update would also change",
     "disabled": "updates.auto_switch_parked_branch is set to false in config.yaml",
 }
 

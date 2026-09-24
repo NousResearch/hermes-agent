@@ -93,6 +93,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
+    _dirty_paths_overlapping_target,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
@@ -945,12 +946,41 @@ def _apply_parked_branch_guard(
     unmerged -> "switch" (default; loud "kept" notice) or "update_in_place" (merge origin/<target>
     INTO the branch, checkout never moves; --switch-branch overrides once); dirty/unverifiable ->
     touch nothing, warn, ``sys.exit(1)`` with the code update SKIPPED (also when the target is
-    missing). Returns ``(parked_branch_switched, in_place_update, switch_block_reason)``.
+    missing). Exception: dirty + "update_in_place" (no --switch-branch) proceeds in place when no
+    uncommitted path overlaps what origin/<target> changed. Returns
+    ``(parked_branch_switched, in_place_update, switch_block_reason)``.
     """
     if current_branch == branch or current_branch == "HEAD":
         return False, False, None
     switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
         git_cmd, _m().PROJECT_ROOT, current_branch, branch)
+    _in_place_configured = False
+    _discard_configured = True  # unknown -> assume the unsafe mode, keep the skip
+    with _best_effort('Could not read updates.parked_branch_strategy: %s'):
+        _updates = _updates_config()
+        _in_place_configured = _updates.get("parked_branch_strategy", "switch") == "update_in_place"
+        _discard_configured = (
+            str(_updates.get("non_interactive_local_changes", "stash")).lower() == "discard")
+    if (switch_block_reason == "dirty" and _in_place_configured and not switch_branch
+            and not _discard_configured):
+        # In place never moves the checkout, so the dirty hazard (work riding an autostash across
+        # branches) does not apply; what remains is the merge or the restore touching the same
+        # paths. Disjoint -> proceed (the normal autostash carries the edits); else stay skipped.
+        # Never with the "discard" mode: this path must not become a way to lose parked work.
+        overlap = _dirty_paths_overlapping_target(git_cmd, _m().PROJECT_ROOT, branch)
+        if overlap == set():
+            print(
+                f"  ℹ On branch '{current_branch}' with uncommitted changes — none touch files "
+                f"origin/{branch} changed; updating in place (no branch switch).")
+            return False, True, switch_block_reason
+        if overlap:
+            switch_block_reason = "dirty_overlap"
+            shown = sorted(overlap)
+            print(f"  ⚠ Uncommitted changes overlap files origin/{branch} changed:")
+            for path in shown[:10]:
+                print(f"      {path}")
+            if len(shown) > 10:
+                print(f"      ... and {len(shown) - 10} more")
     if not switch_safe:
         _m()._print_parked_branch_skip_warning(
             git_cmd, _m().PROJECT_ROOT, current_branch, branch, switch_block_reason)
@@ -961,10 +991,6 @@ def _apply_parked_branch_guard(
     if not switch_block_reason.startswith("unmerged:"):
         print(f"  ⚠ Checkout was parked on '{current_branch}' (fully merged) — switching back to {branch}...")
         return True, False, switch_block_reason
-    _in_place_configured = False
-    with _best_effort('Could not read updates.parked_branch_strategy: %s'):
-        _in_place_configured = (
-            _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
     if not _in_place_configured or switch_branch:
         _m()._print_parked_branch_kept_notice(
             current_branch, branch, switch_block_reason.split(":", 1)[1])

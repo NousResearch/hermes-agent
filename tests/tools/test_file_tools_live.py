@@ -216,3 +216,83 @@ class TestExpandPath:
 
 # ── Terminal output cleanliness ──────────────────────────────────────────
 
+
+# ── _atomic_write failure cleanup ────────────────────────────────────────
+
+class _FailingMvEnv:
+    """Terminal-env double: runs the emitted script under real ``bash -c``
+    (what _run_bash does) with a PATH-stubbed ``mv`` that fails after the temp
+    file exists, so the EXIT trap is what removes it -- or leaks it.
+    """
+
+    def __init__(self, stub_dir: Path, cwd: str):
+        self.cwd = cwd
+        self._path = f"{stub_dir}{os.pathsep}{os.environ['PATH']}"
+
+    def execute(self, command, cwd=None, **kw):
+        import subprocess
+        proc = subprocess.run(
+            ["bash", "-c", command], input=kw.get("stdin_data"),
+            text=True, capture_output=True,
+            env={**os.environ, "PATH": self._path},
+            cwd=cwd or self.cwd)
+        return {"output": (proc.stdout or "") + (proc.stderr or ""),
+                "returncode": proc.returncode}
+
+
+class TestAtomicWriteTrapCleanup:
+    """A failed atomic write must not leak the .hermes-tmp.* staging file.
+
+    The emitted script registers an EXIT trap for cleanup; a regression in its
+    quoting makes the trap's rm target a filename containing literal quote
+    characters, so the temp survives every failure path (cat failure, mv
+    failure, signal).
+    """
+
+    def test_failed_write_removes_staging_file(self, tmp_path):
+        stub_dir = tmp_path / "stubbin"
+        stub_dir.mkdir()
+        stub_mv = stub_dir / "mv"
+        stub_mv.write_text("#!/bin/sh\nexit 1\n")
+        stub_mv.chmod(0o755)
+
+        ops = ShellFileOperations(
+            _FailingMvEnv(stub_dir, str(tmp_path)), cwd=str(tmp_path))
+        target = tmp_path / "target.txt"
+        result = ops.write_file(str(target), "content that never lands")
+
+        assert result.error is not None
+        assert not target.exists()
+        leftovers = list(tmp_path.glob(".hermes-tmp.*"))
+        assert leftovers == [], (
+            f"failed atomic write leaked staging file(s): {leftovers}")
+
+    def test_failed_replace_leaves_original_and_cleans_temp(self, tmp_path):
+        # The atomicity contract ("non-zero = original intact") plus cleanup:
+        # an mv failure on a REPLACE must leave the pre-existing file's bytes
+        # untouched and no staging file behind.
+        stub_dir = tmp_path / "stubbin"
+        stub_dir.mkdir()
+        stub_mv = stub_dir / "mv"
+        stub_mv.write_text("#!/bin/sh\nexit 1\n")
+        stub_mv.chmod(0o755)
+
+        ops = ShellFileOperations(
+            _FailingMvEnv(stub_dir, str(tmp_path)), cwd=str(tmp_path))
+        target = tmp_path / "existing.txt"
+        target.write_text("original\n")
+        result = ops.write_file(str(target), "replacement\n")
+
+        assert result.error is not None
+        assert target.read_text() == "original\n"
+        assert list(tmp_path.glob(".hermes-tmp.*")) == []
+
+    def test_successful_write_leaves_no_staging_file(self, ops, tmp_path):
+        # trap - EXIT must disarm cleanly: a successful write leaves the target
+        # and nothing else.
+        target = tmp_path / "ok.txt"
+        result = ops.write_file(str(target), "lands fine\n")
+
+        assert result.error is None
+        assert target.read_text() == "lands fine\n"
+        assert list(tmp_path.glob(".hermes-tmp.*")) == []

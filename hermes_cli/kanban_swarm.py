@@ -25,6 +25,13 @@ from hermes_cli import kanban_db as kb
 
 BLACKBOARD_PREFIX = "[swarm:blackboard] "
 
+# These are force-loaded by the dispatcher when their dependent role card
+# launches. Keep the curator's inactivity protection tied to this source of
+# truth so a role's required skill cannot be archived before its first run.
+SWARM_VERIFIER_SKILL = "requesting-code-review"
+SWARM_SYNTHESIZER_SKILL = "humanizer"
+SWARM_ROLE_SKILLS = frozenset((SWARM_VERIFIER_SKILL, SWARM_SYNTHESIZER_SKILL))
+
 
 @dataclass(frozen=True)
 class SwarmWorkerSpec:
@@ -235,7 +242,7 @@ def _create_swarm_uncommitted(
         assignee=verifier_assignee,
         parents=worker_ids,
         priority=priority,
-        skills=["requesting-code-review"],
+        skills=[SWARM_VERIFIER_SKILL],
         **common,
     )
     synthesizer = kb.create_task(
@@ -249,7 +256,7 @@ def _create_swarm_uncommitted(
         assignee=synthesizer_assignee,
         parents=[verifier],
         priority=priority,
-        skills=["humanizer"],
+        skills=[SWARM_SYNTHESIZER_SKILL],
         **common,
     )
 

@@ -68,7 +68,7 @@ export function generatedImageFromResult(result: unknown): string | null {
   return stringFields(record, DISPLAY_KEYS)[0] ?? null
 }
 
-/** Codex reports decoded PNG geometry separately from its requested `size`.
+/** Image backends can report decoded PNG geometry (`pixel_size`) separately from the requested `size`.
  * Never use requested_size/size or aspect_ratio as intrinsic metadata. */
 export function generatedImageDimensionsFromResult(result: unknown): MediaImageDimensions | undefined {
   const record = recordFromUnknown(result)

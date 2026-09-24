@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from tools.wake_word_engines import _Engine, _OpenWakeWordEngine, _PorcupineEngine, _SherpaKwsEngine, _sub
+from tools.wake_word_engines import (_Engine, _OpenWakeWordEngine, _PorcupineEngine, _SherpaKwsEngine,
+                                     _WhisperEngine, _sub)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ _PROVIDERS: Dict[str, tuple[str, str]] = {
     "porcupine": ("_PorcupineEngine", "wake.porcupine"),
     **{k: ("_SherpaKwsEngine", "wake.sherpa") for k in ("sherpa", "sherpa-onnx", "kws", "open")},
     **{k: ("_OpenWakeWordEngine", "wake.openwakeword") for k in ("openwakeword", "oww", "local")},
+    "whisper": ("_WhisperEngine", "wake.whisper"),
 }
 
 

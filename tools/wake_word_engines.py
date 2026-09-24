@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import unicodedata
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -269,3 +271,168 @@ class _PorcupineEngine(_Engine):
     def close(self) -> None:
         with suppress(Exception):
             self._porcupine.delete()
+
+
+# ── Whisper (VAD-gated speech-to-text, any language) ─────────────────────────────────────
+# The hotword engines above are English-only (openWakeWord/sherpa models) or need a vendor
+# console (Porcupine). This one reuses the local faster-whisper STT stack: an RMS gate collects
+# one utterance, Whisper transcribes it in the configured language, and the text is matched
+# against ``wake_word.phrase``. Idle CPU is ~zero (nothing runs on silence); a short utterance
+# costs one tiny/base decode (~0.2-0.4 s on CPU). Any language Whisper knows works.
+
+_WHISPER_PAD_SECONDS = 0.3
+
+
+def _normalize_speech(text: str) -> str:
+    """Lowercase, strip accents and punctuation, collapse whitespace — so "Ei, Juca!" == "ei juca"."""
+    text = unicodedata.normalize("NFKD", str(text or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    return " ".join(re.sub(r"[^a-z0-9\s]", " ", text).split())
+
+
+def _phrase_similarity(phrase: str, text: str) -> float:
+    """Best match (0..1) of a normalized phrase against any window of the normalized text.
+
+    Exact containment scores 1.0; otherwise every window of ``n-1..n+1`` words (Whisper may
+    split or merge a name) is compared without spaces via ``difflib`` so "ei jucá" ≈ "ei juca".
+    """
+    from difflib import SequenceMatcher
+    if not phrase or not text:
+        return 0.0
+    if phrase in text:
+        return 1.0
+    words, n = text.split(), len(phrase.split())
+    target = phrase.replace(" ", "")
+    best = 0.0
+    for size in range(max(1, n - 1), n + 2):
+        for i in range(0, max(1, len(words) - size + 1)):
+            window = "".join(words[i:i + size])
+            if window:
+                best = max(best, SequenceMatcher(None, target, window).ratio())
+    return best
+
+
+class _WhisperEngine(_Engine):
+    """faster-whisper keyword spotting: gate on speech energy, transcribe the utterance, match the
+    phrase text. ``wake_word.phrase`` is the DETECTION key (any language Whisper supports)."""
+
+    feature, section = "wake.whisper", "whisper"
+
+    def _build(self, cfg, sub, ww) -> None:
+        import numpy as np
+        self._np = np
+        self._model_name = str(sub.get("model") or "").strip() or _stt_local_model_name() or "tiny"
+        self._language = str(sub.get("language") or "").strip() or _stt_language() or None
+        self._silence_threshold = float(_num(sub, "silence_threshold", 200.0))
+        self._silence_duration = float(_num(sub, "silence_duration", 0.5))
+        self._min_speech = float(_num(sub, "min_speech_seconds", 0.3))
+        self._max_speech = float(_num(sub, "max_speech_seconds", 3.0))
+        # When a window is cut at max_speech_seconds without a match, its last second is carried
+        # into the next window so a phrase straddling the boundary is still heard whole.
+        self._overlap = float(_num(sub, "window_overlap_seconds", 1.0))
+        # 0..1 sensitivity → minimum text similarity (0.6 → 0.79; 1.0 → 0.95; 0.0 → 0.55).
+        self._min_similarity = 0.55 + 0.4 * ww._sensitivity(cfg)
+        phrase = str(ww._get(cfg, "phrase") or "hey hermes").strip()
+        phrase_map: Dict[str, str] = {phrase: ww._active_profile_name()}
+        if ww._get(cfg, "profile_routing"):
+            for prof, p in ww.enrolled_profile_phrases().items():
+                phrase_map.setdefault(p.strip(), prof)
+        self._phrases = {_normalize_speech(p): (p, prof) for p, prof in phrase_map.items() if p.strip()}
+        self._prompt = ", ".join(p for p, _ in self._phrases.values())
+        self._model = _load_whisper_model(self._model_name)
+        self.reset()
+
+    # ── audio gate ──
+    def process(self, frame) -> bool:
+        np = self._np
+        frame = np.asarray(frame, dtype=np.int16)
+        seconds = len(frame) / _ww().SAMPLE_RATE
+        rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))) if len(frame) else 0.0
+        loud = rms > self._silence_threshold
+        if not loud and not self._buffer:
+            return False  # idle silence: nothing to do (and nothing for Whisper to hallucinate on)
+        self._buffer.append(frame)
+        self._buffered += seconds
+        if loud:
+            self._speech += seconds
+            self._trailing = 0.0
+        else:
+            self._trailing += seconds
+        ended_by_silence = self._trailing >= self._silence_duration
+        if not ended_by_silence and self._buffered < self._max_speech:
+            return False
+        audio, speech = self._buffer, self._speech
+        self.reset()
+        if speech < self._min_speech:
+            return False
+        if self._match(self._transcribe(np.concatenate(audio))):
+            return True
+        if not ended_by_silence and self._overlap > 0:
+            # Cut mid-speech with no match: keep the tail so the next decode sees a phrase that
+            # straddles the boundary from its start.
+            keep = max(1, int(round(self._overlap / seconds))) if seconds > 0 else 0
+            tail = audio[-keep:]
+            self._buffer = list(tail)
+            self._buffered = self._speech = len(tail) * seconds
+        return False
+
+    def _transcribe(self, pcm) -> str:
+        np = self._np
+        pad = np.zeros(int(_WHISPER_PAD_SECONDS * _ww().SAMPLE_RATE), dtype=np.float32)
+        audio = np.concatenate([pad, pcm.astype(np.float32) / 32768.0, pad])
+        # The wake phrase is the initial_prompt on purpose: names outside Whisper's vocabulary
+        # ("Juca") are otherwise not transcribed at all — ablation with the `base` model on pt-BR
+        # TTS: 6/6 positives with the prompt vs 0/6 without; false accepts 4/32 vs 3/32, all on
+        # phonetic near-misses ("Ei Luca", sentences containing "Juca"). `sensitivity` tunes that.
+        segments, _info = self._model.transcribe(
+            audio, language=self._language, beam_size=1, initial_prompt=self._prompt,
+            condition_on_previous_text=False, vad_filter=False, without_timestamps=True)
+        return " ".join(str(getattr(seg, "text", seg)).strip() for seg in segments)
+
+    def _match(self, text: str) -> bool:
+        heard = _normalize_speech(text)
+        best, hit = 0.0, None
+        for norm, (display, prof) in self._phrases.items():
+            score = _phrase_similarity(norm, heard)
+            if score > best:
+                best, hit = score, (display.lower(), prof)
+        logger.debug("wake word: whisper heard %r (best %.2f for %s)", heard, best, hit and hit[0])
+        if hit is None or best < self._min_similarity:
+            return False
+        self.last_match = hit
+        return True
+
+    def reset(self) -> None:
+        self._buffer: list = []
+        self._buffered = self._speech = self._trailing = 0.0
+
+    def close(self) -> None:
+        self._model = None
+
+
+def _num(sub: Dict[str, Any], key: str, default: float) -> float:
+    value = sub.get(key)
+    return default if isinstance(value, bool) or not isinstance(value, (int, float)) else float(value)
+
+
+def _stt_config() -> Dict[str, Any]:
+    with suppress(Exception):
+        from tools.transcription_tools import _load_stt_config
+        cfg = _load_stt_config()
+        return cfg if isinstance(cfg, dict) else {}
+    return {}
+
+
+def _stt_language() -> str:
+    return str(_stt_config().get("language") or "").strip()
+
+
+def _stt_local_model_name() -> str:
+    local = _stt_config().get("local")
+    return str(local.get("model") or "").strip() if isinstance(local, dict) else ""
+
+
+def _load_whisper_model(model_name: str):
+    """Reuse the local-STT loader (Hub cache first, Apple Silicon → CPU int8, CUDA fallback)."""
+    from tools.transcription_local import _load_local_whisper_model
+    return _load_local_whisper_model(model_name)

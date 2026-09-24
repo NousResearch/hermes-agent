@@ -96,6 +96,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
+    # Whisper keyword spotting (any language): same stack as local STT (stt.faster_whisper).
+    "wake.whisper": (
+        "faster-whisper==1.2.1",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
     "wake.porcupine": (
         "pvporcupine==4.0.3",
         "sounddevice==0.5.5",

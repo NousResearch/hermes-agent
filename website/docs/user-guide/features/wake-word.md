@@ -77,7 +77,8 @@ backend process.
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
 | **openWakeWord** (default) | Free | None | Local ONNX models. Ships a bundled **"hey hermes"** model (default); also supports `hey_jarvis`, `alexa`, `hey_mycroft`, … and custom models |
-| **sherpa** | Free | None | **Open vocabulary** — detects ANY typed phrase with zero training. Small English model auto-downloads on first use (~13 MB) |
+| **sherpa** | Free | None | **Open vocabulary** — detects ANY typed English phrase with zero training. Small English model auto-downloads on first use (~13 MB) |
+| **whisper** | Free | None | **Any phrase, any language** — reuses the local faster-whisper STT model: a speech gate collects one utterance, Whisper transcribes it, the text is matched against `phrase`. Nothing runs during silence |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
 By default the phrase is **"hey hermes"** — a model for it ships with Hermes, so
@@ -121,20 +122,28 @@ wake_word:
   surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
   input_device: null           # PortAudio input index or device-name substring; null = process default
   capture: auto               # auto | local | client — where PCM is captured (see Remote desktop)
-  provider: openwakeword      # "openwakeword" (free, local) | "sherpa" (free, any phrase) | "porcupine"
-  phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
+  provider: openwakeword      # "openwakeword" (free, local) | "sherpa" (free, any English phrase) | "whisper" (free, any language) | "porcupine"
+  phrase: "hey hermes"        # sherpa/whisper: the detected phrase; other engines: cosmetic label (detection is keyed by the model/keyword below)
   sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
     model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .onnx/.tflite
     inference_framework: ""   # "" (auto) | "onnx" | "tflite"
+  whisper:
+    model: ""                 # faster-whisper size; "" = stt.local.model, else "tiny"
+    language: ""              # "" = stt.language, else Whisper auto-detect
+    silence_threshold: 200    # RMS speech gate
+    silence_duration: 0.5     # seconds of silence that end an utterance
+    min_speech_seconds: 0.3   # shorter blips are ignored
+    max_speech_seconds: 3.0   # longer speech is checked in windows
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
 ```
 
-`sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
-`openwakeword` and `porcupine` blocks select the actual detection model.
+`sensitivity`, `phrase`, and `start_new_session` apply to every engine. The
+`openwakeword` and `porcupine` blocks select the actual detection model; for
+`sherpa` and `whisper` the `phrase` itself is what gets detected.
 
 `input_device` is passed directly to the wake listener's PortAudio
 (`sounddevice`) stream. Use either a numeric device index or an unambiguous
@@ -237,6 +246,34 @@ Names are matched acoustically by their English subword sounds: two-word
 phrases with distinct, 2+ syllable names work best. Very short names, heavy
 non-English phonology, or two profiles with similar-sounding names will
 degrade accuracy — tune per-profile `sensitivity` if needed.
+
+### Option A′ — whisper (any phrase in any language)
+
+The sherpa model only knows English sounds, so a Portuguese, Spanish or German
+phrase ("ei Juca", "oye Tico", "hallo Otto") will not match reliably. The
+`whisper` engine instead listens with the same local faster-whisper model voice
+mode uses for transcription: an energy gate buffers one utterance (nothing is
+decoded while the room is quiet), Whisper transcribes it in your language, and
+the text is compared with `phrase` (accents and punctuation ignored, small
+spelling differences tolerated according to `sensitivity`).
+
+```yaml
+wake_word:
+  enabled: true
+  provider: whisper
+  phrase: "ei juca"
+  whisper:
+    model: base        # faster-whisper size; empty = stt.local.model, else "tiny"
+    language: pt       # empty = stt.language, else Whisper auto-detect
+```
+
+Each utterance costs one short decode (about 0.2–0.4 s for `tiny`/`base` on a
+laptop CPU), so the wake fires roughly half a second after you stop speaking.
+The speech gate is tunable under `whisper:` — `silence_threshold` (RMS, default
+200), `silence_duration` (0.5 s), `min_speech_seconds` (0.3) and
+`max_speech_seconds` (3.0, longer speech is checked in windows that overlap by
+`window_overlap_seconds`, 1.0, so a phrase crossing a window boundary is still
+heard whole). Higher `sensitivity` demands a closer text match.
 
 ### Option B — openWakeWord (free, trained model)
 

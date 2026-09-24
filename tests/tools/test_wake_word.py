@@ -815,3 +815,139 @@ def test_feed_audio_rejects_wrong_owner(monkeypatch, tmp_path):
     ww.start_listening(lambda: None, owner=owner, config={}, external_audio=True)
     assert ww.feed_audio(owner=object(), pcm_int16=b"\x00\x00") is False
     assert ww.stop_listening(owner=owner) is True
+
+
+# ── Whisper (VAD-gated STT) engine ───────────────────────────────────────
+
+
+def _install_fake_whisper(monkeypatch, texts):
+    """Fake faster-whisper model: each transcribe() pops the next canned text."""
+    calls = {"transcribe": []}
+
+    class _Seg:
+        def __init__(self, text):
+            self.text = text
+
+    class _FakeModel:
+        def transcribe(self, audio, **kwargs):
+            calls["transcribe"].append((len(audio), kwargs))
+            return [_Seg(texts.pop(0))], None
+
+    monkeypatch.setattr("tools.wake_word_engines._load_whisper_model", lambda name: _FakeModel())
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    return calls
+
+
+def _speech_frames(n, amp=3000):
+    import numpy as np
+    rng = np.random.default_rng(0)
+    return [(rng.standard_normal(1280) * amp).astype(np.int16) for _ in range(n)]
+
+
+def _silent_frames(n):
+    import numpy as np
+    return [np.zeros(1280, dtype=np.int16) for _ in range(n)]
+
+
+def _whisper_cfg(**over):
+    cfg = {"provider": "whisper", "phrase": "ei juca", "sensitivity": 0.6, "profile_routing": False,
+           "whisper": {"model": "tiny", "language": "pt"}}
+    cfg.update(over)
+    return cfg
+
+
+def _feed(engine, frames):
+    return [engine.process(f) for f in frames]
+
+
+def test_whisper_engine_fires_on_phrase_at_end_of_utterance(monkeypatch):
+    calls = _install_fake_whisper(monkeypatch, ["Ei, Juca!"])
+    eng = ww._WhisperEngine(_whisper_cfg())
+    # 10 frames of speech (0.8 s) then 8 frames of silence (0.64 s > silence_duration 0.5 s).
+    fired = _feed(eng, _speech_frames(10) + _silent_frames(8))
+    assert fired.count(True) == 1 and fired[-2] is True  # fires once, at the 0.56 s silence mark
+    assert eng.last_match == ("ei juca", ww._active_profile_name())
+    (n_samples, kwargs), = calls["transcribe"]
+    assert kwargs["language"] == "pt" and kwargs["initial_prompt"] == "ei juca"
+    assert n_samples > 10 * 1280  # utterance + padding
+
+
+def test_whisper_engine_matches_accented_and_split_spellings(monkeypatch):
+    _install_fake_whisper(monkeypatch, ["Ei jucá.", "Eijuca!", "Ei, Juca, que horas são?"])
+    eng = ww._WhisperEngine(_whisper_cfg())
+    for _ in range(3):
+        assert any(_feed(eng, _speech_frames(6) + _silent_frames(8)))
+
+
+def test_whisper_engine_rejects_other_speech(monkeypatch):
+    _install_fake_whisper(monkeypatch, ["Bom dia, hoje eu preciso comprar leite.", "E o Joca é gente boa."])
+    eng = ww._WhisperEngine(_whisper_cfg())
+    for _ in range(2):
+        assert not any(_feed(eng, _speech_frames(6) + _silent_frames(8)))
+    assert eng.last_match is None
+
+
+def test_whisper_engine_never_transcribes_silence_or_blips(monkeypatch):
+    calls = _install_fake_whisper(monkeypatch, ["Ei, Juca!"] * 5)
+    eng = ww._WhisperEngine(_whisper_cfg())
+    assert not any(_feed(eng, _silent_frames(50)))
+    # 0.16 s blip < min_speech_seconds (0.3 s) is dropped without a decode.
+    assert not any(_feed(eng, _speech_frames(2) + _silent_frames(8)))
+    assert calls["transcribe"] == []
+
+
+def test_whisper_engine_caps_long_utterances(monkeypatch):
+    calls = _install_fake_whisper(monkeypatch, ["Ei, Juca!"] * 3)
+    eng = ww._WhisperEngine(_whisper_cfg())
+    # 5 s of continuous speech: decoded in max_speech_seconds (3 s) windows, never buffered forever.
+    fired = _feed(eng, _speech_frames(int(5 / 0.08)))
+    assert len(calls["transcribe"]) >= 1 and any(fired)
+
+
+def test_whisper_engine_defaults_model_and_language_from_stt_config(monkeypatch):
+    seen = {}
+    _install_fake_whisper(monkeypatch, [])
+    monkeypatch.setattr("tools.wake_word_engines._load_whisper_model", lambda name: seen.setdefault("model", name) and object())
+    monkeypatch.setattr("tools.wake_word_engines._stt_config", lambda: {"language": "pt", "local": {"model": "base"}})
+    eng = ww._WhisperEngine({"provider": "whisper", "phrase": "ei juca", "profile_routing": False})
+    assert seen["model"] == "base" and eng._language == "pt"
+
+
+def test_phrase_similarity_and_normalization():
+    from tools.wake_word_engines import _normalize_speech, _phrase_similarity
+    assert _normalize_speech("  Ei, Jucá!! ") == "ei juca"
+    assert _phrase_similarity("ei juca", "ei juca") == 1.0
+    assert _phrase_similarity("ei juca", "bom dia ei juca tudo bem") == 1.0
+    assert _phrase_similarity("ei juca", "eijuca") > 0.9
+    assert _phrase_similarity("ei juca", "e o joca e gente") < 0.75
+    assert _phrase_similarity("ei juca", "") == 0.0
+
+
+def test_build_engine_dispatches_whisper(monkeypatch):
+    monkeypatch.setattr(ww, "_WhisperEngine", lambda cfg: "whisper")
+    assert ww._build_engine({"provider": "whisper"}) == "whisper"
+    assert ww._PROVIDERS["whisper"][1] == "wake.whisper"
+    for alias in ("stt", "asr"):  # dropped: "stt" is a config section, not a wake engine
+        with pytest.raises(ValueError):
+            ww._build_engine({"provider": alias})
+
+
+def test_whisper_engine_carries_the_window_tail_across_the_cap(monkeypatch):
+    # A phrase straddling the 3 s window boundary: the first decode (cut mid-speech, no match)
+    # must leave the last second in the buffer so the second decode hears the phrase whole.
+    calls = _install_fake_whisper(monkeypatch, ["bom dia hoje eu", "ei juca desliga o ar"])
+    eng = ww._WhisperEngine(_whisper_cfg())
+    cap_frames = 38                      # 38 × 80 ms = 3.04 s ≥ max_speech_seconds
+    fired = _feed(eng, _speech_frames(cap_frames + 4))  # runs 4 frames past the cap
+    assert not any(fired)
+    pad = 2 * int(0.3 * 16000)
+    assert calls["transcribe"][0][0] - pad == cap_frames * 1280  # the capped window
+    fired = _feed(eng, _silent_frames(8))
+    assert fired.count(True) == 1
+    # second decode = 1 s tail (12 frames) + 4 frames past the cap + 7 silent frames to the gate
+    assert calls["transcribe"][1][0] - pad == (12 + 4 + 7) * 1280
+
+
+def test_wake_whisper_lazy_feature_pins_track_local_stt():
+    from tools.lazy_deps import LAZY_DEPS
+    assert set(LAZY_DEPS["wake.whisper"]) == set(LAZY_DEPS["stt.faster_whisper"])

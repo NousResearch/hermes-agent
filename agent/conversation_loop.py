@@ -847,8 +847,10 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 # Named so _is_synthetic_compression_user_turn can recognize a crash-persisted nudge by
 # content (SessionDB projection strips the _length_continuation_nudge tag).
 _LENGTH_CONTINUATION_NETWORK_STUB = (
-    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
-    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
+    "[System: The previous response was cut off by a network error mid-stream — a transport "
+    "interruption, NOT a change in your capabilities. Your tools are still fully available; call "
+    "them as normal and ignore any earlier claim that you lack tool access. Continue the task "
+    "from where you left off. Do not restart or repeat prior text.]"
 )
 _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "

@@ -418,7 +418,8 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str,
+                              session_id: str | None = None) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -488,7 +489,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         # keeps refusing .docx/.xlsx/.pdf regardless of this baseline.
         _mark_full_write_baseline(str(_resolved), task_id)
         _update_read_timestamp(str(_resolved), task_id)
-        file_state.record_read(task_id, str(_resolved))
+        file_state.record_read(task_id, str(_resolved), session_id=session_id)
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -528,7 +529,8 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None,
+                            session_id: str | None = None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -576,7 +578,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         _cap_read_tracker_data(task_data)
 
     try:
-        file_state.record_read(task_id, resolved_str, partial=not complete)
+        file_state.record_read(task_id, resolved_str, partial=not complete, session_id=session_id)
     except Exception:
         logger.debug("file_state.record_read failed", exc_info=True)
 
@@ -595,7 +597,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default",
+                   session_id: str | None = None) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -642,7 +645,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, session_id)
         if extracted is not None:
             return extracted
 
@@ -729,7 +732,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+                                        snapshot=getattr(result, "_snapshot", None),
+                                        session_id=session_id)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -779,14 +783,16 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
             or _check_approval_required_write(paths, task_id))
 
 
-def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> list[str]:
+def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str,
+                   session_id: str | None = None) -> list[str]:
     """One pre-edit warning per path, in priority order: cross-agent registry
     (names the sibling subagent) > per-task staleness > workspace divergence
     (relative path resolving outside the terminal's cwd — the worktree-cwd bug)."""
     warnings: list[str] = []
     for p in paths:
         r = path_to_resolved.get(p)
-        w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(p, task_id)
+        w = (file_state.check_stale(task_id, r, session_id=session_id) if r else None) \
+            or _check_file_staleness(p, task_id)
         if not w and r:
             w = _path_resolution_warning(p, Path(r), task_id)
         if w:
@@ -801,7 +807,7 @@ def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session
     for p in paths:
         _update_read_timestamp(p, task_id)
         if path_to_resolved.get(p):
-            file_state.note_write(task_id, path_to_resolved[p])
+            file_state.note_write(task_id, path_to_resolved[p], session_id=session_id)
 
 
 # Whole-file rewrite hint: an overwrite of an existing file this large whose new content keeps at least
@@ -884,10 +890,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # A whole-file overwrite of content this task never saw, or that
             # changed since, is refused HERE — before the write — instead of
             # warning after the clobber (#65604). Nothing below runs.
-            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
+            blocker = _stale_overwrite_blocker(path, _resolved, task_id, session_id=session_id)
             if blocker:
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
-            warnings = _edit_warnings([path], path_to_resolved, task_id)
+            warnings = _edit_warnings([path], path_to_resolved, task_id, session_id=session_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
             result = _get_file_ops(task_id).write_file(_resolved or path, content)
             result_dict = result.to_dict()
@@ -973,7 +979,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         with ExitStack() as _locks:
             for _r in sorted({_r for _r in _path_to_resolved.values() if _r}):
                 _locks.enter_context(file_state.lock_path(_r))
-            stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
+            stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id, session_id=session_id)
             file_ops = _get_file_ops(task_id)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
@@ -1289,7 +1295,9 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1),
+                          limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid,
+                          session_id=kw.get("session_id"))
 
 
 def _handle_write_file(args, **kw):

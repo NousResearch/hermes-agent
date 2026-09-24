@@ -489,7 +489,8 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "still current — refer to that instead of re-reading.")
 
 
-def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) -> str | None:
+def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str,
+                            session_id: str | None = None) -> str | None:
     """Reason write_file must NOT replace the existing file, else ``None``.
 
     Refuses BEFORE any disk mutation (the pre-#65604 warning arrived after the
@@ -501,7 +502,7 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     """
     if file_state.guard_disabled():
         return None
-    stale = file_state.check_stale(task_id, resolved) if resolved else None
+    stale = file_state.check_stale(task_id, resolved, session_id=session_id) if resolved else None
     if stale:
         return stale
     if _read_mtime_drifted(filepath, task_id):

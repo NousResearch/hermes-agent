@@ -261,11 +261,19 @@ def _ensure_venv_pip(pip_cmd: list, python_exe: str) -> None:
     """Bootstrap pip back into the venv via ensurepip when ``pip --version`` fails
     (some environments lose it); call before the editable install."""
     from hermes_cli.update_cmd import _m
-    try:
-        subprocess.run(pip_cmd + ["--version"], cwd=_m().PROJECT_ROOT, check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        subprocess.run(
-            [python_exe, "-m", "ensurepip", "--upgrade", "--default-pip"], cwd=_m().PROJECT_ROOT, check=True)
+    probe = bounded_probe_run(pip_cmd + ["--version"], timeout=60,
+                              cwd=_m().PROJECT_ROOT, raise_on_spawn_failure=True)
+    if probe is None:
+        raise subprocess.TimeoutExpired(pip_cmd + ["--version"], 60)
+    if probe.returncode == 0:
+        return
+    bootstrap = [python_exe, "-m", "ensurepip", "--upgrade", "--default-pip"]
+    result = bounded_probe_run(bootstrap, timeout=120, cwd=_m().PROJECT_ROOT,
+                               raise_on_spawn_failure=True)
+    if result is None:
+        raise subprocess.TimeoutExpired(bootstrap, 120)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, bootstrap, result.stdout, result.stderr)
 
 
 def _upgrade_pip_before_lazy_refresh(

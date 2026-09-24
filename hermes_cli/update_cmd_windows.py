@@ -278,6 +278,8 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     lines = ["✗ Other Hermes processes are running from this install's venv:"]
     for pid, name, cmdline in matches[:6]:
         hint = hint_by_subcommand.get(_hermes_holder_subcommand(cmdline) or "", "")
+        if not hint and _updater_pip_holder(cmdline):
+            hint = "  ← possible leftover updater pip probe/bootstrap; if its update has exited, stop this PID and retry"
         lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
     if len(matches) > 6:
         lines.append(f"  ... and {len(matches) - 6} more")
@@ -288,6 +290,29 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
         "  (or use `hermes update --force-venv` to proceed anyway at your own risk)"
     )
     return "\n".join(lines)
+
+
+def _updater_pip_holder(cmdline: str) -> bool:
+    """Recognize only the updater's exact pip/ensurepip argv in this install's venv."""
+    from hermes_cli.update_cmd import _m
+    from hermes_constants import project_venv_dir
+    try:
+        tokens = [token.strip('"') for token in shlex.split(cmdline, posix=False)]
+    except ValueError:
+        return False
+    venv = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    scripts = venv / "Scripts"
+    def _same(left, right):
+        return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(str(right)))
+    if len(tokens) == 2 and tokens[1] == "--version":
+        return _same(tokens[0], scripts / "pip.exe")
+    if len(tokens) == 3 and tokens[2] == "--version":
+        return _same(tokens[1], scripts / "pip.exe")
+    if len(tokens) == 4 and tokens[1:] == ["-m", "pip", "--version"]:
+        return _same(tokens[0], scripts / "python.exe")
+    if len(tokens) == 5 and tokens[1:] == ["-m", "ensurepip", "--upgrade", "--default-pip"]:
+        return _same(tokens[0], scripts / "python.exe")
+    return False
 
 
 def _venv_launcher_ancestors(pids: list[int]) -> list[int]:

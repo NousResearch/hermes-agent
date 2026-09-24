@@ -110,9 +110,13 @@ class ModelCapabilities:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
-    "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding", "stepfun": "stepfun",
-    "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
+    # models.dev renamed the Kimi coding-plan providers (2026-09): "kimi-for-coding" ->
+    # "kimi-code-plan-global", plus a CN variant "kimi-code-plan-cn". The old ids no longer
+    # exist, so every kimi-* context lookup missed the catalog and fell back to the generic
+    # 256K default instead of the real 1M window.
+    "kimi": "kimi-code-plan-global", "kimi-coding": "kimi-code-plan-global",
+    "moonshot": "kimi-code-plan-global", "stepfun": "stepfun",
+    "kimi-coding-cn": "kimi-code-plan-cn", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",

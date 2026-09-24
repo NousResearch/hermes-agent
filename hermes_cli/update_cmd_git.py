@@ -9,6 +9,7 @@ import logging
 from contextlib import suppress
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -128,11 +129,56 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
         return False, "unverifiable"
     if status.stdout.strip():
         return False, "dirty"
-    cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
+    try:
+        cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
+    except OSError:
+        return False, "unverifiable"
     if cherry.returncode != 0:
         return False, "unverifiable"
     unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
     return True, f"unmerged:{len(unmerged)}" if unmerged else ""
+
+
+def _restore_local_patch_branch(git_cmd, target_branch: str, local_branch: str) -> None:
+    """Rebase a verified local branch, retaining its old tip in a durable ref."""
+    from hermes_cli.update_cmd import _git_run
+
+    old_tip = _git_run(git_cmd, ["rev-parse", "--verify", local_branch], check=True).stdout.strip()
+    snapshot = f"hermes-update-snapshot/{local_branch.replace('/', '-')}-{uuid.uuid4().hex[:12]}"
+    saved = _git_run(git_cmd, ["branch", snapshot, old_tip])
+    if saved.returncode != 0:
+        print(f"✗ Could not save '{local_branch}' before rebase; it remains unchanged.")
+        print(f"  Inspect: git branch {snapshot} {old_tip}")
+        sys.exit(1)
+    print(f"  ✓ Safety branch: {snapshot} ({old_tip[:10]})")
+    if _git_run(git_cmd, ["checkout", local_branch]).returncode != 0:
+        print(f"✗ Could not restore '{local_branch}'; snapshot {snapshot} is preserved.")
+        sys.exit(1)
+    rebased = _git_run(git_cmd, ["rebase", target_branch])
+    if rebased.returncode == 0:
+        print(f"  ✓ Rebased '{local_branch}' onto updated {target_branch}.")
+        return
+    aborted = _git_run(git_cmd, ["rebase", "--abort"])
+    restored = _git_run(git_cmd, ["rev-parse", "--verify", local_branch])
+    state = _git_run(git_cmd, ["status", "--porcelain"])
+    # The pre-swap updater leaves this recovery marker after pulling code.
+    # It is the only untracked file permitted during abort verification.
+    clean_after_abort = all(
+        line == "?? .update-incomplete" for line in state.stdout.splitlines())
+    if (aborted.returncode != 0 or restored.returncode != 0
+            or restored.stdout.strip() != old_tip or state.returncode != 0
+            or not clean_after_abort):
+        print(f"✗ Rebase failed and automatic abort could not be verified. Snapshot: {snapshot}")
+        print("  Inspect git status and resolve or run git rebase --abort before updating again.")
+        sys.exit(1)
+    if _git_run(git_cmd, ["checkout", target_branch]).returncode != 0:
+        print(f"✗ Rebase failed; '{local_branch}' is restored at {old_tip[:10]}.")
+        print(f"  Snapshot: {snapshot}. Inspect git status before continuing.")
+        sys.exit(1)
+    print(f"✗ Rebase conflicted; '{local_branch}' is intact at {old_tip[:10]}.")
+    print(f"  Updated {target_branch} is active. Snapshot: {snapshot}")
+    print(f"  Resolve later: git checkout {local_branch} && git rebase {target_branch}")
+    sys.exit(1)
 
 
 _PARKED_SKIP_WHY = {

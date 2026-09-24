@@ -29,6 +29,7 @@ from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+from hermes_cli.update_cmd_git import _restore_local_patch_branch
 
 
 GIT = ["git"]
@@ -264,11 +265,7 @@ def test_update_skips_and_warns_on_dirty_parked_branch(
 def test_update_switches_unmerged_parked_branch_with_kept_notice(
     repo_pair, monkeypatch, capsys
 ):
-    """Default strategy ("switch"): clean tree + unmerged commits → the
-    update proceeds (non-interactive callers like the desktop update button
-    cannot resolve a skip), prints the loud 'kept' notice, ends on main
-    fast-forwarded to origin/main, and the commits stay on the parked
-    branch untouched."""
+    """Local-only commits are rebased onto the updated target and reactivated."""
     (repo_pair / "feature.txt").write_text("unmerged work\n")
     _git(repo_pair, "add", "feature.txt")
     _git(repo_pair, "commit", "-qm", "feature work")
@@ -290,19 +287,141 @@ def test_update_switches_unmerged_parked_branch_with_kept_notice(
 
     out = capsys.readouterr().out
     assert "CODE UPDATE SKIPPED" not in out
-    # Ends on main, fast-forwarded.
+    # The original branch is active with its patch on top of updated main.
     assert (
         _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        == "main"
+        == "old-feature"
     )
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
-    assert head == remote
-    # The unmerged commit is still exactly where it was, on the branch.
-    assert (
-        _git(repo_pair, "rev-parse", "old-feature").stdout.strip()
-        == feature_sha
-    )
+    assert head != feature_sha
+    assert _git(repo_pair, "merge-base", "--is-ancestor", remote, head).returncode == 0
+    assert (repo_pair / "feature.txt").read_text() == "unmerged work\n"
+    snapshots = _git(repo_pair, "branch", "--list", "hermes-update-snapshot/*").stdout
+    assert snapshots.strip()
+    snapshot = snapshots.strip().removeprefix("*").strip()
+    assert _git(repo_pair, "rev-parse", snapshot).stdout.strip() == feature_sha
+    assert _git(repo_pair, "status", "--porcelain").stdout.strip() == "?? .update-incomplete"
+
+
+def test_local_patch_comparison_failure_keeps_original_checkout(repo_pair, monkeypatch, capsys):
+    (repo_pair / "feature.txt").write_text("local\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "local patch")
+    original = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(update_cmd, "_apply_parked_branch_guard", lambda *a, **k: (True, False, "unmerged:1"))
+    calls = []
+    def failed_comparison(git_cmd, args, *a, **k):
+        calls.append(args)
+        return SimpleNamespace(returncode=1, stderr="broken comparison", stdout="")
+    monkeypatch.setattr(update_cmd, "_git_run", failed_comparison)
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._prepare_checkout_for_update(
+            GIT, "release", "old-feature", is_fork=False, assume_yes=True,
+            gateway_mode=False, gw_input_fn=None, switch_branch=False,
+            _windows_gateway_resume=None)
+    assert exc.value.code == 1
+    assert "Could not compare" in capsys.readouterr().out
+    assert calls == [["cherry", "origin/release", "old-feature"]]
+    assert _git(repo_pair, "rev-parse", "HEAD").stdout.strip() == original
+    assert _git(repo_pair, "status", "--porcelain").stdout == ""
+
+
+def test_local_patch_rebase_conflict_restores_branch_and_snapshot(repo_pair, monkeypatch, capsys):
+    (repo_pair / "a.txt").write_text("local conflict\n")
+    _git(repo_pair, "add", "a.txt")
+    _git(repo_pair, "commit", "-qm", "local conflict")
+    original = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    _git(repo_pair, "checkout", "main")
+    _git(repo_pair, "merge", "--ff-only", "origin/main")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    with pytest.raises(SystemExit) as exc:
+        _restore_local_patch_branch(GIT, "main", "old-feature")
+    assert exc.value.code == 1
+    assert "Rebase conflicted" in capsys.readouterr().out
+    assert _git(repo_pair, "rev-parse", "old-feature").stdout.strip() == original
+    assert _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+    snapshot = _git(repo_pair, "branch", "--list", "hermes-update-snapshot/*").stdout.strip()
+    assert _git(repo_pair, "rev-parse", snapshot).stdout.strip() == original
+    assert _git(repo_pair, "status", "--porcelain").stdout == ""
+
+
+def test_update_conflict_recovers_with_incomplete_marker(repo_pair, monkeypatch, capsys):
+    (repo_pair / "a.txt").write_text("local conflict\n")
+    _git(repo_pair, "add", "a.txt")
+    _git(repo_pair, "commit", "-qm", "local conflict")
+    original = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    _patch_update_flow(monkeypatch, repo_pair)
+    with pytest.raises(SystemExit) as exc:
+        hermes_main.cmd_update(SimpleNamespace(branch=None, yes=False, force=False, force_venv=False))
+    assert exc.value.code == 1
+    assert "Updated main is active" in capsys.readouterr().out
+    assert _git(repo_pair, "rev-parse", "old-feature").stdout.strip() == original
+    assert _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+    snapshot = _git(repo_pair, "branch", "--list", "hermes-update-snapshot/*").stdout.strip()
+    assert _git(repo_pair, "rev-parse", snapshot).stdout.strip() == original
+    assert _git(repo_pair, "status", "--porcelain").stdout.strip() == "?? .update-incomplete"
+
+
+def test_local_patch_rebases_onto_selected_target(repo_pair, monkeypatch):
+    (repo_pair / "feature.txt").write_text("local\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "local patch")
+    original = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    _git(repo_pair, "checkout", "-b", "release", "origin/main")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    _restore_local_patch_branch(GIT, "release", "old-feature")
+    head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    target = _git(repo_pair, "rev-parse", "release").stdout.strip()
+    assert _git(repo_pair, "merge-base", "--is-ancestor", target, head).returncode == 0
+    assert _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "old-feature"
+    assert (repo_pair / "feature.txt").read_text() == "local\n"
+    snapshot = _git(repo_pair, "branch", "--list", "hermes-update-snapshot/*").stdout.strip()
+    assert _git(repo_pair, "rev-parse", snapshot).stdout.strip() == original
+    assert _git(repo_pair, "status", "--porcelain").stdout == ""
+
+
+def test_snapshot_failure_does_not_checkout_or_rebase(repo_pair, monkeypatch, capsys):
+    (repo_pair / "feature.txt").write_text("local\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "local patch")
+    original = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    real_run = update_cmd._git_run
+    def fail_snapshot(git_cmd, args, *a, **k):
+        if args[0] == "branch":
+            return SimpleNamespace(returncode=1, stdout="", stderr="cannot write ref")
+        return real_run(git_cmd, args, *a, **k)
+    monkeypatch.setattr(update_cmd, "_git_run", fail_snapshot)
+    with pytest.raises(SystemExit) as exc:
+        _restore_local_patch_branch(GIT, "main", "old-feature")
+    assert exc.value.code == 1
+    assert "Could not save" in capsys.readouterr().out
+    assert _git(repo_pair, "rev-parse", "old-feature").stdout.strip() == original
+    assert _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "old-feature"
+    assert _git(repo_pair, "status", "--porcelain").stdout == ""
+
+
+def test_no_new_target_commits_still_restores_local_patch_branch(repo_pair, monkeypatch):
+    (repo_pair / "feature.txt").write_text("local\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "local patch")
+    original = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    _git(repo_pair, "checkout", "main")
+    _git(repo_pair, "merge", "--ff-only", "origin/main")
+    _git(repo_pair, "checkout", "old-feature")
+    _patch_update_flow(monkeypatch, repo_pair)
+    import hermes_cli.managed_uv as managed_uv
+    class _StopFlow(Exception):
+        pass
+    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda *a, **k: (_ for _ in ()).throw(_StopFlow()))
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(SimpleNamespace(branch=None, yes=False, force=False, force_venv=False))
+    head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    assert _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "old-feature"
+    assert head != original
+    assert _git(repo_pair, "merge-base", "--is-ancestor", "main", "old-feature").returncode == 0
+    assert _git(repo_pair, "status", "--porcelain").stdout == ""
 
 
 def test_update_updates_unmerged_branch_in_place_when_configured(

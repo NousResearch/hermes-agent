@@ -933,6 +933,7 @@ class _CheckoutPlan:
     prompt_for_restore: bool
     switch_block_reason: "str | None"
     upstream_checked: bool
+    local_only_branch: "str | None" = None
 
 
 def _apply_parked_branch_guard(
@@ -966,8 +967,11 @@ def _apply_parked_branch_guard(
         _in_place_configured = (
             _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
     if not _in_place_configured or switch_branch:
-        _m()._print_parked_branch_kept_notice(
-            current_branch, branch, switch_block_reason.split(":", 1)[1])
+        if switch_branch:
+            _m()._print_parked_branch_kept_notice(
+                current_branch, branch, switch_block_reason.split(":", 1)[1])
+        else:
+            print(f"  ℹ Comparing local commits on '{current_branch}' with origin/{branch} before update.")
         return True, False, switch_block_reason
     # --branch typos used to surface via the checkout failing, which this path skips.
     if _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", f"origin/{branch}"]).returncode != 0:
@@ -988,6 +992,23 @@ def _prepare_checkout_for_update(
     parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
         git_cmd, branch, current_branch, switch_branch=switch_branch,
         _windows_gateway_resume=_windows_gateway_resume)
+    local_only_branch = None
+    if parked_branch_switched and not switch_branch and switch_block_reason.startswith("unmerged:"):
+        # The guard already checked this comparison. Repeat it here so a failure
+        # cannot be mistaken for an empty list of local patches.
+        try:
+            comparison = _git_run(git_cmd, ["cherry", f"origin/{branch}", current_branch])
+        except OSError:
+            comparison = None
+        if comparison is None or comparison.returncode != 0:
+            print(f"✗ Could not compare '{current_branch}' with origin/{branch}; code update skipped.")
+            print(f"  Inspect with: git cherry origin/{branch} {current_branch}")
+            sys.exit(1)
+        if not any(line.startswith("+ ") for line in comparison.stdout.splitlines()):
+            print(f"✗ Comparison of '{current_branch}' changed while updating; code update skipped.")
+            print(f"  Inspect with: git cherry origin/{branch} {current_branch}")
+            sys.exit(1)
+        local_only_branch = current_branch
 
     if not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
@@ -1048,7 +1069,8 @@ def _prepare_checkout_for_update(
     return _CheckoutPlan(
         auto_stash_ref=auto_stash_ref, commit_count=commit_count, in_place_update=in_place_update,
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
-        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked)
+        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
+        local_only_branch=local_only_branch)
 
 
 @dataclass
@@ -1286,6 +1308,9 @@ def _finish_already_up_to_date(
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     _invalidate_update_cache()
+    if _plan.local_only_branch:
+        from hermes_cli.update_cmd_git import _restore_local_patch_branch
+        _restore_local_patch_branch(git_cmd, branch, _plan.local_only_branch)
 
     # Restore stash and switch back if we moved. EXCEPTION: a parked branch verified clean +
     # fully merged stays on the target — re-parking on the stale branch recreates the incident.
@@ -1293,7 +1318,7 @@ def _finish_already_up_to_date(
         _m()._restore_stashed_changes(
             git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
             input_fn=gw_input_fn)
-    if _plan.parked_branch_switched:
+    if _plan.parked_branch_switched and not _plan.local_only_branch:
         if _plan.switch_block_reason.startswith("unmerged:"):
             _count = _plan.switch_block_reason.split(":", 1)[1]
             print(
@@ -1348,6 +1373,16 @@ def _apply_pulled_update(
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)
+    if getattr(_plan, "local_only_branch", None):
+        from hermes_cli.update_cmd_git import _restore_local_patch_branch
+        if is_fork and branch == "main":
+            _m()._sync_with_upstream_if_needed(
+                git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
+        _m()._write_update_incomplete_marker()
+        _restore_local_patch_branch(git_cmd, branch, _plan.local_only_branch)
+        post_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        # The fork's target was synced before switching back to the local branch.
+        is_fork = False
 
     # Gateways still serve pre-pull modules until the restart phase; an interrupt before a
     # completed restart leaves this marker so the next update catches up even when git is

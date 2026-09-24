@@ -91,6 +91,20 @@ export function resolveBusyComposerAction({
 }
 
 /**
+ * Whether the configured mode has a carrier to ride. `interrupt` redirects the
+ * live turn through `onSteer`; `steer` injects through `onSteerHidden`. Asking
+ * for the wrong one would let the UI promise an action the submit path cannot
+ * deliver (a steer-mode composer with only `onSteer` wired would read as
+ * steer-able and then silently queue on Enter).
+ */
+export function busyModeHasCarrier(mode: BusyInputMode, carriers: {
+  onSteer: boolean
+  onSteerHidden: boolean
+}): boolean {
+  return mode === 'steer' ? carriers.onSteerHidden : carriers.onSteer
+}
+
+/**
  * The resolved mode as a plain atom, mirroring the other display.* knobs the
  * composer reads (`store/display-timestamps.ts`, `store/reasoning-disclosure.ts`).
  * Reading it from a store rather than from the config query keeps ChatBar free

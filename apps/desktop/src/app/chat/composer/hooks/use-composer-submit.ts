@@ -309,17 +309,18 @@ export function useComposerSubmit({
 
   // A correction whose RPC rejects (socket dropped, session gone mid-turn)
   // must not vanish with the already-cleared draft: queue the words so the
-  // turn still sees them. The scope is read at dispatch time, not from the
-  // render-time prop — a gateway can reject well after the user switched
-  // sessions, and queueing into the now-focused session would overwrite ITS
-  // draft (#54527). With no session yet (a new chat busy before its first row
-  // exists) the words go back into the composer instead of a queue that has
-  // nowhere to live.
-  const queueRejectedCorrection = (text: string) => {
-    if (activeQueueSessionKeyRef.current) {
-      enqueueQueuedPrompt(activeQueueSessionKeyRef.current, { text, attachments: [] })
+  // turn still sees them. The scope is captured at dispatch time, not read from
+  // the ref inside the callback — a gateway can reject well after the user
+  // switched sessions, and queueing into the now-focused session would
+  // overwrite ITS draft (#54527). With no session yet (a new chat busy before
+  // its first row exists) there is no queue to live in, so the words go back
+  // into the composer and its stash, exactly like a rejected plain submit.
+  const queueRejectedCorrection = (text: string, rejectedScope: string | null) => {
+    if (rejectedScope) {
+      enqueueQueuedPrompt(rejectedScope, { text, attachments: [] })
     } else {
       loadIntoComposer(text, [])
+      stashAt(rejectedScope, text, [])
     }
   }
 
@@ -340,13 +341,17 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
+    // Captured after clearDraft, before the RPC: this is the session the words
+    // belong to, and it stays the one they fall back to if the RPC rejects.
+    const rejectedScope = activeQueueSessionKeyRef.current
+
     void Promise.resolve(onSteer(text))
       .then(accepted => {
         if (!accepted) {
-          queueRejectedCorrection(text)
+          queueRejectedCorrection(text, rejectedScope)
         }
       })
-      .catch(() => queueRejectedCorrection(text))
+      .catch(() => queueRejectedCorrection(text, rejectedScope))
   }
 
   // Tool-boundary steering: the words ride the model's next tool result, so the
@@ -361,13 +366,18 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
+    // Same dispatch-time scope capture as redirectDraft: the fallback must
+    // target the session the words were aimed at, not whatever is focused by
+    // the time the gateway answers (#54527).
+    const rejectedScope = activeQueueSessionKeyRef.current
+
     void Promise.resolve(onSteerHidden(text))
       .then(accepted => {
         if (!accepted) {
-          queueRejectedCorrection(text)
+          queueRejectedCorrection(text, rejectedScope)
         }
       })
-      .catch(() => queueRejectedCorrection(text))
+      .catch(() => queueRejectedCorrection(text, rejectedScope))
   }
 
   const queueDraft = () => {

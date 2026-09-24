@@ -740,7 +740,8 @@ export const ja = defineLocale({
       timezone: 'タイムゾーン',
       display: {
         personality: '人格',
-        showReasoning: '推論ブロック'
+        showReasoning: '推論ブロック',
+        busyInputMode: '実行中の Enter の動作'
       },
       desktop: {
         repoScanEnabled: 'リポジトリの自動検出',
@@ -905,7 +906,9 @@ export const ja = defineLocale({
       fallbackProviders: 'デフォルトモデルが失敗したときに試す provider:model 形式のバックアップです。',
       display: {
         personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
-        showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
+        showReasoning: 'バックエンドが推論内容を提供したときに表示します。',
+        busyInputMode:
+          'エージェントの実行中に Enter キーを押したときの動作です。interrupt（中断）は現在のターンを入力テキストで再開し、steer（誘導）は実行を止めずに次のツール結果へ追加し、queue（キュー）は現在のターン終了後に実行します。'
       },
       desktop: {
         repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',

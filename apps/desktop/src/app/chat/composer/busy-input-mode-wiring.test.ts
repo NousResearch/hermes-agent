@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { $busyInputMode, normalizeBusyInputMode, setBusyInputModeFromConfig } from './busy-input-mode'
+import { $busyInputMode, busyModeHasCarrier, normalizeBusyInputMode, setBusyInputModeFromConfig } from './busy-input-mode'
 
 const CONFIG_KEY = 'display.busy_input_mode'
 
@@ -48,5 +48,33 @@ describe('display.busy_input_mode wiring', () => {
   // seam is caught here rather than by a user reporting the setting vanished.
   it('keeps the config key aligned with the backend schema name', () => {
     expect(CONFIG_KEY).toBe('display.busy_input_mode')
+  })
+})
+
+// The other seam: the composer's capability check and the submit path must ask
+// for the SAME carrier. `interrupt` rides onSteer (session.redirect) and
+// `steer` rides onSteerHidden (session.steer); a check that consulted the wrong
+// one would let the UI advertise an action the submit path then cannot deliver.
+describe('busy-input carrier selection', () => {
+  const both = { onSteer: true, onSteerHidden: true }
+
+  it('asks for onSteerHidden in steer mode', () => {
+    expect(busyModeHasCarrier('steer', { onSteer: true, onSteerHidden: true })).toBe(true)
+    // onSteer alone cannot deliver a steer — the UI must not promise one.
+    expect(busyModeHasCarrier('steer', { onSteer: true, onSteerHidden: false })).toBe(false)
+  })
+
+  it('asks for onSteer in interrupt mode', () => {
+    expect(busyModeHasCarrier('interrupt', { onSteer: true, onSteerHidden: true })).toBe(true)
+    // onSteerHidden alone cannot deliver a redirect.
+    expect(busyModeHasCarrier('interrupt', { onSteer: false, onSteerHidden: true })).toBe(false)
+  })
+
+  it('ignores carriers in queue mode, which needs neither RPC', () => {
+    // resolveBusyComposerAction returns for queue mode before it ever reads
+    // canCorrect, so the carrier question is moot there — the value must simply
+    // not invent a dependency on a callback queue mode never calls.
+    expect(() => busyModeHasCarrier('queue', both)).not.toThrow()
+    expect(busyModeHasCarrier('queue', { onSteer: false, onSteerHidden: false })).toBe(false)
   })
 })

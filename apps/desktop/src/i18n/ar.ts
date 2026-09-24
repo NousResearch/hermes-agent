@@ -733,6 +733,7 @@ export const ar = defineLocale({
       timezone: 'المنطقة الزمنية',
       'display.personality': 'أسلوب المساعد',
       'display.showReasoning': 'إظهار التفكير',
+      'display.busyInputMode': 'Enter أثناء التشغيل',
       'agent.maxTurns': 'الحد الأقصى لخطوات الوكيل',
       'agent.imageInputMode': 'مرفقات الصور',
       'agent.apiMaxRetries': 'محاولات API',
@@ -820,6 +821,8 @@ export const ar = defineLocale({
       fallbackProviders: 'إدخالات احتياطية بصيغة provider:model لتجربتها إذا فشل النموذج الافتراضي.',
       'display.personality': 'أسلوب المساعد الافتراضي للجلسات الجديدة.',
       'display.showReasoning': 'يعرض أقسام التفكير عندما توفرها الخلفية.',
+      'display.busyInputMode':
+        'ما يفعله الضغط على Enter أثناء عمل الوكيل. خيار interrupt يعيد توجيه الدور الحالي بنصك، وsteer يضيفه إلى نتيجة الأداة التالية دون إيقاف، وqueue يشغله بعد انتهاء الدور.',
       timezone: 'تستخدم عندما يحتاج Hermes إلى سياق الوقت المحلي. اتركها فارغة لاستخدام منطقة النظام.',
       'agent.imageInputMode': 'يتحكم في طريقة إرسال مرفقات الصور إلى النموذج.',
       'agent.maxTurns': 'الحد الأعلى لدورات استدعاء الأدوات قبل أن يوقف Hermes التشغيل.',

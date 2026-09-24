@@ -1248,7 +1248,8 @@ export const de = defineLocale({
       timezone: 'Zeitzone',
       display: {
         personality: 'Persönlichkeit',
-        showReasoning: 'Denkblöcke'
+        showReasoning: 'Denkblöcke',
+        busyInputMode: 'Enter während der Ausführung'
       },
       desktop: {
         repoScanEnabled: 'Automatische Repository-Erkennung',
@@ -1424,7 +1425,9 @@ export const de = defineLocale({
       fallbackProviders: 'Backup-Anbieter:Modell-Einträge, die versucht werden, wenn das Standardmodell fehlschlägt.',
       display: {
         personality: 'Standard-Assistentenstil für neue Sessions.',
-        showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.'
+        showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.',
+        busyInputMode:
+          'Bestimmt das Verhalten beim Drücken der Eingabetaste (Enter), während der Agent noch läuft. Interrupt leitet den aktuellen Turn mit Ihrem Text um, steer fügt ihn ohne Abbruch an das nächste Tool-Ergebnis an und queue führt ihn nach Beendigung des Turns aus.'
       },
       desktop: {
         repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',

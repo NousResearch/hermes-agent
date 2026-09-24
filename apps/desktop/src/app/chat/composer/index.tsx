@@ -43,7 +43,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
-import { $busyInputMode, resolveBusyComposerAction } from './busy-input-mode'
+import { $busyInputMode, busyModeHasCarrier, resolveBusyComposerAction } from './busy-input-mode'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -428,7 +428,16 @@ export function ChatBar({
   // tool batch is parked on the user, so neither can reach the model — text
   // queues behind it (steering there would sit undelivered until the prompt
   // times out). Compaction owns the turn outright.
-  const canRedirect = !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  // Each mode rides its own carrier, so the capability check has to ask for the
+  // one the configured mode will actually call: interrupt redirects through
+  // `onSteer`, steer injects through `onSteerHidden`. Checking the wrong one
+  // would make the UI promise an action the submit path cannot deliver.
+  const canRedirect =
+    !compacting &&
+    !blockingPrompt &&
+    busyModeHasCarrier(busyInputMode, { onSteer: !!onSteer, onSteerHidden: !!onSteerHidden }) &&
+    attachments.length === 0 &&
+    isSteerableText
 
   // While busy, the configured mode decides: interrupt redirects the live turn
   // (Cursor-style stop-and-correct), steer injects into the next tool result

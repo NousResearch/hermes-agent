@@ -892,7 +892,8 @@ export const zh = defineLocale({
       timezone: '时区',
       display: {
         personality: '人格',
-        showReasoning: '推理过程块'
+        showReasoning: '推理过程块',
+        busyInputMode: '运行时按 Enter'
       },
       desktop: {
         repoScanEnabled: '自动发现代码仓库',
@@ -1068,7 +1069,9 @@ export const zh = defineLocale({
       fallbackProviders: '默认模型失败时尝试的备用 provider:model 条目。',
       display: {
         personality: '新会话的默认助手风格。',
-        showReasoning: '当后端提供推理内容时予以显示。'
+        showReasoning: '当后端提供推理内容时予以显示。',
+        busyInputMode:
+          '控制智能体运行期间按 Enter 的行为。中断（interrupt）会使用输入文本重定向并重启当前回合，引导（steer）会将其追加到下一个工具结果且不中断运行，排队（queue）则在当前回合结束后执行。'
       },
       desktop: {
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',

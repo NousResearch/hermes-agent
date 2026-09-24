@@ -1743,12 +1743,12 @@ def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> di
     placeholders = ",".join("?" for _ in ordered_ids)
     for bucket, own, other in (("parents", "child_id", "parent_id"), ("children", "parent_id", "child_id")):
         for row in conn.execute(
-            f"SELECT l.{own} AS owner_id, t.id, t.title, t.status "
+            f"SELECT l.{own} AS owner_id, t.id, t.title, t.status, t.assignee, t.body "
             f"FROM task_links l JOIN tasks t ON t.id = l.{other} "
             f"WHERE l.{own} IN ({placeholders}) ORDER BY l.{own}, t.id", tuple(ordered_ids),
         ).fetchall():
             contexts[row["owner_id"]][bucket].append(
-                {"id": row["id"], "title": row["title"], "status": row["status"]}
+                {key: row[key] for key in ("id", "title", "status", "assignee", "body")}
             )
     return contexts
 

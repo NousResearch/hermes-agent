@@ -13,7 +13,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
+import re
 import time
+import unicodedata
 
 
 # Least → most urgent; sorted outputs put critical first.
@@ -591,6 +593,67 @@ def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagno
     )]
 
 
+_DEPENDENCY_ROLE_WORDS = {
+    "review": re.compile(r"\b(?:review(?:er|ing)?|revis(?:ar|ao|or)|verific(?:ar|acao)|"
+                         r"verif(?:y|ication)|parecer|audit(?:ar|oria|ing)?)\b"),
+    "execution": re.compile(r"\b(?:implement(?:ar|acao|ation|ing)?|execut(?:ar|e|ion|ing)|"
+                            r"executor|rodar|run|running|constru(?:ir|cao)|build(?:ing)?)\b"),
+}
+
+
+def _dependency_role(task) -> tuple[str, str]:
+    """Heurística PT/EN; papel explícito prevalece, depois título, depois corpo.
+
+    Não procurar no corpo quando o título mistura papéis: citar o trabalho
+    revisado não basta para transformar uma revisão em implementação.
+    """
+    assignee = str(_task_field(task, "assignee") or "").strip().casefold()
+    if assignee in {"revisor", "reviewer", "executor", "implementer"}:
+        role = "review" if assignee in {"revisor", "reviewer"} else "execution"
+        return role, f"assignee={assignee}"
+    for field_name in ("title", "body"):
+        text = unicodedata.normalize("NFKD", str(_task_field(task, field_name) or "").casefold())
+        text = "".join(char for char in text if not unicodedata.combining(char))
+        matches = [(role, pattern.search(text)) for role, pattern in _DEPENDENCY_ROLE_WORDS.items()]
+        hits = [(role, match.group()) for role, match in matches if match]
+        if len(hits) == 1:
+            role, word = hits[0]
+            return role, f"{field_name}: {word}"
+        if hits:
+            return "", ""
+    return "", ""
+
+
+def _rule_suspected_inverted_dependency(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Aviso por aresta, no filho; não bloqueia nem corrige o grafo."""
+    child_role, child_signal = _dependency_role(task)
+    graph = cfg.get("_graph")
+    if child_role != "execution" or not isinstance(graph, dict):
+        return []
+    child_id = _task_field(task, "id")
+    out = []
+    for parent in graph.get("parents") or []:
+        parent_role, parent_signal = _dependency_role(parent)
+        parent_id = _task_field(parent, "id")
+        if parent_role != "review" or not parent_id or not child_id:
+            continue
+        out.append(Diagnostic(
+            kind="suspected_inverted_dependency", severity="warning",
+            title="Possible inverted review dependency",
+            detail=f"{parent_id} -> {child_id}: the parent looks like review ({parent_signal}) "
+                   f"and the child like execution ({child_signal}). This edge makes execution "
+                   "depend on review, but review normally follows execution. This is only a heuristic: an audit "
+                   "that defines implementation scope may legitimately come first. Inspect both "
+                   "cards before changing the edge; no task or dependency was changed.",
+            actions=[DiagnosticAction(kind="comment", label="Check dependency intent",
+                                      suggested=True)],
+            first_seen_at=now, last_seen_at=now,
+            data={"parent_id": parent_id, "child_id": child_id,
+                  "parent_signal": parent_signal, "child_signal": child_signal},
+        ))
+    return out
+
+
 def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Blocked for >= cfg["blocked_stale_hours"] (default 24) with no comment
     or unblock since the last ``blocked`` event."""
@@ -745,6 +808,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
     _rule_running_with_open_parents,
+    _rule_suspected_inverted_dependency,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,

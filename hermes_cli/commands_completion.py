@@ -168,13 +168,37 @@ def _handoff_completions(sub_text: str, sub_lower: str):
             name, partial, name, f"→ {home_name}" if home_name else "send this session here")
 
 
+def _reasoning_completions(sub_text: str, sub_lower: str):
+    """``/reasoning`` — effort, display, and scope arguments can be combined."""
+    completed, partial = _split_args(sub_text)
+    used = set(completed)
+    from agent.reasoning_effort import EFFORT_LADDER
+
+    rows = [(level, "reasoning effort") for level in EFFORT_LADDER]
+    rows += [
+        ("show", "show reasoning"), ("on", "show reasoning"),
+        ("hide", "hide reasoning"), ("off", "hide reasoning"),
+        ("full", "show full recap"), ("all", "show full recap"),
+        ("clamp", "clamp recap to 10 lines"),
+        ("collapse", "clamp recap to 10 lines"), ("short", "clamp recap to 10 lines"),
+    ]
+    rows += [(flag, "persist setting" if flag == "--global" else "session only")
+             for flag in ("--global", "--session")]
+    if any(level in used for level in EFFORT_LADDER):
+        rows = [row for row in rows if row[0] not in EFFORT_LADDER]
+    yield from _prefix_completions(
+        ((name, meta) for name, meta in rows if name not in used), partial,
+        skip_exact=False)
+
+
 # base command -> (handler(sub_text, sub_lower), single_word_only). Single-word handlers only
 # run while the first argument is typed; /tools and /handoff parse multi-word input themselves.
 _DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool]] = {
     "/skin": (_skin_completions, True),
     "/personality": (_personality_completions, True),
     "/tools": (_tools_completions, False),
-    "/handoff": (_handoff_completions, False)}
+    "/handoff": (_handoff_completions, False),
+    "/reasoning": (_reasoning_completions, False)}
 
 
 def _extract_path_word(text: str) -> str | None:

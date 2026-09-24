@@ -21,7 +21,10 @@
  *     `app.isPackaged` asserted) with a sandboxed HOME/HERMES_HOME and only
  *     the LLM faked (scripted loopback provider) completes a first turn: the
  *     reply is rendered, persisted (state.db + REST), and passes the core
- *     transcript oracle.
+ *     transcript oracle. The packaged app is pointed at THIS checkout's
+ *     Python backend (HERMES_DESKTOP_HERMES_ROOT = repo root, its .venv), so
+ *     this proves the packaged Electron shell + renderer, not a bundled
+ *     backend/runtime install.
  *
  * No packaged build: skipped with a reason locally; FAILS when CI is set and
  * HERMES_E2E_REQUIRE_PACKAGED=1 (the CI step that builds the pack sets it).
@@ -514,7 +517,9 @@ test('packaged binary boots against a scripted provider and completes a first ch
     })
 
     await test.step('boots to an interactive composer', async () => {
-      await waitForInteractive(electronApp, page).catch(error => {
+      // 60 s, not the harness default 180 s: a warm packaged boot is well under
+      // that, and a broken renderer should fail fast with the main-process story.
+      await waitForInteractive(electronApp, page, 60_000).catch(error => {
         throw new Error(`${(error as Error).message}\npackaged main-process log tail:\n${logTail()}`)
       })
       await installDuplicateSampler(page)

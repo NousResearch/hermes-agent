@@ -792,32 +792,89 @@ class TestRegisteredTaskRecoveryFollowups:
         assert token["relaunched_profiles"] == ["alpha"]
         assert token["resume_needed"] is True
 
-    def test_pure_unmapped_success_records_neutral_attestation(self, monkeypatch, tmp_path):
-        """R3: a verified unmapped restart gets a durable diagnostic record,
-        without putting an unknown gateway in the default profile marker."""
-        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
-        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [777])
+    def test_mapped_sibling_cannot_vouch_for_missing_unmapped_replay(self, monkeypatch, tmp_path):
+        """A fleet hit from mapped PID 101 must not clear an unmapped replay obligation.
 
-        _verify_relaunched_gateways_alive(
-            _token({}), {}, [{"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}]
+        This reproduces review 4092785896: the unmapped watcher can be created
+        while its replay never starts, even though an unrelated mapped gateway
+        remains healthy throughout recovery.
+        """
+        alpha_home = tmp_path / "alpha"
+        entry = {"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}
+        _install_windows_resume_stubs(monkeypatch)
+        monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda *a, **kw: None)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: alpha_home)
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_kw: [101])
+        monkeypatch.setattr(
+            gateway_windows,
+            "_wait_for_gateway_ready",
+            lambda *, home=None, all_profiles=False, **_kw: [101] if home == alpha_home or all_profiles else [],
         )
+        clock = [0.0]
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_time",
+            SimpleNamespace(
+                monotonic=lambda: clock[0],
+                sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            ),
+        )
+
+        token = _token({"alpha": 11})
+        token["unmapped"] = [entry]
+        with pytest.raises(RuntimeError, match="not verified alive"):
+            _resume_windows_gateways_after_update(token)
+
+        assert token["unmapped"] == [entry]
+        assert token["resume_needed"] is True
+
+    def test_pure_unmapped_success_records_neutral_attestation(self, monkeypatch, tmp_path):
+        """A normalized replay gets only its own new stable PID in the neutral attestation."""
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+        _install_windows_resume_stubs(monkeypatch)
+        raw_argv = ["python", "-m", "hermes_cli.main", "gateway", "run"]
+        expected_argv = [r"C:\Hermes\venv\Scripts\python.exe", *raw_argv[1:]]
+        entry = {"pid": 77, "argv": raw_argv}
+        scans = iter([[101], [101, 202]])
+        clock = [0.0]
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_time",
+            SimpleNamespace(
+                monotonic=lambda: clock[0],
+                sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            ),
+        )
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_kw: next(scans, [101, 202]))
+        monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda pid: list(expected_argv) if pid == 202 else None)
+        monkeypatch.setattr(
+            gateway_windows,
+            "windowless_gateway_restart_spec",
+            lambda argv: (list(expected_argv), "", {}),
+        )
+
+        token = _token({})
+        token["unmapped"] = [entry]
+        _resume_windows_gateways_after_update(token)
 
         assert (tmp_path / "state" / "gateway.unmapped-start-attestation.json").exists()
         assert not (tmp_path / "state" / "gateway.start-attestation.json").exists()
+        assert token["unmapped"] == []
+        assert token["resume_needed"] is False
         warning = gateway_windows.check_unmapped_start_attestation(current_pids=[])
-        assert warning is not None and "unmapped gateway" in warning
+        assert warning is not None and "PID 202" in warning
         assert "Task Scheduler" not in warning
 
     def test_pure_unmapped_failure_keeps_recovery_obligation(self, monkeypatch, tmp_path):
         """R3: no stable unmapped process means no neutral success marker and
         the original argv remains available for a later recovery attempt."""
         monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
-        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [])
+        monkeypatch.setattr(update_cmd_windows, "_wait_for_unmapped_replay_ready", lambda *_a, **_kw: None)
         entry = {"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}
         token = _token({})
 
         with pytest.raises(RuntimeError, match="not verified alive"):
-            _verify_relaunched_gateways_alive(token, {}, [entry])
+            _verify_relaunched_gateways_alive(token, {}, [(entry, {101}, list(entry["argv"]))])
 
         assert token["unmapped"] == [entry]
         assert not (tmp_path / "state" / "gateway.unmapped-start-attestation.json").exists()
@@ -830,22 +887,107 @@ class TestRegisteredTaskRecoveryFollowups:
         monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(default_home))
         monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: alpha_home)
         monkeypatch.setattr(
-            gateway_windows,
-            "_wait_for_gateway_ready",
-            lambda *, home=None, all_profiles=False, **_kw: [777] if all_profiles else ([101] if home == alpha_home else []),
+            gateway_windows, "_wait_for_gateway_ready", lambda *, home=None, **_kw: [101] if home == alpha_home else []
         )
+        monkeypatch.setattr(update_cmd_windows, "_wait_for_unmapped_replay_ready", lambda *_a, **_kw: 202)
         token = _token({})
+        entry = {"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}
 
         _verify_relaunched_gateways_alive(
             token,
             {"alpha": 11},
-            [{"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}],
+            [(entry, {101}, list(entry["argv"]))],
         )
 
         assert (alpha_home / "state" / "gateway.start-attestation.json").exists()
         assert (default_home / "state" / "gateway.unmapped-start-attestation.json").exists()
         assert not (default_home / "state" / "gateway.start-attestation.json").exists()
         assert token["relaunched_profiles"] == ["alpha"]
+
+    def test_unmapped_replay_accepts_only_a_new_matching_stable_pid(self, monkeypatch):
+        """A new PID 202 earns success only when its live argv belongs to this replay."""
+        expected = [r"C:\Hermes\venv\Scripts\python.exe", "-m", "hermes_cli.main", "gateway", "run"]
+        clock = [0.0]
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_time",
+            SimpleNamespace(
+                monotonic=lambda: clock[0],
+                sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            ),
+        )
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_kw: [101, 202])
+        monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda pid: list(expected) if pid == 202 else None)
+
+        assert update_cmd_windows._wait_for_unmapped_replay_ready({101}, expected) == 202
+
+    def test_unmapped_replay_rejects_new_pid_with_another_gateway_argv(self, monkeypatch):
+        """A sibling that starts after the replay is still not this entry's gateway."""
+        expected = ["python", "-m", "hermes_cli.main", "gateway", "run", "--profile", "alpha"]
+        clock = [0.0]
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_time",
+            SimpleNamespace(
+                monotonic=lambda: clock[0],
+                sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            ),
+        )
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_kw: [101, 202])
+        monkeypatch.setattr(
+            gateway, "_capture_gateway_argv", lambda _pid: ["python", "-m", "hermes_cli.main", "gateway", "run", "--profile", "beta"]
+        )
+
+        assert update_cmd_windows._wait_for_unmapped_replay_ready({101}, expected) is None
+
+    def test_unmapped_replay_keeps_pending_entry_when_candidate_dies_unstable(self, monkeypatch):
+        """A matching PID that vanishes before the confirmation window is not recovered."""
+        expected = ["python", "-m", "hermes_cli.main", "gateway", "run"]
+        clock = [0.0]
+        scans = iter([[101, 202], [101]])
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_time",
+            SimpleNamespace(
+                monotonic=lambda: clock[0],
+                sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            ),
+        )
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_kw: next(scans, [101]))
+        monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda _pid: list(expected))
+
+        assert update_cmd_windows._wait_for_unmapped_replay_ready({101}, expected) is None
+
+    def test_partial_unmapped_recovery_attests_only_verified_pid_and_retains_failure(self, monkeypatch, tmp_path):
+        """Two replays recover independently: only PID 202 can be attested when the other fails."""
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+        first = {"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}
+        second = {"pid": 88, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run", "--profile", "beta"]}
+        claimed: list[set[int]] = []
+
+        def ready(_before, argv, *, excluded_pids=None):
+            claimed.append(set(excluded_pids or set()))
+            return 202 if argv == first["argv"] else None
+
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_wait_for_unmapped_replay_ready",
+            ready,
+        )
+        token = _token({})
+
+        with pytest.raises(RuntimeError, match="not verified alive"):
+            _verify_relaunched_gateways_alive(
+                token,
+                {},
+                [(first, {101}, list(first["argv"])), (second, {101}, list(second["argv"]))],
+            )
+
+        assert token["unmapped"] == [second]
+        assert token["resume_needed"] is True
+        assert claimed == [set(), {202}]
+        payload = (tmp_path / "state" / "gateway.unmapped-start-attestation.json").read_text(encoding="utf-8")
+        assert '"pids": [202]' in payload
 
     def test_partial_retry_does_not_drop_or_restart_verified_alpha(self, monkeypatch, tmp_path):
         """R2: after alpha was verified, a retry only attempts beta and

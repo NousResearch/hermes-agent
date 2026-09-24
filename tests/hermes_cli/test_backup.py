@@ -553,6 +553,38 @@ class TestImport:
 
         assert (hermes_home / "config.yaml").read_text() == "model: test\n"
 
+    def test_import_skips_corrupt_deflate_member_and_continues(self, tmp_path, monkeypatch, capsys):
+        """One damaged member warns without rolling back earlier files or stopping later ones."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("config.yaml", "model: restored\n")
+            zf.writestr("damaged.json", '{"will": "fail"}')
+            zf.writestr("sessions/after.json", '{"restored": true}')
+
+        with zipfile.ZipFile(zip_path) as zf:
+            info = zf.getinfo("damaged.json")
+            data_offset = info.header_offset + 30 + len(info.filename) + len(info.extra)
+        with zip_path.open("r+b") as archive:
+            archive.seek(data_offset)
+            first_byte = archive.read(1)
+            archive.seek(data_offset)
+            # DEFLATE block type 3 is reserved, so zlib rejects this member.
+            archive.write(bytes([first_byte[0] | 0b110]))
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (hermes_home / "config.yaml").read_text() == "model: restored\n"
+        assert not (hermes_home / "damaged.json").exists()
+        assert not list(hermes_home.glob(".damaged.json.*.partial"))
+        assert (hermes_home / "sessions" / "after.json").read_text() == '{"restored": true}'
+        assert "Warnings (1 files skipped):" in capsys.readouterr().out
+
 
 
 

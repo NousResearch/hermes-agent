@@ -1237,6 +1237,11 @@ When you send `/model` with no arguments in a Telegram chat, Hermes shows an int
 
 The current model and provider are displayed at the top. All navigation happens by editing the same message in-place (no chat clutter).
 
+Each picker is tied to its sent message and topic, so buttons on one picker cannot
+change another session. Multiple pickers can remain open independently. Abandoned
+pickers are bounded: the oldest expire when the adapter reaches its limit. If a
+button reports that the picker expired, send `/model` again.
+
 :::tip
 If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
 :::

@@ -74,6 +74,7 @@ except Exception:
     def _list_providers():
         return []
 
+
 _PROVIDER_PREFIXES: frozenset[str] = frozenset(
     value.lower()
     for profile in _list_providers()
@@ -1188,13 +1189,40 @@ def _context_cache_key(model: str, base_url: str) -> str:
     return f"{model}@{(base_url or '').rstrip('/')}"
 
 
-def save_context_length(model: str, base_url: str, length: int, *, source: str = "") -> None:
+def _context_cache_known_floor(
+    model: str, base_url: str, provider: str = ""
+) -> Optional[int]:
+    """Reject transient low Gemini limits, including explicitly identified proxy routes."""
+    if "gemini" not in (model or "").lower():
+        return None
+    if (provider or "").strip().lower() == "gemini" or _infer_provider_from_url(
+        base_url or ""
+    ) == "gemini":
+        return DEFAULT_CONTEXT_LENGTHS["gemini"]
+    return None
+
+
+def save_context_length(
+    model: str, base_url: str, length: int, *, provider: str = "", source: str = ""
+) -> None:
     """Persist a discovered context length under ``model@base_url`` (same model, different providers, different limits)."""
     # 0/negative is always a bug and would make get_model_context_length() return 0 (`0 is not None`).
     if length <= 0:
         logger.warning("Refusing to cache non-positive context length %s -> %s tokens", f"{model}@{base_url}", length)
         return
     key = _context_cache_key(model, base_url)
+    floor = _context_cache_known_floor(model, base_url, provider)
+    if floor is not None and length < floor:
+        existing = get_cached_context_length(model, base_url)
+        if existing is not None and existing < floor:
+            _invalidate_cached_context_length(model, base_url)
+        logger.info(
+            "Ignoring context length cache %s -> %s below known floor %s",
+            key,
+            length,
+            floor,
+        )
+        return
     document = _load_context_cache_document()
     cache = document.get("context_lengths") or {}
     confirmed = document.get("bedrock_confirmed_v1") or {}
@@ -1216,12 +1244,20 @@ def save_context_length(model: str, base_url: str, length: int, *, source: str =
         logger.debug("Failed to save context length cache: %s", e)
 
 
-def save_provider_context_length(model: str, base_url: str, length: int, provider: str = "") -> None:
+def save_provider_context_length(
+    model: str, base_url: str, length: int, provider: str = ""
+) -> None:
     """Persist a provider-confirmed window, distinguishing it from legacy Bedrock fallbacks."""
     if _is_bedrock_context(base_url, provider):
-        save_context_length(model, base_url or "bedrock://", length, source="bedrock-confirmed-v1")
+        save_context_length(
+            model,
+            base_url or "bedrock://",
+            length,
+            provider=provider,
+            source="bedrock-confirmed-v1",
+        )
     else:
-        save_context_length(model, base_url, length)
+        save_context_length(model, base_url, length, provider=provider)
 
 
 def get_cached_context_length(model: str, base_url: str, *, bedrock_confirmed: bool = False) -> Optional[int]:
@@ -1972,19 +2008,41 @@ def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = 
     return None, ""
 
 
-def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
+def _validate_cached_context_length(
+    model: str, base_url: str, cached: int, *, api_key: str = "", provider: str = ""
+) -> Optional[int]:
     """Step 1 of get_model_context_length: accept, repair, or drop a persisted entry. Returns the
     value to use, or None to fall through to live resolution. Order matters: a value must be
     rejected as bogus before any provider-specific handling."""
     # Drop rules: (predicate, log level, message, shown value). 0/negative is always a bug (`0 is not
     # None` would hand the compressor a zero window); Kimi/MiniMax are underreported as 32K by stale
     # third-party metadata; pre-catalog leftovers persisted a shorter catch-all (see _PRE_CATALOG_STALE_KEYS).
+    floor = _context_cache_known_floor(model, base_url, provider)
     drop_rules = (
-        (cached <= 0, logger.warning, "Dropping non-positive cache entry %s@%s -> %s; re-resolving", cached),
-        (cached <= 32768 and _model_name_suggests_stale_32k_underreport(model), logger.info,
-         "Dropping stale cached context entry %s@%s -> %s (known 32K underreport); re-resolving via hardcoded defaults", f"{cached:,}"),
-        (_stale_pre_catalog_cache_entry(model, cached), logger.info,
-         "Dropping stale pre-catalog cache entry %s@%s -> %s; re-resolving via hardcoded defaults", f"{cached:,}"),
+        (
+            cached <= 0,
+            logger.warning,
+            "Dropping non-positive cache entry %s@%s -> %s; re-resolving",
+            cached,
+        ),
+        (
+            cached <= 32768 and _model_name_suggests_stale_32k_underreport(model),
+            logger.info,
+            "Dropping stale cached context entry %s@%s -> %s (known 32K underreport); re-resolving via hardcoded defaults",
+            f"{cached:,}",
+        ),
+        (
+            _stale_pre_catalog_cache_entry(model, cached),
+            logger.info,
+            "Dropping stale pre-catalog cache entry %s@%s -> %s; re-resolving via hardcoded defaults",
+            f"{cached:,}",
+        ),
+        (
+            floor is not None and cached < floor,
+            logger.info,
+            "Dropping stale Gemini cache entry %s@%s -> %s below known floor; re-resolving",
+            f"{cached:,}",
+        ),
     )
     for hit, log, msg, shown in drop_rules:
         if hit:
@@ -2212,8 +2270,12 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
 
 
 def get_model_context_length(
-    model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
-    provider: str = "", custom_providers: list | None = None,
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+    custom_providers: list | None = None,
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
     model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
@@ -2260,6 +2322,7 @@ def get_model_context_length(
     # A profile that qualifies its own bound (external processes have no /models probe) wins
     # over the generic caches below; explicit user/endpoint overrides above still take precedence.
     from providers import get_provider_profile
+
     profile = get_provider_profile(provider)
     context = profile.get_model_context_length(model) if profile else None
     if type(context) is int and context > 0:
@@ -2271,7 +2334,13 @@ def get_model_context_length(
     codex_route = _is_codex_route(provider, base_url, custom_providers)
     # 1. Persistent cache (LM Studio / Codex routes excluded — see _skip_persistent_context_cache).
     cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not codex_route and not _skip_persistent_context_cache(base_url, provider) else None
-    validated = _validate_cached_context_length(model, base_url, cached, api_key=api_key) if cached is not None else None
+    validated = (
+        _validate_cached_context_length(
+            model, base_url, cached, api_key=api_key, provider=provider
+        )
+        if cached is not None
+        else None
+    )
     if validated is not None:
         return validated
     # 1b. AWS Bedrock. Must run BEFORE the custom-endpoint step: bedrock-runtime.* is not in

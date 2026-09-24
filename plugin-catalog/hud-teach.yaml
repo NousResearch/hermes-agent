@@ -1,0 +1,20 @@
+name: hud-teach
+repo: https://github.com/iamlukethedev/hermes-hud-teach
+sha: faa71902eaaf0b82af58c37a58a117daf159021a
+description: 'Click-through numbered marks on any live Mac window — chess, games,
+  Photoshop, Settings — so Hermes can teach on the real UI without clicking for
+  the user.'
+maintainer: iamlukethedev
+tier: community
+category: desktop
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/iamlukethedev/hermes-hud-teach
+version: "0.1.3"
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - teach_screen
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

@@ -13,6 +13,7 @@ import json
 import pytest
 
 from tools import browser_camofox
+from tools import browser_tool_eval_policy as bt_eval_policy
 
 
 PRIVATE_URL = "http://169.254.169.254/latest/meta-data/"
@@ -29,11 +30,9 @@ def _block_active(monkeypatch):
     """Make the SSRF guard active and the current page resolve to a private URL."""
     from tools import browser_tool
 
-    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
     monkeypatch.setattr(
-        browser_tool,
-        "_camofox_current_page_private_url",
-        lambda tab_id, user_id, session=None: PRIVATE_URL,
+        bt_eval_policy, "_camofox_current_page_private_url", lambda tab_id, user_id, session=None: PRIVATE_URL
     )
 
 
@@ -41,22 +40,20 @@ def _block_inactive_guard(monkeypatch):
     """SSRF guard inactive (local backend / allow_private_urls)."""
     from tools import browser_tool
 
-    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
 
     def fail_probe(tab_id, user_id, session=None):
         raise AssertionError("must not probe page URL when the SSRF guard is inactive")
 
-    monkeypatch.setattr(browser_tool, "_camofox_current_page_private_url", fail_probe)
+    monkeypatch.setattr(bt_eval_policy, "_camofox_current_page_private_url", fail_probe)
 
 
 def _public_page(monkeypatch):
     from tools import browser_tool
 
-    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
     monkeypatch.setattr(
-        browser_tool,
-        "_camofox_current_page_private_url",
-        lambda tab_id, user_id, session=None: None,
+        bt_eval_policy, "_camofox_current_page_private_url", lambda tab_id, user_id, session=None: None
     )
 
 

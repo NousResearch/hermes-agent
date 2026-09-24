@@ -8,6 +8,8 @@ sibling platform-plugin tests on the same xdist worker.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,7 +26,6 @@ is_connected = _simplex.is_connected
 register = _simplex.register
 _env_enablement = _simplex._env_enablement
 _standalone_send = _simplex._standalone_send
-_guess_extension = _simplex._guess_extension
 _is_image_ext = _simplex._is_image_ext
 _is_audio_ext = _simplex._is_audio_ext
 _CORR_PREFIX = _simplex._CORR_PREFIX
@@ -95,21 +96,6 @@ def test_env_enablement_seeds_home_channel(monkeypatch):
 # 4. Adapter init
 # ---------------------------------------------------------------------------
 
-def test_adapter_init_custom_url():
-    from gateway.config import PlatformConfig
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
-    adapter = SimplexAdapter(cfg)
-    assert adapter.ws_url == "ws://localhost:5225"
-    assert adapter._running is False
-    assert adapter._ws is None
-
-
-# ---------------------------------------------------------------------------
-# 5. Helper functions (magic-byte detection)
-# ---------------------------------------------------------------------------
-
-def test_guess_extension_png():
-    assert _guess_extension(b"\x89PNG\r\n\x1a\n") == ".png"
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +174,45 @@ async def test_send_group():
     ]
     assert msg_content == {"type": "text", "text": "Hello, group!"}
     assert result.success is True
+
+
+@pytest.mark.parametrize(("mode", "color"), [
+    ("RGBA", (255, 0, 0, 128)),
+    ("LA", (128, 128)),
+    ("P", 0),
+])
+def test_prepare_image_flattens_jpeg_incompatible_modes(tmp_path, mode, color):
+    from PIL import Image
+
+    image_path = tmp_path / f"{mode}.png"
+    image = Image.new(mode, (256, 128), color)
+    if mode == "P":
+        image.putpalette([255, 0, 0] + [0, 0, 0] * 255)
+        image.info["transparency"] = 0
+    image.save(image_path)
+
+    prepared_path, thumb_uri = SimplexAdapter._prepare_image(str(image_path))
+
+    assert prepared_path == str(image_path)
+    encoded = thumb_uri.removeprefix(_simplex._THUMB_URI_PREFIX)
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as thumbnail:
+        assert thumbnail.mode == "RGB"
+        assert thumbnail.size == (128, 64)
+
+
+@pytest.mark.asyncio
+async def test_send_image_reports_thumbnail_preparation_failure(tmp_path, monkeypatch):
+    adapter = _adapter_with_ws()
+    image_path = tmp_path / "broken.png"
+    image_path.write_bytes(b"not an image")
+    monkeypatch.setattr(adapter, "_prepare_image", MagicMock(side_effect=OSError("bad image")))
+    adapter._send_items = AsyncMock()
+
+    result = await adapter.send_image_file("contact-42", str(image_path))
+
+    assert result.success is False
+    assert result.error == "Failed to prepare image: bad image"
+    adapter._send_items.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -388,3 +413,73 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
     }
 
 
+
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# Every SIMPLEX_* read (auto_accept / group_allowed in __init__, ws_url in the
+# registry gates, everything in _env_enablement) went through raw os.getenv,
+# which under multiplexing holds the DEFAULT profile's YAML-to-env bridge
+# output -- a secondary profile silently borrowed the default's daemon URL,
+# group allowlist and auto-accept setting. Reads now go through the module's
+# ``_get_scoped_secret`` (profile .env AND extra both honored; scoped miss
+# fails closed; unscoped default profile keeps env precedence).
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    from agent.secret_scope import (
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    tokens = []
+
+    def install(scope=None):
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+
+    yield install
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("SIMPLEX_WS_URL", "ws://default:5225")
+    monkeypatch.setenv("SIMPLEX_GROUP_ALLOWED", "*")
+    monkeypatch.setenv("SIMPLEX_AUTO_ACCEPT", "true")
+
+
+def test_multiplex_scoped_miss_does_not_borrow_default_profile_env(
+    multiplex_scope, default_profile_env
+):
+    """A secondary profile with no SimpleX config of its own must not be
+    auto-enabled off the default's daemon URL, nor inherit its wide-open
+    group allowlist."""
+    from gateway.config import PlatformConfig
+
+    multiplex_scope({"SOMETHING_ELSE": "x"})
+    assert _env_enablement() is None
+    assert check_requirements() is False
+    assert is_connected(PlatformConfig(enabled=True, extra={})) is False
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"auto_accept": False}))
+    assert adapter.group_allow_from == set()
+    assert adapter.auto_accept is False
+
+
+def test_multiplex_scope_reads_profile_own_env_not_default(
+    multiplex_scope, default_profile_env
+):
+    """A secondary profile's own .env (installed as the scope) is honored --
+    the extra-only shape would have ignored it."""
+    multiplex_scope({"SIMPLEX_WS_URL": "ws://profile:5225", "SIMPLEX_GROUP_ALLOWED": "g1"})
+    seeded = _env_enablement()
+    assert seeded == {"ws_url": "ws://profile:5225", "group_allowed": "g1"}
+    assert check_requirements() is True

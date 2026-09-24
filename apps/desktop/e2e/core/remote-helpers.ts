@@ -7,7 +7,7 @@
  * to a backend on another machine.
  */
 
-import { type ChildProcess, spawn } from 'node:child_process'
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
@@ -27,6 +27,8 @@ export interface RemoteBackend {
   /** Start it again on the same port and home (the user's service restarting). */
   restart: () => Promise<void>
   logTail: () => string
+  /** True when `hide` paths are really invisible to the backend (see startRemoteBackend). */
+  hidden: boolean
 }
 
 function python(): string {
@@ -76,8 +78,58 @@ async function waitReady(url: string, token: string, child: ChildProcess, log: s
   throw new Error(`remote backend never answered /api/status:\n${log.slice(-40).join('\n')}`)
 }
 
+/**
+ * Can this runner give a child its own mount namespace (unprivileged user
+ * namespaces)? Ubuntu 24.04+ may restrict them via AppArmor.
+ */
+function mountNamespaceAvailable(): boolean {
+  if (process.platform !== 'linux') {
+    return false
+  }
+
+  const probe = spawnSync('unshare', ['--user', '--map-root-user', '--mount', 'true'], { stdio: 'ignore' })
+
+  return probe.status === 0
+}
+
+/**
+ * The client and the "remote" share one host, so an absolute client path
+ * would resolve on the backend too. `hide` directories are covered with an
+ * empty tmpfs in a private mount namespace of the backend (then the backend
+ * drops back to the runner's own uid), so they exist for the Desktop and not
+ * for the backend — the other-machine filesystem. Returns null when the
+ * runner has no unprivileged user namespaces (caller checks `hidden`).
+ */
+function hidingCommand(hide: string[], argv: string[]): null | string[] {
+  if (!hide.length || !mountNamespaceAvailable()) {
+    return null
+  }
+
+  const uid = String(process.getuid?.() ?? 0)
+  const gid = String(process.getgid?.() ?? 0)
+  const mounts = hide.map((_, i) => `mount -t tmpfs -o mode=0755 tmpfs "$${i + 3}"`).join(' && ')
+
+  return [
+    'unshare',
+    '--user',
+    '--map-root-user',
+    '--mount',
+    'sh',
+    '-c',
+    `u="$1" g="$2" && ${mounts} && shift ${hide.length + 2} && exec unshare --user --map-user="$u" --map-group="$g" -- "$@"`,
+    'sh',
+    uid,
+    gid,
+    ...hide,
+    ...argv
+  ]
+}
+
 /** Spawn `hermes serve` for `sandbox` (its HOME/HERMES_HOME, cwd = its root). */
-export async function startRemoteBackend(sandbox: CoreSandbox): Promise<RemoteBackend> {
+export async function startRemoteBackend(
+  sandbox: CoreSandbox,
+  { hide = [] }: { hide?: string[] } = {}
+): Promise<RemoteBackend> {
   const port = await freePort()
   const token = crypto.randomBytes(24).toString('base64url')
   const url = `http://127.0.0.1:${port}`
@@ -97,8 +149,12 @@ export async function startRemoteBackend(sandbox: CoreSandbox): Promise<RemoteBa
     }
   }
 
+  const argv = [python(), '-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', String(port)]
+  const hiding = hidingCommand(hide, argv)
+  const [command, ...args] = hiding ?? argv
+
   const launch = async () => {
-    child = spawn(python(), ['-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', String(port)], {
+    child = spawn(command!, args, {
       cwd: sandbox.root,
       env: {
         ...env,
@@ -144,7 +200,8 @@ export async function startRemoteBackend(sandbox: CoreSandbox): Promise<RemoteBa
       await kill()
       await launch()
     },
-    logTail: () => log.slice(-60).join('\n')
+    logTail: () => log.slice(-60).join('\n'),
+    hidden: hiding !== null
   }
 }
 

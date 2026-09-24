@@ -83,7 +83,11 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
   const backendBox = createCoreSandbox('remote-backend')
   const clientBox = createCoreSandbox('remote-client')
   writeProviderHome(backendBox.hermesHome, provider.url, 'agent:\n  image_input_mode: native\n')
-  const backend = await startRemoteBackend(backendBox)
+  // The client-only folder is hidden from the backend (private mount
+  // namespace), so a path attach would really miss like on another machine.
+  const picturesDir = path.join(clientBox.root, 'client-only-pictures')
+  fs.mkdirSync(picturesDir, { recursive: true })
+  const backend = await startRemoteBackend(backendBox, { hide: [picturesDir] })
   const { app, page } = await launchCoreApp(coreAppEnv(clientBox, remoteEnv(backend)))
   const ws = recordWebSockets(page)
 
@@ -117,9 +121,20 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
 
     await test.step('an image that exists only on the client reaches the model as bytes (#120730)', async () => {
       const png = uniquePng(`client-only-${nonce}`)
-      const clientPath = path.join(clientBox.root, 'client-only-pictures', `shot-${nonce}.png`)
-      fs.mkdirSync(path.dirname(clientPath), { recursive: true })
+      const clientPath = path.join(picturesDir, `shot-${nonce}.png`)
       fs.writeFileSync(clientPath, png)
+
+      if (backend.hidden) {
+        expect(
+          fs.existsSync(`/proc/${backend.pid()}/root${clientPath}`),
+          'the backend cannot see the client file'
+        ).toBe(false)
+      } else {
+        test
+          .info()
+          .annotations.push({ type: 'fidelity', description: 'client file visible to the backend (shared fs)' })
+      }
+
       await stubImagePicker(app, clientPath)
       await page
         .locator('[data-slot="composer-root"] button:has(.codicon-add)')
@@ -186,10 +201,12 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
         })
         .toBe(title)
 
+      const killedPid = backend.pid()
       await backend.restart()
-      await expect.poll(() => sessionRows(backendBox).find(r => r.id === session.sessionId)?.title ?? null).toBe(title)
+      expect(backend.pid(), 'a new backend process').not.toBe(killedPid)
       await page.reload()
       await waitForInteractive(app, page)
+      // Served by the RESTARTED backend's session list, i.e. read back from its state.db.
       await expect(sidebarRow(page, title)).toBeVisible({ timeout: 60_000 })
 
       // The renamed session keeps working after the restart.

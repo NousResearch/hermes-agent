@@ -22,6 +22,29 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # Optional per-turn semantic router. The local controller may return only a route label;
+    # Hermes maps that label through routes below. Keep disabled until the controller is calibrated.
+    "model_router": {
+        "enabled": False,
+        "controller_url": "http://127.0.0.1:18777/v1/route",
+        "timeout_seconds": 5,
+        "minimum_confidence": 0.75,
+        "message_max_chars": 4096,
+        "fallback_route": "exception",
+        # Post-tool selection is separately opt-in. It may change only model/effort within
+        # one live provider runtime; provider/API-mode switches remain next-turn only.
+        "mid_turn": {
+            "enabled": False,
+            "tool_outcome_max_chars": 2048,
+            "strong_route": "exception",
+            # Tool results are projected to deterministic difficulty metadata. Raw text needs
+            # this explicit opt-in AND model_router.controller_auth_token for authenticated egress.
+            "authenticated_raw_tool_outcome": False,
+        },
+        # Each route needs provider, model, description, and optionally reasoning_effort.
+        # The controller cannot supply provider/model values and cannot escape this allowlist.
+        "routes": {},
+    },
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.

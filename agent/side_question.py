@@ -148,7 +148,7 @@ def _answer_via_oneshot(question: str, history: Optional[List[Dict[str, Any]]], 
 def answer_side_question(
     question: str, history: Optional[List[Dict[str, Any]]], *, parent_agent: Any = None,
     main_runtime: Optional[Dict[str, Any]] = None, max_tokens: int = 2048, temperature: Optional[float] = 0.3,
-    timeout: float = 180.0,
+    timeout: float = 180.0, reasoning_config: Optional[dict] = None,
 ) -> str:
     """Fork when ``parent_agent`` is live, else (or on empty answer / failure) the one-shot
     digest. Raises on failure — callers surface the error on their own UI."""
@@ -166,4 +166,4 @@ def answer_side_question(
             logger.warning("/btw cache-parity fork failed; falling back to one-shot", exc_info=True)
 
     return _answer_via_oneshot(question, history, main_runtime=main_runtime, max_tokens=max_tokens,
-                               temperature=temperature, timeout=timeout)
+                               temperature=temperature, timeout=timeout, reasoning_config=reasoning_config)

@@ -1011,6 +1011,20 @@ def _side_agent_args(rid, params, prefix):
     return session, text, parent, f"{prefix}_{uuid.uuid4().hex[:6]}", None
 
 
+def _side_agent_turn_route(agent, text):
+    """Resolve a policy route for Desktop side work, never inheriting a live fallback."""
+    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_cli.model_router import resolve_turn_route
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    runtime = {k: getattr(agent, k, "") for k in
+               ("provider", "requested_provider", "api_key", "base_url", "api_mode")}
+    return resolve_turn_route(
+        config=load_user_config_effective(), user_message=text,
+        base_model=str(getattr(agent, "model", "") or ""), base_runtime=runtime,
+        runtime_resolver=lambda provider, model: resolve_runtime_provider(requested=provider, target_model=model),
+    )
+
+
 @method("prompt.background")
 def _(rid, params: dict) -> dict:
     session, text, parent, task_id, err = _side_agent_args(rid, params, "bg")
@@ -1019,7 +1033,13 @@ def _(rid, params: dict) -> dict:
 
     def body():
         from run_agent import AIAgent
-        kwargs = _background_agent_kwargs(session["agent"], task_id)
+        agent = session["agent"]
+        selected = _side_agent_turn_route(agent, text)
+        kwargs = _background_agent_kwargs(agent, task_id)
+        if selected.decision != "disabled":
+            kwargs.update(selected.runtime)
+            kwargs.update(model=selected.model, reasoning_config=selected.reasoning_config,
+                          request_overrides=selected.request_overrides, fallback_model=None)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
             result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
                 user_message=text, task_id=task_id)
@@ -1040,8 +1060,14 @@ def _(rid, params: dict) -> dict:
     main_runtime = {
         k: getattr(agent, k, None)
         for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
-
     def body():
+        # Runs under _session_profile_runtime_scope via _spawn_side_agent; resolve there so
+        # a multiplexed Desktop session reads its own policy, never the launch profile's.
+        selected = _side_agent_turn_route(agent, text)
+        if selected.decision != "disabled":
+            # The auxiliary side-question configuration may independently choose a provider
+            # before its strict fallback guard. Do not permit that escape from an allowlist.
+            raise RuntimeError("model-router side questions require a dedicated allowlisted auxiliary route")
         from agent.side_question import answer_side_question
         return answer_side_question(
             text, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""

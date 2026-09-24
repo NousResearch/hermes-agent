@@ -476,12 +476,15 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     cli, query, query, single_query_images, single_query_image_urls
                 )
                 turn_route = cli._resolve_turn_agent_config(effective_query)
+                cli._active_turn_router_active = bool(turn_route.get("router_active"))
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
+                    reasoning_config=turn_route.get("reasoning_config"),
+                    route_signature=turn_route["signature"],
                 ):
                     _configure_quiet_agent(cli.agent)
                     if emitter is not None:

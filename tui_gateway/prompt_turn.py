@@ -542,6 +542,87 @@ def _adopt_out_of_band_turns(session: dict) -> None:
         session["history_version"] = version + 1
 
 
+def _apply_tui_model_router(session: dict, st: _TurnRun, user_message: Any) -> None:
+    """Temporarily apply an allowlisted Laya route for this one Desktop turn."""
+    agent = st.agent
+    snapshot = None
+    if agent is None or st.one_turn_restore:
+        return
+    if "moa_one_shot_restore" in session:
+        raise RuntimeError("model_router cannot run during a one-turn MoA override")
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_cli.model_router import resolve_turn_route
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from .model_switch import _restore_agent_model_runtime, _snapshot_agent_model_runtime
+        base_runtime = {
+            "provider": getattr(agent, "provider", ""),
+            "requested_provider": getattr(agent, "provider", ""),
+            "api_key": getattr(agent, "api_key", ""),
+            "base_url": getattr(agent, "base_url", ""),
+            "api_mode": getattr(agent, "api_mode", ""),
+        }
+        selected = resolve_turn_route(
+            config=load_user_config_effective(), user_message=user_message,
+            base_model=str(getattr(agent, "model", "") or ""), base_runtime=base_runtime,
+            runtime_resolver=lambda provider, model: resolve_runtime_provider(
+                requested=provider, target_model=model),
+        )
+        if selected.decision == "disabled":
+            return
+        runtime = selected.runtime
+        from hermes_cli.models import resolve_fast_mode_overrides
+        target_fast = None
+        if getattr(agent, "service_tier", None) == "priority":
+            target_fast = resolve_fast_mode_overrides(
+                selected.model, provider=runtime.get("provider"), base_url=runtime.get("base_url"))
+        target_overrides = dict(selected.request_overrides or {})
+        if target_fast:
+            target_overrides.update(target_fast)
+        changed = (
+            selected.model != getattr(agent, "model", "")
+            or runtime.get("provider") != getattr(agent, "provider", "")
+            or runtime.get("api_key", "") != getattr(agent, "api_key", "")
+            or runtime.get("base_url", "") != getattr(agent, "base_url", "")
+            or runtime.get("api_mode", "") != getattr(agent, "api_mode", "")
+            or selected.reasoning_config != getattr(agent, "reasoning_config", None)
+            or target_overrides != dict(getattr(agent, "request_overrides", {}) or {})
+            or bool(getattr(agent, "_fallback_chain", None))
+            or bool(getattr(agent, "_fallback_activated", False))
+        )
+        if not changed:
+            return
+        snapshot = _snapshot_agent_model_runtime(agent)
+        st.one_turn_restore = snapshot
+        # A routed turn must never use the ordinary provider fallback chain: its targets are
+        # intentionally limited to the router policy allowlist.
+        agent._fallback_chain = []
+        agent._fallback_model = None
+        agent._fallback_index = 0
+        if (selected.model != getattr(agent, "model", "")
+                or runtime.get("provider") != getattr(agent, "provider", "")
+                or runtime.get("api_key", "") != getattr(agent, "api_key", "")
+                or runtime.get("base_url", "") != getattr(agent, "base_url", "")
+                or runtime.get("api_mode", "") != getattr(agent, "api_mode", "")
+                or bool(getattr(agent, "_fallback_activated", False))):
+            agent.switch_model(
+                new_model=selected.model, new_provider=runtime.get("provider"),
+                api_key=runtime.get("api_key", ""), base_url=runtime.get("base_url", ""),
+                api_mode=runtime.get("api_mode", ""),
+            )
+        agent.request_overrides = target_overrides
+        agent.reasoning_config = selected.reasoning_config
+    except Exception:
+        # Restore a partial in-place switch before preserving the ordinary model for this turn.
+        if snapshot:
+            try:
+                _restore_agent_model_runtime(agent, snapshot)
+            except Exception:
+                pass
+        st.one_turn_restore = None
+        raise
+
+
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
@@ -578,6 +659,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     _adopt_out_of_band_turns(session)
     st.agent = agent = session["agent"]
+    _apply_tui_model_router(session, st, text)
+    agent = st.agent
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
         st.history = list(session["history"])
@@ -934,7 +1017,16 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
             _persist_live_session_runtime(session)
             _persist_live_session_system_prompt(session)
         except Exception:
-            logger.debug("TUI one-turn model restore failed", exc_info=True)
+            # A half-restored agent could retain the routed model/reasoning. Retire it and
+            # rebuild from the session's configured primary route instead of leaking state.
+            logger.error("TUI one-turn model restore failed; retiring the routed agent", exc_info=True)
+            with session["history_lock"]:
+                if session.get("agent") is st.agent:
+                    session["agent"] = None
+            st.one_turn_restore = None
+            from .model_switch import _restart_completed_failed_agent_build
+            session["agent_error"] = "TUI one-turn model restore failed"
+            _restart_completed_failed_agent_build(sid, session, session.get("agent_ready"))
     scopes = st.scopes
     with contextlib.suppress(Exception):
         if scopes.approval is not None:

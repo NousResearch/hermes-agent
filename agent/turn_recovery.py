@@ -41,6 +41,11 @@ from utils import base_url_host_matches
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def _has_active_midturn_route(agent: Any) -> bool:
+    """A post-tool route may not activate the agent's persistent fallback chain."""
+    return isinstance(getattr(agent, "_midturn_route_restore", None), dict)
+
+
 def _runtime_uses_ascii_encoding() -> bool:
     """Return whether the process genuinely needs an ASCII-only request fallback."""
     encoding = locale.getpreferredencoding(False).strip().lower().replace("_", "-")
@@ -1654,7 +1659,10 @@ def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bo
     Classify that text; on a billing / rate-limit verdict activate the configured fallback and
     return True so the caller re-runs the same user turn on the generic loop."""
     error = result.get("error")
-    if not error or result.get("interrupted") or not agent._has_pending_fallback():
+    if (
+        not error or result.get("interrupted") or not agent._has_pending_fallback()
+        or _has_active_midturn_route(agent)
+    ):
         return False
     classified = classify_api_error(
         RuntimeError(str(error)), provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
@@ -1831,7 +1839,11 @@ def route_classified_error(
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
     )
-    if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
+    if (
+        _should_fallback
+        and not _has_active_midturn_route(agent)
+        and agent._fallback_index < len(agent._fallback_chain)
+    ):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
@@ -1849,6 +1861,7 @@ def route_classified_error(
     # escalate to the fallback chain once; False -> terminal handling.
     if (
         classified.is_auth
+        and not _has_active_midturn_route(agent)
         and not _retry.auth_failover_attempted
         and agent._fallback_index < len(agent._fallback_chain)
     ):

@@ -233,6 +233,16 @@ def _is_local_validation_error(api_error: Any) -> bool:
     return not (isinstance(api_error, TypeError) and "nonetype" in _text and "not iterable" in _text)
 
 
+def _restore_active_midturn_route(agent: Any) -> bool:
+    """End a temporary post-tool route instead of letting it escape its active runtime."""
+    if not isinstance(getattr(agent, "_midturn_route_restore", None), dict):
+        return False
+    from agent.midturn_model_router import restore_midturn_route
+
+    restore_midturn_route(agent)
+    return True
+
+
 @dataclass
 class UnrecoveredErrorVerdict:
     """``action``: ``"continue"`` (retry), ``"break"`` (fallback armed / redirect pending) or
@@ -303,6 +313,15 @@ def settle_unrecovered_error(
         # slug is dead for this account, so record it before the fallback walk runs (#106475).
         from agent.fallback_cooldown import _mark_entitlement_rejected_model
         _mark_entitlement_rejected_model(agent, api_error)
+        # A post-tool route is request-local. On rejection, restore its original runtime and
+        # terminate this request instead of activating the ordinary cross-provider chain.
+        if _restore_active_midturn_route(agent):
+            return _verdict("return", nonretryable_client_error_result(
+                agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
+                api_messages=api_messages, messages=messages, conversation_history=conversation_history,
+                api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
+                base_url=_base, model=_model,
+            ))
         # Copilot self-heal BEFORE fallback: a stale credential yields a 400
         # ``model_not_available_for_integrator`` / ``model_not_supported``, not a 401.
         # Fresh token + client rebuild, one retry, SAME provider.
@@ -347,6 +366,14 @@ def settle_unrecovered_error(
         ))
 
     if retry_count >= max_retries:
+        if _restore_active_midturn_route(agent):
+            return _verdict("return", max_retries_exhausted_result(
+                agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
+                error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,
+                messages=messages, conversation_history=conversation_history,
+                api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
+                base_url=_base, model=_model,
+            ))
         # Before fallback, rebuild the primary client once per API call block for
         # transient transport errors (stale pool, TCP reset).
         if not _retry.primary_recovery_attempted and agent._try_recover_primary_transport(

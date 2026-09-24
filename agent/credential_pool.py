@@ -1135,13 +1135,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             for index, entry in enumerate(self._entries):
                 row = rows.get(entry.id)
                 pair = self._persisted_token_pairs.get(entry.id, (None, None))
+                # Reference-only rows are intentionally secret-free on disk; never dehydrate
+                # their live in-memory credential while adopting a concurrent generation.
                 if row is None or not any(pair):
                     continue
                 # Adopt only rows the store overrode with a peer's newer pair; re-hydrating an
-                # unchanged row would drop in-memory-only runtime fields to_dict() omits.
+                # unchanged row would replace the live object (and pull peer cooldown state
+                # merged into the written row) on every ordinary flush.
                 if pair != (entry.access_token, entry.refresh_token):
-                    # Reference-only rows are intentionally secret-free on disk; never dehydrate
-                    # their live in-memory credential while adopting a concurrent generation.
                     self._entries[index] = PooledCredential.from_dict(self.provider, row)
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
@@ -1150,6 +1151,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._replace_entry(entry, updated)
         if persist:
             self._persist()
+            # _persist may have swapped in a peer's newer token generation; hand callers
+            # the live entry so they don't rebind the client to the stale pair.
+            return self._find(lambda e: e.id == updated.id) or updated
         return updated
 
     def _quarantine_sources(self, entry: PooledCredential, sources: Set[str]) -> None:

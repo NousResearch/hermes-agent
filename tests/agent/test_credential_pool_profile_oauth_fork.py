@@ -767,7 +767,15 @@ def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowe
 
     fleet["use"](_profile(fleet, "stale-dead") if borrowed else fleet["root"])
     stale, stale_billing, peer = load_pool("anthropic"), load_pool("anthropic"), load_pool("anthropic")
+    stale_adopter = load_pool("anthropic")
     assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
+    # An ordinary flush whose pair already matches disk must not re-hydrate the live object.
+    live = peer._entries[0]
+    peer._persist()
+    assert peer._entries[0] is live
+    # A stale writer's _adopt hands back the post-persist entry carrying the peer's pair.
+    adopted = stale_adopter._adopt(stale_adopter._entries[0], last_status=None)
+    assert adopted.refresh_token == "sk-ant-ort-RT1" and adopted is stale_adopter._entries[0]
 
     stale.mark_exhausted_and_rotate(
         status_code=401, credential_id="abc123",

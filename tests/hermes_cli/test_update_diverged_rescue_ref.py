@@ -1,11 +1,12 @@
-"""`hermes update` must not drop local commits without leaving a way back.
+"""`hermes update` must not drop local commits without leaving a named way back.
 
 When the checkout sits on the update's target branch and its history has
 diverged, the update resets hard to ``origin/<branch>``. Divergence there has
 two indistinguishable causes: an upstream force-push (nothing local is lost)
-and local commits on that branch (everything is). The rescue ref that makes
-the second case recoverable was written only for orphan divergence — a
-disjoint history — which is the rarer of the two.
+and local commits on that branch (everything is). The update must park the old
+HEAD under ``refs/hermes-update-backups/`` first and tell the user the ref name.
+The installer update paths are covered in
+``tests/scripts/install/test_install_diverged_rescue_ref.py``.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ def _commit(repo, name, text):
 
 
 @pytest.fixture()
-def diverged_checkout(tmp_path, monkeypatch):
+def diverged_checkout(tmp_path):
     """A checkout on ``main`` carrying a local commit its ``origin/main`` does not have."""
     upstream = tmp_path / "upstream"
     upstream.mkdir()
@@ -46,8 +47,6 @@ def diverged_checkout(tmp_path, monkeypatch):
     _git(tmp_path, "clone", "-q", str(upstream), str(checkout))
     _git(checkout, "reset", "-q", "--hard", "HEAD~1")          # back to the shared commit
     local_sha = _commit(checkout, "local-fix.txt", "local\n")  # diverges from origin/main
-
-    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
     return checkout, local_sha
 
 
@@ -57,29 +56,29 @@ def _rescue_refs(checkout):
     return dict(line.split() for line in out.splitlines() if line.strip())
 
 
-def test_reset_leaves_a_rescue_ref_for_the_discarded_commits(diverged_checkout):
-    """The reset is fine; losing the only pointer to the local work is not."""
-    checkout, local_sha = diverged_checkout
-
-    update_cmd._reconcile_diverged_checkout(GIT, "main", local_sha)
-
+def _assert_reset_kept_local_commit(checkout, local_sha, output):
     head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
     origin = _git(checkout, "rev-parse", "origin/main").stdout.strip()
     assert head == origin, "the reset itself must still happen"
+    refs = [ref for ref, sha in _rescue_refs(checkout).items() if sha == local_sha]
+    assert len(refs) == 1, f"the dropped commit needs exactly one rescue ref: {_rescue_refs(checkout)}"
+    assert refs[0].startswith("refs/hermes-update-backups/diverged-main-")
+    assert refs[0] in output, "the user must be told where the commits went"
+    dropped = _git(checkout, "log", "--format=%H", f"origin/main..{refs[0]}").stdout.split()
+    assert dropped == [local_sha]
 
-    refs = _rescue_refs(checkout)
-    assert local_sha in refs.values(), (
-        "the discarded commit must stay reachable through a rescue ref; without one "
-        f"it is recoverable only from the reflog. refs found: {refs}")
 
-
-def test_the_rescue_ref_carries_the_whole_discarded_history(diverged_checkout):
-    """A ref on the tip is enough: every dropped commit is reachable from it."""
+def test_hermes_update_keeps_local_commit_behind_a_rescue_ref(
+        diverged_checkout, monkeypatch, capsys):
+    """The real apply path: ff-only fails, the reconcile resets, the local commit stays reachable."""
     checkout, local_sha = diverged_checkout
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
 
-    update_cmd._reconcile_diverged_checkout(GIT, "main", local_sha)
+    update_cmd._pull_updates(
+        GIT, "main", None, prompt_for_restore=False, gw_input_fn=None,
+        discard_local_changes=False, keep_stash=False)
 
-    ref = next(r for r, sha in _rescue_refs(checkout).items() if sha == local_sha)
-    listed = _git(checkout, "log", "--format=%H", ref).stdout.split()
-    assert local_sha in listed
-    assert len(listed) >= 2, "the shared base must remain reachable from the rescue ref too"
+    out = capsys.readouterr().out
+    _assert_reset_kept_local_commit(checkout, local_sha, out)
+    assert "1 commit(s) not on origin/main" in out
+

@@ -64,7 +64,7 @@ def _prune_orphan_rescue_refs(
             list_result = _git_run(
                 git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
             if list_result.returncode != 0:
-                return
+                continue
             refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
             stale |= set(refs[:-keep] if keep > 0 else refs)
             if max_age_days > 0:

@@ -7,27 +7,20 @@ the task is skipped (existing behavior preserved).
 from __future__ import annotations
 
 import json
-import os
-import sys
-import tempfile
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture()
-def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
-    test_home = tempfile.mkdtemp(prefix="kanban_default_assignee_test_")
-    monkeypatch.setenv("HERMES_HOME", test_home)
-    # Force-reimport so the fresh HERMES_HOME is picked up.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+def isolated_kanban_home(tmp_path, monkeypatch):
+    """Fresh HERMES_HOME with a clean kanban DB."""
+    test_home = tmp_path / ".hermes"
+    test_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(test_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from hermes_cli import kanban_db
     yield kanban_db, test_home
-    # Cleanup is best-effort; tempfile dir survives but pytest isolation
-    # gives each test its own monkeypatched HERMES_HOME so no cross-test
-    # contamination.
 
 
 def _fake_spawn(*args, **kwargs):
@@ -42,11 +35,13 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
     task gets the assignment applied and dispatched on the same tick. The
     DB row is mutated (assignee column + an 'assigned' event)."""
     kb, _home = isolated_kanban_home
-    with kb.connect_closing() as conn:
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+    with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         task_id = kb.create_task(conn, title="t1", assignee=None)
-    with kb.connect_closing() as conn:
-        res = kb.dispatch_once(
+    with kbc.connect_closing() as conn:
+        res = kbd.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,
             default_assignee="default",
         )
@@ -56,12 +51,12 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
     assert res.spawned[0][0] == task_id
     assert res.spawned[0][1] == "default"
 
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
     assert row["assignee"] == "default"
 
     # 'assigned' event emitted for the audit trail
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         evs = list(conn.execute(
             "SELECT kind, payload FROM task_events WHERE task_id = ? AND kind = 'assigned'",
             (task_id,),
@@ -81,11 +76,13 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
     default_assignee logic — that fallback only applies to genuinely
     unassigned rows."""
     kb, _home = isolated_kanban_home
-    with kb.connect_closing() as conn:
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+    with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         task_id = kb.create_task(conn, title="t1", assignee="default")
-    with kb.connect_closing() as conn:
-        res = kb.dispatch_once(
+    with kbc.connect_closing() as conn:
+        res = kbd.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,
             default_assignee="someother",
         )

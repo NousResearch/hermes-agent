@@ -12,8 +12,10 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentReasoningEffortWire,
   $messages,
-  $selectedStoredSessionId
+  $selectedStoredSessionId,
+  $turnStartedAt
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
@@ -48,11 +50,21 @@ export interface SessionView {
   $awaitingResponse: ReadableAtom<boolean>
   $messagesEmpty: ReadableAtom<boolean>
   $lastVisibleIsUser: ReadableAtom<boolean>
+  /** Epoch ms this surface's current turn began, null when idle. Per-surface
+   *  for the same reason $busy is: a tile's activity timer must count its own
+   *  turn, not whichever session the global mirror last reflected. */
+  $turnStartedAt: ReadableAtom<number | null>
   $cwd: ReadableAtom<string>
   $model: ReadableAtom<string>
   $provider: ReadableAtom<string>
   $fast: ReadableAtom<boolean>
   $reasoningEffort: ReadableAtom<string>
+  /** The session's effort is not known yet (a resume in flight, or its agent
+   *  still building), so an empty `$reasoningEffort` must not render as the
+   *  profile default — that paints a level about to be replaced (#79807). */
+  $reasoningEffortPending: ReadableAtom<boolean>
+  /** Gateway-reported level the route sends for `$reasoningEffort` ('' = unknown). */
+  $reasoningEffortWire: ReadableAtom<string>
 }
 
 /** The active session's own slice, or `undefined` while it's a draft. */
@@ -87,6 +99,21 @@ const $primaryBusy = computed([$primaryState, $busy, $selectedStoredSessionId], 
   state ? state.busy : selected ? false : draftBusy
 )
 
+/** Whether a slice's effort is still unknown: marked pending by the resume and
+ *  cleared by the first runtime report of `reasoning_effort` (even ''). */
+export const reasoningEffortPending = (state: ClientSessionState): boolean =>
+  Boolean(state.reasoningEffortPending) && !state.reasoningEffort
+
+/**
+ * Same reasoning as busy: a selected stored session with no slice yet is a
+ * cold resume in flight, whose effort the backend has not reported. The
+ * draft's '' there would render as the profile default. A true new chat (no
+ * stored id) is the composer's own pick and is never pending.
+ */
+const $primaryReasoningEffortPending = computed([$primaryState, $selectedStoredSessionId], (state, selected) =>
+  state ? reasoningEffortPending(state) : Boolean(selected)
+)
+
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
@@ -99,8 +126,11 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $model: primaryField<string>(state => state.model, $currentModel),
   $provider: primaryField<string>(state => state.provider, $currentProvider),
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
+  $reasoningEffortPending: $primaryReasoningEffortPending,
+  $reasoningEffortWire: primaryField<string>(state => state.reasoningEffortWire ?? '', $currentReasoningEffortWire),
   $runtimeId: $activeSessionId,
-  $storedId: $selectedStoredSessionId
+  $storedId: $selectedStoredSessionId,
+  $turnStartedAt: primaryField<number | null>(state => state.turnStartedAt, $turnStartedAt)
 }
 
 const SessionViewContext = createContext<SessionView>(PRIMARY_SESSION_VIEW)

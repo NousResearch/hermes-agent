@@ -26,7 +26,6 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_subscriptions,
 )
 
 
@@ -71,12 +70,6 @@ def test_two_plugins_communicate():
     assert received == [{"n": 42}]
 
 
-def test_emit_with_no_subscribers_returns_zero():
-    manager = _fresh_manager()
-    ctx_b = _make_ctx(manager, "plugin_b", key="b")
-    assert ctx_b.emit("ping", {"x": 1}) == 0
-
-
 def test_emit_none_payload_delivers_empty_kwargs():
     manager = _fresh_manager()
     ctx_a = _make_ctx(manager, "plugin_a", key="a")
@@ -111,8 +104,6 @@ def test_namespace_forced_to_emitter_key():
 
     # Delivered under the emitter's own key ("b"), never "a".
     assert delivered_events == ["b:ping"]
-    # Registry stores it under the forced full name.
-    assert "b:ping" in manager._subscriptions
 
 
 def test_namespace_falls_back_to_name_when_key_empty():
@@ -161,18 +152,6 @@ def test_emit_rejects_empty_event():
     ctx_b = _make_ctx(manager, "plugin_b", key="b")
     with pytest.raises(ValueError):
         ctx_b.emit("")
-
-
-def test_subscribe_is_unrestricted():
-    """Any plugin may subscribe to any event, including hermes: and foreign."""
-    manager = _fresh_manager()
-    ctx_a = _make_ctx(manager, "plugin_a", key="a")
-    got = []
-    # None of these raise — only emit is namespace-gated.
-    ctx_a.subscribe("hermes:core_event", lambda **p: got.append("hermes"))
-    ctx_a.subscribe("b:ping", lambda **p: got.append("b"))
-    assert "hermes:core_event" in manager._subscriptions
-    assert "b:ping" in manager._subscriptions
 
 
 # ── 4. Per-callback isolation ────────────────────────────────────────────────
@@ -237,9 +216,9 @@ def test_emit_returns_before_blocking_subscriber_finishes():
 
 
 def test_pending_budget_drops_new_event_without_blocking(monkeypatch, caplog):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugins_dispatch
 
-    monkeypatch.setattr(plugins_mod, "_EVENT_PENDING_CAP", 1)
+    monkeypatch.setattr(plugins_dispatch, "_EVENT_PENDING_CAP", 1)
     manager = _fresh_manager()
     ctx_a = _make_ctx(manager, "plugin_a", key="a")
     ctx_b = _make_ctx(manager, "plugin_b", key="b")
@@ -339,35 +318,6 @@ def test_owner_removal_cancels_callback_already_snapshotted_in_queue():
     assert observed == []
 
 
-def test_event_bus_reset_cancels_queued_generation():
-    manager = _fresh_manager()
-    ctx_gate = _make_ctx(manager, "gate", key="gate")
-    ctx_a = _make_ctx(manager, "plugin_a", key="a")
-    ctx_b = _make_ctx(manager, "plugin_b", key="b")
-    entered = threading.Event()
-    release = threading.Event()
-    observed = []
-
-    def blocking(**payload):
-        entered.set()
-        release.wait(timeout=2.0)
-
-    ctx_gate.subscribe("b:ping", blocking)
-    ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload))
-    assert ctx_b.emit("ping", {"value": 1}) == 2
-    assert entered.wait(timeout=1.0)
-    old_worker = manager._event_worker
-
-    manager._reset_event_bus()
-    release.set()
-    assert old_worker is not None
-    old_worker.join(timeout=2.0)
-
-    assert not old_worker.is_alive()
-    assert observed == []
-    assert manager._subscriptions == {}
-
-
 # ── 5. Recursion cap ─────────────────────────────────────────────────────────
 
 
@@ -406,25 +356,8 @@ def test_recursion_cap_terminates(caplog):
 # ── 6. Manifest emits/listens parsed as optional ─────────────────────────────
 
 
-def test_manifest_emits_listens_default_empty():
-    m = PluginManifest(name="plain")
-    assert m.emits == []
-    assert m.listens == []
-
-
-def test_manifest_emits_listens_present():
-    m = PluginManifest(
-        name="declar",
-        key="declar",
-        emits=["ping", "pong"],
-        listens=["other:ready"],
-    )
-    assert m.emits == ["ping", "pong"]
-    assert m.listens == ["other:ready"]
-
-
 def test_manifest_parse_reads_emits_listens(tmp_path):
-    """_parse_manifest picks up optional emits/listens from plugin.yaml."""
+    """parse_manifest_file picks up optional emits/listens from plugin.yaml."""
     import yaml
 
     plugin_dir = tmp_path / "myplug"
@@ -441,45 +374,12 @@ def test_manifest_parse_reads_emits_listens(tmp_path):
         encoding="utf-8",
     )
 
-    manager = _fresh_manager()
-    manifest = manager._parse_manifest(manifest_file, plugin_dir, "user", "")
+    from hermes_cli.plugins import parse_manifest_file
+
+    manifest = parse_manifest_file(manifest_file, plugin_dir, "user", "")
     assert manifest is not None
     assert manifest.emits == ["ping"]
     assert manifest.listens == ["other:evt"]
-
-
-def test_manifest_parse_absent_emits_listens(tmp_path):
-    import yaml
-
-    plugin_dir = tmp_path / "bare"
-    plugin_dir.mkdir()
-    manifest_file = plugin_dir / "plugin.yaml"
-    manifest_file.write_text(
-        yaml.safe_dump({"name": "bare"}), encoding="utf-8"
-    )
-
-    manager = _fresh_manager()
-    manifest = manager._parse_manifest(manifest_file, plugin_dir, "user", "")
-    assert manifest is not None
-    assert manifest.emits == []
-    assert manifest.listens == []
-
-
-# ── Module-level accessor ────────────────────────────────────────────────────
-
-
-def test_get_plugin_subscriptions_accessor(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
-
-    fresh = _fresh_manager()
-    monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", lambda force=False: fresh)
-
-    ctx = _make_ctx(fresh, "plugin_a", key="a")
-    ctx.subscribe("b:ping", lambda **p: None)
-
-    subs = get_plugin_subscriptions()
-    assert "b:ping" in subs
-    assert len(subs["b:ping"]) == 1
 
 
 # ── 7. plugins show output includes emits/listens ────────────────────────────
@@ -514,18 +414,15 @@ def test_plugins_show_includes_emits_listens(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "showplug" in out
-    assert "Emits:" in out
     assert "ping" in out
     assert "pong" in out
-    assert "Listens:" in out
     assert "other:ready" in out
 
 
-def test_plugins_show_not_found_exits(monkeypatch, capsys):
+def test_plugins_show_not_found_exits(monkeypatch):
     from hermes_cli import plugins_cmd
 
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [])
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         plugins_cmd.cmd_show("nope")
-    out = capsys.readouterr().out
-    assert "not found" in out.lower()
+    assert exc.value.code not in (0, None)

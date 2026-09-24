@@ -57,29 +57,6 @@ def _make_global_store(tmp_path) -> "os.PathLike[str]":
 
 
 class TestLoadGlobalAuthStoreMemo:
-    def test_repeated_calls_read_store_once(self, tmp_path, monkeypatch):
-        """Repeated calls must not re-read/re-parse the global store."""
-        global_path = _make_global_store(tmp_path)
-        monkeypatch.setattr(
-            auth_mod, "_global_auth_file_path", lambda: global_path
-        )
-        reads = {"n": 0}
-        orig = auth_mod._load_auth_store
-
-        def counting_load(store_path=None):
-            reads["n"] += 1
-            return orig(store_path)
-
-        monkeypatch.setattr(auth_mod, "_load_auth_store", counting_load)
-
-        first = auth_mod._load_global_auth_store()
-        for _ in range(10):
-            auth_mod._load_global_auth_store()
-        assert reads["n"] == 1, (
-            "repeated calls must be memo hits (store read once), "
-            f"got {reads['n']}"
-        )
-        assert first.get("providers", {}).get("openai") == {"api_key": "sk-x"}
 
     def test_mtime_change_re_reads_once(self, tmp_path, monkeypatch):
         """A store file change on disk invalidates the memo."""

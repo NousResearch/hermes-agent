@@ -28,14 +28,13 @@ def setup_module():
 
 
 def test_stale_google_transitives_are_reported_missing(setup_module, monkeypatch):
-    installed = {
-        "google-api-python-client": "2.194.0",
-        "google-auth": "2.55.0",
-        "google-auth-oauthlib": "1.3.1",
-        "google-auth-httplib2": "0.3.1",
-        "httplib2": "0.31.2",
-        "pyasn1": "0.6.3",
-    }
+    """Absent or version-drifted packages are reported; exact matches are not."""
+    specs = list(setup_module.REQUIRED_PACKAGES)
+    assert len(specs) >= 3
+    installed = {spec.partition("==")[0]: spec.partition("==")[2] for spec in specs}
+    stale, missing = specs[0], specs[1]
+    installed[stale.partition("==")[0]] = "0.0.0-stale"
+    del installed[missing.partition("==")[0]]
 
     def fake_version(name):
         try:
@@ -45,11 +44,7 @@ def test_stale_google_transitives_are_reported_missing(setup_module, monkeypatch
 
     monkeypatch.setattr(setup_module, "_distribution_version", fake_version)
 
-    assert setup_module._missing_required_packages() == [
-        "google-auth==2.55.1",
-        "httplib2==0.32.0",
-        "pyasn1==0.6.4",
-    ]
+    assert setup_module._missing_required_packages() == [stale, missing]
 
 
 def test_installer_repairs_stale_transitives(setup_module, monkeypatch):

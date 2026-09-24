@@ -51,6 +51,7 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
+    agent._codex_session_prompt = None  # seeded session: no recorded composition to compare
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0
     agent._skill_nudge_interval = 0
@@ -111,6 +112,7 @@ def test_codex_turn_persists_each_message_exactly_once():
     real AIAgent._flush_messages_to_session_db to prove no #860/#42039
     duplicate-write regression on the codex path."""
     tmp = tempfile.mkdtemp(prefix="codex_persist_")
+    db = None
     try:
         db = SessionDB(Path(tmp) / "state.db")
         sid = "sess-codex-once"
@@ -163,37 +165,8 @@ def test_codex_turn_persists_each_message_exactly_once():
     finally:
         import shutil
 
-        shutil.rmtree(tmp)
+        if db is not None:
+            db.close()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
-class TestGatewayPersistedResolution:
-    """The gateway default must preserve standard-runtime skip-db behaviour."""
-
-    @staticmethod
-    def _resolve_persistence_block(agent_result, session_db_present):
-        # gateway/run.py persistence block:
-        #   agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
-        return agent_result.get("agent_persisted", session_db_present)
-
-    @staticmethod
-    def _resolve_passthrough(result_holder0):
-        # gateway/run.py result_holder passthrough:
-        #   result_holder[0].get("agent_persisted", True) if result_holder[0] else True
-        return result_holder0.get("agent_persisted", True) if result_holder0 else True
-
-    def test_codex_result_keeps_gateway_skip(self):
-        # Codex now self-persists → gateway must SKIP (agent_persisted True).
-        codex = {"agent_persisted": True}
-        assert self._resolve_persistence_block(codex, True) is True
-        assert self._resolve_persistence_block(codex, False) is True
-        assert self._resolve_passthrough(codex) is True
-
-    def test_standard_runtime_preserves_skip_db(self):
-        # Standard runtime omits the key → old behaviour: skip iff DB present.
-        standard = {"final_response": "ok"}
-        assert self._resolve_persistence_block(standard, True) is True
-        assert self._resolve_persistence_block(standard, False) is False
-        assert self._resolve_passthrough(standard) is True
-
-    def test_missing_result_holder_defaults_persisted(self):
-        assert self._resolve_passthrough(None) is True

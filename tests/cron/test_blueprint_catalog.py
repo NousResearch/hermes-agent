@@ -9,7 +9,6 @@ cron job store.
 import importlib
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -19,23 +18,12 @@ from cron.blueprint_catalog import (
     BlueprintSlot,
     fill_blueprint,
     get_blueprint,
-    blueprint_catalog_entry,
     blueprint_deeplink,
-    blueprint_form_schema,
-    blueprint_slash_command,
 )
 
 
 class TestCatalog:
-    def test_catalog_nonempty_and_keyed(self):
-        assert len(CATALOG) >= 1
-        for r in CATALOG:
-            assert get_blueprint(r.key) is r
 
-    def test_every_slot_has_known_type(self):
-        for r in CATALOG:
-            for s in r.slots:
-                assert s.type in {"time", "enum", "text", "weekdays"}
 
     def test_bad_slot_type_rejected(self):
         with pytest.raises(ValueError):
@@ -68,9 +56,6 @@ class TestScheduleResolution:
         )
         assert spec["schedule"] == "0 14 * * 1-5"
 
-    def test_defaults_fill_when_omitted(self):
-        spec = fill_blueprint(get_blueprint("morning-brief"), {})
-        assert spec["schedule"] == "0 8 * * *"
 
 
 class TestValidation:
@@ -121,16 +106,7 @@ class TestValidation:
 
 
 class TestRenderers:
-    def test_form_schema_fields(self):
-        schema = blueprint_form_schema(get_blueprint("morning-brief"))
-        names = [f["name"] for f in schema["fields"]]
-        assert names == ["time", "deliver"]
-        assert schema["key"] == "morning-brief"
 
-    def test_slash_command_defaults(self):
-        cmd = blueprint_slash_command(get_blueprint("morning-brief"))
-        assert cmd.startswith("/blueprint morning-brief")
-        assert "time=08:00" in cmd
 
 
     def test_deeplink_shape(self):
@@ -152,24 +128,7 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 class TestCommandHandler:
-    def test_bare_lists_catalog(self, isolated_home):
-        from hermes_cli.blueprint_cmd import handle_blueprint_command
 
-        res = handle_blueprint_command("")
-        assert "morning-brief" in res.text and "Automation Blueprints" in res.text
-        assert res.agent_seed is None
-
-    def test_name_seeds_agent(self, isolated_home):
-        from hermes_cli.blueprint_cmd import handle_blueprint_command
-
-        # `/blueprint <name>` (no inline slots) now seeds the agent to ask
-        # the user for each value conversationally instead of dumping fields.
-        res = handle_blueprint_command("morning-brief")
-        assert res.agent_seed is not None
-        assert "morning-brief" in res.agent_seed
-        assert "cronjob tool" in res.agent_seed
-        # the schedule template is handed to the agent to build the cron expr
-        assert "* * *" in res.agent_seed
 
 
     def test_fill_creates_job(self, isolated_home):

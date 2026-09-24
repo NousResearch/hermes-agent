@@ -3,30 +3,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_FETCH_TIMEOUT_MS = 15_000
-// Default / floor / ceiling for Desktop's data-URL file load (composer attach,
-// image preview, etc.). The whole file is base64-buffered in main, so this is
-// a memory guard — not a model limit. Settings → Chat takes a free-form MB
-// value; 16 MB ships as default. The ceiling is only a typo guard (very large
-// values can OOM / crash the app).
-const DATA_URL_READ_DEFAULT_MAX_MB = 16
-const DATA_URL_READ_MIN_MAX_MB = 1
-const DATA_URL_READ_MAX_MAX_MB = 4096
+// Relative, not `@hermes/shared`: the electron bundle is built by esbuild with
+// no tsconfig path resolution (see scripts/bundle-electron-main.mjs), so a bare
+// specifier would typecheck and then fail to bundle.
+import {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB
+} from '../../shared/src/data-url-read-max'
+
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
 // after base64 + framing. Preview stays on the Settings-configurable path.
 const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
-
-function clampDataUrlReadMaxMb(value) {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return DATA_URL_READ_DEFAULT_MAX_MB
-  }
-
-  return Math.min(DATA_URL_READ_MAX_MAX_MB, Math.max(DATA_URL_READ_MIN_MAX_MB, Math.round(parsed)))
-}
 
 function dataUrlReadMaxBytesFromMb(maxMb) {
   return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
@@ -274,6 +266,22 @@ function resolvePersistedRemoteToken({
   return encryptSecret(incomingToken, { allowPlainText: allowPlainText === true })
 }
 
+// The renderer-facing "the saved token is in plain text" warning signal for the
+// connection-config IPC path. Plain text is the CHOSEN mode while keychain
+// encryption is opted out — probeSecureTokenStorage reports availability in
+// that mode on purpose — so the warning fires only for the genuinely degraded
+// state: the token is plain AND the machine cannot secure it (the keyring-less
+// opt-in path). The env override supplies its token from the environment, not
+// the saved block, so it never warns; `secureTokenStorage === false` is matched
+// strictly so an absent signal never manufactures a warning.
+function resolveRemoteTokenPlainText({ envOverride, token, secureTokenStorage }: any = {}) {
+  if (envOverride) {
+    return false
+  }
+
+  return token?.encoding === 'plain' && secureTokenStorage === false
+}
+
 function sensitiveFileBlockReason(filePath) {
   const normalized = String(filePath || '')
     .replace(/\\/g, '/')
@@ -401,6 +409,29 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
   rejectUnsafePathSyntax(resolvedPath, purpose)
 
   return resolvedPath
+}
+
+/**
+ * Candidate absolute paths to retry when a preview/download target could not
+ * be resolved against the agent's working directory. Attachment references
+ * stored in chat history are frequently HOME-relative (e.g.
+ * "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
+ * ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to cwd
+ * (#115609). Pure and DI-testable: takes `home`/`hermesHome` as arguments
+ * instead of reaching for `app.getPath('home')` / a module-level constant.
+ * Returns an empty array for absolute paths, `file:` URLs, and empty input —
+ * those already had their one real resolution attempt upstream.
+ */
+function homeRelativeAttachmentCandidates(raw, home, hermesHome) {
+  const trimmed = String(raw || '').trim()
+
+  if (!trimmed || /^file:/i.test(trimmed) || path.isAbsolute(trimmed)) {
+    return []
+  }
+
+  const normalized = trimmed.replace(/\\/g, '/')
+
+  return [path.join(home, normalized), path.join(hermesHome, 'attachments', path.basename(normalized))]
 }
 
 async function statForIpc(fsImpl: { promises: { stat: typeof fs.promises.stat } }, resolvedPath, purpose, typeLabel) {
@@ -546,11 +577,13 @@ export {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
+  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,

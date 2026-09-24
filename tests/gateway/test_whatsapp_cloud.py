@@ -582,9 +582,17 @@ class TestDeliveryFailureStatuses:
         payload = self._status_payload(
             [{"id": "wamid.OK1", "status": state, "recipient_id": "15551234567"}]
         )
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="gateway.platforms.whatsapp_cloud"):
             await adapter._dispatch_payload(payload)
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        debugs = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == "gateway.platforms.whatsapp_cloud"
+        ]
+        assert len(debugs) == 1
+        assert state in debugs[0].getMessage()
+        assert "wamid.OK1" in debugs[0].getMessage()
 
     @pytest.mark.asyncio
     async def test_failed_status_without_errors_still_warns(self, caplog):
@@ -601,6 +609,62 @@ class TestDeliveryFailureStatuses:
             await adapter._dispatch_payload(payload)  # must not raise
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert len(warnings) == 2
+
+    @pytest.mark.asyncio
+    async def test_malformed_status_entries_do_not_break_valid_failed(self, caplog):
+        import logging
+
+        adapter = _make_adapter()
+        payload = self._status_payload(
+            [
+                "oops",
+                42,
+                None,
+                {"status": "mysterious", "id": None},
+                {
+                    "id": "wamid.MIXED1",
+                    "status": "failed",
+                    "recipient_id": "15551234567",
+                    "errors": [{"code": 131047, "title": "Re-engagement message"}],
+                },
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            await adapter._dispatch_payload(payload)  # must not raise
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "wamid.MIXED1" in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_failed_status_details_flattened_and_bounded(self, caplog):
+        import logging
+
+        adapter = _make_adapter()
+        hostile = "line1\nline2\rline3 " + "x" * 500
+        payload = self._status_payload(
+            [
+                {
+                    "id": "wamid.HOSTILE",
+                    "status": "failed",
+                    "recipient_id": "15551234567",
+                    "errors": [
+                        {
+                            "code": 131047,
+                            "title": "Bad\nTitle",
+                            "error_data": {"details": hostile},
+                        }
+                    ],
+                }
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            await adapter._dispatch_payload(payload)
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        text = warnings[0].getMessage()
+        assert "\n" not in text and "\r" not in text
+        assert "x" * 500 not in text
+        assert "line1 line2 line3" in text
 
     @pytest.mark.asyncio
     async def test_message_still_dispatched_alongside_failed_status(self, caplog):

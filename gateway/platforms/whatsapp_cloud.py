@@ -51,6 +51,14 @@ from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
 
+_LOG_VALUE_LIMIT = 300
+
+
+def _one_line(value: Any, limit: int = _LOG_VALUE_LIMIT) -> str:
+    """Flatten a Meta-provided string to one bounded log line."""
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    return text if len(text) <= limit else text[:limit] + "..."
+
 
 DEFAULT_API_VERSION = "v20.0"
 # ``None`` → aiohttp binds one socket per address family; "0.0.0.0" was unreachable on IPv6-only hosts.
@@ -785,7 +793,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     continue
                 data = error.get("error_data")
                 details = (data.get("details") if isinstance(data, dict) else None) or error.get("message")
-                parts.append(f"code={error.get('code')} title={error.get('title')!r} details={details!r}")
+                parts.append(
+                    f"code={error.get('code')} title={_one_line(error.get('title'))!r}"
+                    f" details={_one_line(details)!r}")
             if not parts:
                 logger.warning(
                     "[whatsapp_cloud] delivery failed for wamid %s to %s: no error details in status payload",

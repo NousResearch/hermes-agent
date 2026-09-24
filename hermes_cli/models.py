@@ -1600,6 +1600,48 @@ def _drop_delisted_opencode_models(normalized: str, rows: Optional[list[str]]) -
     return rows
 
 
+def _configured_relay_base_url(provider: str) -> str:
+    """``model.base_url`` when it points the *configured* provider at a relay/proxy, else "".
+
+    Discovery must probe the same endpoint inference uses (#121387): with ``model.base_url``
+    set for the configured provider, the vendor's canonical host is NOT the catalog to list.
+    Mirrors the ``$OPENAI_BASE_URL`` -> ``model.base_url`` -> canonical precedence of
+    ``_openai_discovery_base_url`` for every built-in provider, not just OpenAI.
+    """
+    try:
+        model_cfg = _get_model_config_dict()
+    except Exception:
+        return ""
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    if not cfg_provider or not provider:
+        return ""
+    try:
+        if normalize_provider(provider) != normalize_provider(cfg_provider):
+            return ""
+    except Exception:
+        return ""
+    return str(model_cfg.get("base_url") or "").strip().rstrip("/")
+
+
+def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
+    """Live catalog probed at a configured ``model.base_url`` relay, or None to fall through.
+
+    Returns only the relay's live ids (no curated merge): a relay user must see the relay's
+    catalog, and a failed/empty probe degrades to the canonical fetchers untouched.
+    """
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(normalized)
+        if profile is None or getattr(profile, "auth_type", "") != "api_key":
+            return None
+        api_key, _ = _api_key_credentials(normalized)
+        live = profile.fetch_models(api_key=api_key, base_url=relay)
+        return [str(m) for m in (live or []) if m] or None
+    except Exception:
+        return None
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
     fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
@@ -1608,6 +1650,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return _ollama_local_catalog(force_refresh)
 
     normalized = normalize_provider(provider)
+    # A configured `model.base_url` relay wins over the canonical per-provider fetchers: the
+    # picker must list what the configured endpoint serves and must not touch the vendor
+    # host (#121387). Any probe failure falls through to the existing canonical path.
+    relay = _configured_relay_base_url(provider)
+    if relay:
+        relayed = _relay_model_catalog(normalized, relay)
+        if relayed:
+            return relayed
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)

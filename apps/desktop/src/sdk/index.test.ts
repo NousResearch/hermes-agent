@@ -329,4 +329,20 @@ describe('host.composer draft facade', () => {
   it('reports a setDraft failure when no surface answers', async () => {
     await expect(host.composer.setDraft('sess-ghost', 'hello')).resolves.toBe(false)
   })
+
+  it('routes focus by address on the app focus bus: tile for a session, resolved-active for null', async () => {
+    const seen: string[] = []
+    const off = (event: Event) => seen.push((event as CustomEvent<{ target: string }>).detail.target)
+
+    window.addEventListener('hermes:composer-focus', off)
+    host.composer.focus('sess-1')
+    host.composer.focus(null)
+    // requestComposerFocus defers a plain focus request one macrotask.
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    window.removeEventListener('hermes:composer-focus', off)
+
+    // A session id never resolves to the primary unless the primary shows it —
+    // an absent tile drops the request rather than focusing the wrong pane.
+    expect(seen).toEqual(['tile:sess-1', 'main'])
+  })
 })

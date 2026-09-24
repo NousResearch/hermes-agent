@@ -25,6 +25,7 @@ import { capabilityScoped } from '@/api/client'
 import {
   type ComposerInsertMode,
   type ComposerTarget,
+  requestComposerFocus,
   requestComposerGetDraft,
   requestComposerInsertAcked,
   requestComposerSetDraft,
@@ -1671,6 +1672,20 @@ export const host = {
       const { target } = resolveComposerAddress(sessionId === null ? undefined : sessionId)
 
       return requestComposerSubmit(text, { target })
+    },
+
+    /** Put the caret in a composer — the app's own focus bus, same address
+     *  resolution as the verbs above. `insertText`/`setDraft` already focus a
+     *  VISIBLE surface they paint; this is the standalone verb for the other
+     *  cases (return the caret after a plugin popover/dialog closes, a
+     *  keybind that "goes to the input") that plugins used to reach with a
+     *  hand-built `hermes:composer-focus` CustomEvent. Fail-closed like the
+     *  rest: an absent tile drops the request instead of focusing whatever
+     *  the primary happens to show. */
+    focus: (sessionId: null | string = null): void => {
+      const { target } = resolveComposerAddress(sessionId === null ? undefined : sessionId)
+
+      requestComposerFocus(target)
     }
   }
 }

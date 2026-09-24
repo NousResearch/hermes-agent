@@ -64,6 +64,8 @@ class _ToolCallAccumulator:
         if extra is None and hasattr(tc_delta, "model_extra"):
             extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
         if extra is not None:
+            # extra may be a plain dict (MiniMax M2.7 via NVIDIA NIM) rather than a
+            # Pydantic model — see test_tool_call_extra_content_dict_passthrough
             from agent.chat_completion_helpers import _dump_if_model
             entry["extra_content"] = _dump_if_model(extra)
         name = entry["function"]["name"]

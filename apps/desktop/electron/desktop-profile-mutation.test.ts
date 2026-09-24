@@ -19,6 +19,10 @@ const sources = [
 ]
 
 for (const method of ['PATCH', 'DELETE']) {
+  // These cases create, sync-write, reopen and recursively remove two files on
+  // the native filesystem. Windows antivirus and a saturated CI worker can
+  // delay one synchronous operation past Vitest's 5s default (5.49s observed
+  // in the full Electron suite); the ownership assertions remain unchanged.
   test.each(sources)(`${method} on $label preserves startup ownership across restart`, source => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-owner-'))
     const target = path.join(root, 'active-profile.json')
@@ -55,7 +59,7 @@ for (const method of ['PATCH', 'DELETE']) {
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 15_000)
 
   test.each([null, 'local'])(`${method} failures through %s preserve both preferences`, connectionId => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-failure-'))

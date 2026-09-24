@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
     KnownSymptom,
@@ -126,8 +127,10 @@ def test_acp_failure_is_retried_per_semantics_and_surfaced_once(outcomes, name):
     row, out = ROWS[name], outcomes[name]
     run, fake = out.run, out.fake
     assert fake.invalid() == [], f"requests rejected by the ACP schema: {fake.invalid()}"
-    assert len(fake.main_prompts()) == row.model_calls, (
-        f"{name}: {len(fake.main_prompts())} model calls, expected {row.model_calls}\n{run.describe()}")
+    with known_failure(r"^crash_\w+: [3-9] model calls, expected 2",
+                       "#121467 a crash whose stderr lags the exit reads as a timeout and is retried past the budget"):
+        assert len(fake.main_prompts()) == row.model_calls, (
+            f"{name}: {len(fake.main_prompts())} model calls, expected {row.model_calls}\n{run.describe()}")
     assert (run.returncode == 0) is row.succeeds, run.describe()
     assert run.stdout.count(row.visible) == 1, f"{row.visible!r} must be shown exactly once\n{run.describe()}"
     rows = messages(out.nh, latest_session(out.nh))

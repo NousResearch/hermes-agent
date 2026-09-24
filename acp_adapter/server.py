@@ -814,6 +814,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if state is None:
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
+        if isinstance(getattr(state.agent, "acp_unavailable_error", None), Exception):
+            message = "The default model is temporarily unavailable. Select another model before sending a prompt."
+            if self._conn:
+                await self._conn.session_update(session_id, acp.update_agent_message_text(message))
+            return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)

@@ -61,7 +61,8 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
     findings: list[tuple[str, str]] = []
     plugins = raw_config.get("plugins") if isinstance(raw_config, dict) else None
     if isinstance(plugins, dict):
-        findings += [(f"plugins.enabled: {key}", f"remove it and configure {RELAY_PLUGINS_CONFIG_ENV}")
+        findings += [(f"plugins.enabled: {key}", "remove it and configure a standard user or system Relay plugins.toml; "
+                     f"use {RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override")
                      for key in legacy_relay_plugin_keys(plugins.get("enabled"))]
     effective_env = dict(env_map or {})
     # Fall through to process env ONLY when no explicit env_map was given: run_doctor passes None and wants
@@ -72,7 +73,7 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
                 effective_env[name] = os.environ[name]
     if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
         findings += [(name, f"run `hermes migrate relay` to generate relay-plugins.toml and set {RELAY_PLUGINS_CONFIG_ENV}; "
-                            "this variable is now ignored and no traces are exported")
+                            "this legacy variable is now ignored and does not configure an exporter")
                      for name in configured_legacy_relay_env_vars(effective_env)]
     return findings
 

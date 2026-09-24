@@ -884,13 +884,22 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         agent.provider = _fb["provider"]
         agent.model = _fb_model or _fb["model"]
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
-    if _refused_entries:
+    # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
+    # so name it even when no fallback entries are configured.
+    _pool_exhausted = False
+    if _explicit and _explicit != "auto":
+        with suppress(Exception):
+            from agent.credential_pool import load_pool
+            _pool = load_pool(_explicit)
+            _pool_exhausted = _pool.has_credentials() and not _pool.has_available(model=agent.model)
+    if _refused_entries or _pool_exhausted:
         # Neutral wording: the explicit-provider branch below raises the provider-specific
         # missing-credentials message, not the generic "No LLM provider configured" one.
         logger.warning(
-            "Init-time provider resolution failed: primary %r unresolvable; fallback entries refused: %s",
+            "Init-time provider resolution failed: primary %r unresolvable (%s); fallback entries refused: %s",
             agent.provider,
-            "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries),
+            "credential pool exhausted" if _pool_exhausted else "no usable credentials",
+            "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
         )
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.

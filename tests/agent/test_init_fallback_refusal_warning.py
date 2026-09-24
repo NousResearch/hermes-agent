@@ -28,16 +28,37 @@ _LADDER = [
 ]
 
 
+_LADDER_REASONS = (
+    "deepseek",
+    "no usable credentials",
+    "kimi",
+    "kimi auth handshake refused",
+)
+
+
+class _Pool:
+    def __init__(self, available):
+        self._available = available
+
+    def has_credentials(self):
+        return True
+
+    def has_available(self, model=None):
+        return self._available
+
+
 @pytest.mark.parametrize(
-    "primary, raise_match",
+    "primary, ladder, pool_available, raise_match, expected",
     [
-        ("openrouter", "No LLM provider configured"),
+        ("openrouter", _LADDER, True, "No LLM provider configured", _LADDER_REASONS),
         # Explicit non-OpenRouter primary: provider-specific missing-credentials error.
-        ("anthropic", "no API key was found"),
+        ("anthropic", _LADDER, True, "no API key was found", _LADDER_REASONS),
+        # #119533: a burned primary pool with no ladder at all must still be named.
+        ("openrouter", [], False, "No LLM provider configured", ("credential pool exhausted",)),
     ],
 )
 def test_fully_refusing_ladder_warns_with_each_reason(
-    monkeypatch, caplog, primary, raise_match
+    monkeypatch, caplog, primary, ladder, pool_available, raise_match, expected
 ):
     """Primary resolves no client; deepseek resolves none (missing key), kimi raises."""
     from agent import agent_init
@@ -51,17 +72,20 @@ def test_fully_refusing_ladder_warns_with_each_reason(
     monkeypatch.setattr(
         "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool", lambda provider: _Pool(pool_available)
+    )
 
     with caplog.at_level(logging.WARNING, logger="run_agent"):
         with pytest.raises(RuntimeError, match=raise_match):
-            agent_init._routed_client_kwargs(_agent(primary), _LADDER, 60)
+            agent_init._routed_client_kwargs(_agent(primary), ladder, 60)
 
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 1
     text = warnings[0].getMessage()
     assert primary in text
-    assert "deepseek" in text and "no usable credentials" in text
-    assert "kimi" in text and "kimi auth handshake refused" in text
+    for fragment in expected:
+        assert fragment in text
 
 
 def test_recovered_ladder_does_not_warn(monkeypatch, caplog):

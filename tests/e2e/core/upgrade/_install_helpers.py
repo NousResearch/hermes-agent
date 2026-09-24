@@ -44,7 +44,9 @@ def git(*args: str, cwd: Path, check: bool = True, env: dict | None = None) -> s
 
 
 def head_sha() -> str:
-    return git("rev-parse", "HEAD", cwd=H.WORKTREE)
+    """The commit the sandbox installs: HEAD, or HERMES_E2E_INSTALL_REF (a patched commit object,
+    used to prove a scenario red against a sabotaged install without moving the branch)."""
+    return git("rev-parse", os.environ.get("HERMES_E2E_INSTALL_REF") or "HEAD", cwd=H.WORKTREE)
 
 
 def make_origin(root: Path, ref: str) -> Path:

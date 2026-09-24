@@ -1,0 +1,46 @@
+{
+  "name": "Hermes Agent",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "postCreateCommand": "pip install uv && uv sync --locked --extra all --extra dev && cd ui-tui && npm install && cd ../website && npm install",
+  "containerEnv": {
+    "SHELL": "/bin/bash",
+    "LANG": "C.UTF-8",
+    "TZ": "UTC"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "yzhang.markdown-all-in-one"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": ".venv/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "ruff.importStrategy": "fromExtension",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        }
+      }
+    }
+  },
+  "portsAttributes": {
+    "8642": {
+      "label": "Hermes Gateway",
+      "onAutoForward": "notify"
+    },
+    "3000": {
+      "label": "Dashboard",
+      "onAutoForward": "notify"
+    }
+  }
+}

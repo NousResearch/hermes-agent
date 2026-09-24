@@ -19,7 +19,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from hermes_time import now as _hermes_now, safe_strftime
+from hermes_time import now as _hermes_now
+from hermes_time_format import safe_strftime
 
 logger = logging.getLogger("cron.scheduler")
 

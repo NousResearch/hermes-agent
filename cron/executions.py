@@ -383,6 +383,64 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+_STALE_CLAIM_RELEASED_REASON = (
+    "Scheduler released this claim as stale without a terminal result from its owner; "
+    "whether side effects ran is unknown (#115692)."
+)
+
+
+def mark_claim_unknown(
+    job_id: str, *, claimed_after: Optional[float] = None,
+    reason: str = _STALE_CLAIM_RELEASED_REASON,
+) -> Optional[Dict[str, Any]]:
+    """Durably terminalise the open row for ``job_id`` before its in-flight claim is released.
+
+    ``cron.scheduler.sweep_stale_inflight`` drops the in-memory guard of a stale claim; if the
+    ledger still says 'claimed'/'running' afterwards, the attempt has no durable outcome and no one
+    can tell whether its side effects ran. This writes that terminal state first. Only the newest
+    open row for ``job_id`` is touched, and only when it was claimed at/after ``claimed_after`` (the
+    in-flight claim's start) so a row owned by a different attempt is left alone. Returns the
+    updated record, or None when nothing matched.
+    """
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        rows = conn.execute(
+            """SELECT id, claimed_at FROM executions
+               WHERE job_id=? AND status IN ('claimed','running')
+               ORDER BY claimed_at DESC, id DESC""",
+            (str(job_id),),
+        ).fetchall()
+        target_id = None
+        for row in rows:
+            if claimed_after is None:
+                target_id = row["id"]
+                break
+            try:
+                claimed = datetime.fromisoformat(row["claimed_at"])
+                if claimed.tzinfo is None:
+                    claimed = claimed.astimezone()
+                if claimed.timestamp() >= claimed_after:
+                    target_id = row["id"]
+                    break
+            except (TypeError, ValueError):
+                continue
+        if target_id is None:
+            return None
+        cur = conn.execute(
+            """UPDATE executions
+               SET status='unknown', finished_at=?, error=?, handoff_pending=0,
+                   handoff_started_at=NULL
+               WHERE id=? AND status IN ('claimed','running')""",
+            (now, reason, target_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        _prune_unlocked(conn)
+        record = _fetch(conn, target_id)
+    _emit_execution_state(record)
+    return record
+
+
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
 ) -> List[Dict[str, Any]]:

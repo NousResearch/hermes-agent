@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
-from hermes_time import safe_strftime
+from hermes_time_format import safe_strftime
 
 logger = logging.getLogger(__name__)
 

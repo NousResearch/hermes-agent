@@ -3655,13 +3655,18 @@ def held_archive_watermark(
     ids = [_exact_id(m, False) for m in messages if isinstance(m, dict)]
     ids += [_exact_id(m, True) for m in (verbatim_tail or ()) if isinstance(m, dict)]
     held = [rid for rid in ids if rid is not None]
-    if not ids or ids[-1] is None or (newest_held := max(held)) >= watermark:
+    if not ids or ids[-1] is None:
+        return watermark
+    newest_held = max(held)
+    # A lease-less caller checks liveness even when nothing was appended: a commit-time re-check against a
+    # watermark read before the slow step never sees newest_held < watermark, yet the winner may have landed.
+    if newest_held >= watermark and not stale_raises:
         return watermark
     if session_db.get_message_role(session_id, newest_held) is None:
         if stale_raises:
             raise StaleHeldHistory(f"held row {newest_held} of session {session_id} is no longer active")
         return watermark
-    return newest_held
+    return min(newest_held, watermark)
 
 
 def _commit_compaction(

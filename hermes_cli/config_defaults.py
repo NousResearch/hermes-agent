@@ -1513,6 +1513,12 @@ DEFAULT_CONFIG = {
         "ignore_other_user_mentions": False,
         "thread_require_mention": False,  # require @mention in thread replies too
         "channel_prompts": {},  # per-channel ephemeral system prompts
+        # Per-thread response mute toggled by a principal's emoji reaction. off | log-only | enforce.
+        # log-only records what WOULD be suppressed (mute_events table) but still responds.
+        # Env: SLACK_REACTION_MUTE_MODE / SLACK_REACTION_MUTE_EMOJI / SLACK_REACTION_MUTE_USERS.
+        "reaction_mute_mode": "off",
+        "reaction_mute_emoji": "mute",  # reaction name that toggles the mute (colons optional)
+        "reaction_mute_users": "",  # member IDs allowed to toggle; empty = SLACK_ALLOWED_USERS
     },
 
     "discord": {

@@ -52,8 +52,18 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .reaction_mute import (
+        DEFAULT_DB_NAME as _MUTE_DB_NAME, DEFAULT_MUTE_EMOJI as _MUTE_DEFAULT_EMOJI,
+        MODE_ENFORCE as _MUTE_ENFORCE, MODE_LOG_ONLY as _MUTE_LOG_ONLY, MODE_OFF as _MUTE_OFF,
+        ReactionMuteStore, normalize_emoji as _normalize_mute_emoji, normalize_mode as _normalize_mute_mode,
+    )
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from reaction_mute import (  # type: ignore
+        DEFAULT_DB_NAME as _MUTE_DB_NAME, DEFAULT_MUTE_EMOJI as _MUTE_DEFAULT_EMOJI,
+        MODE_ENFORCE as _MUTE_ENFORCE, MODE_LOG_ONLY as _MUTE_LOG_ONLY, MODE_OFF as _MUTE_OFF,
+        ReactionMuteStore, normalize_emoji as _normalize_mute_emoji, normalize_mode as _normalize_mute_mode,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -3751,6 +3761,12 @@ class SlackAdapter(BasePlatformAdapter):
                     "event_ts": event.get("event_ts"), "raw_event": event})
             except Exception:  # pragma: no cover - hook contract is non-blocking
                 logger.debug("[Slack] reaction hook forwarding failed", exc_info=True)
+        # Per-thread response mute (principals only). Runs before the reaction_triggers gate so the
+        # mute emoji works whether or not reaction routing is enabled; it never feeds the agent.
+        if await self._maybe_toggle_reaction_mute(
+                channel_id=channel_id, msg_ts=msg_ts, reaction_name=reaction_name, user_id=user_id,
+                client=client, removed=removed or event.get("type") == "reaction_removed"):
+            return
         # None → routing disabled; empty set → all emoji; non-empty → allowlist.
         triggers = self._slack_reaction_triggers()
         if triggers is None:
@@ -3860,6 +3876,206 @@ class SlackAdapter(BasePlatformAdapter):
             raw = _get_scoped_secret("SLACK_REACTION_TRIGGER_TARGET", "")
         channel, _, thread = str(raw or "").strip().partition(":")
         return channel.strip(), thread.strip()
+
+    # ── Per-thread response mute (reaction toggle) ─────────────────────────────────────────
+    # See plugins/platforms/slack/reaction_mute.py for the model. The toggle lives in
+    # _handle_slack_reaction; the responder check (_reaction_mute_suppresses) sits at the very end
+    # of _handle_slack_message_impl, AFTER auth, channel gating, hydration and MessageEvent build
+    # and BEFORE the runner handoff, so a muted message is still ingested but never becomes a turn
+    # (nor steering for a running one).
+
+    def _slack_reaction_mute_mode(self) -> str:
+        """``off`` (default) | ``log-only`` | ``enforce``. From ``slack.reaction_mute_mode`` or
+        ``SLACK_REACTION_MUTE_MODE``; unknown values are ``off``."""
+        return _normalize_mute_mode(
+            _extra_or_secret(self.config.extra, "reaction_mute_mode", "SLACK_REACTION_MUTE_MODE", _MUTE_OFF))
+
+    def _slack_reaction_mute_emoji(self) -> str:
+        """Reaction name that toggles the mute (default ``mute``). Colons and case are ignored."""
+        return _normalize_mute_emoji(
+            _extra_or_secret(self.config.extra, "reaction_mute_emoji", "SLACK_REACTION_MUTE_EMOJI",
+                             _MUTE_DEFAULT_EMOJI))
+
+    def _slack_reaction_mute_users(self) -> set:
+        """Member IDs allowed to toggle a mute. ``slack.reaction_mute_users`` /
+        ``SLACK_REACTION_MUTE_USERS`` when set, else the ``SLACK_ALLOWED_USERS`` allowlist. Empty
+        (or an allow-all install with no explicit list) means nobody can toggle — fail closed."""
+        raw = _extra_or_secret(self.config.extra, "reaction_mute_users", "SLACK_REACTION_MUTE_USERS", "")
+        if not raw:
+            raw = _get_scoped_secret("SLACK_ALLOWED_USERS", "") or ""
+        if isinstance(raw, (list, tuple, set)):
+            parts = [str(p) for p in raw]
+        else:
+            parts = re.split(r"[,\s]+", str(raw or ""))
+        return {p.strip() for p in parts if p.strip()}
+
+    def _reaction_mute_store(self) -> Optional["ReactionMuteStore"]:
+        """Lazily opened store at ``slack.reaction_mute_db`` / ``SLACK_REACTION_MUTE_DB``, default
+        ``$HERMES_HOME/slack_reaction_mute.db``. None when the file cannot be opened (then the
+        feature is inert rather than crashing inbound handling)."""
+        store = getattr(self, "_reaction_mute_store_obj", None)
+        if store is not None:
+            return store
+        try:
+            raw_path = _extra_or_secret(self.config.extra, "reaction_mute_db", "SLACK_REACTION_MUTE_DB", "")
+            if raw_path:
+                db_path = _Path(str(raw_path)).expanduser()
+            else:
+                from hermes_constants import get_hermes_home
+                db_path = _Path(get_hermes_home()) / _MUTE_DB_NAME
+            store = ReactionMuteStore(db_path)
+            store.is_muted("", "")  # open + create schema now so a broken path surfaces here
+        except Exception:
+            logger.warning("[Slack] reaction_mute store unavailable; mute toggles are inert", exc_info=True)
+            return None
+        self._reaction_mute_store_obj = store
+        return store
+
+    async def _resolve_thread_root_ts(self, client, channel_id: str, msg_ts: str) -> str:
+        """Parent ``thread_ts`` of the reacted-to message (``item.ts`` equals the thread root only
+        when the reaction is on the parent). Falls back to ``msg_ts`` when the lookup fails, which is
+        right for a top-level message and only wrong for a reply whose parent we could not fetch."""
+        if client is None:
+            return msg_ts
+        try:
+            history = await client.conversations_replies(
+                channel=channel_id, ts=msg_ts, limit=1, inclusive=True)
+            messages = (history or {}).get("messages") or []
+            if messages:
+                first = messages[0]
+                return str(first.get("thread_ts") or first.get("ts") or msg_ts)
+        except Exception as e:  # pragma: no cover - network path
+            logger.debug("[Slack] reaction_mute thread_ts lookup failed for %s: %s", msg_ts, e)
+        return msg_ts
+
+    async def _maybe_toggle_reaction_mute(
+        self, *, channel_id: str, msg_ts: str, reaction_name: str, user_id: str, client,
+        removed: bool) -> bool:
+        """Apply a mute-emoji reaction from a principal to the thread's reactor set (both
+        directions idempotent). Non-principal attempts are logged and audited, never applied.
+        Returns True when the reaction was the mute emoji with the feature on — the caller then
+        stops, so the mute emoji can never also become a ``reaction_triggers`` agent turn."""
+        mode = self._slack_reaction_mute_mode()
+        if mode == _MUTE_OFF:
+            return False
+        if _normalize_mute_emoji(reaction_name) != self._slack_reaction_mute_emoji():
+            return False
+        store = self._reaction_mute_store()
+        if store is None:
+            return False
+        action = "removed" if removed else "added"
+        thread_ts = await self._resolve_thread_root_ts(client, channel_id, msg_ts)
+        if user_id not in self._slack_reaction_mute_users():
+            logger.info(
+                "[Slack] reaction_mute ignored: user=%s is not a principal (reaction %s :%s:) "
+                "channel=%s thread_ts=%s message_ts=%s", user_id, action, reaction_name, channel_id,
+                thread_ts, msg_ts)
+            store.record_event(
+                "ignored_non_principal", mode=mode, channel_id=channel_id, thread_ts=thread_ts,
+                user_id=user_id, message_ts=msg_ts, reaction=reaction_name, detail=action)
+            return True
+        if removed:
+            muted, changed = store.remove_reactor(channel_id, thread_ts, user_id)
+            kind = "unmuted" if (changed and not muted) else ("noop_remove" if not changed else "reactor_removed")
+        else:
+            muted, changed = store.add_reactor(channel_id, thread_ts, user_id)
+            kind = "muted" if changed and len(store.reactors(channel_id, thread_ts)) == 1 else (
+                "noop_add" if not changed else "reactor_added")
+        reactors = store.reactors(channel_id, thread_ts)
+        logger.info(
+            "[Slack] reaction_mute %s: channel=%s thread_ts=%s by=%s reactors=%d muted=%s mode=%s",
+            kind, channel_id, thread_ts, user_id, len(reactors), muted, mode)
+        store.record_event(
+            kind, mode=mode, channel_id=channel_id, thread_ts=thread_ts, user_id=user_id,
+            message_ts=msg_ts, reaction=reaction_name, detail=f"reactors={len(reactors)}")
+        return True
+
+    async def _reaction_mute_suppresses(
+        self, event: dict, msg_event: "MessageEvent", *, channel_id: str, ts: str,
+        is_command_text: bool) -> bool:
+        """Responder gate. True when the message must NOT start a turn (``enforce`` on a muted
+        thread). Mute key is ``event.thread_ts or event.ts`` — the raw Slack thread, not the session
+        key. Recognized slash commands always pass (operator escape hatch). ``log-only`` records the
+        message it would have suppressed and returns False."""
+        mode = self._slack_reaction_mute_mode()
+        if mode == _MUTE_OFF:
+            return False
+        store = self._reaction_mute_store()
+        if store is None:
+            return False
+        mute_ts = str(event.get("thread_ts") or ts or "")
+        if not mute_ts or not store.is_muted(channel_id, mute_ts):
+            return False
+        user_id = str(event.get("user") or "")
+        if is_command_text:
+            logger.info(
+                "[Slack] reaction_mute command bypass: channel=%s thread_ts=%s ts=%s user=%s",
+                channel_id, mute_ts, ts, user_id)
+            store.record_event(
+                "command_bypass", mode=mode, channel_id=channel_id, thread_ts=mute_ts,
+                user_id=user_id, message_ts=ts)
+            return False
+        if mode == _MUTE_LOG_ONLY:
+            logger.info(
+                "[Slack] reaction_mute would-suppress (log-only): channel=%s thread_ts=%s ts=%s user=%s",
+                channel_id, mute_ts, ts, user_id)
+            store.record_event(
+                "would_suppress", mode=mode, channel_id=channel_id, thread_ts=mute_ts,
+                user_id=user_id, message_ts=ts)
+            return False
+        ingested = await self._ingest_muted_message(msg_event)
+        logger.info(
+            "[Slack] reaction_mute suppressed: channel=%s thread_ts=%s ts=%s user=%s ingested=%s",
+            channel_id, mute_ts, ts, user_id, ingested)
+        store.record_event(
+            "suppressed", mode=mode, channel_id=channel_id, thread_ts=mute_ts, user_id=user_id,
+            message_ts=ts, detail=f"ingested={ingested}")
+        return True
+
+    async def _ingest_muted_message(self, msg_event: "MessageEvent") -> bool:
+        """Persist a suppressed message to its thread session's transcript as a user row, with the
+        same sender prefix and hydrated thread context a turn would have carried, so the next turn in
+        that session (after unmute) sees it. No model call. Returns True when a row was written
+        or the message was already persisted (platform id dedupe)."""
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return False
+        source = getattr(msg_event, "source", None)
+        if source is None:
+            return False
+        try:
+            entry = await asyncio.to_thread(store.get_or_create_session, source)
+            session_id = getattr(entry, "session_id", None)
+            if not session_id:
+                return False
+            message_id = str(getattr(msg_event, "message_id", "") or "")
+            if message_id and store.has_platform_message_id(session_id, message_id):
+                return True
+            text = str(getattr(msg_event, "text", "") or "")
+            from gateway.session import is_shared_multi_user_session, neutralize_untrusted_inline_text
+            store_cfg = getattr(store, "config", None)
+            shared = is_shared_multi_user_session(
+                source, group_sessions_per_user=getattr(store_cfg, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(store_cfg, "thread_sessions_per_user", False))
+            if shared and getattr(source, "user_name", None):
+                safe_name = neutralize_untrusted_inline_text(source.user_name)
+                if getattr(source, "user_id", None):
+                    safe_name = f"{safe_name} | Slack user <@{source.user_id}>"
+                text = f"[{safe_name}] {text}"
+            channel_context = getattr(msg_event, "channel_context", None)
+            if channel_context:
+                text = f"{channel_context}\n\n[New message]\n{text}"
+            row: Dict[str, Any] = {
+                "role": "user", "content": text, "timestamp": time.time(),
+                "display_metadata": {"gateway_input_owner": "slack_reaction_mute"},
+            }
+            if message_id:
+                row["message_id"] = message_id
+            await asyncio.to_thread(store.append_to_transcript, session_id, row)
+            return True
+        except Exception:
+            logger.warning("[Slack] reaction_mute transcript ingest failed", exc_info=True)
+            return False
 
     @staticmethod
     def _first_file_share(file_obj: Dict[str, Any], channel_id: str) -> Dict[str, Any]:
@@ -4545,6 +4761,10 @@ class SlackAdapter(BasePlatformAdapter):
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context)
+        # Per-thread mute: ingest-only under enforce (transcript row, no turn, no 👀 marker).
+        if await self._reaction_mute_suppresses(
+                event, msg_event, channel_id=channel_id, ts=ts, is_command_text=is_command_text):
+            return
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -6716,6 +6936,8 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
     ("reaction_triggers", "SLACK_REACTION_TRIGGERS", "csv"), ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "str"),
     ("allowed_channels", "SLACK_ALLOWED_CHANNELS", "csv"), ("ignored_channels", "SLACK_IGNORED_CHANNELS", "csv"),
+    ("reaction_mute_mode", "SLACK_REACTION_MUTE_MODE", "str"), ("reaction_mute_emoji", "SLACK_REACTION_MUTE_EMOJI", "str"),
+    ("reaction_mute_users", "SLACK_REACTION_MUTE_USERS", "csv"), ("reaction_mute_db", "SLACK_REACTION_MUTE_DB", "str"),
 )
 
 

@@ -1092,6 +1092,12 @@ export const de = defineLocale({
       hideThreadTimelineDesc: 'Blendet die Navigationsbalken am rechten Rand jeder Unterhaltung aus.',
       reasoningCollapsedTitle: 'Gedanken standardmäßig einklappen',
       reasoningCollapsedDesc: 'Gestreamte Gedankengänge verfügbar halten, ohne sie aufzuklappen, bis Sie sie öffnen.',
+      codeBlockCollapseTitle: 'Höhe von Codeblöcken',
+      codeBlockCollapseDesc:
+        'Kompakt klappt Codeblöcke ab etwa sieben Zeilen ein, Hoch ab etwa zwanzig. Aus klappt sie nie ein, sodass lange Blöcke vollständig auswählbar bleiben.',
+      codeBlockCollapseCompact: 'Kompakt',
+      codeBlockCollapseTall: 'Hoch',
+      codeBlockCollapseOff: 'Aus',
       uiScaleTitle: 'UI-Skalierung',
       uiScaleDesc: (percent: number) =>
         `Skaliert Text und Bedienelemente in der gesamten App. Cmd/Ctrl mit +, - und 0 funktioniert ebenfalls. Aktuell: ${percent}%.`,

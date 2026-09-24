@@ -148,6 +148,11 @@ export const APPEARANCE_SETTINGS = {
     keywords: ['thinking', 'reasoning', 'collapse', 'expand', 'chain of thought'],
     copy: appearanceCopy('reasoningCollapsed')
   },
+  codeBlockCollapse: {
+    subpage: 'chat-display',
+    keywords: ['code block', 'fold', 'collapse', 'height', 'expand'],
+    copy: appearanceCopy('codeBlockCollapse')
+  },
   embeds: { subpage: 'chat-display', keywords: ['external content', 'privacy'], copy: appearanceCopy('embeds') },
   pet: {
     subpage: 'pet',

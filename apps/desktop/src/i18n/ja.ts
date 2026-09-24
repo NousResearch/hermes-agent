@@ -588,6 +588,12 @@ export const ja = defineLocale({
       hideThreadTimelineDesc: '各会話の右端にあるナビゲーションバーを非表示にします。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
+      codeBlockCollapseTitle: 'コードブロックの高さ',
+      codeBlockCollapseDesc:
+        'コンパクトは約 7 行、トールは約 20 行を超えると折りたたみます。オフでは折りたたまず、長いブロックも全体を選択できます。',
+      codeBlockCollapseCompact: 'コンパクト',
+      codeBlockCollapseTall: 'トール',
+      codeBlockCollapseOff: 'オフ',
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,

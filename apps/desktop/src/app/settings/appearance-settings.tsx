@@ -16,6 +16,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $codeBlockCollapse, type CodeBlockCollapse, setCodeBlockCollapse } from '@/store/code-block-collapse'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import {
@@ -421,6 +422,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
+  const codeBlockCollapse = useStore($codeBlockCollapse)
   const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
@@ -507,6 +509,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'product', label: a.product },
     { id: 'technical', label: a.technical }
   ] as const
+
+  const codeBlockCollapseOptions = [
+    { id: 'compact', label: a.codeBlockCollapseCompact },
+    { id: 'tall', label: a.codeBlockCollapseTall },
+    { id: 'off', label: a.codeBlockCollapseOff }
+  ] as const satisfies readonly { id: CodeBlockCollapse; label: string }[]
 
   const sessionDensityOptions = [
     { id: 'compact', label: a.sessionDensityCompact },
@@ -1023,6 +1031,24 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.reasoningCollapsed)}
               label={a.reasoningCollapsedTitle}
               onChange={setReasoningCollapsedByDefault}
+            />
+          )}
+
+          {show('chat-display') && (
+            <ListRow
+              action={
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setCodeBlockCollapse(id)
+                  }}
+                  options={codeBlockCollapseOptions}
+                  value={codeBlockCollapse}
+                />
+              }
+              description={a.codeBlockCollapseDesc}
+              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.codeBlockCollapse)}
+              title={a.codeBlockCollapseTitle}
             />
           )}
 

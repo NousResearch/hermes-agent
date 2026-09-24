@@ -1095,6 +1095,12 @@ export const fr = defineLocale({
       reasoningCollapsedTitle: 'Réduire le raisonnement par défaut',
       reasoningCollapsedDesc:
         "Conserver le raisonnement diffusé en continu sans le développer tant que vous ne l'ouvrez pas.",
+      codeBlockCollapseTitle: 'Hauteur des blocs de code',
+      codeBlockCollapseDesc:
+        "Compacte replie les blocs de code au-delà d'environ sept lignes, Haute au-delà d'environ vingt. Désactivé ne les replie jamais, pour que les longs blocs restent entièrement sélectionnables.",
+      codeBlockCollapseCompact: 'Compacte',
+      codeBlockCollapseTall: 'Haute',
+      codeBlockCollapseOff: 'Désactivé',
       uiScaleTitle: "Échelle de l'interface",
       uiScaleDesc: (percent: number) =>
         `Redimensionne le texte et les contrôles dans toute l'application. Cmd/Ctrl avec +, - et 0 fonctionne aussi. Actuel : ${percent}%.`,

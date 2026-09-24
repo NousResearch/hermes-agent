@@ -620,6 +620,12 @@ export const ar = defineLocale({
       hideThreadTimelineDesc: 'إخفاء أشرطة التنقل على الحافة اليمنى لكل محادثة.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
+      codeBlockCollapseTitle: 'ارتفاع كتل التعليمات البرمجية',
+      codeBlockCollapseDesc:
+        'يطوي «مضغوط» كتل التعليمات البرمجية بعد نحو سبعة أسطر، و«طويل» بعد نحو عشرين سطرًا. أما «معطل» فلا يطويها أبدًا، فتبقى الكتل الطويلة قابلة للتحديد بالكامل.',
+      codeBlockCollapseCompact: 'مضغوط',
+      codeBlockCollapseTall: 'طويل',
+      codeBlockCollapseOff: 'معطل',
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل، بما في ذلك النص.',
       translucencyGlassDesc: 'زجاج غير لامع: يظهر سطح المكتب كضبابية ناعمة بينما يبقى النص واضحًا.',

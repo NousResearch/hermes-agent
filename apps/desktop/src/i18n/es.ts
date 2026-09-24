@@ -1092,6 +1092,12 @@ export const es = defineLocale({
       hideThreadTimelineDesc: 'Oculta las barras de navegación del borde derecho de cada conversación.',
       reasoningCollapsedTitle: 'Contraer el razonamiento por defecto',
       reasoningCollapsedDesc: 'Mantiene disponible el razonamiento transmitido sin expandirlo hasta que lo abras.',
+      codeBlockCollapseTitle: 'Altura de los bloques de código',
+      codeBlockCollapseDesc:
+        'Compacta pliega los bloques de código a partir de unas siete líneas y Alta a partir de unas veinte. Desactivado nunca los pliega, así que los bloques largos se pueden seleccionar por completo.',
+      codeBlockCollapseCompact: 'Compacta',
+      codeBlockCollapseTall: 'Alta',
+      codeBlockCollapseOff: 'Desactivado',
       uiScaleTitle: 'Escala de la interfaz',
       uiScaleDesc: percent =>
         `Escala el texto y los controles de toda la app. También funciona Cmd/Ctrl con +, - y 0. Actual: ${percent}%.`,

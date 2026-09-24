@@ -1323,6 +1323,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         has_explicit_version = False
     floor_refused = (
         has_explicit_version and current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver)
+    migration_failed = False
     if floor_refused:
         msg = support_floor_message()
         results["warnings"].append(msg)
@@ -1331,7 +1332,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if not quiet:
             print(f"  ⚠ {msg}")
     else:
+        migration_warning_count = len(results["warnings"])
         run_migrations(current_ver, results, quiet)
+        migration_failed = len(results["warnings"]) > migration_warning_count
 
     _disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)
@@ -1360,7 +1363,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # read time); this list only feeds the "N new config option(s)" display.
     results["config_added"].extend(field["key"] for field in get_missing_config_fields())
 
-    if current_ver < latest_ver and not floor_refused:
+    if current_ver < latest_ver and not floor_refused and not migration_failed:
         config = read_raw_config()
         config["_config_version"] = latest_ver
         _persist_migration(config)

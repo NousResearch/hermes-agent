@@ -128,6 +128,14 @@ export function useVoiceConversation({
     statusRef.current = status
   }, [status])
 
+  // The sentence-by-sentence fallback polls the pending reply on a timer; it
+  // must not outlive the session or the hook (a stray tick after unmount hits
+  // a torn-down window).
+  const cancelFallbackPollRef = useRef<(() => void) | null>(null)
+
+   
+  useEffect(() => () => cancelFallbackPollRef.current?.(), [])
+
   const clearTurnTimeout = () => {
     if (turnTimeoutRef.current) {
       window.clearTimeout(turnTimeoutRef.current)
@@ -136,6 +144,7 @@ export function useVoiceConversation({
   }
 
   const dropSpeechSession = () => {
+    cancelFallbackPollRef.current?.()
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
@@ -462,17 +471,27 @@ export function useVoiceConversation({
       let pollTimer: number | null = null
       let ownedSequence = $voicePlayback.get().sequence
 
+      const cancelPoll = () => {
+        settled = true
+
+        if (pollTimer !== null) {
+          window.clearTimeout(pollTimer)
+          pollTimer = null
+        }
+
+        if (cancelFallbackPollRef.current === cancelPoll) {
+          cancelFallbackPollRef.current = null
+        }
+      }
+
+      cancelFallbackPollRef.current = cancelPoll
+
       const finishFallback = (barged: boolean, stopped = false) => {
         if (settled) {
           return
         }
 
-        settled = true
-
-        if (pollTimer !== null) {
-          window.clearTimeout(pollTimer)
-        }
-
+        cancelPoll()
         awaitingSpokenResponseRef.current = false
         settleAfterSpeech(barged, stopped)
       }
@@ -509,6 +528,7 @@ export function useVoiceConversation({
           source: 'voice-conversation',
           syncOnly: true
         })
+
         ownedSequence = $voicePlayback.get().sequence
         speechStartSequenceRef.current = ownedSequence
         let playbackFailed = false

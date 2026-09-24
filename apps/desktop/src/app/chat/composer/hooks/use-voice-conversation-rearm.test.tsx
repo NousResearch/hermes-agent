@@ -165,6 +165,7 @@ function renderRearmConversation(responseId: string, responseText: string) {
 
 function renderIncrementalFallbackConversation() {
   let response: null | { id: string; pending: boolean; text: string } = null
+  const pendingResponse = vi.fn(() => response)
 
   const hook = renderHook(
     ({ enabled }) =>
@@ -176,12 +177,13 @@ function renderIncrementalFallbackConversation() {
           response = { id: 'reply-edge', pending: true, text: 'The first sentence is ready. ' }
         },
         onTranscribeAudio: async () => 'Hello',
-        pendingResponse: () => response
+        pendingResponse
       }),
     { initialProps: { enabled: false } }
   )
 
   return {
+    pendingResponse,
     finishResponse() {
       response = {
         id: 'reply-edge',
@@ -333,6 +335,23 @@ describe('useVoiceConversation playback rearm', () => {
     await waitFor(() => expect(hook.result.current.status).toBe('listening'))
   })
 
+  it('stops polling the pending fallback reply once the hook unmounts', async () => {
+    mocks.useFallbackSpeech()
+    mocks.deferFallbackPlayback()
+    const { hook, pendingResponse } = renderIncrementalFallbackConversation()
+
+    await beginReply(hook)
+    await waitFor(() => expect(mocks.playSpeechText).toHaveBeenCalledTimes(1))
+
+    hook.unmount()
+    const pollsAtUnmount = pendingResponse.mock.calls.length
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 400))
+    })
+
+    expect(pendingResponse.mock.calls.length).toBe(pollsAtUnmount)
+  })
+
   it('does not play the next fallback sentence or re-arm after Stop', async () => {
     mocks.useFallbackSpeech()
     mocks.deferFallbackPlayback()
@@ -354,6 +373,7 @@ describe('useVoiceConversation playback rearm', () => {
 
   it('speaks a sealed interim bubble while a tool is still running', async () => {
     mocks.useFallbackSpeech()
+
     let releaseSubmit: () => void = () => {}
     let response: null | { id: string; pending: boolean; text: string } = null
 

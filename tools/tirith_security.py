@@ -306,6 +306,23 @@ def _extract_tirith_binary(tar: tarfile.TarFile, dest_dir: str, log) -> tuple[st
     return None, "binary_not_in_archive"
 
 
+def _probe_tirith_binary(path: str, log) -> bool:
+    """Return whether an extracted Tirith candidate can execute its version command."""
+    try:
+        result = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("tirith install rejected unusable binary: %s", exc)
+        return False
+    if result.returncode:
+        log("tirith install rejected unusable binary (version exit %d): %s",
+            result.returncode, result.stderr.strip())
+        return False
+    return True
+
+
 def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     """Download and install tirith to $HERMES_HOME/bin/tirith -> ``(installed_path,
     failure_reason)``; the reason ("" on success) is the disk marker's retryability tag."""
@@ -338,6 +355,9 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             src, reason = _extract_tirith_binary(tar, tmpdir, log)
         if src is None:
             return None, reason
+        os.chmod(src, os.stat(src).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        if not _probe_tirith_binary(src, log):
+            return None, "binary_probe_failed"
         dest = os.path.join(_hermes_bin_dir(), "tirith")
         try:
             shutil.move(src, dest)

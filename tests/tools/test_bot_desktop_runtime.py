@@ -471,3 +471,38 @@ def test_a_comfortable_start_is_not_logged(tmp_path, monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="tools.bot_desktop.runtime"):
         runtime.start()
     assert not [m for m in (r.getMessage() for r in caplog.records) if "available" in m]
+
+
+def _published_screen(monkeypatch, display: str = ":20") -> None:
+    """A running screen for this profile, with the browser-env and activity touches stubbed out."""
+    from tools.bot_desktop import browser
+
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": display, "XAUTHORITY": "/tmp/xauth"})
+    monkeypatch.setattr(runtime, "touch_activity", lambda: None)
+    monkeypatch.setattr(browser, "env_for_agent", lambda env: None)
+
+
+def test_the_screen_env_pins_the_session_type_to_x11(monkeypatch):
+    """The screen is an X11 display even when the gateway's own login session is Wayland, and Chromium
+    chooses its windowing backend from `XDG_SESSION_TYPE` as well as `WAYLAND_DISPLAY`: with the leaked
+    value a headed browser starts, answers CDP and writes `DevToolsActivePort`, but maps no window on the
+    screen at all (Chromium 152 on a KDE Wayland host: no mapped window after 20 s; `x11` maps in seconds,
+    `--ozone-platform=x11` likewise). `launcher.sh` exports the same value into the panel, so a browser
+    opened from the dock was never affected; only the agent's own spawns were."""
+    _published_screen(monkeypatch)
+
+    env = runtime.desktop_env({"DISPLAY": ":0", "XDG_SESSION_TYPE": "wayland", "WAYLAND_DISPLAY": "wayland-0"})
+
+    assert env["DISPLAY"] == ":20"
+    assert "WAYLAND_DISPLAY" not in env, "a leaked Wayland socket flips GTK/Chromium backends"
+    assert env["XDG_SESSION_TYPE"] == "x11"
+
+
+def test_a_host_without_a_screen_keeps_its_own_session_type(monkeypatch):
+    """The pin is scoped to a published screen. A host with a real seat must come back untouched, or the
+    desktop app and cua-driver would be told they are on X11 when they are not."""
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    base = {"DISPLAY": ":0", "XDG_SESSION_TYPE": "wayland", "WAYLAND_DISPLAY": "wayland-0"}
+
+    assert runtime.desktop_env(base) == base
+    assert runtime.desktop_env(base) is not base, "the caller's environment must not be mutated in place"

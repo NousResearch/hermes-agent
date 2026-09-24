@@ -340,7 +340,8 @@ def _allocate_display() -> int:
 
 def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
-    merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
+    merged in when its desktop is running, plus ``XDG_SESSION_TYPE=x11`` (the screen is X11 whatever the
+    gateway's own session is). Unchanged otherwise, so hosts with a real seat keep it.
     Pure: never starts anything (it is called from env builders, status probes and tests)."""
     env = dict(os.environ if base_env is None else base_env)
     published = published_env()
@@ -348,6 +349,11 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+        # The same value launcher.sh exports into the panel, and for the same reason: Chromium picks its
+        # windowing backend from XDG_SESSION_TYPE as well as WAYLAND_DISPLAY, so a Wayland-login gateway
+        # that leaves it alone gets a headed browser that runs, answers CDP and maps NO window on the
+        # screen (measured: Chromium 152 on a KDE Wayland host, no window after 20 s; x11 maps in seconds).
+        env["XDG_SESSION_TYPE"] = "x11"
         from tools.bot_desktop.browser import env_for_agent
         env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env

@@ -15,7 +15,7 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
+from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, _extract_status_code, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -84,7 +84,7 @@ def handle_api_error(
     if _recovered:
         return _verdict("continue")
 
-    status_code = getattr(api_error, "status_code", None)
+    status_code = _extract_status_code(api_error)
     error_context = agent._extract_api_error_context(api_error)
 
     # Process is exiting mid-flight: retries/rotation/fallbacks are futile and the

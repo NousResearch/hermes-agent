@@ -1379,6 +1379,15 @@ def _status_of(exc: Any) -> Optional[int]:
     if isinstance(code, int):
         return code
     code = getattr(exc, "status", None)  # some SDKs use .status
+    if isinstance(code, int) and 100 <= code < 600:
+        return code
+    # botocore ClientError keeps its HTTP status in a mapping rather than an
+    # attribute: response["ResponseMetadata"]["HTTPStatusCode"].  Read this
+    # shape generically so Bedrock client errors take the same 4xx path as SDK
+    # exceptions exposing ``status_code``.
+    response = getattr(exc, "response", None)
+    metadata = response.get("ResponseMetadata") if isinstance(response, dict) else None
+    code = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
     return code if isinstance(code, int) and 100 <= code < 600 else None
 
 

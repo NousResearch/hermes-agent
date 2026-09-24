@@ -21,7 +21,7 @@ from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STA
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import FailoverReason, _extract_status_code, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -265,7 +265,7 @@ def recover_before_classification(
         _err_body = str(getattr(api_error, "body", None) or getattr(api_error, "message", None) or str(api_error))
     except Exception:
         pass
-    _err_status = getattr(api_error, "status_code", None)
+    _err_status = _extract_status_code(api_error)
     # 4xx-only gate: 5xx/timeouts are transient and take the retry path.
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
     # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
@@ -446,7 +446,7 @@ def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
     ``encrypted_content`` blob with this auth signature, so a persisted session loops on "sign
     in again" while a fresh session on the same bearer works. The caller treats it like
     ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
-    if getattr(api_error, "status_code", None) != 401:
+    if _extract_status_code(api_error) != 401:
         return False
     reason = agent._extract_api_error_context(api_error).get("reason")
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"
@@ -523,7 +523,7 @@ def _recover_format_errors(
         and bool(getattr(agent, "codex_responses_native_compaction", False))
     ):
         from agent.native_compaction import is_native_compaction_rejection
-        if is_native_compaction_rejection(api_error, getattr(api_error, "status_code", None)):
+        if is_native_compaction_rejection(api_error, _extract_status_code(api_error)):
             _retry.native_compaction_reject_retry_attempted = True
             agent.codex_responses_native_compaction = False
             _vlines(
@@ -926,7 +926,7 @@ _NONRETRYABLE_LABELS = {
 
 def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model: Any) -> Optional[str]:
     """Prefixed catalogue id when a bare 404 most likely means ``vendor/model`` lost its prefix."""
-    if getattr(api_error, "status_code", None) != 404:
+    if _extract_status_code(api_error) != 404:
         return None
     try:
         from hermes_cli.model_normalize import suggest_prefixed_model_id
@@ -1117,7 +1117,7 @@ def max_retries_exhausted_result(
     # SSE stream-drop (e.g. "Network connection lost"): usually a proxy/CDN cutting a very
     # large tool call mid-response.
     _is_stream_drop = (
-        not getattr(api_error, "status_code", None)
+        not _extract_status_code(api_error)
         and any(p in error_msg for p in _STREAM_DROP_MARKERS)
     )
     if _is_stream_drop:
@@ -1721,7 +1721,7 @@ def route_classified_error(
     is_rate_limited = False
     _wrapped_output_cap_budget = None
     _is_zai_coding_overload = False
-    status_code = getattr(api_error, "status_code", None)
+    status_code = _extract_status_code(api_error)
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ClassifiedErrorVerdict:
         return ClassifiedErrorVerdict(

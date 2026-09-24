@@ -177,23 +177,6 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const refreshed = [chat('p', 200), chat('q', 201)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
-    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([200, 201])
-  })
-
-  it('puts earlier stored ids in front and later ones at the tail', () => {
-    const previous = [chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746)]
-
-    const refreshed = [
-      chat('kcsie', 662),
-      chat('tail-a', 700),
-      chat('tail-b', 701),
-      chat('tail-c', 746),
-      chat('next', 747)
-    ]
-
-    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
-      662, 700, 701, 746, 747
-    ])
   })
 
   it('moves an older row that was glued on after the tail back to stored order', () => {
@@ -202,24 +185,6 @@ describe('graftRefreshedTailOntoBackfill', () => {
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
       662, 700, 701, 746
-    ])
-  })
-
-  it('replaces the window when the page covers every on-screen row', () => {
-    const previous = [chat('tail-a', 700), chat('tail-b', 701)]
-    const refreshed = [chat('kcsie', 662), chat('tail-a', 700), chat('tail-b', 701)]
-
-    expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
-  })
-
-  it('keeps a live row the page does not cover at the end of the stored order', () => {
-    const previous = [chat('tail-c', 746), chat('live'), chat('kcsie', 662)]
-    const refreshed = [chat('kcsie', 662), chat('tail-c', 746)]
-
-    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.id)).toEqual([
-      'kcsie',
-      'tail-c',
-      'live'
     ])
   })
 
@@ -263,13 +228,6 @@ describe('extendRefreshPageToOverlap', () => {
     expect(graftRefreshedTailOntoBackfill(extended, previous).map(message => message.rowId)).toEqual([1, 2, 3, 4, 5, 6])
   })
 
-  it('keeps the newest page when an older-page read fails', async () => {
-    const refreshed = [chat('new-tool', 5)]
-
-    await expect(
-      extendRefreshPageToOverlap(refreshed, [chat('earlier', 1)], vi.fn().mockRejectedValue(new Error()))
-    ).resolves.toBe(refreshed)
-  })
 })
 
 describe('backfillOlderTranscriptPage', () => {

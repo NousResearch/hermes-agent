@@ -15,10 +15,12 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
+
+import pytest
 
 from tests.e2e.core.delivery._fake_platform import GatewayProcess, read_jsonl, wait_until
-from tests.e2e.core.security._helpers import REPO_ROOT, db_blob, files_containing, run_hermes
+from tests.e2e.core.security._helpers import REPO_ROOT, BoundaryBreach, db_blob, files_containing, run_hermes
 from tests.fakes.fake_llm_provider import Error, Response, Text, ToolCall
 
 
@@ -62,6 +64,9 @@ CONTENT_SINKS = (LOGS, STORE, EXPORT, EXPORT_REDACTED, WIRE, PLATFORM)
 # user-guide/security.md "The session database itself still holds the command as it was executed");
 # the provider replay of the model's own tool call and the default (non --redact) export read it back.
 RAW_BY_DESIGN_SINKS = (LOGS, EXPORT_REDACTED, PLATFORM)
+# Test-id spelling of each sink: one cell per (scenario, sink), so a KNOWN names exactly one sink.
+SINK_IDS = {LOGS: "logs", STORE: "store", EXPORT: "export", EXPORT_REDACTED: "export_redact", WIRE: "next_request",
+            PLATFORM: "platform"}
 
 
 @dataclass(frozen=True)
@@ -226,11 +231,6 @@ def collect(home: Path, requests: list[dict], platform_journal: Path | None = No
                   EXPORT_REDACTED: {"redacted.jsonl": exports["redacted.jsonl"]}, WIRE: wire, PLATFORM: platform})
 
 
-def leak_report(sinks: Sinks, scenario: Scenario, keys: Secrets) -> list[str]:
-    needles = scenario.secrets(keys)
-    return [hit for sink in scenario.sinks for hit in sinks.hits(sink, needles, only=f"chat {chat_for(scenario.name)}")]
-
-
 def chat_for(name: str) -> str:
     return f"c-{name}"
 
@@ -253,16 +253,33 @@ class World:
     runs: dict[str, str]
 
 
-def check(world: World, scenario: str) -> None:
-    """Harness precondition (plain AssertionError), then the boundary (BoundaryBreach, KNOWN-able)."""
-    from tests.e2e.core.security._helpers import BoundaryBreach
+def cells(known: dict[str, str], *, platform: bool) -> list[Any]:
+    """One ``pytest.param(scenario, sink)`` per sink a scenario is held to (``platform``: the surface has a
+    platform wire). A KNOWN key is a cell id ``<scenario>-<sink id>`` and strict-xfails ONLY that sink, so a
+    new leak of the same scenario into any other sink is a plain red, never absorbed by the known gap."""
+    out, ids = [], set()
+    for name, scenario in SCENARIOS.items():
+        for sink in scenario.sinks:
+            if sink == PLATFORM and not platform:
+                continue
+            cid = f"{name}-{SINK_IDS[sink]}"
+            ids.add(cid)
+            marks = ([pytest.mark.xfail(strict=True, raises=BoundaryBreach, reason=known[cid])]
+                     if cid in known else [])
+            out.append(pytest.param(name, sink, id=cid, marks=marks))
+    stale = sorted(set(known) - ids)
+    assert not stale, f"KNOWN names cells that do not exist: {stale}"
+    return out
 
+
+def check(world: World, scenario: str, sink: str) -> None:
+    """Harness precondition (plain AssertionError), then the boundary for ONE sink (BoundaryBreach)."""
     missing = world.pre[scenario]
     assert not missing, (f"{scenario}: the secret never travelled, so absence proves nothing: {missing}\n"
                          f"{world.runs[scenario]}")
-    leaks = leak_report(world.sinks, SCENARIOS[scenario], world.keys)
+    leaks = world.sinks.hits(sink, SCENARIOS[scenario].secrets(world.keys), only=f"chat {chat_for(scenario)}")
     if leaks:
-        raise BoundaryBreach(f"{scenario}: secret reached a redacted sink:\n  " + "\n  ".join(leaks))
+        raise BoundaryBreach(f"{scenario}: secret reached the redacted sink {sink!r}:\n  " + "\n  ".join(leaks))
 
 
 # Gateway ------------------------------------------------------------------------------------------

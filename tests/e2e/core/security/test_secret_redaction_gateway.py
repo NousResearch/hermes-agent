@@ -13,18 +13,20 @@ import sys
 
 import pytest
 
-from tests.e2e.core.security._helpers import known_param, write_home
+from tests.e2e.core.security._helpers import write_home
 from tests.e2e.core.security._redact import (
-    CONFIG, SCENARIOS, Ctx, Director, LoggingGateway, Secrets, World, assert_harness_sane, chat_for, check, collect,
-    echo_preconditions, prompt_for, seed_workspace,
+    CONFIG, SCENARIOS, Ctx, Director, LoggingGateway, Secrets, World, assert_harness_sane, cells, chat_for, check,
+    collect, echo_preconditions, prompt_for, seed_workspace,
 )
 from tests.e2e.core.delivery._fake_platform import wait_until
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell commands and process groups")
 
+# Keyed by cell id ``<scenario>-<sink>``: only the platform wire of the streamed answer is the known gap;
+# the same answer reaching gateway.log, state.db, an export or the next request stays a plain red.
 KNOWN: dict[str, str] = {
-    "assistant_text": "#56039 streamed gateway replies reach the platform without secret redaction",
+    "assistant_text-platform": "#56039 streamed gateway replies reach the platform without secret redaction",
 }
 
 PLATFORM = "fk_tg"
@@ -66,6 +68,6 @@ def gw_world(tmp_path_factory) -> World:
     return World(keys, sinks, echo_preconditions(ws, keys, gets, logs), {n: "(gateway)" for n in SCENARIOS})
 
 
-@pytest.mark.parametrize("scenario", [known_param(n, KNOWN) for n in SCENARIOS])
-def test_gateway_turn_never_persists_delivers_or_replays_a_secret(gw_world: World, scenario: str) -> None:
-    check(gw_world, scenario)
+@pytest.mark.parametrize("scenario, sink", cells(KNOWN, platform=True))
+def test_gateway_turn_never_persists_delivers_or_replays_a_secret(gw_world: World, scenario: str, sink: str) -> None:
+    check(gw_world, scenario, sink)

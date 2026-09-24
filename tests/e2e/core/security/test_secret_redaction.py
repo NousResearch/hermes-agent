@@ -25,16 +25,16 @@ import sys
 
 import pytest
 
-from tests.e2e.core.security._helpers import known_param, run_hermes, write_home
+from tests.e2e.core.security._helpers import run_hermes, write_home
 from tests.e2e.core.security._redact import (
-    CONFIG, SCENARIOS, Ctx, Director, Secrets, World, assert_harness_sane, check, collect, echo_preconditions,
+    CONFIG, SCENARIOS, Ctx, Director, Secrets, World, assert_harness_sane, cells, check, collect, echo_preconditions,
     prompt_for, seed_workspace,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell commands (cat | tee, curl)")
 
-KNOWN: dict[str, str] = {}
+KNOWN: dict[str, str] = {}  # cell id ``<scenario>-<sink>`` -> "#issue symptom"
 
 _SESSION_RE = re.compile(r"session_id:\s*(\S+)")
 
@@ -67,6 +67,6 @@ def cli_world(tmp_path_factory) -> World:
     return World(keys, sinks, echo_preconditions(ws, keys, gets, logs), runs)
 
 
-@pytest.mark.parametrize("scenario", [known_param(n, KNOWN) for n in SCENARIOS])
-def test_cli_turn_never_persists_or_replays_a_secret(cli_world: World, scenario: str) -> None:
-    check(cli_world, scenario)
+@pytest.mark.parametrize("scenario, sink", cells(KNOWN, platform=False))
+def test_cli_turn_never_persists_or_replays_a_secret(cli_world: World, scenario: str, sink: str) -> None:
+    check(cli_world, scenario, sink)

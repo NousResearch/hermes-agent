@@ -11,10 +11,10 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class FloodError(Exception):
-    retry_after = 43
+    retry_after = 120
 
     def __str__(self):
-        return "Flood control exceeded. Retry in 43 seconds"
+        return "Flood control exceeded. Retry in 120 seconds"
 
 
 class PreviewBot:

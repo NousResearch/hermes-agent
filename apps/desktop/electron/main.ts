@@ -321,6 +321,7 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import { petOverlayClickThrough } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -14353,8 +14354,11 @@ function spawnPetOverlayWindow(bounds) {
   // sits over the desktop eating clicks (the invisible "dead zone" bug). The
   // wake indicator already uses this spawn-time ignore pattern. forward:true
   // keeps mousemove flowing to the page so the renderer can re-arm
-  // interactivity the moment the cursor touches a solid sprite pixel.
-  win.setIgnoreMouseEvents(true, { forward: true })
+  // interactivity the moment the cursor touches a solid sprite pixel. Linux
+  // has no forward, so there the overlay stays a solid window instead.
+  if (petOverlayClickThrough()) {
+    win.setIgnoreMouseEvents(true, { forward: true })
+  }
 
   try {
     // Electron docs: macOS may transform process type on each
@@ -14381,11 +14385,13 @@ function spawnPetOverlayWindow(bounds) {
   installWindowRendererLifecycle(win, { kind: 'overlay', callbacks: { log: rememberLog } })
 
   win.on('closed', () => {
-    petOverlayClosing = false
-
-    if (petOverlayWindow === win) {
-      petOverlayWindow = null
+    // A stale window openPetOverlay replaced must not touch its replacement.
+    if (petOverlayWindow !== win) {
+      return
     }
+
+    petOverlayWindow = null
+    petOverlayClosing = false
 
     // If the overlay went away on its own (e.g. ⌘W), tell the main renderer to
     // pop the pet back in so it doesn't stay hidden. Harmless echo when we're
@@ -14419,9 +14425,12 @@ function openPetOverlay(bounds) {
 
   // A previous close was requested but never finished (close() can be aborted
   // on macOS) — force the stale window down before spawning a replacement so
-  // two overlays can never coexist.
+  // two overlays can never coexist. Detach it first so its 'closed' handler
+  // (sync or not) can't pop the pet back in over the replacement.
   if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    petOverlayWindow.destroy()
+    const stale = petOverlayWindow
+    petOverlayWindow = null
+    stale.destroy()
   }
 
   petOverlayClosing = false
@@ -14469,10 +14478,6 @@ function rehomePetOverlay() {
   }
 
   petOverlayWindow.setBounds(resolved)
-  // Re-assert click-through after a display-driven move so a re-home can never
-  // leave a mouse-enabled transparent region behind (same bug class as the
-  // spawn-time default above).
-  petOverlayWindow.setIgnoreMouseEvents(true, { forward: true })
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'bounds', bounds: resolved })

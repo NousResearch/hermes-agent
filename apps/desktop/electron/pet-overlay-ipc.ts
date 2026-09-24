@@ -2,7 +2,7 @@
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
 import { type BrowserWindow, ipcMain, screen } from 'electron'
 
-import { resolvePetOverlayBounds } from './pet-overlay'
+import { petOverlayClickThrough, resolvePetOverlayBounds } from './pet-overlay'
 
 export interface PetOverlayIpcDeps {
   getMainWindow: () => BrowserWindow | null
@@ -114,6 +114,11 @@ export function registerPetOverlayIpc({
   // the sprite so transparent margins pass clicks to whatever is behind.
   ipcMain.on('hermes:pet-overlay:ignore-mouse', (_event, ignore) => {
     const petOverlayWindow = getPetOverlayWindow()
+
+    // No forward on Linux: an ignoring overlay could never be re-armed.
+    if (Boolean(ignore) && !petOverlayClickThrough()) {
+      return
+    }
 
     if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
       petOverlayWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })

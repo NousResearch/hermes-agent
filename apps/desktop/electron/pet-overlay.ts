@@ -25,6 +25,13 @@ const MIN_SIZE = 80
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi))
 
 /**
+ * Whether the overlay may start click-through. `setIgnoreMouseEvents(true, { forward: true })`
+ * only forwards pointer moves on macOS/Windows; on Linux an ignoring overlay never hears the
+ * cursor re-enter the sprite, so it stays a solid window (the X11 HUD makes the same call).
+ */
+export const petOverlayClickThrough = (platform = process.platform) => platform !== 'linux'
+
+/**
  * Keep the WHOLE rect inside `workArea`: size is capped to the work area, then
  * the origin is clamped so no edge crosses it.
  */

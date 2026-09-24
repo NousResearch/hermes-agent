@@ -3982,8 +3982,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
-        resume_unanswered_turn: bool = False) -> tuple:
+        resume_unanswered_turn: bool = False, approval_notify_callback=None,
+        approval_session_key: Optional[str] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
+        ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
+        approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
         provider/model must match or the turn fails; ``runtime`` metadata is attached.
@@ -4060,8 +4063,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
-                    with notification_turn(agent, muted=muted, session_id=session_id or ""):
-                        result = agent.run_conversation(**conversation_kwargs)
+                    approval_token = None
+                    if approval_notify_callback is not None and approval_session_key:
+                        # Same machinery as /v1/runs (_run_agent_sync): the contextvar scopes
+                        # this turn's approvals to the key the resolve endpoint looks up.
+                        from tools.approval import register_gateway_notify
+                        from tools.approval_context import set_current_session_key
+                        approval_token = set_current_session_key(approval_session_key)
+                        register_gateway_notify(approval_session_key, approval_notify_callback)
+                    try:
+                        with notification_turn(agent, muted=muted, session_id=session_id or ""):
+                            result = agent.run_conversation(**conversation_kwargs)
+                    finally:
+                        if approval_token is not None:
+                            from tools.approval import unregister_gateway_notify
+                            from tools.approval_context import reset_current_session_key
+                            with suppress(Exception):
+                                unregister_gateway_notify(approval_session_key)
+                            with suppress(Exception):
+                                reset_current_session_key(approval_token)
                     result, usage = self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)

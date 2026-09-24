@@ -28,6 +28,11 @@ export interface BackendStartFailureContext {
    * cloud) primary backend rather than spawning a local child.
    */
   attemptedRemote: boolean
+  /**
+   * True when the boot that just failed was a supervisor-owned respawn after
+   * an unexpected primary exit, not an initial or user-driven start.
+   */
+  supervisorRecovery?: boolean
 }
 
 /**
@@ -35,9 +40,14 @@ export interface BackendStartFailureContext {
  * Latch local failures (prevent install-restart loops); never latch remote
  * failures (they are transient and must stay retryable so recovery paths work
  * without an app restart).
+ *
+ * A supervisor-owned respawn never latches either: it already has its own
+ * bounded crash-loop budget, so a pre-ready child exit must not become a
+ * permanent local boot latch before that budget can run. Initial and
+ * user-driven starts keep the fail-closed latch.
  */
 export function shouldLatchBackendStartFailure(context: BackendStartFailureContext): boolean {
-  return !context.attemptedRemote
+  return !context.attemptedRemote && !context.supervisorRecovery
 }
 
 export interface RemoteReauthFailureContext {

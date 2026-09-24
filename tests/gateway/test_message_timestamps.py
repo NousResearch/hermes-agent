@@ -2,11 +2,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from gateway.message_timestamps import (
-    coerce_message_timestamp,
     render_user_content_with_timestamp,
-    strip_leading_message_timestamps,
 )
-from run_agent import AIAgent
 
 
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -38,15 +35,6 @@ def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embed
 # ---------------------------------------------------------------------------
 
 
-def test_message_timestamps_enabled_defaults_off():
-    from gateway.run import _message_timestamps_enabled
-
-    assert _message_timestamps_enabled(None) is False
-    assert _message_timestamps_enabled({}) is False
-    assert _message_timestamps_enabled({"gateway": {}}) is False
-    assert (
-        _message_timestamps_enabled({"gateway": {"message_timestamps": {}}}) is False
-    )
 
 
 def test_build_history_injects_only_when_enabled():

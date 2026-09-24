@@ -15,6 +15,7 @@ from typing import BinaryIO, Sequence, TextIO
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
 
+
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
 
 
@@ -85,6 +86,22 @@ def _is_hermes_gateway_run_argv(command: Sequence[str]) -> bool:
     return bool(looks_like_gateway_command_line(" ".join(str(part) for part in command)))
 
 
+def _child_launchd_label_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Env vars that carry this wrapper's launchd identity to the grandchild.
+
+    launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on this wrapper (its direct child; an
+    interactive shell has none, the grandchild sees ``XPC_SERVICE_NAME=0``). Re-exporting the
+    label lets the gateway resolve its job without it (the stop-drain cap reading the live
+    ``ExitTimeOut``, the exit-75 restart route, the control-socket supervisor declaration — all
+    via ``gateway.restart.launchd_job_label``). Only ``ai.hermes.*`` labels are exported;
+    app-coalition labels are meaningless as a job identity.
+    """
+    from gateway.restart import LAUNCHD_LABEL_ENV, launchd_job_label
+
+    label = launchd_job_label(os.environ if environ is None else environ)
+    return {LAUNCHD_LABEL_ENV: label} if label else {}
+
+
 def _prepare_child_command(command: Sequence[str], environ: Mapping[str, str] | None = None) -> list[str]:
     """Return the argv to exec, upgrading stale launchd-wrapped gateway commands.
 
@@ -134,7 +151,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_path: Path = args.error_log
 
     try:
-        proc = subprocess.Popen(_prepare_child_command(args.command), stderr=subprocess.PIPE)
+        proc = subprocess.Popen(
+            _prepare_child_command(args.command),
+            stderr=subprocess.PIPE,
+            env={**os.environ, **_child_launchd_label_env()},
+        )
     except OSError as exc:
         with _open_log(log_path) as log_file:
             _write_timestamped_line(log_file, f"failed to start stderr-timestamped command: {exc}")

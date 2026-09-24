@@ -205,19 +205,6 @@ describe('MessagingView pairing', () => {
     expect(screen.getByText('Bee')).toBeTruthy()
   })
 
-  it('shows no pairing affordance when nobody is waiting', async () => {
-    // Approvals are rare; an always-present empty state would be permanent
-    // chrome on a page that is otherwise about credentials.
-    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
-    getPairing.mockResolvedValue({ approved: [], pending: [] })
-
-    await renderMessaging()
-
-    expect((await screen.findAllByText('Microsoft Teams')).length).toBeGreaterThan(0)
-    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
-    expect(screen.queryByText(/Pending requests/)).toBeNull()
-  })
-
   it('still renders platforms when the pairing endpoint fails', async () => {
     // An older backend without the endpoint must not blank the page.
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })

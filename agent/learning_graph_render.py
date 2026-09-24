@@ -11,6 +11,9 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from agent.learning_graph import memory_node_id
+from hermes_time import safe_strftime
+
 LEAD_IN = 0.06  # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
 # constants.ts AGE_GRADIENT — old quiet, recent bright.
 AGE_OLD_INK, AGE_MID_INK, AGE_NEW_INK, AGE_MID = 0.42, 0.74, 0.95, 0.52
@@ -78,7 +81,7 @@ def format_date(ts: Optional[float]) -> str:
         dt = _utc(float(ts)) if ts else None
     except (ValueError, OSError, OverflowError):
         dt = None
-    return f"{dt.day} {dt.strftime('%b %Y')}" if dt else "unknown"
+    return f"{dt.day} {safe_strftime(dt, '%b %Y')}" if dt else "unknown"
 
 
 def compute_recency(nodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -204,8 +207,8 @@ class _ChartBucket:
 
 # granularity → (period key, row label) from a UTC datetime.
 _PERIODS: dict[str, tuple] = {
-    "day": (lambda dt: (dt.year, dt.month, dt.day), lambda dt: f"{dt.day} {dt.strftime('%b')}"),
-    "month": (lambda dt: (dt.year, dt.month), lambda dt: dt.strftime("%b %Y")),
+    "day": (lambda dt: (dt.year, dt.month, dt.day), lambda dt: f"{dt.day} {safe_strftime(dt, '%b')}"),
+    "month": (lambda dt: (dt.year, dt.month), lambda dt: safe_strftime(dt, "%b %Y")),
     "year": (lambda dt: (dt.year,), lambda dt: dt.strftime("%Y")),
 }
 
@@ -258,7 +261,8 @@ def _build_chart_buckets(nodes: list[dict[str, Any]], rec: dict[str, Any], max_r
 
 def _bucket_rows(buckets: list[_ChartBucket], payload: dict[str, Any]) -> list[dict[str, Any]]:
     cmap = category_color_map(payload)
-    memory_lookup = {f"memory:{card.get('source')}:{idx}": card for idx, card in enumerate(payload.get("memory", []) or []) if isinstance(card, dict)}
+    memory_lookup = {memory_node_id(card, idx): card
+                     for idx, card in enumerate(payload.get("memory", []) or []) if isinstance(card, dict)}
 
     def node_row(node: dict[str, Any]) -> dict[str, Any]:
         card, memory = _node_card(node), memory_lookup.get(_node_id(node))

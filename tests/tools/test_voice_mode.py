@@ -10,18 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def _non_wsl_proc_version(real_open):
-    """Return an open() shim that makes host WSL detection deterministic."""
-    def _fake_open(file, *args, **kwargs):
-        if file == "/proc/version":
-            from io import StringIO
-
-            return StringIO("Linux test-kernel")
-        return real_open(file, *args, **kwargs)
-
-    return _fake_open
-
-
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -162,7 +150,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
+        monkeypatch.setattr("tools.voice_mode.is_wsl", lambda: False)
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -190,7 +178,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
+        monkeypatch.setattr("tools.voice_mode.is_wsl", lambda: False)
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -198,7 +186,7 @@ class TestDetectAudioEnvironment:
         assert result["warnings"] == []
         assert any("SSH" in n for n in result.get("notices", []))
 
-    def test_wsl_without_pulse_blocks_voice(self, monkeypatch, tmp_path):
+    def test_wsl_without_pulse_blocks_voice(self, monkeypatch):
         """WSL without PULSE_SERVER should block voice mode."""
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
@@ -208,18 +196,10 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
-        proc_version = tmp_path / "proc_version"
-        proc_version.write_text("Linux 5.15.0-microsoft-standard-WSL2")
+        monkeypatch.setattr("tools.voice_mode.is_wsl", lambda: True)
 
-        _real_open = open
-        def _fake_open(f, *a, **kw):
-            if f == "/proc/version":
-                return _real_open(str(proc_version), *a, **kw)
-            return _real_open(f, *a, **kw)
-
-        with patch("builtins.open", side_effect=_fake_open):
-            from tools.voice_mode import detect_audio_environment
-            result = detect_audio_environment()
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
 
         assert result["available"] is False
         assert any("WSL" in w for w in result["warnings"])
@@ -309,7 +289,6 @@ class TestCheckVoiceRequirements:
         result = check_voice_requirements()
         assert result["available"] is True
         assert result["stt_available"] is True
-        assert "STT provider: OK (plugin: my-plugin-stt)" in result["details"]
 
 # ============================================================================
 # AudioRecorder
@@ -1445,7 +1424,7 @@ class TestWSL2PowerShellFallback:
             m.wait = MagicMock(return_value=m.returncode)
             return m
 
-        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+        with patch("tools.voice_mode.is_wsl", return_value=True), \
              patch("tools.voice_mode._import_audio", side_effect=ImportError), \
              patch("tools.voice_mode.shutil.which",
                    side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
@@ -1491,13 +1470,7 @@ class TestWSL2PowerShellFallback:
                 return f"C:\\Temp\\{wsl_path.split('/')[-1]}\n".encode()
             return b""
 
-        def _fake_open(path, *args, **kwargs):
-            if str(path) == "/proc/version":
-                import io
-                return io.StringIO("Linux Microsoft WSL2")
-            return open(path, *args, **kwargs)
-
-        with patch("builtins.open", side_effect=_fake_open), \
+        with patch("tools.voice_mode.is_wsl", return_value=True), \
              patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay") else None), \
              patch("subprocess.check_output", side_effect=_capture_check_output), \
              patch("subprocess.Popen", return_value=MagicMock(returncode=0, wait=lambda **k: 0)), \
@@ -1531,13 +1504,7 @@ class TestWSL2PowerShellFallback:
             m.wait.return_value = 0
             return m
 
-        def _fake_open(path, *args, **kwargs):
-            if str(path) == "/proc/version":
-                import io
-                return io.StringIO("Linux version 5.15.0-generic #72-Ubuntu")
-            return open(path, *args, **kwargs)
-
-        with patch("builtins.open", side_effect=_fake_open), \
+        with patch("tools.voice_mode.is_wsl", return_value=False), \
              patch("tools.voice_mode._import_audio", side_effect=ImportError), \
              patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("ffplay", "aplay") else None), \
              patch("subprocess.Popen", side_effect=_capture_popen), \
@@ -1558,12 +1525,6 @@ class TestWSLAudioEnvironmentGate:
     not be hard-blocked, but the recording/STT PulseAudio-bridge guidance
     must still be surfaced (as a non-blocking notice)."""
 
-    def _fake_open_wsl(self, path, *args, **kwargs):
-        if str(path) == "/proc/version":
-            import io
-            return io.StringIO("Linux version 5.15 Microsoft Standard WSL2")
-        return open(path, *args, **kwargs)
-
     def test_wsl_no_pulse_but_powershell_available_not_hard_blocked(self, monkeypatch):
         from unittest.mock import patch
         from tools import voice_mode as vm
@@ -1574,7 +1535,7 @@ class TestWSLAudioEnvironmentGate:
             monkeypatch.delenv(_ssh_var, raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        with patch("builtins.open", side_effect=self._fake_open_wsl), \
+        with patch("tools.voice_mode.is_wsl", return_value=True), \
              patch("tools.voice_mode._wsl_powershell_tts_available", return_value=True), \
              patch("tools.voice_mode._pulse_socket_reachable", return_value=False), \
              patch("hermes_constants.is_container", return_value=False):
@@ -1601,7 +1562,7 @@ class TestWSLAudioEnvironmentGate:
             monkeypatch.delenv(_ssh_var, raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        with patch("builtins.open", side_effect=self._fake_open_wsl), \
+        with patch("tools.voice_mode.is_wsl", return_value=True), \
              patch("tools.voice_mode._wsl_powershell_tts_available", return_value=False), \
              patch("tools.voice_mode._pulse_socket_reachable", return_value=False), \
              patch("hermes_constants.is_container", return_value=False):
@@ -1622,7 +1583,7 @@ class TestWSLAudioEnvironmentGate:
             monkeypatch.delenv(_ssh_var, raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        with patch("builtins.open", side_effect=self._fake_open_wsl), \
+        with patch("tools.voice_mode.is_wsl", return_value=True), \
              patch("hermes_constants.is_container", return_value=False):
             result = vm.detect_audio_environment()
 

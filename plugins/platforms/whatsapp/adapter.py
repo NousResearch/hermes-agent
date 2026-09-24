@@ -633,7 +633,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # knows inbound media only, so index our own sends (the cron-delivered image case).
             from gateway import rich_sent_store
             mime = mimetypes.guess_type(file_path)[0] or _MEDIA_INFO.get(_MEDIA_TYPE_BY_BRIDGE_KIND.get(media_type), ("", ""))[1]
-            rich_sent_store.record_media(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
+            await rich_sent_store.record_media_async(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
         return result
 
     @_needs_bridge

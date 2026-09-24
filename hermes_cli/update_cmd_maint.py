@@ -394,6 +394,12 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
                 print(line)
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
+    # A multi-profile host whose gateway came back standalone on a guard says so here too — the
+    # update summary is the one line operators read (the boot log under s6 is not).
+    with suppress(Exception):
+        from hermes_cli.gateway_multiplex_mode import consume_rewritten_notice, recorded_standalone_warning_lines
+        for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
+            print(line)
     return desktop_build_ok and sqlite_runtime_ok
 
 
@@ -858,8 +864,8 @@ def _sync_profiles_after_update() -> None:
             print(f"→ Seeded .env for {len(backfilled)} profile(s) (copied from default): {', '.join(backfilled)}")
 
     with suppress(Exception):
-        from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
-        synced = sync_honcho_profiles_quiet()
+        from plugins.memory import import_provider_module
+        synced = import_provider_module("honcho", "cli").sync_honcho_profiles_quiet()
         if synced:
             print(f"\n-> Honcho: synced {synced} profile(s)")
 

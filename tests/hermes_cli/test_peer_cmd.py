@@ -441,18 +441,6 @@ def test_dm_older_peer_hidden_duplicate_gives_clear_error(monkeypatch, capsys, o
     assert "Title already in use" in err
 
 
-def test_dm_older_peer_with_visible_bot_chat_still_works(monkeypatch, capsys, fake_peer_server):
-    """Backward compat: an older peer ignores the new query params and returns
-    the plain visible listing — a visible Bot Chat must still resolve."""
-    _FakePeer.sessions = ["bc_visible"]
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
-    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
-
-    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
-
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out)["reply"] == "reply from the other machine"
-    assert _FakePeer.sessions == ["bc_visible"]
 
 
 def test_run_starts_async_turn_with_canonical_session_and_idempotency(

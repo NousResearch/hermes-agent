@@ -1071,9 +1071,13 @@ def _provider_overflow_exhausted_result(
 
 
 def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool:
-    """Rewrite a cache-decorated system message in place, keeping its blocks (a bare string
-    over the ``[static prefix, volatile tail]`` list would drop both cache_control
-    breakpoints). Returns False when the shape cannot be safely patched."""
+    """Rewrite a cache-decorated system message in place while preserving its layout.
+
+    A single text block is replaced wholesale. For multi-block layouts, including
+    ``[static prefix, volatile tail]`` and ``[stable, context, volatile]``, a
+    matching concatenated prefix is retained and only the final tail block is
+    updated. Return ``False`` when the shape or prefix cannot be safely rewritten.
+    """
     content = system_message.get("content")
     if not isinstance(content, list) or not content or not all(
         isinstance(part, dict) and part.get("type") == "text" for part in content

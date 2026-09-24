@@ -118,14 +118,14 @@ class TestSyncFailoverSystemMessage:
 
 
 class TestSyncFailoverPreservesCacheDecoration:
-    """The sync must not flatten a cache-decorated system message.
+    """Exercise failover sync for cache-decorated system messages.
 
     ``apply_anthropic_cache_control`` runs once per call block, before the retry
     loop, splitting the system prompt into either ``[static prefix, volatile
-    tail]`` or ``[stable, cacheable context, volatile tail]`` blocks. A failover
-    fires *inside* that retry loop, so overwriting the list with a bare string
-    drops the system cache breakpoints and the retried request re-bills the
-    whole system prompt.
+    tail]`` or ``[stable, cacheable context, volatile tail]`` blocks. These
+    tests verify that sync preserves that decoration and that a prefix mismatch
+    can be safely re-decorated. They validate request structure only, not real
+    cache hits, misses, or billing.
     """
 
     _STATIC = "You are a helpful assistant.\n\nStable brief.\n"

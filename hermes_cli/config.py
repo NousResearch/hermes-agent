@@ -910,14 +910,12 @@ def _coerce_config_version(value: Any) -> int:
     return max(version, 0)
 
 
-def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
-    """Return ``(current_version, latest_version)`` from the raw on-disk config.
-    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
-    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
-    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
-    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
-    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
-    be mistaken for an up-to-date config."""
+def _read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[Optional[int], int]:
+    """Single raw read behind ``check_config_version()``: ``(stamp, latest_version)`` where
+    *stamp* is ``None`` when config.yaml parsed but carries no ``_config_version`` key (a
+    never-stamped current-schema file, not an ancient install — ``migrate_config()`` gives it only
+    the legacy-key steps). A missing file, or malformed YAML under a tolerant caller, reads as
+    ``latest`` exactly as ``check_config_version()`` always reported it."""
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
     if not config_path.exists():
@@ -945,7 +943,21 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
                 f"a mapping, got {type(config).__name__}"
             )
         config = {}
+    if "_config_version" not in config:
+        return None, latest
     return _coerce_config_version(config.get("_config_version")), latest
+
+
+def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
+    """Return ``(current_version, latest_version)`` from the raw on-disk config.
+    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
+    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
+    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
+    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
+    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
+    be mistaken for an up-to-date config. A file with no version key reads as 0."""
+    stamp, latest = _read_config_version_stamp(raise_on_parse_error=raise_on_parse_error)
+    return (0 if stamp is None else stamp), latest
 
 
 # ---- Config structure validation ----
@@ -1299,7 +1311,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
     # which must not happen when the migration will be refused for malformed YAML.
-    current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
+    stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
+    current_ver = 0 if stamp is None else stamp
 
     try:
         fixes = sanitize_env_file()
@@ -1315,9 +1328,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # Missing/unparseable files never trip the floor gate.
     # Imported lazily because the steps call back into this module.
     from hermes_cli.config_migrations import (
-        SUPPORT_FLOOR_VERSION, has_version_stamp, run_migrations, support_floor_message)
+        SUPPORT_FLOOR_VERSION, run_migrations, support_floor_message)
 
-    has_explicit_version = has_version_stamp()
+    has_explicit_version = stamp is not None
     floor_refused = (
         has_explicit_version and current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver)
     if floor_refused:

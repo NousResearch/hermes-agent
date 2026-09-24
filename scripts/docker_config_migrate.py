@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Iterable
 
 from hermes_cli.config import (
+    InvalidUserConfigError,
+    _read_config_version_stamp,
     check_config_version,
     get_config_path,
     get_env_path,
@@ -16,7 +18,6 @@ from hermes_cli.config import (
 from hermes_cli.config_backups import backup_config, list_config_backups
 from hermes_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
-    has_version_stamp,
     support_floor_message,
 )
 from utils import env_var_enabled
@@ -48,7 +49,15 @@ def main() -> int:
         print("[config-migrate] HERMES_SKIP_CONFIG_MIGRATION is set; skipping config migration")
         return 0
 
-    current_ver, latest_ver = check_config_version()
+    # Strict read: malformed YAML or a non-mapping root is left alone with a warning (the
+    # tolerant check_config_version() already printed one) and the boot continues, instead of
+    # running the backup/migrate dance that migrate_config() would refuse anyway.
+    try:
+        stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
+    except InvalidUserConfigError as exc:
+        print(f"[config-migrate] WARNING: {exc}; leaving config.yaml untouched", file=sys.stderr)
+        return 0
+    current_ver = 0 if stamp is None else stamp
     if current_ver >= latest_ver:
         return 0
 
@@ -56,9 +65,9 @@ def main() -> int:
     # leaves the file untouched), so don't run the backup/verify dance that
     # would raise "did not advance config version" and block the boot.
     # Warn-and-continue matches the CLI's fail-safe posture. A config with no
-    # _config_version (a volume seeded from the template) is not below the
-    # floor: migrate_config() stamps it.
-    if current_ver < SUPPORT_FLOOR_VERSION and has_version_stamp():
+    # _config_version (stamp None: a volume seeded from the template) is not
+    # below the floor: migrate_config() stamps it.
+    if stamp is not None and current_ver < SUPPORT_FLOOR_VERSION:
         print(
             f"[config-migrate] WARNING: {support_floor_message()}",
             file=sys.stderr,

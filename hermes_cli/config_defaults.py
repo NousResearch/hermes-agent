@@ -1085,6 +1085,8 @@ DEFAULT_CONFIG = {
             # Optional local text file with performance direction; may include a `{transcript}`
             # placeholder, else the live transcript is appended.
             "persona_prompt_file": "",
+            # Gemini 3.8: concise speech_metadata.style, overriding persona_prompt_file.
+            "style": "",
         },
         "xai": {
             "voice_id": "eve",  # or a custom voice ID (docs.x.ai custom voices)

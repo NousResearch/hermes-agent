@@ -2,6 +2,7 @@
 
 import base64
 import struct
+import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -72,6 +73,101 @@ class TestWrapPcmAsWav:
 
 
 class TestGenerateGeminiTts:
+    def test_public_tool_forwards_instructions_to_gemini(self, tmp_path):
+        import json
+        from tools.tts_tool import text_to_speech_tool
+
+        output = tmp_path / "out.mp3"
+        def generate(text, path, config, instructions=None):
+            assert instructions == "Speak warmly"
+            assert text == "Hello world."
+            output.write_bytes(b"ID3fakeaudio")
+            return path
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "gemini"}), \
+             patch("tools.tts_tool._generate_gemini_tts", side_effect=generate):
+            result = json.loads(text_to_speech_tool("Hello world.", output_path=str(output),
+                                                    instructions="Speak warmly"))
+        assert result["success"] is True
+
+    @pytest.mark.parametrize("model", ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"])
+    def test_38_wire_shape_and_wav(self, model, tmp_path, monkeypatch, fake_pcm_bytes):
+        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_delivery import _wrap_pcm_as_wav
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        persona = tmp_path / "persona.md"
+        persona.write_text("THE SCENE\nQuiet study.\nDIRECTOR'S NOTES\nWarm and measured.")
+        wav = _wrap_pcm_as_wav(fake_pcm_bytes)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"candidates": [{"content": {"parts": [
+            {"inlineData": {"mimeType": "audio/wav", "data": base64.b64encode(wav).decode()}}
+        ]}}]}
+        config = {"gemini": {"model": model, "voice": "voice_custom", "audio_tags": False,
+                             "persona_prompt_file": str(persona)}}
+        with patch("requests.post", return_value=response) as post, \
+             patch("agent.auxiliary_client.call_llm") as rewrite:
+            _generate_gemini_tts("Hello <laugh> world", str(tmp_path / "out.wav"), config)
+        rewrite.assert_not_called()
+        assert post.call_args.args[0].endswith(f"/models/{model}:generateContent")
+        assert post.call_args.kwargs["json"] == {
+            "contents": [{"role": "user", "parts": [{"text": "Hello <laugh> world",
+                "speech_metadata": {"style": persona.read_text()}}]}],
+            "generationConfig": {"responseModalities": ["AUDIO"],
+                "speechConfig": {"voiceConfig": {"voice": "voice_custom"}}}}
+        assert (tmp_path / "out.wav").read_bytes() == wav
+
+    def test_38_audio_tags_only_insert_supported_events(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"model": "gemini-3.8-flash-tts", "audio_tags": True}}
+        with patch("tools.tts_tool_providers._rewrite_with_auxiliary_model",
+                   return_value="Hello <laugh> world") as rewrite, \
+             patch("requests.post", return_value=mock_gemini_response) as post:
+            _generate_gemini_tts("Hello  world", str(tmp_path / "out.wav"), config)
+        assert rewrite.called
+        assert post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"] == "Hello <laugh> world"
+
+        for unsafe in ("Hello [whispers] world", "Hello <whisper> world", "Different text"):
+            with patch("tools.tts_tool_providers._rewrite_with_auxiliary_model", return_value=unsafe), \
+                 patch("requests.post", return_value=mock_gemini_response) as post:
+                _generate_gemini_tts("Hello  world", str(tmp_path / "out.wav"), config)
+            assert post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"] == "Hello  world"
+
+    def test_38_style_precedence_and_legacy_placeholder(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        persona = tmp_path / "persona.md"
+        persona.write_text("Say this: {{transcript}}")
+        config = {"gemini": {"model": "gemini-3.8-flash-tts", "persona_prompt_file": str(persona)}}
+        with pytest.raises(ValueError, match="migrate"):
+            _generate_gemini_tts("Hello", str(tmp_path / "out.wav"), config)
+        for style, call in [("configured", None), ("configured", "per-call"), ("", "per-call")]:
+            config["gemini"]["style"] = style
+            with patch("requests.post", return_value=mock_gemini_response) as post:
+                _generate_gemini_tts("Hello", str(tmp_path / "out.wav"), config, instructions=call)
+            part = post.call_args.kwargs["json"]["contents"][0]["parts"][0]
+            assert part == {"text": "Hello", "speech_metadata": {"style": call or style}}
+
+    def test_38_l16_respects_mime_rate_and_rejects_unknown(self, tmp_path, monkeypatch, fake_pcm_bytes):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        response = MagicMock(status_code=200)
+        inline = {"mimeType": "audio/L16;codec=pcm;rate=16000",
+                  "data": base64.b64encode(fake_pcm_bytes).decode()}
+        response.json.return_value = {"candidates": [{"content": {"parts": [{"inlineData": inline}]}}]}
+        with patch("requests.post", return_value=response):
+            _generate_gemini_tts("Hi", str(tmp_path / "out.wav"), {"gemini": {"model": "gemini-3.8-flash-tts"}})
+        with wave.open(str(tmp_path / "out.wav"), "rb") as audio:
+            assert audio.getframerate() == 16000
+            assert audio.readframes(audio.getnframes()) == fake_pcm_bytes
+        inline["mimeType"] = "audio/mp3"
+        with patch("requests.post", return_value=response), pytest.raises(RuntimeError, match="unsupported audio MIME"):
+            _generate_gemini_tts("Hi", str(tmp_path / "out.wav"), {"gemini": {"model": "gemini-3.8-flash-tts"}})
+
     def test_missing_api_key_raises_value_error(self, tmp_path):
         from tools.tts_tool import _generate_gemini_tts
 

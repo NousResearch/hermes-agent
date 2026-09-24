@@ -150,7 +150,10 @@ models-dev-upstream/
 
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)
 .codex/
-.cursor/
+.cursor/*
+# Canonical pstack skills are versioned; allow the shared skill tree only.
+!.cursor/skills/
+!.cursor/skills/**
 .gemini/
 .zed/
 .mcp.json

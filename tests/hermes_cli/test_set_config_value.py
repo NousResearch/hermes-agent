@@ -465,6 +465,8 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 # #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
+# `config get` redacts resolved credentials (issue #84106)
+# ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
     """#34067 / #112003 / #114107: only a WRONG-PREFIX path under a known section is provably a typo

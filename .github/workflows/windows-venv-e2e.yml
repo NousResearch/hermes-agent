@@ -78,3 +78,11 @@ jobs:
           uv run --no-sync python -m pytest \
             tests/tools/test_process_registry_windows_live.py \
             -o addopts= -v -p no:cacheprovider
+
+      - name: Run Telegram CLOSE-WAIT reconnect live E2E (#87057)
+        shell: bash
+        run: |
+          set -uo pipefail
+          uv run --no-sync python -m pytest \
+            tests/gateway/test_telegram_closewait_windows_live.py \
+            -o addopts= -v -p no:cacheprovider

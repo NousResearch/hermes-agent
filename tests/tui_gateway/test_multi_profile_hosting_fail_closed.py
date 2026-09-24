@@ -58,7 +58,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
-    monkeypatch.setattr(lpp, "_snapshot", None)
+    monkeypatch.setattr(lpp, "_authority", None)
     from agent import secret_scope
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     server._cfg_cache = server._cfg_mtime = server._cfg_path = None

@@ -32,7 +32,7 @@ def _launch_local_env(monkeypatch):
     """The launch process runs the local backend; secondaries must never see it."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", False)
-    monkeypatch.setattr(ltp, "_snapshot", None)
+    monkeypatch.setattr(ltp, "_authority", None)
     monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", lambda _h: {})
 

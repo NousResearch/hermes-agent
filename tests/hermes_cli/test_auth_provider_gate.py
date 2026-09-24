@@ -210,7 +210,7 @@ def test_profile_dotenv_key_counts_as_explicit_when_process_env_lacks_it(tmp_pat
     from agent import secret_scope
     from tui_gateway import launch_profile_policy as lpp
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr(lpp, "_snapshot", None)
+    monkeypatch.setattr(lpp, "_authority", None)
 
     from hermes_cli.auth import is_provider_explicitly_configured
     from hermes_cli.web_server_profiles import _config_profile_scope

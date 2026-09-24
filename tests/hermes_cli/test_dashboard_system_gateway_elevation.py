@@ -75,7 +75,10 @@ def test_only_system_scope_lifecycle_verbs_are_spawned_under_sudo(
     if both_units:
         user_unit.parent.mkdir(parents=True)
         user_unit.write_text("[Service]\n", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.web_server_profiles._resolve_profile_dir", lambda name: tmp_path / name)
+    monkeypatch.setattr(
+        "hermes_cli.web_server_profiles._resolve_profile_dir",
+        lambda name, **_kwargs: tmp_path / name,
+    )
     argv = _spawn(tmp_path, subcommand, sudo_ok=True)
     plain = runtime_command(tmp_path, subcommand)
     assert argv == (["sudo", "-n", *plain] if elevated else plain)

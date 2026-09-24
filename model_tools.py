@@ -923,9 +923,12 @@ def handle_function_call(
             return _emit(tool_error("Connectors are not available in this session."))
         if is_connector_name(function_name) and parse_connector_name(function_name) is None:
             return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
-    elif (enabled_toolsets is not None or disabled_toolsets is not None) and function_name not in _select_tool_names(
-        enabled_toolsets, disabled_toolsets, quiet_mode=True,
-    ):
+    elif (enabled_toolsets is not None or disabled_toolsets is not None) and function_name not in {
+        td["function"]["name"] for td in get_tool_definitions(
+            enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            quiet_mode=True, skip_tool_search_assembly=True,
+        )
+    }:
         message = f"Tool '{function_name}' is not available in this session."
         return _emit(tool_error(message), status="blocked", error_type="ToolNotGranted", error_message=message)
 

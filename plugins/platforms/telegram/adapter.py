@@ -684,11 +684,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._status_indicator_enabled: bool = bool(extra.get("status_indicator", False))
         self._status_online_text: str = str(extra.get("status_online", "Online"))
         self._status_offline_text: str = str(extra.get("status_offline", "Offline"))
-        # Cold-boot queue: drop server-side pending updates on first boot (default True,
-        # preserves historical behaviour). Set extra.drop_pending_on_cold_boot: false to
-        # receive messages sent while the gateway was offline (e.g. nightly-off hosts).
-        # Watcher reconnects always preserve the queue regardless of this setting.
-        self._drop_pending_on_cold_boot: bool = self._coerce_bool_extra("drop_pending_on_cold_boot", True)
+        # Cold-boot queue: preserve server-side pending updates unless the operator
+        # opts in. Upstream defaulted this knob to true, which discarded DMs queued
+        # while the gateway was down (T2 / Corey 2026-09-11). Set
+        # extra.drop_pending_on_cold_boot: true, or TELEGRAM_DROP_PENDING_UPDATES=1,
+        # to flush. Watcher reconnects always preserve the queue.
+        self._drop_pending_on_cold_boot: bool = self._coerce_bool_extra("drop_pending_on_cold_boot", False)
         self._dm_topics_config: List[Dict[str, Any]] = extra.get("dm_topics", [])
         # chat_ids with DM topics configured (O(1) root-DM ignore check)
         self._dm_topic_chat_ids: Set[str] = {str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e}
@@ -1287,7 +1288,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 retry_kwargs.pop("direct_messages_topic_id", None)
                 return await _await_with_thread_deadline(
                     send_fn(**retry_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
-
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
         configured = self.config.extra.get("fallback_ips", []) if getattr(self.config, "extra", None) else []
@@ -3178,16 +3178,22 @@ class TelegramAdapter(BasePlatformAdapter):
     def _cold_boot_drop_pending(self, *, is_reconnect: bool) -> bool:
         """Whether THIS connection asks Telegram to discard its queued updates.
 
-        A watcher reconnect always preserves them (#46621); a cold boot follows
-        ``platforms.telegram.extra.drop_pending_on_cold_boot`` (default true). The decision is logged
-        on every cold boot — a command that never ran is otherwise invisible (#71811)."""
-        drop_pending = self._drop_pending_on_cold_boot if not is_reconnect else False
+        A watcher reconnect always preserves them (#46621). A cold boot drops only
+        when ``TELEGRAM_DROP_PENDING_UPDATES=1`` or
+        ``platforms.telegram.extra.drop_pending_on_cold_boot`` is true. The knob
+        defaults to false so a gateway restart keeps queued DMs. The decision is
+        logged on every cold boot — a command that never ran is otherwise invisible
+        (#71811)."""
+        drop_pending = False if is_reconnect else (
+            _should_drop_pending_updates(is_reconnect=False) or self._drop_pending_on_cold_boot)
         if not is_reconnect:
             logger.info(
                 "[%s] Cold boot: %s Telegram updates queued while offline "
-                "(platforms.telegram.extra.drop_pending_on_cold_boot: %s)",
+                "(platforms.telegram.extra.drop_pending_on_cold_boot: %s, "
+                "TELEGRAM_DROP_PENDING_UPDATES opt-in: %s)",
                 self.name, "dropping" if drop_pending else "preserving",
-                "true" if self._drop_pending_on_cold_boot else "false")
+                "true" if self._drop_pending_on_cold_boot else "false",
+                "true" if _should_drop_pending_updates(is_reconnect=False) else "false")
         return drop_pending
 
     async def _start_webhook_mode(self, webhook_url: str, *, is_reconnect: bool) -> None:
@@ -3210,8 +3216,8 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._app.updater.start_webhook(
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
             secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=self._cold_boot_drop_pending(is_reconnect=is_reconnect),
-       )
+            drop_pending_updates=_should_drop_pending_updates(is_reconnect=is_reconnect) or self._cold_boot_drop_pending(is_reconnect=is_reconnect),
+        )
         self._webhook_mode = True
         self._polling_progress_accepting = False
         self._send_path_degraded = False
@@ -3241,9 +3247,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.error("[%s] Telegram polling error: %s", self.name, _redact_telegram_error_text(error), exc_info=True)
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
-        drop_pending = self._cold_boot_drop_pending(is_reconnect=is_reconnect)
+        # Default: keep the Bot API queue (messages sent while we were down). Opt-in flush:
+        # TELEGRAM_DROP_PENDING_UPDATES=1 or extra.drop_pending_on_cold_boot. Watcher reconnect always preserves (#46621).
         polling_started = await self._start_polling_resilient(
-            drop_pending_updates=drop_pending, error_callback=_polling_error_callback, require_progress=not is_reconnect)
+            drop_pending_updates=_should_drop_pending_updates(is_reconnect=is_reconnect) or self._cold_boot_drop_pending(is_reconnect=is_reconnect),
+            error_callback=_polling_error_callback, require_progress=not is_reconnect)
         if not polling_started:
             logger.warning(
                 "[%s] Connected in degraded Telegram mode: gateway is alive, polling will be retried in the background", self.name)
@@ -3251,12 +3259,11 @@ class TelegramAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
 
-        ``is_reconnect``: False = cold boot (drop the Bot API queue unless
-        ``extra.drop_pending_on_cold_boot`` is false); True = watcher reconnect (preserve
-        queued updates, else every message sent during the outage is lost). Webhook env:
+        ``is_reconnect``: False = cold boot (keep the Bot API queue unless
+        ``TELEGRAM_DROP_PENDING_UPDATES=1`` or ``extra.drop_pending_on_cold_boot``
+        is true); True = watcher reconnect (always preserve queued updates). Webhook env:
         TELEGRAM_WEBHOOK_URL, TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST,
-        TELEGRAM_WEBHOOK_SECRET."""
-        # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
+        TELEGRAM_WEBHOOK_SECRET."""        # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
         self._polling_teardown_started = False
         self._webhook_mode = False  # re-evaluated on every explicit connection
         if not TELEGRAM_AVAILABLE:
@@ -3896,7 +3903,6 @@ class TelegramAdapter(BasePlatformAdapter):
             kwargs["parse_mode"] = parse_mode
         await _await_with_thread_deadline(
             self._bot.edit_message_text(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
-
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
         skip further work); the fallback edit's exceptions propagate."""

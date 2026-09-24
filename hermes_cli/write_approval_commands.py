@@ -24,7 +24,7 @@ def _fmt_pending_list(subsystem: str) -> str:
         tag = " [auto]" if origin == "background_review" else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
         if subsystem == wa.MEMORY:
-            lines.extend(f"      {line}" for line in _matched_entries(r.get("payload")))
+            lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
     lines.append("")
     lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
@@ -113,13 +113,10 @@ def _changed_entries(result: dict, kind: str) -> List[str]:
 def _matched_entries(payload) -> List[str]:
     """The full entry each staged memory replace/remove is pinned to: the summary shows only
     the old_text search string, and approval applies to this entry, not to that search."""
-    if not isinstance(payload, dict):
-        return []
-    ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
+    from tools.memory_tool import destructive_ops
     return [f"{op['action']}s entry: {op['matched_entry']}" if op.get("matched_entry")
             else f"{op['action']}: unpinned legacy target \u2014 reject and recreate before approving"
-            for op in (ops if isinstance(ops, list) else [])
-            if isinstance(op, dict) and op.get("action") in ("replace", "remove")]
+            for op in destructive_ops(payload)]
 
 
 def _apply_one(subsystem: str, rec, memory_store):

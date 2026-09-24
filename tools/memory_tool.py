@@ -68,11 +68,10 @@ def _pin_matched_entries(store: "MemoryStore", payload: Dict[str, Any]) -> Optio
     contains it. Returns the JSON error when the search fails now, as the direct write would."""
     target = payload.get("target", "memory")
     if payload.get("action") == "batch":
-        ops = [op or {} for op in payload["operations"]]
-        result = store.resolve_batch_entries(target, ops)
+        result = store.resolve_batch_entries(target, payload["operations"])
         if result.get("success"):
             payload["operations"] = [op if entry is None else {**op, "matched_entry": entry}
-                                     for op, entry in zip(ops, result["matched_entries"])]
+                                     for op, entry in zip(payload["operations"], result["matched_entries"])]
     elif payload.get("action") in _BG_DELETE_ACTIONS:
         result = store.resolve_entry(target, payload.get("old_text") or "", payload["action"])
         if result.get("success"):
@@ -156,6 +155,12 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
 
 
 _BG_DELETE_ACTIONS = ("replace", "remove")
+
+
+def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The replace/remove ops of a staged memory payload, single-op or batch shape."""
+    ops = payload.get("operations") or [] if payload.get("action") == "batch" else [payload]
+    return [op for op in ops if op.get("action") in _BG_DELETE_ACTIONS]
 
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
@@ -288,9 +293,7 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
-    ops = payload.get("operations") or [] if action == "batch" else [payload]
-    if any(isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS and not op.get("matched_entry")
-           for op in ops):
+    if any(not op.get("matched_entry") for op in destructive_ops(payload)):
         return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
                                            "verified; nothing was applied. Reject it and recreate the change."}
     if action == "batch":

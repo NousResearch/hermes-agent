@@ -230,31 +230,36 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     assert _REVIEWED in handle_pending_subcommand(wa.MEMORY, ["pending"])
 
 
-@pytest.mark.parametrize("shape,legacy", [("single", False), ("batch", False), ("single", True)])
-def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape, legacy):
-    """Approve listed what a replace overwrote but was silent about what a remove deleted. A
-    record staged before removes were pinned to their full entry has no verifiable target, so
-    approve refuses it (keeping the record) instead of replaying its old_text search."""
+@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape):
+    """Approve listed what a replace overwrote but was silent about what a remove deleted."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import load_on_disk_store
     from tools import write_approval as wa
     _store, pid = _review_stages_remove(shape)
-    if legacy:
-        path = wa._pending_path(wa.MEMORY, pid)
-        record = json.loads(path.read_text(encoding="utf-8"))
-        record["payload"].pop("matched_entry", None)
-        path.write_text(json.dumps(record), encoding="utf-8")
-        assert "unpinned legacy target" in handle_pending_subcommand(wa.MEMORY, ["pending"])
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
+    assert _REVIEWED not in load_on_disk_store().memory_entries, out
+    assert _REVIEWED in out
+
+
+def test_approve_refuses_unpinned_legacy_remove(hermes_home):
+    """A record staged before removes were pinned to their full entry has no verifiable target,
+    so approve refuses it (keeping the record) instead of replaying its old_text search."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import load_on_disk_store
+    from tools import write_approval as wa
+    _store, pid = _review_stages_remove("single")
+    path = wa._pending_path(wa.MEMORY, pid)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"].pop("matched_entry", None)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert "unpinned legacy target" in handle_pending_subcommand(wa.MEMORY, ["pending"])
 
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
 
-    if legacy:
-        assert "Approved 0" in out and "predates entry pinning" in out, out
-        assert _REVIEWED in load_on_disk_store().memory_entries
-        assert wa.get_pending(wa.MEMORY, pid) is not None
-        return
-    assert _REVIEWED not in load_on_disk_store().memory_entries, out
-    assert _REVIEWED in out
+    assert "Approved 0" in out and "predates entry pinning" in out, out
+    assert _REVIEWED in load_on_disk_store().memory_entries
+    assert wa.get_pending(wa.MEMORY, pid) is not None
 
 
 def test_handle_approval_on(hermes_home):

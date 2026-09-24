@@ -2,6 +2,22 @@
 
 
 class CLIProcessNotificationsMixin:
+    @staticmethod
+    def _process_heartbeat_is_stale(event: dict, registry) -> bool:
+        """Whether a queued heartbeat's process has exited or been replaced.
+
+        A heartbeat captures an earlier running state. A busy CLI may drain it
+        only after the reader has moved the process to finished, where treating
+        it as a user turn would incorrectly report that it is still running.
+        """
+        if event.get("type") != "heartbeat":
+            return False
+        session = registry.get(str(event.get("session_id") or ""))
+        if session is None or session.exited:
+            return True
+        started_at = event.get("started_at")
+        return started_at is not None and session.started_at != started_at
+
     def _owns_process_notification(self, event: dict) -> bool:
         """Whether this session owns a delegation event (pre-compression keys resolve to their continuation; fail closed)."""
         event_key = str(event.get("session_key") or "")
@@ -29,6 +45,8 @@ class CLIProcessNotificationsMixin:
         for event, text in process_registry.drain_notifications(
             session_key=getattr(self, "session_id", "") or "", owns_event=self._owns_process_notification,
         ):
+            if self._process_heartbeat_is_stale(event, process_registry):
+                continue
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
@@ -64,4 +82,3 @@ class CLIProcessNotificationsMixin:
         if is_seeded_query:
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
         return user_input, is_voice_input, is_seeded_query
-

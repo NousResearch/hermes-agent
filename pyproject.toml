@@ -244,8 +244,9 @@ voice = [
 wake = [
   "openwakeword==0.6.0",
   "onnxruntime==1.27.0",
-  "sherpa-onnx==1.13.4",
+  "sherpa-onnx==1.13.8",
   "sentencepiece==0.2.2",
+  "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
@@ -581,6 +582,16 @@ setuptools = false
 setuptools-rust = false
 wheel = false
 sherpa-onnx = false
+# sherpa-onnx==1.13.8 exact-pins a companion runtime wheel, sherpa-onnx-core==1.13.8, which
+# upstream published 2026-09-10 — younger than the 14-day cutoff when the KWS pin was bumped,
+# so [wake]'s lazy install (and the extra itself) bricked on "no version of
+# sherpa-onnx-core==1.13.8" until the window passed. Same exact-pin / zero-float-protection
+# shape as the entries above: the upstream requirement is a hard ==, it cannot move on its own.
+sherpa-onnx-core = false
+# pypinyin: sherpa_onnx.text2token's Chinese ("ppinyin") path imports it lazily and upstream
+# never declares it — same undeclared-helper shape as sentencepiece. Exact-pinned in the
+# [wake] extra, so the cutoff adds no float protection (see the block above).
+pypinyin = false
 slack-bolt = false
 slack-sdk = false
 snowballstemmer = false

@@ -89,10 +89,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "numpy==2.4.3",
     ),
     # Open-vocabulary keyword spotting. sentencepiece is needed by
-    # sherpa_onnx.text2token but undeclared by sherpa-onnx.
+    # sherpa_onnx.text2token but undeclared by sherpa-onnx; pypinyin is the same for
+    # Chinese phrases (tokens_type="ppinyin" imports it lazily) — both undeclared upstream.
+    # 1.13.4's KeywordSpotter never fires (official test wavs AND live recordings, 0 hits);
+    # the same model+audio on 1.13.8 hits immediately — pin the working release.
     "wake.sherpa": (
-        "sherpa-onnx==1.13.4",
+        "sherpa-onnx==1.13.8",
         "sentencepiece==0.2.2",
+        "pypinyin==0.55.0",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),

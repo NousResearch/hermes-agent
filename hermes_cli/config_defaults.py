@@ -1263,6 +1263,9 @@ DEFAULT_CONFIG = {
         "sherpa": {
             # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer
             "model_dir": "",
+            # phrase -> space-separated pinyin ("嗨天枢": "h ēi t iān sh ū"); only needed when the
+            # dictionary reading differs from how the phrase is actually spoken
+            "phrase_readings": {},
         },
         "porcupine": {
             # built-in keyword ("jarvis", "computer", ...) or path to a custom .ppn

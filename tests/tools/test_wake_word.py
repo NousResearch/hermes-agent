@@ -310,20 +310,28 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
 # ── sherpa-onnx open-vocabulary engine ───────────────────────────────────
 
 
-def _install_fake_sherpa(monkeypatch, tmp_path):
-    """Fake sherpa_onnx + a fake model dir so the engine builds offline."""
-    calls = {"text2token": [], "spotter": [], "results": []}
+def _install_fake_sherpa(monkeypatch, tmp_path, *, with_bpe: bool = True):
+    """Fake sherpa_onnx + a fake model dir so the engine builds offline.
 
-    model_dir = tmp_path / "kws-model"
+    ``with_bpe=False`` builds a zh-en / Chinese shaped model dir (no ``bpe.model``).
+    """
+    calls = {"text2token": [], "token_calls": [], "spotter": [], "results": []}
+
+    model_dir = tmp_path / ("kws-bpe" if with_bpe else "kws-zh-en")
     model_dir.mkdir()
-    for name in (
+    names = [
         "tokens.txt",
-        "bpe.model",
         "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
         "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
         "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
-    ):
+    ]
+    if with_bpe:
+        names.append("bpe.model")
+    for name in names:
         (model_dir / name).write_bytes(b"x")
+    # Vocabulary for the explicit-reading path (token <space> index, as upstream ships it).
+    (model_dir / "tokens.txt").write_text(
+        "x 0\nh 1\nāi 2\nēi 3\nt 4\niān 5\nsh 6\nū 7\n", encoding="utf-8")
 
     class _FakeStream:
         def accept_waveform(self, sample_rate, samples):
@@ -348,9 +356,21 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
         def reset_stream(self, stream):
             pass
 
-    def _fake_text2token(phrases, tokens, tokens_type, bpe_model):
+    # Stand-in for the real tokenizer. ppinyin covers hanzi syllables — the zh-en model's
+    # tokens.txt splits each syllable into initial+final — and drops a phrase it cannot
+    # cover ENTIRELY: real ``text2token(['hey hermes'], 'ppinyin')``, like every other input
+    # holding a latin letter, digit or punctuation mark, comes back as an EMPTY list (no
+    # partial token list, and not one empty element either).
+    _ppinyin = {"嗨天枢": ["h", "āi", "t", "iān", "sh", "ū"],
+                "嘿天枢": ["h", "ēi", "t", "iān", "sh", "ū"]}
+
+    def _fake_text2token(phrases, tokens, tokens_type, bpe_model=None):
         calls["text2token"].append(list(phrases))
-        return [p.split() for p in phrases]
+        calls["token_calls"].append({"phrases": list(phrases), "tokens_type": tokens_type,
+                                     "bpe_model": bpe_model})
+        if tokens_type == "ppinyin":
+            return [_ppinyin[p] for p in phrases if p in _ppinyin]
+        return [p.lower().split() for p in phrases]
 
     sherpa = types.ModuleType("sherpa_onnx")
     sherpa.KeywordSpotter = _FakeSpotter
@@ -371,6 +391,84 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
         np_stub.asarray = lambda x, dtype=None: _FakeArr(x)
         monkeypatch.setitem(sys.modules, "numpy", np_stub)
     return calls, model_dir
+
+
+def _build_sherpa_engine(model_dir, phrase="hi there", sensitivity=0.5, readings=None):
+    from tools.wake_word_engines import _SherpaKwsEngine
+    cfg = {"provider": "sherpa", "phrase": phrase, "sensitivity": sensitivity,
+           "profile_routing": False, "sherpa": {"model_dir": str(model_dir)}}
+    if readings is not None:
+        cfg["sherpa"]["phrase_readings"] = readings
+    return _SherpaKwsEngine(cfg)
+
+
+def test_sherpa_kws_uses_bpe_for_the_english_model(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    eng = _build_sherpa_engine(model_dir)
+    assert calls["token_calls"][0]["tokens_type"] == "bpe"
+    assert calls["token_calls"][0]["bpe_model"] == str(model_dir / "bpe.model")
+    assert Path(eng._keywords_file).read_text(encoding="utf-8") == "hi there @HI_THERE\n"
+    eng.close()
+
+
+def test_sherpa_kws_uses_ppinyin_when_the_model_has_no_bpe(monkeypatch, tmp_path):
+    """The zh-en / Chinese KWS models ship no bpe.model — hard-coding BPE dies on them."""
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path, with_bpe=False)
+    eng = _build_sherpa_engine(model_dir, phrase="嗨天枢")
+    assert calls["token_calls"][0]["tokens_type"] == "ppinyin"
+    assert calls["token_calls"][0]["bpe_model"] is None
+    # The derived-pinyin path writes the tokenizer's syllables verbatim (not upper-cased) with
+    # the phrase as the @display-name.
+    assert Path(eng._keywords_file).read_text(encoding="utf-8") == "h āi t iān sh ū @嗨天枢\n"
+    eng.close()
+
+
+def test_sherpa_kws_phrase_readings_pin_the_spoken_reading(monkeypatch, tmp_path):
+    """Dictionary pinyin ≠ how a phrase is spoken (「嗨」 is hāi, said hēi): reading wins."""
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path, with_bpe=False)
+    eng = _build_sherpa_engine(model_dir, phrase="嗨天枢", readings={"嗨天枢": "h ēi t iān sh ū"})
+    assert Path(eng._keywords_file).read_text(encoding="utf-8") == "h ēi t iān sh ū @嗨天枢\n"
+    assert calls["text2token"] == []  # a pinned reading never goes through derivation
+    assert eng._display_to_profile == {"嗨天枢": ww._active_profile_name()}
+    eng.close()
+
+
+def test_sherpa_kws_phrase_readings_reject_a_token_outside_the_vocabulary(monkeypatch, tmp_path):
+    """A typo in a reading must fail loudly at build time, not leave a deaf spotter."""
+    _install_fake_sherpa(monkeypatch, tmp_path, with_bpe=False)
+    with pytest.raises(RuntimeError, match="tokens not in"):
+        _build_sherpa_engine(tmp_path / "kws-zh-en", phrase="嗨天枢",
+                             readings={"嗨天枢": "h zzz t iān sh ū"})
+
+
+def test_sherpa_kws_rejects_a_phrase_that_tokenises_to_nothing(monkeypatch, tmp_path):
+    """A phrase the tokenizer cannot cover must fail at build time, not arm a deaf spotter.
+
+    Real ppinyin drops the whole phrase for latin text, so a zh-en model + an English phrase
+    used to build a spotter that could never fire.
+    """
+    _install_fake_sherpa(monkeypatch, tmp_path, with_bpe=False)
+    with pytest.raises(RuntimeError, match="no tokens produced"):
+        _build_sherpa_engine(tmp_path / "kws-zh-en", phrase="hey hermes")
+
+
+def test_sherpa_kws_ppinyin_branch_passes_the_phrase_verbatim(monkeypatch, tmp_path):
+    """Only the BPE branch upper-cases. Pinyin tokens are lower-case syllables and ppinyin
+    lower-cases internally, so an ``.upper()`` here would advertise a case-sensitivity the
+    ppinyin path does not have (and would break nothing visibly — hence the pin)."""
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path, with_bpe=False)
+    with pytest.raises(RuntimeError, match="no tokens produced"):
+        _build_sherpa_engine(model_dir, phrase="hey hermes")
+    assert calls["token_calls"][0]["phrases"] == ["hey hermes"]
+
+
+def test_sherpa_kws_rejects_a_reading_keyed_to_an_unknown_phrase(monkeypatch, tmp_path):
+    """A mis-keyed reading is silently ignored by the lookup, so the engine would derive the
+    dictionary reading and quietly not hear the phrase — fail loudly instead."""
+    _install_fake_sherpa(monkeypatch, tmp_path, with_bpe=False)
+    with pytest.raises(RuntimeError, match="match no configured"):
+        _build_sherpa_engine(tmp_path / "kws-zh-en", phrase="嗨天枢",
+                             readings={"嗨天枢 ": "h ēi t iān sh ū", "嗨天枢x": "h ēi t iān sh ū"})
 
 
 # ── Multi-profile phrase routing ─────────────────────────────────────────

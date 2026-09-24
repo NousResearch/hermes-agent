@@ -77,7 +77,7 @@ backend process.
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
 | **openWakeWord** (default) | Free | None | Local ONNX models. Ships a bundled **"hey hermes"** model (default); also supports `hey_jarvis`, `alexa`, `hey_mycroft`, … and custom models |
-| **sherpa** | Free | None | **Open vocabulary** — detects ANY typed phrase with zero training. Small English model auto-downloads on first use (~13 MB) |
+| **sherpa** | Free | None | **Open vocabulary** — detects ANY typed phrase with zero training. Defaults to the small English KWS model (auto-downloads on first use, ~13 MB); `model_dir` can point at any sherpa-onnx KWS model, English or Chinese/zh-en |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
 By default the phrase is **"hey hermes"** — a model for it ships with Hermes, so
@@ -129,12 +129,16 @@ wake_word:
   openwakeword:
     model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .onnx/.tflite
     inference_framework: ""   # "" (auto) | "onnx" | "tflite"
+  sherpa:
+    model_dir: ""             # KWS model dir; "" = auto-download the small English zipformer
+    phrase_readings: {}       # phrase -> space-separated pinyin, e.g. {嗨天枢: "h ēi t iān sh ū"}
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
 ```
 
 `sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
-`openwakeword` and `porcupine` blocks select the actual detection model.
+`openwakeword`, `sherpa`, and `porcupine` blocks select the actual detection
+model.
 
 `input_device` is passed directly to the wake listener's PortAudio
 (`sounddevice`) stream. Use either a numeric device index or an unambiguous
@@ -216,6 +220,50 @@ wake_word:
 The small English KWS model (~13 MB) downloads once on first use. Each
 profile can set its own phrase — "hey \<profile\>" for every profile you run.
 
+#### Choosing the model (`sherpa.model_dir`)
+
+Empty (the default) uses the English model above. Point `model_dir` at any
+local sherpa-onnx KWS model directory (`tokens.txt` plus the
+`encoder`/`decoder`/`joiner` `.onnx` files) to detect phrases in another
+language, e.g. a `zh-en` or Chinese zipformer. The phrase must be expressible
+in that model's token table: the English models tokenize with a SentencePiece
+BPE vocabulary (phrases are English words), while the `zh-en` / Chinese ones
+have no `bpe.model` and tokenize hanzi into pinyin (phrases are Chinese). A
+phrase the tokenizer cannot represent at all fails when the listener builds
+the engine — the error names the phrase — instead of arming an ear that can
+never fire.
+
+```yaml
+wake_word:
+  provider: sherpa
+  phrase: "嗨天枢"
+  sherpa:
+    model_dir: ~/.hermes/wakewords/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20
+```
+
+#### Fixing a reading the dictionary gets wrong (`sherpa.phrase_readings`)
+
+Derived pinyin is the dictionary reading, and that is not always how a phrase
+is spoken: 「嗨」 is `hāi` on paper but commonly said `hēi`. The acoustic model
+matches what you actually say, so a phrase whose derived reading differs will
+mostly miss. Pin the spoken reading explicitly:
+
+```yaml
+wake_word:
+  phrase: "嗨天枢"
+  sherpa:
+    phrase_readings:
+      嗨天枢: "h ēi t iān sh ū"    # space-separated pinyin, one token per syllable
+```
+
+Only needed when the dictionary reading is not the spoken one; leave it empty
+otherwise. Two mistakes fail while the engine builds rather than degrading
+into missed wake-ups: a reading token that is not in the model's `tokens.txt`,
+and a `phrase_readings` key that matches no configured phrase (a mis-keyed
+reading would otherwise be ignored and silently fall back to the dictionary
+reading). The phrases in play are this profile's own, plus — with
+`profile_routing: true` — every other wake-enabled profile's phrase.
+
 ### Waking a specific profile (desktop)
 
 With the sherpa engine, ONE listener can wake ANY profile. Every profile
@@ -233,10 +281,11 @@ and listen only for its own phrase. The CLI and TUI are single-profile
 processes: a wake phrase belonging to another profile prints the switch
 command (`hermes -p <profile>`) instead of routing.
 
-Names are matched acoustically by their English subword sounds: two-word
-phrases with distinct, 2+ syllable names work best. Very short names, heavy
-non-English phonology, or two profiles with similar-sounding names will
-degrade accuracy — tune per-profile `sensitivity` if needed.
+Names are matched acoustically by their subword sounds (English words, with
+the default model): two-word phrases with distinct, 2+ syllable names work
+best. Very short names, heavy non-English phonology, or two profiles with
+similar-sounding names will degrade accuracy — tune per-profile `sensitivity`
+if needed.
 
 ### Option B — openWakeWord (free, trained model)
 

@@ -37,6 +37,13 @@ CASES: dict[str, Case] = {
     "slow_down_adds_five_seconds": Case(1, (PENDING, SLOW_DOWN, PENDING, APPROVE)),
 }
 
+class PolledFasterThanAllowed(AssertionError):
+    """Raised ONLY at the poll-cadence assertion, the signature of #121163 / #121254.
+
+    The strict xfails accept nothing else: a failed login, a wrong poll count or a timeout is a
+    real failure even in a KNOWN cell."""
+
+
 # Red on main for a tracked, open bug. Strict: XPASS fails, forcing the entry out with the fix.
 KNOWN: dict[str, str] = {
     "honors_server_interval": "#121163 (dup #87432) device-code poll interval is capped to 1s "
@@ -57,7 +64,8 @@ def expected_min_gaps(case: Case) -> list[float]:
 
 def _params():
     for name in CASES:
-        marks = [pytest.mark.xfail(strict=True, reason=KNOWN[name])] if name in KNOWN else []
+        marks = [pytest.mark.xfail(strict=True, raises=PolledFasterThanAllowed, reason=KNOWN[name])
+                 ] if name in KNOWN else []
         yield pytest.param(name, marks=marks, id=name)
 
 
@@ -90,6 +98,7 @@ def test_device_code_login_poll_cadence(name: str, tmp_path) -> None:
     gaps = [round(b - a, 3) for a, b in zip(flow.polls, flow.polls[1:])]
     want = expected_min_gaps(case)
     short = [(i, got, need) for i, (got, need) in enumerate(zip(gaps, want)) if got + SLACK_S < need]
-    assert not short, (
-        f"client polled faster than the server allows (server interval {case.interval}s, script {case.script}): "
-        f"observed gaps {gaps}, required at least {want}; short polls (index, got, need): {short}")
+    if short:
+        raise PolledFasterThanAllowed(
+            f"client polled faster than the server allows (server interval {case.interval}s, script {case.script}): "
+            f"observed gaps {gaps}, required at least {want}; short polls (index, got, need): {short}")

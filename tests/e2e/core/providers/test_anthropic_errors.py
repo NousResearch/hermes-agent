@@ -22,6 +22,13 @@ pytestmark = [pytest.mark.skipif(not sys.platform.startswith("linux"), reason="p
               pytest.mark.live_system_guard_bypass]
 
 
+class StreamDropAcceptedAsAnswer(AssertionError):
+    """#121320's signature, raised ONLY where the user is handed the dropped stream's fragment.
+
+    Strict xfails below accept nothing else, so a harness failure (process death, timeout, a
+    later assertion once the bug is fixed) still fails the run."""
+
+
 # Red on current main for a tracked, open bug. Strict: the test FAILS the moment the bug is
 # fixed, so the entry is removed with the fix instead of masking a later regression.
 KNOWN: dict[str, str] = {
@@ -30,7 +37,12 @@ KNOWN: dict[str, str] = {
 
 
 def known(key: str) -> pytest.MarkDecorator:
-    return pytest.mark.xfail(strict=True, reason=KNOWN[key])
+    return pytest.mark.xfail(strict=True, raises=StreamDropAcceptedAsAnswer, reason=KNOWN[key])
+
+
+def _answer_must_be(stdout: str, expected: str, fragment: str) -> None:
+    if stdout.count(expected) != 1 or fragment in stdout:
+        raise StreamDropAcceptedAsAnswer(f"user got {stdout[-800:]!r} instead of exactly one {expected!r}")
 
 
 @pytest.fixture
@@ -66,9 +78,10 @@ def test_429_waits_the_retry_after_then_succeeds(rig_factory) -> None:
 
 def test_529_overloaded_is_retried_then_surfaced(rig_factory) -> None:
     retries = 2
+    vendor_message = "Overloaded (e2e-529-marker)"
     # auto_recovery_cycles: 0 disables the documented post-exhaustion wait ladder (15/30/60 s
     # cycles) so the attempt budget alone decides when the error reaches the user.
-    rig = rig_factory(lambda _r: ApiError(529, "overloaded_error", "Overloaded"),
+    rig = rig_factory(lambda _r: ApiError(529, "overloaded_error", vendor_message),
                       config={"agent": {"api_max_retries": retries, "auto_recovery_cycles": 0}})
     proc = rig.run("-z", "hello")
     mains = rig.srv.main_requests()
@@ -76,20 +89,21 @@ def test_529_overloaded_is_retried_then_surfaced(rig_factory) -> None:
         f"529 must use exactly the api_max_retries={retries} attempt budget; saw {len(mains)} requests, "
         f"gaps {_gaps(rig)}")
     assert all(g >= 0.5 for g in _gaps(rig)), f"529 retries must back off, gaps {_gaps(rig)}"
-    surfaced = (proc.stdout + proc.stderr).lower()
-    assert proc.returncode != 0 or "overload" in surfaced or "529" in surfaced, (
-        f"exhausted 529s must reach the user: rc={proc.returncode} out={proc.stdout[-500:]!r}")
-    assert "overload" in surfaced or "529" in surfaced, f"error not named: {surfaced[-800:]}"
+    surfaced = proc.stdout + proc.stderr
+    assert proc.returncode != 0, f"an exhausted 529 must fail the one-shot run: {surfaced[-800:]!r}"
+    assert vendor_message in surfaced, f"the vendor's overloaded_error message never reached the user: {surfaced[-800:]}"
 
 
 def test_400_invalid_request_is_surfaced_without_a_retry_storm(rig_factory) -> None:
-    rig = rig_factory(lambda _r: ApiError(400, "invalid_request_error", "tools.0.custom.name: scripted rejection"),
+    vendor_message = "tools.0.custom.name: e2e-400-marker rejection"
+    rig = rig_factory(lambda _r: ApiError(400, "invalid_request_error", vendor_message),
                       config={"agent": {"api_max_retries": 3}})
     proc = rig.run("-z", "hello")
     mains = rig.srv.main_requests()
     assert len(mains) == 1, f"a non-retryable 400 was re-sent {len(mains) - 1} times: gaps {_gaps(rig)}"
     surfaced = proc.stdout + proc.stderr
-    assert "scripted rejection" in surfaced or "invalid_request" in surfaced or "400" in surfaced, surfaced[-800:]
+    assert proc.returncode != 0, f"a rejected request must fail the one-shot run: {surfaced[-800:]!r}"
+    assert vendor_message in surfaced, f"the vendor's invalid_request_error message never reached the user: {surfaced[-800:]}"
 
 
 @known("stream_drop_retry")
@@ -104,7 +118,8 @@ def test_stream_drop_mid_thinking_retries_without_duplicate_persisted_content(ri
     ], config={"agent": {"api_max_retries": 2}})
     proc = rig.run("chat", "-q", "hello", "-Q")
     assert proc.returncode == 0, proc.stderr[-2000:]
-    assert proc.stdout.count("RECOVERED-ANSWER") == 1 and "LOST-ANSWER" not in proc.stdout, proc.stdout[-800:]
+    _answer_must_be(proc.stdout, "RECOVERED-ANSWER", "PARTIAL-THOUGHT")
+    assert "LOST-ANSWER" not in proc.stdout, proc.stdout[-800:]
     mains = [r["body"] for r in rig.srv.main_requests()]
     assert len(mains) == 2, [r.get("response") for r in rig.srv.requests]
     assert normalised(mains[1]["messages"]) == normalised(mains[0]["messages"]), (
@@ -129,7 +144,8 @@ def test_stream_drop_then_next_turn_replays_only_the_completed_signature(rig_fac
         Reply([Text("TURN-TWO")]),
     ], config={"agent": {"api_max_retries": 2}})
     first = rig.run("chat", "-q", "one", "-Q")
-    assert first.returncode == 0 and "TURN-ONE" in first.stdout, first.stderr[-2000:]
+    assert first.returncode == 0, first.stderr[-2000:]
+    _answer_must_be(first.stdout, "TURN-ONE", "FRAGMENT")
     (session_id,) = rig.session_ids()
     second = rig.run("chat", "--resume", session_id, "-q", "two", "-Q")
     assert second.returncode == 0 and "TURN-TWO" in second.stdout, second.stderr[-2000:]

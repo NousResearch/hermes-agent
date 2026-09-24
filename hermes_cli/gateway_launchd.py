@@ -16,6 +16,8 @@ import sys
 import time
 from xml.sax.saxutils import escape
 
+from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S
+
 
 def _gw():
     from hermes_cli import gateway  # late: the facade imports this module
@@ -808,6 +810,7 @@ def wait_for_launchd_gateway_supervision(
     label: str | None = None,
     poll_interval: float = 0.5,
     old_pid: int | None = None,
+    shutdown_timeout: float | None = None,
 ) -> bool:
     """Poll launchd until it supervises a live gateway; True at once if the detached fallback is active.
     ``launchd_restart`` returns once the restart is *requested* (asynchronous), so it can't see a helper
@@ -825,17 +828,37 @@ def wait_for_launchd_gateway_supervision(
     process running is not a restart, so passing it holds the invoking profile to the same fresh-pid
     contract :func:`_wait_for_launchd_service_pid` enforces for sibling labels. With ``old_pid=None``
     (no pre-restart pid was observable) any supervised pid counts, as before.
+
+    With ``old_pid``, ``timeout`` starts only once launchd stops reporting that pid: the graceful drain
+    before it exits is bounded by ``shutdown_timeout`` (default: the gateway's own restart exit budget
+    plus launchd's ``ExitTimeOut`` clamp).
     """
     if _gw()._launchd_unsupported_marker_exists():
         return True
 
     label = label or _gw().get_launchd_label()
-    deadline = time.monotonic() + max(timeout, 0.0)
+    # ``timeout`` measures launchd's respawn, so it starts once the old process is gone. Until then
+    # the old gateway is still draining, which is bounded by its own restart budget, not by ours:
+    # a busy gateway's graceful shutdown alone can outlast ``timeout`` (a 33s drain failed a 20s
+    # window although launchd respawned it at once).
+    now = time.monotonic()
+    shutdown_deadline = None
+    if old_pid is not None:
+        if shutdown_timeout is None:
+            shutdown_timeout = _gw()._get_restart_exit_wait_budget() + LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S
+        shutdown_deadline = now + max(shutdown_timeout, 0.0)
+    deadline = now + max(timeout, 0.0)
     while True:
         pid = _gw()._launchctl_supervised_pid(label)
         if pid is not None and pid != old_pid:
             return True
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if shutdown_deadline is not None:
+            if pid == old_pid and now < shutdown_deadline:
+                deadline = now + max(timeout, 0.0)  # old gateway still exiting: respawn clock not started
+            else:
+                shutdown_deadline = None  # old pid gone (or out of budget): the respawn clock runs
+        if now >= deadline:
             return False
         time.sleep(max(poll_interval, 0.01))
 

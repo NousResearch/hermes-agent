@@ -30,6 +30,16 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } 
   clearBotAttentionMock: vi.fn(),
   hostMock: {
     onEvent: vi.fn(),
+    pluginDecisions: {
+      get: () => {
+        try {
+          const raw = window.localStorage.getItem('hermes.desktop.pluginDecisions.v2')
+          return raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
+        } catch {
+          return {}
+        }
+      }
+    },
     profileRoutes: vi.fn(),
     requestProfile: vi.fn(),
     retainProfileSocket: vi.fn()

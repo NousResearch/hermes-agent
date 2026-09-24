@@ -9,8 +9,6 @@
 
 import { host, LruCache } from '@hermes/plugin-sdk'
 
-import { pluginActive } from '@/contrib/plugins-store'
-
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
 import { ID } from './shared'
 import type { ProfileRoute, RosterRow } from './types'
@@ -120,7 +118,9 @@ const RELAY_OUTBOX_ANY = '*'
 const routesWithOutboxWork = new Set<string>()
 
 function relayBotModeOn(): boolean {
-  return pluginActive(ID)
+  const decisions = host.pluginDecisions.get()
+
+  return ID in decisions ? Boolean(decisions[ID]) : true
 }
 
 function noteRelayOutboxWork(event?: { connectionId?: string }) {

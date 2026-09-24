@@ -4,7 +4,15 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
-import { _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } from '@/store/session'
+import {
+  _resetSessionOwnerHintsForTests,
+  messagingListServerForFetch,
+  setMessagingListServer,
+  setMessagingSessions,
+  setSessionOwnerHint,
+  setSessions,
+  stampMessagingRowsWithListServer
+} from '@/store/session'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   $sessionTiles,
@@ -95,6 +103,8 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
     $sessionTiles.set([])
     clearAllSessionStates()
     setSessions([])
+    setMessagingSessions([])
+    setMessagingListServer(null)
     $profiles.set([])
     _resetSessionOwnerHintsForTests({ storage: true })
   })
@@ -209,6 +219,95 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
       setPrimaryGateway(null)
       $connectionsRegistry.set(null)
       delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('routes approval.respond for a messaging row that omits profile to the list server, not ambient or an assumed primary (#108102)', async () => {
+    // Telegram rows from a legacy backend omit `profile`. After restart there is
+    // no tile, hint, or runtime ledger. The list that still contains the row
+    // names the backend that owns it. A non-primary list must keep that
+    // connection; a primary list routes to the primary profile door; an
+    // unrecorded list must not guess primary on a multi-connection install.
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    const primaryRequest = vi.fn(async (method: string, params: unknown) => ({ method, params, via: 'primary' }))
+    setPrimaryGateway({ onEvent: () => () => undefined, request: primaryRequest, state: 'open' } as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local' })
+    const ambient = vi.fn(async () => ({ via: 'ambient' }))
+
+    try {
+      setMessagingListServer({ connectionId: 'homelab', profile: null })
+      setMessagingSessions([makeSessionInfo({ id: 'telegram-remote', source: 'telegram' })])
+
+      expect(knownOwnerForSession('telegram-remote')).toEqual({ connectionId: 'homelab', profile: 'default' })
+
+      await expect(
+        requestForOwnedSession('telegram-remote', ambient as never, 'approval.respond', {
+          choice: 'once',
+          session_id: 'telegram-remote'
+        })
+      ).rejects.toThrow(/cannot dial|registry connections/i)
+      expect(primaryRequest).not.toHaveBeenCalled()
+      expect(ambient).not.toHaveBeenCalled()
+
+      setMessagingListServer({ connectionId: null, profile: null })
+      setMessagingSessions([makeSessionInfo({ id: 'telegram-primary', source: 'telegram' })])
+
+      await expect(
+        requestForOwnedSession('telegram-primary', ambient as never, 'approval.respond', {
+          choice: 'once',
+          session_id: 'telegram-primary'
+        })
+      ).resolves.toEqual({
+        method: 'approval.respond',
+        params: { choice: 'once', session_id: 'telegram-primary' },
+        via: 'primary'
+      })
+      expect(ambient).not.toHaveBeenCalled()
+
+      setMessagingListServer(null)
+      setMessagingSessions([makeSessionInfo({ id: 'telegram-unknown', source: 'telegram' })])
+      primaryRequest.mockClear()
+
+      await expect(
+        requestForOwnedSession('telegram-unknown', ambient as never, 'approval.respond', {
+          choice: 'once',
+          session_id: 'telegram-unknown'
+        })
+      ).rejects.toSatisfy(isSessionOwnerResolutionError)
+      expect(primaryRequest).not.toHaveBeenCalled()
+      expect(ambient).not.toHaveBeenCalled()
+
+      const stamped = stampMessagingRowsWithListServer(
+        [makeSessionInfo({ id: 'telegram-stamped', source: 'telegram' })],
+        { connectionId: 'homelab', profile: null }
+      )
+
+      expect(stamped[0]?.connection_id).toBe('homelab')
+      expect(stamped[0]?.profile).toBeUndefined()
+      setMessagingListServer(null)
+      setMessagingSessions(stamped)
+      expect(knownOwnerForSession('telegram-stamped')).toEqual({ connectionId: 'homelab', profile: 'default' })
+
+      setMessagingListServer({ connectionId: null, profile: null })
+      setMessagingSessions([
+        makeSessionInfo({ connection_id: 'homelab', id: 'telegram-tagged', source: 'telegram' })
+      ])
+      expect(knownOwnerForSession('telegram-tagged')).toEqual({ connectionId: 'homelab', profile: 'default' })
+
+      setSessions([makeSessionInfo({ id: 'fresh-desktop', profile: 'omar', source: 'desktop' })])
+      expect(knownOwnerForSession('fresh-desktop')).toBe('omar')
+
+      setMessagingListServer({ connectionId: 'homelab', profile: null })
+      setSessions([makeSessionInfo({ id: 'fresh-untagged', source: 'desktop' })])
+      expect(knownOwnerForSession('fresh-untagged')).toBeUndefined()
+
+      expect(messagingListServerForFetch('all', 'homelab')).toEqual({ connectionId: 'homelab', profile: null })
+      expect(messagingListServerForFetch('omar', 'local')).toEqual({ connectionId: null, profile: 'omar' })
+      expect(messagingListServerForFetch('', null)).toEqual({ connectionId: null, profile: null })
+    } finally {
+      setPrimaryGateway(null)
+      setMessagingListServer(null)
+      setMessagingSessions([])
     }
   })
 })

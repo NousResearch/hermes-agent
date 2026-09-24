@@ -377,7 +377,13 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
             pool_state["fail"] = leg.host == "pool" and not leg.ok
             done = gw.turn(sid, f"turn {i}")
             if i == 0:
-                gw.seen_or_wait(gw.event("session.title", sid), timeout=120)  # first-turn aux call settles
+                # The instant derived title arrives before the asynchronous model title request.
+                # Wait for the fake provider's title so its call belongs to this leg's routing log.
+                gw.seen_or_wait(
+                    lambda m: gw.event("session.title", sid)(m)
+                    and (m.get("params") or {}).get("payload", {}).get("title") == "aux-from-main",
+                    timeout=120,
+                )
             log = fleet.since(marks)
             payload = (done.get("params") or {}).get("payload") or {}
             ctx = f"leg {i} ({leg.value!r} -> {leg.host}): {done.get('params', {}).get('type')} {str(payload)[:300]}\n{describe(log)}"

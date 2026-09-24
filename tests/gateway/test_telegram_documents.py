@@ -9,9 +9,10 @@ We mock the telegram module at import time to avoid collection errors.
 """
 
 import asyncio
+import logging
 import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -28,6 +29,19 @@ from gateway.platforms.event import MessageEvent, MessageType
 # ---------------------------------------------------------------------------
 # Now we can safely import
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+
+# Raise the REAL telegram exception types, not local ``class X(Exception)``
+# stand-ins. ``python-telegram-bot`` is a lazy-install extra (pyproject
+# ``[messaging]``, resolved by tools/lazy_deps.py at first use), so it is not
+# guaranteed in every test env — but ``tests/gateway/conftest.py`` installs a
+# PTB-22.x-faithful ``telegram.error`` hierarchy when the real library is
+# absent, including the load-bearing detail that ``BadRequest`` INHERITS FROM
+# ``NetworkError``. Importing through ``telegram.error`` therefore exercises
+# the real inheritance graph either way: local stand-ins subclassing bare
+# ``Exception`` would have hidden the fact that the classifier must match on
+# class NAME, since a subclass check would wrongly retry a permanent
+# ``BadRequest``.
+from telegram.error import BadRequest, TimedOut  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +269,102 @@ class TestDocumentDownloadBlock:
         adapter.handle_message.assert_called_once()
         event = adapter.handle_message.call_args[0][0]
         assert "could not be downloaded" in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_voice_get_file_timeout_retries_then_caches_without_resend_prompt(
+        self, adapter, caplog
+    ):
+        file_obj = _make_file_obj(b"OggS voice bytes")
+        msg = _make_message()
+        msg.voice = MagicMock(file_size=100)
+        msg.voice.get_file = AsyncMock(
+            side_effect=[TimedOut("Telegram file API timed out"), file_obj]
+        )
+
+        with (
+            patch(
+                "plugins.platforms.telegram.adapter.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as sleep,
+            caplog.at_level(logging.INFO),
+        ):
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        assert msg.voice.get_file.await_count == 2
+        sleep.assert_awaited_once()
+        msg.reply_text.assert_not_awaited()
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["audio/ogg"]
+        assert "retry succeeded" in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_voice_bad_request_surfaces_immediately_without_retry(self, adapter):
+        msg = _make_message()
+        msg.voice = MagicMock(file_size=100)
+        msg.voice.get_file = AsyncMock(side_effect=BadRequest("file is unavailable"))
+
+        with patch(
+            "plugins.platforms.telegram.adapter.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        msg.voice.get_file.assert_awaited_once()
+        sleep.assert_not_awaited()
+        msg.reply_text.assert_awaited_once()
+        assert "BadRequest" in msg.reply_text.await_args.args[0]
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_voice_download_timeout_stops_after_three_exponential_attempts(
+        self, adapter
+    ):
+        file_obj = _make_file_obj()
+        file_obj.download_as_bytearray = AsyncMock(
+            side_effect=TimedOut("Telegram CDN timed out")
+        )
+        msg = _make_message()
+        msg.voice = MagicMock(file_size=100)
+        msg.voice.get_file = AsyncMock(return_value=file_obj)
+
+        with patch(
+            "plugins.platforms.telegram.adapter.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        assert msg.voice.get_file.await_count == 3
+        assert file_obj.download_as_bytearray.await_count == 3
+        assert sleep.await_args_list == [call(0.5), call(1.0)]
+        msg.reply_text.assert_awaited_once()
+        assert "TimedOut" in msg.reply_text.await_args.args[0]
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_oversized_voice_short_circuits_before_download_or_retry(self, adapter):
+        adapter._max_doc_bytes = 100
+        msg = _make_message()
+        msg.voice = MagicMock(file_size=101)
+        msg.voice.get_file = AsyncMock()
+
+        with patch(
+            "plugins.platforms.telegram.adapter.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        msg.voice.get_file.assert_not_awaited()
+        sleep.assert_not_awaited()
+        msg.reply_text.assert_not_awaited()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == []
+        assert "voice message" in event.text
+        assert "exceeds" in event.text
 
 
 class TestVideoDownloadBlock:

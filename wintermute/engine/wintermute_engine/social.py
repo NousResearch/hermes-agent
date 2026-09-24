@@ -157,6 +157,7 @@ def open_outreach(drives: Dict[str, Any], peers: Dict[str, Any], key: str, ts: d
         "status": "open",
     }
     peer["outreach_total"] = int(peer.get("outreach_total", 0)) + 1
+    drives["meta"]["silent_streak"] = 0
     peer["last_interaction"] = store.iso(ts)
     peer["last_message_direction"] = "to_them"
     peer["messages_to_them"] = int(peer.get("messages_to_them", 0)) + 1
@@ -195,6 +196,19 @@ def pulse_social(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime) ->
         if isinstance(outreach, dict) and outreach.get("status") == "expired":
             physics.apply_event(drives, "no_response", peer)
     physics.refresh_oxytocin_global(drives, peers)
+
+
+def withhold(drives: Dict[str, Any], ts: datetime) -> None:
+    """A wake kept inside. Silence is free when he wants to be alone; otherwise what goes
+    unsaid piles up, a little more with each silent wake in a row (capped)."""
+    meta = drives["meta"]
+    streak = int(physics.safe_float(meta.get("silent_streak"))) + 1
+    meta["silent_streak"] = streak
+    wants_alone = physics.effective_drives(drives)["solitude"] / 100.0  # before silence eases it
+    physics.apply_event(drives, "withheld")
+    physics.apply_event(drives, "unsaid", scale=min(streak, 4) / 4.0 * (1.0 - wants_alone))
+    store.log_event("withheld", "You kept this pulse inside"
+                    + (f" ({streak} wakes in a row)." if streak > 1 else "."), ts)
 
 
 def drift_bonds(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime, dt_h: float) -> None:

@@ -306,10 +306,13 @@ def plugin(home):
     store.set_hermes_home(home)
 
     class Ctx:
-        hooks, tools = {}, {}
+        hooks, tools, middleware = {}, {}, {}
 
         def register_hook(self, name, cb):
             self.hooks[name] = cb
+
+        def register_middleware(self, kind, cb):
+            self.middleware[kind] = cb
 
         def register_tool(self, name, toolset, schema, handler, **_):
             assert toolset == "wintermute" and schema["name"] == name
@@ -708,3 +711,44 @@ def test_what_he_writes_is_kept_whole_or_refused_never_cut(plugin):
     assert all(len(f) <= 500 for f in _peers()[KEY]["known_facts"])
     too_long_self = json.loads(plugin.tools["wintermute_rewrite_self"]({"text": "y" * 1201}))
     assert not too_long_self["success"] and store.read_self() == ""
+
+
+
+def test_his_state_bends_the_sampling_itself(plugin):
+    request = {"model": "deepseek", "messages": [{"role": "user", "content": "hi"}],
+               "extra_body": {"reasoning": {"enabled": True, "effort": "medium"}}}
+    shape = plugin.middleware["llm_request"]
+    with store.locked_state() as (drives, _):
+        drives["modulators"].update(adrenaline=0.9, cortisol=0.7)
+        drives["drives"]["restlessness"] = 95
+        drives["unconscious"].update(torpor=0, anxiety=10, hypervigilance=10)
+    wired = shape(request=request)["request"]
+    with store.locked_state() as (drives, _):
+        drives["modulators"].update(adrenaline=0.0, cortisol=0.1, melatonin=0.8)
+        drives["drives"]["restlessness"] = 0
+        drives["unconscious"].update(torpor=90)
+    heavy = shape(request=request)["request"]
+    assert wired["temperature"] > 1.1 > heavy["temperature"] >= 0.3
+    assert wired["presence_penalty"] > 0 == heavy["presence_penalty"]
+    assert heavy["extra_body"]["reasoning"]["effort"] == "low"
+    assert wired["messages"] == request["messages"] and "max_tokens" not in wired   # never cut short
+    assert request["extra_body"]["reasoning"]["effort"] == "medium"                 # input untouched
+
+
+def test_silence_is_free_when_wanted_and_piles_up_when_not(home):
+    def cost(solitude, wakes):
+        state = _drives()
+        state["drives"].update(solitude=solitude, expression=20)
+        state["modulators"].update(melatonin=0.0)
+        for _ in range(wakes):
+            social.withhold(state, T0)
+        return state["drives"]["expression"] - 20, state["meta"]["silent_streak"]
+    free, _ = cost(100, 1)                 # he wanted to be alone: that silence costs nothing
+    heavy, streak = cost(0, 3)
+    assert free < 0.5 and heavy > 10 and streak == 3
+    per_wake = lambda n: cost(0, n)[0] - cost(0, n - 1)[0]  # noqa: E731
+    assert per_wake(2) < per_wake(4) == pytest.approx(per_wake(7))   # grows, then stops growing
+    state = _drives()
+    social.withhold(state, T0)
+    social.open_outreach(state, {}, KEY, T0, "here", 30)
+    assert state["meta"]["silent_streak"] == 0

@@ -138,6 +138,7 @@ DEFAULT_DRIVES: Dict[str, Any] = {
         "pulse_target": "telegram:7375758021",
         "thread": None,
         "self_written_at": None,
+        "silent_streak": 0,
     },
     # Slow drift of his resting levels with lived experience (see physics.PLASTIC).
     "temperament": {},

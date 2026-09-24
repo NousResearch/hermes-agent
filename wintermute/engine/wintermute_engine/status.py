@@ -57,7 +57,8 @@ FR_MODS = {"cortisol": "cortisol", "dopamine": "dopamine", "serotonin": "séroto
            "entropy": "entropie"}
 FR_UNC = {"irritability": "irritabilité", "anxiety": "anxiété", "torpor": "torpeur",
           "satiation": "satiété", "melancholy": "mélancolie", "hypervigilance": "hypervigilance"}
-ICONS = {"heard": "←", "said": "→", "tool": "⚙", "think": "·", "wake": "☀", "flag": "⚑"}
+ICONS = {"heard": "←", "said": "→", "tool": "⚙", "think": "·", "wake": "☀", "flag": "⚑",
+         "feel": "♥", "voice": "∿"}
 
 
 def _bar(value: float, width: int = 22) -> str:

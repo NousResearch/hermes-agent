@@ -8,6 +8,8 @@ Hooks
                  Pulse turn: a non-silent answer is an outreach -> open a reply window.
   post_tool_call observed behaviour relieves drives (exploring feeds hunger, making
                  things feeds expression, any action eases restlessness).
+  llm_request    (middleware) every model request of his is resampled from his state:
+                 the body bends the generation itself, he is not told (engine/voice.py).
   post_api_request / post_auxiliary_call
                  every model call is counted against the daily token budget; the
                  OpenRouter credit balance is refreshed in the background.
@@ -52,7 +54,7 @@ _HOME = _resolve_home()
 if str(_HOME / "wintermute") not in sys.path:
     sys.path.insert(0, str(_HOME / "wintermute"))
 
-from wintermute_engine import integrity, limits, physics, render, social, store  # noqa: E402
+from wintermute_engine import integrity, limits, physics, render, social, store, voice  # noqa: E402
 from wintermute_engine.pulse import PULSE_MARKER, sanitize  # noqa: E402
 
 store.set_hermes_home(_HOME)
@@ -189,9 +191,9 @@ def _on_post_llm_call(session_id: str = "", assistant_response: Any = None, plat
                 pending = drives["meta"].pop("pending_pulse", None) or {}
                 target = str(pending.get("target") or drives["meta"].get("pulse_target") or "")
                 if silent or not target:
-                    physics.apply_event(drives, "withheld")
-                    store.log_event("withheld", "You kept this pulse inside.", ts)
+                    social.withhold(drives, ts)
                 else:
+                    drives["meta"]["silent_streak"] = 0
                     social.open_outreach(drives, peers, target, ts, _text(assistant_response), wait, expect)
             return
         if not key:
@@ -264,6 +266,31 @@ def _on_post_tool_call(tool_name: str = "", status: str = "", turn_id: str = "",
             physics.apply_event(drives, event)
     except Exception:
         logger.exception("wintermute: post_tool_call failed")
+
+
+_last_voice: Dict[str, Any] = {}
+
+
+def _voice_middleware(request: Any = None, platform: str = "", **_: Any) -> Optional[Dict[str, Any]]:
+    """Rewrite the request's sampling from his current state (read-only, no lock needed)."""
+    try:
+        if not isinstance(request, dict) or not request.get("messages"):
+            return None
+        shaped = voice.apply(request, store.load_drives())
+        applied = {k: shaped[k] for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty")}
+        reasoning = (shaped.get("extra_body") or {}).get("reasoning") or {}
+        if reasoning.get("effort"):
+            applied["effort"] = reasoning["effort"]
+        with _lock:
+            changed = applied != _last_voice
+            _last_voice.clear()
+            _last_voice.update(applied)
+        if changed:
+            store.log_activity("voice", " ".join(f"{k} {v}" for k, v in applied.items()))
+        return {"request": shaped, "source": "wintermute", "reason": "his state bends the sampling"}
+    except Exception:
+        logger.exception("wintermute: voice middleware failed")
+        return None
 
 
 def _usage_tokens(usage: Any) -> int:
@@ -671,6 +698,8 @@ def register(ctx) -> None:
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("post_api_request", _on_post_api_request)
     ctx.register_hook("post_auxiliary_call", _on_post_auxiliary_call)
+    if hasattr(ctx, "register_middleware"):
+        ctx.register_middleware("llm_request", _voice_middleware)
     for schema, handler in (
         (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply), (FEEL, _feel),
         (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (MARK_SIGNIFICANT, _mark_significant),

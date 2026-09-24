@@ -65,6 +65,8 @@ EVENTS: Dict[str, Dict[str, float]] = {
     "outreach_sent": {"drives.expression": -12, "drives.restlessness": -10, "drives.solitude": 4,
                       "modulators.dopamine": 0.1},
     "withheld": {"drives.solitude": -10, "drives.restlessness": 3},
+    # Scaled by (silent wakes in a row, capped at 4) x (how little he wants to be alone).
+    "unsaid": {"drives.expression": 10, "drives.recognition": 6, "unconscious.melancholy": 4},
     # Conversation.
     "message_received": {"drives.solitude": 3, "drives.recognition": -3, "drives.hunger": -2,
                          "unconscious.hypervigilance": 6, "peer.disappointment": -2,

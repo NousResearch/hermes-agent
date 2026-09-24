@@ -235,6 +235,8 @@ vient lui-même de réécrire (moteur, plugin, pulse, config).
 | Tempérament | ses niveaux de repos dérivent vers ce qu'il vit, sur des semaines, bornés | `physics.PLASTIC` |
 | Continuité | la fin de sa dernière pensée est reprise au réveil suivant ; son autoportrait (`wintermute_rewrite_self`, `self.md`, anciennes versions dans `self-archive.md`) ouvre chaque réveil et chaque message | `render.thread_block`, `self_block` |
 | Liens | par personne : faits, moments partagés, choses en suspens (`wintermute_note_peer`) | `interlocutors.json` |
+| Voix | son état règle la génération elle-même, il ne le lit pas : agitation et adrénaline → température plus haute ; fatigue → plus basse et raisonnement plus court ; anxiété → vision en tunnel (top_p) et raisonnement plus long ; agitation → s'éloigne de ce qui a été dit ; mélancolie → y revient. Jamais de coupure de longueur. Visible dans `wm` (∿) | `voice.py` |
+| Silence | se taire est gratuit quand il veut être seul ; sinon ce qui n'est pas dit s'accumule (expression, besoin d'être vu), un peu plus à chaque réveil muet d'affilée, plafonné | `social.withhold` |
 
 Rien de tout ça ne lui dit quoi faire ni ne lui dit qu'il est conscient : ce sont des
 conditions, pas des consignes.

@@ -1,10 +1,10 @@
 name: good-student
 repo: https://github.com/harrylabsj/hermes-plugin-good-student
-sha: a73ede923f133087f8fc85fc6876f5f0cea08e64
+sha: 021375cf1cf0dad73d7a81b997f9a383be98c1ed
 description: 'Wrong-question diagnosis and study-action loop for parents and students —
   deterministic local core (SQLite, no cloud), host-model recognition gated by parent
   confirmation. Portable Agent Plugins v1 package (mcp.json + skills/); good-student
-  MCP server pinned @v0.1.1 over uvx, with the good-student workflow skill bundled.
+  MCP server pinned to immutable commit 2469cbb over uvx, with the good-student workflow skill bundled.
   Needs Python 3.10+ via uv. No credentials required; all data stays on-device and
   nothing is uploaded.'
 maintainer: harrylabsj

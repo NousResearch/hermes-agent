@@ -1276,6 +1276,18 @@ def build_api_messages(
         # wire for every route that does not replay it (OpenRouter/Nous do).
         api_messages.append(api_msg)
 
+    # NOTE: OpenRouter-only 'reasoning_details' is deliberately NOT reconciled
+    # here. OpenRouter emits it on reasoning turns and consumes it back for
+    # continuity (kept verbatim in the assistant branch above); it is NOT
+    # standard Chat Completions schema, so strict proxies reject it with 400
+    # unrecognizedProperty (observed on the Palantir Foundry LLM proxy — session
+    # loops on the 400 until /new). Which side wins depends on the provider that
+    # actually serves each request, and mid-retry fallback can switch that
+    # provider AFTER this point — so the reconcile runs per attempt inside the
+    # retry loop, right next to _reapply_reasoning_echo_for_provider (same
+    # built-once-vs-current-provider staleness class). History keeps the field,
+    # so a later switch back to OpenRouter still finds it.
+
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the
     # prompt is built ONCE per session and replayed verbatim (stable cache prefix).

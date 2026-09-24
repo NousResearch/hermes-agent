@@ -422,3 +422,76 @@ class TestPerProviderReasoningEcho:
         assert agent.model == "glm-5.2"
 
 
+    def test_apply_policy_strips_without_opt_in(self):
+        """apply_reasoning_content_policy strips reasoning_content
+        when needs_thinking_pad is False (no opt-in, not echo family)."""
+        from agent.message_sanitization import apply_reasoning_content_policy
+        source = {"role": "assistant", "content": "hi", "reasoning_content": "my thoughts"}
+        api_msg = {"role": "assistant", "content": "hi"}
+        apply_reasoning_content_policy(source, api_msg, needs_thinking_pad=False)
+        assert "reasoning_content" not in api_msg
+
+
+# ---------------------------------------------------------------------------
+# strip_reasoning_details_for_non_openrouter — OpenRouter-only field guard
+# ---------------------------------------------------------------------------
+
+class TestStripReasoningDetails:
+    """reasoning_details is OpenRouter-specific; strict proxies (Palantir
+    Foundry LLM, Mistral, Fireworks) 400 on it. Keep it only for OpenRouter,
+    strip it from the outgoing copy for every other provider."""
+
+    def _history(self):
+        # An OpenRouter reasoning turn mixed into history, then a plain turn.
+        return [
+            {"role": "user", "content": "ahoj"},
+            {
+                "role": "assistant",
+                "content": "Zdravim.",
+                "reasoning_details": [
+                    {"type": "reasoning.text", "text": "user pozdravil", "format": "unknown"}
+                ],
+            },
+            {"role": "user", "content": "co je 2+2?"},
+        ]
+
+    def test_strips_for_non_openrouter(self):
+        """Palantir/strict provider: the field must be gone from the wire copy."""
+        from agent.message_sanitization import strip_reasoning_details_for_non_openrouter
+        msgs = self._history()
+        removed = strip_reasoning_details_for_non_openrouter(msgs, is_openrouter=False)
+        assert removed == 1
+        assert all("reasoning_details" not in m for m in msgs)
+
+    def test_preserves_for_openrouter(self):
+        """OpenRouter consumes the field back for reasoning continuity — keep it."""
+        from agent.message_sanitization import strip_reasoning_details_for_non_openrouter
+        msgs = self._history()
+        removed = strip_reasoning_details_for_non_openrouter(msgs, is_openrouter=True)
+        assert removed == 0
+        assert msgs[1]["reasoning_details"]  # untouched
+
+    def test_idempotent_and_noop_when_absent(self):
+        """Safe to call every iteration; no-op when no assistant turn carries it."""
+        from agent.message_sanitization import strip_reasoning_details_for_non_openrouter
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert strip_reasoning_details_for_non_openrouter(msgs, is_openrouter=False) == 0
+        # Second pass after a real strip stays a no-op.
+        hist = self._history()
+        strip_reasoning_details_for_non_openrouter(hist, is_openrouter=False)
+        assert strip_reasoning_details_for_non_openrouter(hist, is_openrouter=False) == 0
+
+    def test_only_touches_assistant_turns(self):
+        """A stray reasoning_details on a non-assistant row is left alone."""
+        from agent.message_sanitization import strip_reasoning_details_for_non_openrouter
+        msgs = [
+            {"role": "user", "content": "hi", "reasoning_details": [{"x": 1}]},
+            {"role": "assistant", "content": "yo", "reasoning_details": [{"y": 2}]},
+        ]
+        removed = strip_reasoning_details_for_non_openrouter(msgs, is_openrouter=False)
+        assert removed == 1
+        assert "reasoning_details" in msgs[0]  # user row untouched
+        assert "reasoning_details" not in msgs[1]  # assistant row stripped

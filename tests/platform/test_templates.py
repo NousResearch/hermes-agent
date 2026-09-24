@@ -24,10 +24,19 @@ GOOD = {"tenant_id": "acme-shop", "company": "Acme Shop", "support_email": "help
 @pytest.fixture(autouse=True)
 def catalogue(tmp_path_factory, monkeypatch):
     """The MCP catalogue as the image composes it, so HubSpot and Sheets grants validate."""
+    import nova.runtime.hermes  # noqa: F401 — installs the runtime's extension discovery
+    from nova.extensions import catalogue as extension_catalogue
+
     composed = tmp_path_factory.mktemp("catalogue")
     shutil.copytree(REPO / "optional-mcps", composed, dirs_exist_ok=True)
     shutil.copytree(REPO / "nova" / "mcp-catalog", composed, dirs_exist_ok=True)
     monkeypatch.setenv("HERMES_OPTIONAL_MCPS", str(composed))
+    # The inventory is cached process-wide; an earlier test may have read it without the
+    # NOVA entries. Read it again here, and again afterwards so no later test sees ours.
+    extension_catalogue(refresh=True)
+    yield
+    monkeypatch.undo()
+    extension_catalogue(refresh=True)
 
 
 def test_there_are_templates():

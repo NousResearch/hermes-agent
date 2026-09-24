@@ -621,6 +621,18 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('updates the active busy-input mode immediately after /busy set', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ value: 'queue' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/busy queue')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(getUiState().busyInputMode).toBe('queue')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('busy input mode: queue')
+    })
+  })
+
   it('renders browser connect progress messages from the gateway', async () => {
     const rpc = vi.fn(() =>
       Promise.resolve({

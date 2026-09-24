@@ -61,6 +61,26 @@ export const prepareSlashSubmission = (display: string, tokens: ComposerToken[])
 
 export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
 
+// A redirected busy submit can end the active model request before its normal
+// `message.complete` reaches the renderer. Preserve the visible stream first
+// so the user never experiences an in-flight reply disappearing.
+export const interruptBusySubmission = ({
+  appendMessage,
+  gw,
+  send,
+  sid,
+  sys
+}: {
+  appendMessage: (msg: Msg) => void
+  gw: GatewayClient
+  send: () => void
+  sid: string
+  sys: (text: string) => void
+}) => {
+  turnController.interruptTurn({ appendMessage, gw, sid, sys })
+  send()
+}
+
 export function useSubmission(opts: UseSubmissionOptions) {
   const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
     opts
@@ -239,6 +259,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
           .catch(() => fallback('steer failed — message queued for next turn'))
 
         return
+      }
+
+      if (mode === 'interrupt' && live.sid) {
+        return interruptBusySubmission({ appendMessage, gw, send: () => send(item.text), sid: live.sid, sys })
       }
 
       // The gateway owns the atomic redirect decision because it knows whether

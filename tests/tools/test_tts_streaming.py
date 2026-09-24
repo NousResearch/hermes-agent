@@ -1216,3 +1216,12 @@ def test_sync_pipeline_falls_back_to_requested_path_when_reported_missing(monkey
     assert len(played) == 1 and played[0][1] > 0, (
         "requested-path fallback no longer plays"
     )
+
+
+@pytest.mark.parametrize("tag", ["<think>", "<thinking>", "<THINK>", "<reasoning>"])
+def test_flush_drops_unterminated_think_tail(tag):
+    from tools.tts_streaming import SentenceChunker
+
+    chunker = SentenceChunker()
+    assert chunker.feed(f"The spoken part. {tag}half-formed reas") == []
+    assert chunker.flush() == ["The spoken part."]

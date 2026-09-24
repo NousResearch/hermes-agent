@@ -16,6 +16,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
+from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
 
@@ -61,7 +62,11 @@ def take_speech_interrupted() -> bool:
 
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
-_THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
+# Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
+# so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
+_THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
+_THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(rf"<(?:{_THINK_NAMES})(?=[\s>]|$)", flags=re.IGNORECASE)
 
 
 class SentenceChunker:
@@ -86,7 +91,7 @@ class SentenceChunker:
     def feed(self, delta: str) -> List[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
         self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
-        if "<think" in self.buf and "</think>" not in self.buf:
+        if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
         start = 0  # skip boundaries that would leave the head too short
@@ -102,7 +107,10 @@ class SentenceChunker:
 
     def flush(self) -> List[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
-        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf).strip(), ""
+        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
+        if m := _THINK_OPEN_RE.search(tail):
+            tail = tail[: m.start()]  # unterminated reasoning block: never speak it
+        tail = tail.strip()
         return [tail] if tail else []
 
 

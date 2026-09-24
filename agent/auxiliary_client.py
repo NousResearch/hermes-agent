@@ -7327,6 +7327,9 @@ _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
     # a slow local model reads as an unreachable endpoint (#89445).
     (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),
+    # Connection failures above already reach provider fallback. This remaining branch covers a
+    # pure HTTP 5xx/408 after its bounded same-provider transient retries are exhausted.
+    (_is_transient_transport_error, "transient HTTP error"),
 )
 
 

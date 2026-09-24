@@ -332,3 +332,9 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_mcp_sdk_snake_case_read_only_hint_supported(self):
+        """MCP 2.0 ToolAnnotations exposes the hint as a snake_case attribute."""
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True

@@ -30,7 +30,11 @@ except ImportError:
 import sys
 from pathlib import Path as _Path
 
-sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+# Standalone fallback only: append a real checkout root so installed packages
+# keep precedence; never prepend (shadowing) and never duplicate.
+_checkout_root = _Path(__file__).resolve().parents[3]
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret

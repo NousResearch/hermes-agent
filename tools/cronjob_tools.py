@@ -28,7 +28,11 @@ _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 # mask the gateway watchdog forever — pre-#76502 the parent was at least reaped at ~1800s.
 _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Standalone fallback only: append a real checkout root so installed packages
+# keep precedence; never prepend (shadowing) and never duplicate.
+_checkout_root = Path(__file__).resolve().parent.parent
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from cron.jobs import (
     AmbiguousJobReference,

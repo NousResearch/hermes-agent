@@ -448,17 +448,18 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         project_entry = str(project_root)
         site_entry = str(site_packages)
-        if project_entry not in sys.path:
-            sys.path.insert(0, project_entry)
         # addsitedir semantics matter: pywin32 (MCP SDK on Windows) needs .pth processing for pywintypes.
         site.addsitedir(site_entry)
         if site_entry in sys.path:
             sys.path.remove(site_entry)
-        insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
-        sys.path.insert(insert_at, site_entry)
+        # Venv site-packages stays first (interpreter correction); the checkout
+        # root is appended so it can never shadow installed packages.
+        sys.path.insert(0, site_entry)
+        if project_entry not in sys.path:
+            sys.path.append(project_entry)
 
         os.environ["VIRTUAL_ENV"] = str(resolved_venv)
-        pythonpath = [project_entry, site_entry]
+        pythonpath = [site_entry, project_entry]
         if os.environ.get("PYTHONPATH"):
             pythonpath.append(os.environ["PYTHONPATH"])
         os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
@@ -1596,7 +1597,11 @@ os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Standalone fallback only: append a real checkout root so installed packages
+# keep precedence; never prepend (shadowing) and never duplicate.
+_checkout_root = Path(__file__).resolve().parent.parent
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
 # The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)

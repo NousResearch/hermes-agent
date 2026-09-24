@@ -68,12 +68,19 @@ def _realpath_or_self(path: str) -> str:
 
 
 def ensure_project_root_on_path() -> None:
-    """Put the project root at sys.path[0], deduping realpath-equivalents."""
+    """Make the project root importable, deduping realpath-equivalents.
+
+    The root is appended, never prepended, so checkout-level modules cannot
+    shadow same-named installed packages process-wide.
+    """
     project_root = project_root_str()
     normalized_root = os.path.normcase(_realpath_or_self(project_root))
-    sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
-    sys.path.insert(0, project_root)
+    for entry in sys.path:
+        if not entry:
+            continue
+        if os.path.normcase(_realpath_or_self(entry)) == normalized_root:
+            return
+    sys.path.append(project_root)
 
 
 def is_termux_env() -> bool:

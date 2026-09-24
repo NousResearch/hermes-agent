@@ -40,9 +40,11 @@ import sys
 
 # Inline path math so ``python hermes_cli/main.py`` (script mode: sys.path[0]
 # is hermes_cli/, not the repo root) can import hermes_cli._startup_fast.
+# Appended, never prepended, so the checkout cannot shadow installed packages.
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
-if _bootstrap_root not in sys.path:
-    sys.path.insert(0, _bootstrap_root)
+if (os.path.isfile(os.path.join(_bootstrap_root, "gateway", "__init__.py"))
+        and _bootstrap_root not in sys.path):
+    sys.path.append(_bootstrap_root)
 from hermes_cli import _startup_fast  # noqa: E402
 
 # A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute

@@ -177,7 +177,11 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
         getattr(parent, action)()
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+# Standalone fallback only: append a real checkout root so installed packages
+# keep precedence; never prepend (shadowing) and never duplicate.
+_checkout_root = Path(__file__).resolve().parents[3]
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin

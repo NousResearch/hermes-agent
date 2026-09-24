@@ -33,7 +33,10 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
 # Must precede repo-level imports: standalone invocations (e.g. module reload after
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Appended, never prepended, so the checkout cannot shadow installed packages.
+_checkout_root = Path(__file__).resolve().parent.parent
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting

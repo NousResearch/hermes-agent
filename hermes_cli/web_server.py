@@ -30,8 +30,9 @@ from typing import Any, Dict, Optional, Tuple
 
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# Appended, never prepended, so the checkout cannot shadow installed packages.
+if (PROJECT_ROOT / "gateway" / "__init__.py").is_file() and str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 from hermes_cli import __version__
 from hermes_cli.config import load_config

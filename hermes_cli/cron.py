@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(PROJECT_ROOT))
+# Appended, never prepended, so the checkout cannot shadow installed packages.
+if (PROJECT_ROOT / "gateway" / "__init__.py").is_file() and str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
 

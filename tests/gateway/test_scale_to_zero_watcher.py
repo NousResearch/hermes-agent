@@ -214,7 +214,7 @@ async def test_watcher_honours_a_false_hold_from_the_adapter(monkeypatch):
     adapter.hold_redial = lambda: False
     suspends = []
     monkeypatch.setattr(
-        r, "_scale_to_zero_self_suspend", lambda: suspends.append(1) or _noop_async()
+        r, "_scale_to_zero_self_suspend", lambda *a, **k: suspends.append(1) or _noop_async()
     )
 
     await _run_one_iteration(r)
@@ -254,7 +254,7 @@ async def test_watcher_abandons_cleanly_when_it_must_not_suspend(
     r, adapter = _runner_with(monkeypatch, idle=True, brokered=True, **kwargs)
     suspends = []
     monkeypatch.setattr(
-        r, "_scale_to_zero_self_suspend", lambda: suspends.append(1) or _noop_async()
+        r, "_scale_to_zero_self_suspend", lambda *a, **k: suspends.append(1) or _noop_async()
     )
 
     await _run_one_iteration(r)
@@ -493,7 +493,7 @@ async def test_watcher_self_suspends_after_dormant(monkeypatch):
     r, adapter = _runner_with(monkeypatch, idle=True)
     calls = []
 
-    async def fake_suspend():
+    async def fake_suspend(*a, **k):
         calls.append(("suspend", adapter.go_dormant_calls))
         r._running = False  # stop the loop after the first full sequence
 
@@ -514,7 +514,7 @@ async def test_watcher_skips_suspend_when_dormant_fails(monkeypatch):
     adapter.go_dormant = broken_dormant
     suspend_calls = []
 
-    async def fake_suspend():
+    async def fake_suspend(*a, **k):
         suspend_calls.append(1)
 
     monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
@@ -534,7 +534,7 @@ async def test_watcher_skips_suspend_when_inbound_lands_mid_quiesce(monkeypatch)
     )
     suspend_calls = []
 
-    async def fake_suspend():
+    async def fake_suspend(*a, **k):
         suspend_calls.append(1)
 
     monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
@@ -805,3 +805,86 @@ def test_missing_api_adapter_is_not_work(monkeypatch):
     r = _work_count_runner(monkeypatch)
     r.adapters = {}
     assert r._scale_to_zero_is_idle() is True
+
+
+@pytest.mark.asyncio
+async def test_wake_marker_touch_releases_the_brokered_fence(monkeypatch, tmp_path):
+    """A platform that resumes the VM in place keeps this process alive, so the fence
+    taken for the brokered stop must let go the moment NAS touches the marker."""
+    r, adapter = _runner_with(monkeypatch, idle=True, brokered=True)
+    marker = tmp_path / "wake"
+    monkeypatch.setattr("gateway.scale_to_zero.WAKE_MARKER_TICK_S", 0.01)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.request_brokered_suspend", lambda *a, **k: True
+    )
+
+    task = asyncio.create_task(r._scale_to_zero_self_suspend(str(marker), None))
+    await asyncio.sleep(0.05)
+    assert adapter.redial == [], "released before any wake"
+    marker.touch()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert adapter.redial == ["release"]
+
+
+@pytest.mark.asyncio
+async def test_wake_marker_left_alone_keeps_the_fence(monkeypatch, tmp_path):
+    """No touch, no release: a marker that predates the stop is only the baseline, and
+    the transport cap stays the one way out of a wake that never comes."""
+    r, adapter = _runner_with(monkeypatch, idle=True, brokered=True)
+    marker = tmp_path / "wake"
+    marker.touch()
+    monkeypatch.setattr("gateway.scale_to_zero.WAKE_MARKER_TICK_S", 0.01)
+    monkeypatch.setattr("gateway.relay.ws_transport.REDIAL_HOLD_MAX_S", 0.05)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.request_brokered_suspend", lambda *a, **k: True
+    )
+
+    await asyncio.wait_for(
+        r._scale_to_zero_self_suspend(str(marker), marker.stat().st_mtime_ns), timeout=2
+    )
+
+    assert adapter.redial == []
+
+
+@pytest.mark.asyncio
+async def test_wake_during_the_handshake_abandons_the_suspend(monkeypatch, tmp_path):
+    """The baseline is read before the connector starts buffering, so a wake that lands
+    while the socket closes is a wake: no stop goes out, and the fence lets go."""
+    r, adapter = _runner_with(monkeypatch, idle=True, brokered=True)
+    marker = tmp_path / "wake"
+    monkeypatch.setenv("HERMES_WAKE_MARKER_PATH", str(marker))
+    requests = []
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.request_brokered_suspend",
+        lambda *a, **k: requests.append(1) or True,
+    )
+
+    async def go_dormant_then_wake():
+        adapter.go_dormant_calls += 1
+        marker.touch()
+        return True
+
+    adapter.go_dormant = go_dormant_then_wake
+    await _run_one_iteration(r, settle=0.3)
+
+    assert requests == []
+    assert adapter.redial == ["hold", "release"]
+
+
+@pytest.mark.asyncio
+async def test_wake_during_the_request_releases_the_fence(monkeypatch, tmp_path):
+    """A touch while the stop request is in flight is not absorbed into the baseline."""
+    r, adapter = _runner_with(monkeypatch, idle=True, brokered=True)
+    marker = tmp_path / "wake"
+    monkeypatch.setenv("HERMES_WAKE_MARKER_PATH", str(marker))
+    monkeypatch.setattr("gateway.scale_to_zero.WAKE_MARKER_TICK_S", 0.01)
+
+    def accept_after_a_wake(*a, **k):
+        marker.touch()
+        return True
+
+    monkeypatch.setattr("gateway.scale_to_zero.request_brokered_suspend", accept_after_a_wake)
+    await _run_one_iteration(r, settle=0.3)
+
+    assert adapter.redial == ["hold", "release"]

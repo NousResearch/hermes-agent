@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 from collections import Counter
@@ -17,6 +18,10 @@ try:
     from hermes_cli import __version__ as HERMES_VERSION
 except Exception:
     HERMES_VERSION = "0.0.0"
+
+
+class SkillCommandLoadError(RuntimeError):
+    pass
 
 
 def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None, tools: Any = None) -> int:
@@ -75,24 +80,73 @@ class SlashCommandsMixin:
     }
 
 
-    @classmethod
-    def _available_commands(cls) -> list[AvailableCommand]:
-        return [
+    def _available_commands(self, state: SessionState) -> list[AvailableCommand]:
+        commands = [
             AvailableCommand(name=name, description=desc, input=UnstructuredCommandInput(hint=hint) if hint else None)
-            for name, (_help, desc, hint) in cls._COMMANDS.items()
+            for name, (_help, desc, hint) in self._COMMANDS.items()
         ]
+        from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+        from agent.skill_commands import get_skill_commands
 
-    async def _send_available_commands_update(self, session_id: str) -> None:
+        token = set_session_cwd(state.cwd)
+        try:
+            for key, info in get_skill_commands().items():
+                name = key.lstrip("/")
+                if name in self._COMMANDS:
+                    continue
+                commands.append(AvailableCommand(
+                    name=name,
+                    description=info.get("description") or f"Invoke the {info.get('name') or name} skill",
+                    input=UnstructuredCommandInput(hint="optional instruction"),
+                ))
+        finally:
+            reset_session_cwd(token)
+        return commands
+
+    async def _send_available_commands_update(self, state: SessionState) -> None:
         """Advertise supported slash commands to the connected ACP client."""
         if not self._conn:
             return
         update = AvailableCommandsUpdate(
-            session_update="available_commands_update", available_commands=self._available_commands()
+            session_update="available_commands_update",
+            available_commands=await asyncio.to_thread(self._available_commands, state),
         )
-        await self._send(session_id, update, fail_msg="Failed to advertise ACP slash commands for session %s")
+        await self._send(state.session_id, update, fail_msg="Failed to advertise ACP slash commands for session %s")
 
-    def _schedule_available_commands_update(self, session_id: str) -> None:
-        self._schedule_soon(lambda: self._send_available_commands_update(session_id))
+    def _schedule_available_commands_update(self, state: SessionState) -> None:
+        self._schedule_soon(lambda: self._send_available_commands_update(state))
+
+    def _expand_skill_command(self, text: str, state: SessionState) -> str | None:
+        parts = text.split(maxsplit=1)
+        command = parts[0]
+        instruction = parts[1] if len(parts) > 1 else ""
+        from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+        from agent.skill_commands import (
+            build_skill_invocation_message,
+            build_stacked_skill_invocation_message,
+            resolve_skill_command_key,
+            split_stacked_skill_commands,
+        )
+
+        token = set_session_cwd(state.cwd)
+        try:
+            key = resolve_skill_command_key(command.lstrip("/").lower())
+            if key is None:
+                return None
+            extra_keys, user_instruction = split_stacked_skill_commands(instruction)
+            if extra_keys:
+                stacked = build_stacked_skill_invocation_message(
+                    [key, *extra_keys], user_instruction, task_id=state.session_id
+                )
+                if stacked:
+                    return stacked[0]
+                raise SkillCommandLoadError(f"Failed to load stacked skills starting with {key}")
+            expanded = build_skill_invocation_message(key, user_instruction, task_id=state.session_id)
+            if expanded is None:
+                raise SkillCommandLoadError(f"Failed to load skill for {key}")
+            return expanded
+        finally:
+            reset_session_cwd(token)
 
     def _handle_slash_command(self, text: str, state: SessionState) -> str | None:
         """Dispatch a slash command; ``None`` for unknown ones so they fall through to the LLM."""

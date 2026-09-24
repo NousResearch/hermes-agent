@@ -75,6 +75,33 @@ def make_agent_and_state():
     return acp_agent, state, fake, conn
 
 
+@pytest.mark.asyncio
+async def test_acp_advertises_skill_commands_from_session_workspace(tmp_path):
+    acp_agent, state, _fake, conn = make_agent_and_state()
+    state.cwd = str(tmp_path)
+    observed = {}
+
+    def skill_commands():
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        observed["cwd"] = resolve_agent_cwd()
+        return {
+            "/paseo-sidekick": {
+                "name": "paseo-sidekick",
+                "description": "Delegate context-heavy work to a sidekick",
+            }
+        }
+
+    with patch("agent.skill_commands.get_skill_commands", side_effect=skill_commands):
+        await acp_agent._send_available_commands_update(state)
+
+    session_id, update = conn.updates[-1]
+    commands = {command.name: command for command in update.available_commands}
+    assert session_id == state.session_id
+    assert observed["cwd"] == tmp_path
+    assert commands["paseo-sidekick"].description == "Delegate context-heavy work to a sidekick"
+
+
 def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
     captured = {}
@@ -131,6 +158,105 @@ async def test_acp_steer_slash_command_injects_into_running_agent():
     assert response.stop_reason == "end_turn"
     assert fake.steers == ["prefer the simpler fix"]
     assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_skill_slash_command_loads_skill_before_turn(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    skill_dir = tmp_path / "skills" / "paseo-sidekick"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: paseo-sidekick\ndescription: Delegate context-heavy work\n---\n\nSidekick instructions.\n",
+        encoding="utf-8",
+    )
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    token = set_hermes_home_override(tmp_path)
+    try:
+        response = await acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="/paseo-sidekick investigate the failure")],
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert response.stop_reason == "end_turn"
+    assert len(fake.runs) == 1
+    assert "Sidekick instructions." in fake.runs[0]
+    assert "investigate the failure" in fake.runs[0]
+
+
+@pytest.mark.asyncio
+async def test_acp_skill_slash_command_accepts_non_space_whitespace():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    expanded = "[IMPORTANT: loaded paseo-sidekick]"
+
+    with (
+        patch("agent.skill_commands.resolve_skill_command_key", return_value="/paseo-sidekick"),
+        patch("agent.skill_commands.build_skill_invocation_message", return_value=expanded) as build,
+    ):
+        await acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="/paseo-sidekick\tinvestigate the failure")],
+        )
+
+    assert fake.runs == [expanded]
+    build.assert_called_once_with(
+        "/paseo-sidekick", "investigate the failure", task_id=state.session_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_acp_known_skill_load_failure_does_not_reach_model():
+    acp_agent, state, fake, conn = make_agent_and_state()
+
+    with (
+        patch("agent.skill_commands.resolve_skill_command_key", return_value="/paseo-sidekick"),
+        patch("agent.skill_commands.build_skill_invocation_message", return_value=None),
+    ):
+        response = await acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="/paseo-sidekick investigate")],
+        )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == []
+    assert "Failed to load skill for /paseo-sidekick" in conn.updates[-1][1].content.text
+
+
+@pytest.mark.asyncio
+async def test_acp_stacked_skill_commands_load_every_skill_before_turn():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    expanded = "[IMPORTANT: loaded two skills]\n\nCombined instructions"
+
+    with (
+        patch("agent.skill_commands.resolve_skill_command_key", return_value="/paseo-sidekick"),
+        patch(
+            "agent.skill_commands.split_stacked_skill_commands",
+            return_value=(["/code-review"], "inspect the branch"),
+        ),
+        patch(
+            "agent.skill_commands.build_stacked_skill_invocation_message",
+            return_value=(expanded, ["paseo-sidekick", "code-review"], []),
+        ) as build,
+    ):
+        await acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[
+                TextContentBlock(
+                    type="text",
+                    text="/paseo-sidekick /code-review inspect the branch",
+                )
+            ],
+        )
+
+    assert fake.runs == [expanded]
+    build.assert_called_once_with(
+        ["/paseo-sidekick", "/code-review"],
+        "inspect the branch",
+        task_id=state.session_id,
+    )
 
 
 @pytest.mark.asyncio

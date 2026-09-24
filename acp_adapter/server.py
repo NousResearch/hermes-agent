@@ -25,7 +25,7 @@ from acp.schema import (
 )
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
-from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
+from acp_adapter.commands import HERMES_VERSION, SkillCommandLoadError, SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
     AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
@@ -593,7 +593,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     f"{replay_verb} will still succeed, partial transcript may be missing",
                     state.session_id, exc_info=True,
                 )
-        self._schedule_available_commands_update(state.session_id)
+        self._schedule_available_commands_update(state)
         self._schedule_soon(lambda: self._send_usage_update(state))
         return {
             "models": self._build_model_state(state),
@@ -665,7 +665,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return ForkSessionResponse(session_id="")
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
-        self._schedule_available_commands_update(state.session_id)
+        self._schedule_available_commands_update(state)
         return ForkSessionResponse(
             session_id=state.session_id, models=self._build_model_state(state), modes=self._session_modes(state)
         )
@@ -828,6 +828,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             # Off the loop: /model validates through switch_model (network I/O) and /compress
             # calls the LLM; handlers are sync and hold no loop-bound state.
             response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
+            if response_text is None:
+                try:
+                    expanded_skill = await asyncio.to_thread(self._expand_skill_command, user_text, state)
+                except SkillCommandLoadError as exc:
+                    response_text = str(exc)
+                else:
+                    if expanded_skill is not None:
+                        user_text = expanded_skill
+                        user_content = expanded_skill
             if response_text is not None:
                 if self._conn:
                     await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))

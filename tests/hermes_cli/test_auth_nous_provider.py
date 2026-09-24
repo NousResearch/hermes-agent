@@ -695,6 +695,8 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
         (400, ValueError("not json"), None, False),
         (401, {"message": "unauthorized"}, "invalid_grant", True),
         (403, ValueError("not json"), "invalid_grant", True),
+        (400, ["not", "a", "dict"], None, False),
+        (401, "unauthorized", "invalid_grant", True),
     ],
 )
 def test_refresh_token_exchange_error_classification(

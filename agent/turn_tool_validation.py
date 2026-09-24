@@ -177,8 +177,14 @@ def validate_tool_calls(
             )
             agent._invalid_json_retries = 0
             agent._cleanup_task_resources(effective_task_id)
+            # Blame the output cap only when the model reported one; otherwise the args
+            # were cut by a stream break or a router rewriting finish_reason (#91717).
+            _copy = (
+                site_copy("truncated") if finish_reason == "length"
+                else site_copy("truncated_unreported", finish_reason=repr(finish_reason))
+            )
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count, site_copy("truncated"),
+                agent, messages, conversation_history, api_call_count, _copy,
             ))
 
         agent._invalid_json_retries += 1

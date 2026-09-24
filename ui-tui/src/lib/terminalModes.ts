@@ -21,6 +21,8 @@ export const TERMINAL_MODE_RESET =
   '\x1b[0m' + // attributes
   '\x1b[?25h' // cursor visible
 
+export const NATIVE_TUI_EXIT_RESET = '\x1b[2J\x1b[H'
+
 type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
   fd?: number
 }

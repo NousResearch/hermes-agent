@@ -245,7 +245,10 @@ def _messaging_platform_payload(
     elif not configured:
         state = "not_configured"
     elif gateway_running and not state:
-        state = "pending_restart"
+        # Plugin adapters can be live without publishing a per-platform runtime
+        # entry. Their configured, enabled state on a running gateway is therefore
+        # connected rather than evidence that a restart is pending.
+        state = "connected" if entry.get("is_plugin") else "pending_restart"
     elif not gateway_running and not state:
         # Same verdict /api/status gives: ``hermes gateway stop`` keeps the last failure on disk,
         # and a profile the operator stopped must not wear a "Start failed" badge for it.

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { setActiveSessionId, setSessions } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $hudMode } from '@/store/hud'
+import { $selectedStoredSessionId, setActiveSessionId, setSessions } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -80,6 +81,17 @@ describe('approval request routing', () => {
 })
 
 describe('preview action request routing', () => {
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+
+  afterEach(() => {
+    delete desktopWindow.hermesDesktop
+    $hudMode.set(false)
+    $selectedStoredSessionId.set(null)
+    $sessionStates.set({})
+    $sessionTiles.set([])
+    setSessions([])
+  })
+
   it('retries a replayed scoped request only while no session is bound yet', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: null })).toBe('retry')
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-a' })).toBe('run')
@@ -131,6 +143,31 @@ describe('preview action request routing', () => {
     } finally {
       $sessionTiles.set([])
     }
+  })
+
+  it('lets the HUD answer window reads for its selected lineage without claiming other panes', async () => {
+    const result = { app: 'Safari', title: 'Hermes issue' }
+    const readWindowBelow = vi.fn().mockResolvedValue(result)
+    desktopWindow.hermesDesktop = { readWindowBelow } as unknown as Window['hermesDesktop']
+    $hudMode.set(true)
+    $selectedStoredSessionId.set('lineage-root')
+    $sessionStates.set({ 'runtime-hud': createClientSessionState('lineage-tip') })
+    setSessions([
+      {
+        _lineage_ids: ['lineage-root', 'lineage-tip'],
+        _lineage_root_id: 'lineage-root',
+        id: 'lineage-tip'
+      } as SessionInfo
+    ])
+
+    const windowRead = deliver('window.read', { session_id: 'runtime-hud' }, null)
+    const previewRead = deliver('preview.read', { session_id: 'runtime-hud' }, null)
+
+    await Promise.resolve()
+
+    expect(readWindowBelow).toHaveBeenCalledOnce()
+    expect(windowRead.respond).toHaveBeenCalledWith({ value: JSON.stringify(result) })
+    expect(previewRead.respond).not.toHaveBeenCalled()
   })
 
   it('fails fast for an unscoped request with no session in view', () => {

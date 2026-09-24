@@ -7,6 +7,7 @@ import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
+import { $hudMode } from '@/store/hud'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
   receiveApprovalRequest,
@@ -17,7 +18,8 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
-import { $sessionTiles } from '@/store/session-states'
+import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
+import { $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -60,10 +62,10 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
 
 /**
  * Bridges answered from THIS window's panes (preview tab, xterm buffer, the
- * native window below, the tour overlay). Every attached window sees the
- * request; one not hosting the session has no pane for it and its empty answer
- * would win the race, so the tool reports "no preview tab / no terminal" while
- * the owner's pane is open (#113348).
+ * native window below, the tour overlay). If one reaches a window that does
+ * not host the session, its empty answer could beat the owner's answer and
+ * make the tool report "no preview tab / no terminal" while that pane is open
+ * (#113348).
  */
 const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
 
@@ -73,9 +75,38 @@ export function windowHostsSession(sessionId: string, activeSessionId: null | st
 }
 
 /**
- * Panes are local to one desktop window, while gateway requests fan out
- * to every connected window. A scoped request may only be answered by the
- * window hosting its session (primary view or a tile). During reconnect,
+ * The HUD owns native-window geometry for the conversation it is showing.
+ * Its gateway transport receives the scoped request, but the HUD deliberately
+ * keeps no `$activeSessionId` view binding of its own; translate the request's
+ * runtime id and match its durable selection through the compression lineage.
+ */
+function hudHostsWindowRead(sessionId: string): boolean {
+  if (!$hudMode.get()) {
+    return false
+  }
+
+  const selectedSessionId = $selectedStoredSessionId.get()
+
+  if (!selectedSessionId) {
+    return false
+  }
+
+  const storedSessionId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
+
+  return (
+    selectedSessionId === storedSessionId ||
+    $sessions
+      .get()
+      .some(
+        session =>
+          sessionMatchesStoredId(session, selectedSessionId) && sessionMatchesStoredId(session, storedSessionId)
+      )
+  )
+}
+
+/**
+ * Panes are local to one desktop window. A scoped request may only be answered
+ * by the window hosting its session (primary view or a tile). During reconnect,
  * however, an open request can replay one event-loop turn before the resumed
  * session becomes active; retry that one narrow race and otherwise leave the
  * request for its owner.
@@ -94,6 +125,17 @@ export function previewSessionRoute({
   }
 
   return replayed && !activeSessionId ? 'retry' : 'ignore'
+}
+
+function windowOwnedSessionRoute(
+  method: string,
+  route: Parameters<typeof previewSessionRoute>[0]
+): PreviewSessionRoute {
+  if (method === 'window.read' && hudHostsWindowRead(route.sessionId)) {
+    return 'run'
+  }
+
+  return previewSessionRoute(route)
 }
 
 const markNeedsInput = (ctx: ServerRequestContext) => {
@@ -458,7 +500,11 @@ export function handleServerRequest(
   const sessionId = str(request.params.session_id)
 
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
-    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
+    const route = windowOwnedSessionRoute(request.method, {
+      activeSessionId,
+      replayed: request.replayed,
+      sessionId
+    })
 
     if (route === 'ignore') {
       return true
@@ -470,8 +516,11 @@ export function handleServerRequest(
       // turn. A second miss deliberately stays silent for another window.
       setTimeout(() => {
         if (
-          previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) ===
-          'run'
+          windowOwnedSessionRoute(request.method, {
+            activeSessionId: deps.activeSessionIdRef.current,
+            replayed: false,
+            sessionId
+          }) === 'run'
         ) {
           handler({ deps, request, sessionId, isActiveSession: true })
         }

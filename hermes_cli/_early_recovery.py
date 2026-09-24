@@ -9,6 +9,7 @@ the known-fragile core packages, using the pins from pyproject.toml).
 from __future__ import annotations
 
 import contextlib
+import errno
 import importlib
 import os
 import shutil
@@ -329,7 +330,17 @@ _RESTORE_CLAIM_WAIT_SECONDS = 10.0
 _merge_advice_shown = False
 
 
+# flock's EWOULDBLOCK and msvcrt LK_NBLCK's EACCES/EDEADLOCK: another process holds the claim.
+_CLAIM_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES, errno.EDEADLK})
+
+
 def _lock_fd(fd: int, lock: bool) -> bool:
+    """False only while another launch holds the claim.
+
+    A filesystem that cannot lock at all (ENOLCK on NFS without lockd, EOPNOTSUPP/EINVAL on some SMB
+    shares) proceeds unguarded like a read-only git dir: counting it as "held" would stop every launch
+    from ever repairing a checkout the restore handled fine before claims existed.
+    """
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -340,9 +351,9 @@ def _lock_fd(fd: int, lock: bool) -> bool:
             import fcntl
 
             fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if lock else fcntl.LOCK_UN)
-        return True
-    except OSError:
-        return False
+    except OSError as exc:
+        return not (lock and exc.errno in _CLAIM_HELD_ERRNOS)
+    return True
 
 
 @contextlib.contextmanager
@@ -374,10 +385,13 @@ def _restore_claim(git_dir: Path):
 
 
 def _held_open(path: Path) -> bool:
-    """True when a running process has ``path`` open: a live git inside a command still holds its lock.
+    """True when a running process has ``path`` open, the usual sign of a live git owning its lock.
 
-    Linux answers exactly through /proc. Windows refuses to unlink a file another process has open, so
-    the caller's unlink is its probe; elsewhere nothing portable exists and the claim is the guard.
+    Best effort, not exact: Linux answers through /proc, but a live git that owns ``index.lock`` without
+    an open fd (``commit`` waiting in the editor, or between closing the lock and renaming it) reads as
+    dead; Windows refuses to unlink a file another process has open, so the caller's unlink is its probe;
+    macOS/BSD have no portable check at all. The claim only orders Hermes launches, so on those paths a
+    live git's lock can be removed; its command then fails and the marker stays for the next launch.
     """
     proc = Path("/proc")
     if not (proc / "self" / "fd").is_dir():
@@ -424,8 +438,8 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
     edits are never touched; the updater's autostash (if any) stays in ``git stash list``. Concurrent
     launches take turns (``_restore_claim``); a launch that waited out another's restore relaunches.
 
-    Limits, by design: a torn ``hermes_cli/__init__.py`` or ``hermes_bootstrap.py`` fails before this
-    runs. A file git also changes that the user deleted, emptied or cut to a prefix of git's version
+    Limits, by design: a torn ``hermes_cli/__init__.py``, ``hermes_bootstrap.py``, ``agent/__init__.py``
+    or ``agent/jiter_preload.py`` (imported before the ``hermes-agent`` hook) fails before this runs. A file git also changes that the user deleted, emptied or cut to a prefix of git's version
     looks exactly like git's own half-written file and is restored too, as is a user edit to a
     conflicted path or, on git < 2.38, to a path both sides of a custom-branch merge changed.
     """
@@ -482,6 +496,11 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
                   "then launch again." + (f" Your local changes are in its stash ({stash})." if stash else ""),
                   file=sys.stderr)
         return False
+    # A killed claim holder's own git child can still be writing; scanning under it reads half a tree.
+    if not _release_dead_index_lock(git_dir):
+        print("⚠ A running git holds the index after an interrupted `hermes update`; the next launch "
+              "finishes the restore.", file=sys.stderr)
+        return False
     written = _paths_git_wrote(git, root, pre, target)
     if written is None:  # after a gc or re-clone: nothing left to compare against
         marker.unlink()
@@ -491,9 +510,6 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
     if restore or added:
         print("⚠ A previous `hermes update` was killed while git was writing the new code — "
               f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
-        if not _release_dead_index_lock(git_dir):
-            print("  A running git holds the index; the next launch finishes the restore.", file=sys.stderr)
-            return False
         failed = None
         if restore:
             run = git("restore", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=-",

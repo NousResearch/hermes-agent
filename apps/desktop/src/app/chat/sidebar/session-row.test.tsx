@@ -349,21 +349,10 @@ describe('SidebarSessionRow decoration slots', () => {
       })
     )
 
-  it('mounts leading and trailing decorations with the row session id', () => {
+  it('mounts leading and trailing decorations, each handed the DURABLE row id', () => {
     act(() => {
       decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
       decorate(SESSION_ROW_AREAS.trailing, 'deco-tail', 'tail-deco')
-    })
-
-    renderRow(makeSession({ id: 'row-42', title: 'Decorated' }))
-
-    expect(screen.getByTestId('lead-deco').textContent).toBe('row-42')
-    expect(screen.getByTestId('tail-deco').textContent).toBe('row-42')
-  })
-
-  it('hands the slot the DURABLE id when it differs from the live one', () => {
-    act(() => {
-      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
     })
 
     // Auto-compression rotates the live id. A plugin that remembered the live
@@ -373,6 +362,7 @@ describe('SidebarSessionRow decoration slots', () => {
     renderRow(makeSession({ _lineage_root_id: 'root-9', id: 'live-9', title: 'Compressed' }))
 
     expect(screen.getByTestId('lead-deco').textContent).toBe('root-9')
+    expect(screen.getByTestId('tail-deco').textContent).toBe('root-9')
   })
 
   it('renders nothing for an area with no registrations and survives an unmount', () => {

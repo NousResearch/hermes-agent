@@ -945,12 +945,14 @@ export const host = {
    *  resolved to its durable lineage root before writing. */
   sessions: {
     /** Pin or unpin a session — the row's ⇧-click / context-menu action. A
-     *  pinned session moves into the Pinned section on the next render. */
-    pin: (storedSessionId: string, pinned = true): void => {
+     *  pinned session moves into the Pinned section on the next render.
+     *  `index` slots the pin at that position in the Pinned list (a drop
+     *  target between two pins); omitted = append, like the ⇧-click. */
+    pin: (storedSessionId: string, pinned = true, index?: number): void => {
       const id = durableSessionPinId(storedSessionId)
 
       if (pinned) {
-        pinSession(id)
+        pinSession(id, index)
       } else {
         unpinSession(id)
       }
@@ -958,9 +960,13 @@ export const host = {
 
     /** Replace the manual session order with `ids` (what a drag persists).
      *  Ids the window hasn't loaded reconcile on the next render, exactly
-     *  like the app's own reorder. */
+     *  like the app's own reorder. An EMPTY list clears the manual order and
+     *  returns Recents to the default sort — the sidebar's own reconcile
+     *  effect reaches that state one render after a drag empties the list;
+     *  the verb states it directly so a plugin reset never depends on a
+     *  mounted effect. */
     reorder: (ids: string[]): void => {
-      setSidebarSessionOrderManual(true)
+      setSidebarSessionOrderManual(ids.length > 0)
       setSidebarSessionOrderIds(ids)
     },
 

@@ -516,13 +516,49 @@ ctx.register({
 })
 ```
 
-Pair it with the session list API — `host.sessions.pin(id, pinned?)`,
-`host.sessions.reorder(ids)`, `host.sessions.setColor(id, color | null)` — which
-write the same stores the app's own controls write (so a plugin action and a
-hand click can never disagree). Ids are STORED session ids: a live id is
-resolved to its durable lineage root, so pins and colours survive compression's
-id rotation — and the row-decoration slots hand your render that same durable id
-(`_lineage_root_id ?? id`), never the live one.
+Pair it with the session list API, which writes the same stores the app's own
+controls write (so a plugin action and a hand click can never disagree):
+
+```ts
+host.sessions.pin(storedSessionId: string, pinned?: boolean, index?: number): void
+host.sessions.reorder(storedSessionIds: string[]): void   // [] = clear manual order → default sort
+host.sessions.setColor(storedSessionId: string, color: string | null): void
+```
+
+Ids are STORED session ids: a live id is resolved to its durable lineage root,
+so pins and colours survive compression's id rotation — and the row-decoration
+slots hand your render that same durable id (`_lineage_root_id ?? id`), never
+the live one. `pin(id, true, index)` slots the pin at that position in the
+Pinned list (a drop target between two pins); without `index` it appends, like
+the row's ⇧-click.
+
+**Arbitration.** The verbs are discrete user-triggered edits of user data —
+last write wins, exactly as if the user had clicked, and no plugin owns the
+result afterwards. Slot contributions are ALL mounted (registration order, not
+first-wins), each inside its own error boundary: a plugin that throws or
+returns `null` for a row cannot suppress another plugin's decoration on it, and
+two decorations on one row render side by side. Core keeps the row's layout,
+gestures and title — slots augment, never replace.
+
+**Teardown.** The verbs need none. Slot contributions are removed by the
+`ctx.register` disposer (disable/reload drops them and the row re-renders
+without the decoration).
+
+Migration for the held catalog plugins:
+
+- **drag-to-pin-session** — replace the `__reactFiber$*` walk for `onTogglePin`
+  / `onReorderSessions` / `session._lineage_root_id` with the row's slot id
+  (`render: ({ sessionId }) => …` under `SESSION_ROW_AREAS.leading` gives you
+  the durable id per row), then `host.sessions.pin(sessionId, true, dropIndex)`
+  for a drop into the Pinned section, `host.sessions.pin(sessionId, false)` for
+  a drop back into Recents, and `host.sessions.reorder([])` for its
+  "reset manual order" path.
+- **better-session-appearance** — replace the `localStorage`
+  `hermes.desktop.sessionColors` write and the fiber-harvested `onChange` with
+  `host.sessions.setColor(sessionId, hex)` (`null` clears), and render its
+  per-row glyph through `SESSION_ROW_AREAS.leading` instead of mutating the
+  row's status dot (the durable id it needed from `_lineage_root_id` is the
+  slot's `sessionId`).
 
 ### Transcript directives — inline components the model addresses
 
@@ -654,9 +690,9 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?, timeoutMs?, { spawnPriority? })   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
-host.sessions.pin(storedSessionId, pinned?)  // pin/unpin a session (default pinned=true);
-                                           //   same store the row's ⇧-click writes
-host.sessions.reorder(ids)                 // replace the manual session order (what a drag persists)
+host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinned=true); index = slot in Pinned;
+                                           //   same store the row's ⇧-click / drop writes
+host.sessions.reorder(ids)                 // replace the manual session order (what a drag persists); [] resets
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
 ```
 
@@ -1157,7 +1193,7 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

@@ -383,6 +383,11 @@ describe('host.sessions session-list mutations', () => {
 
     host.sessions.pin('row-1', false)
     expect($pinnedSessionIds.get()).toEqual(['row-2'])
+
+    // Drop-target pinning (drag-to-pin) slots the pin at an index instead of
+    // appending — the same `pinSession(id, index)` the sidebar's drop uses.
+    host.sessions.pin('row-0', true, 0)
+    expect($pinnedSessionIds.get()).toEqual(['row-0', 'row-2'])
   })
 
   it('resolves a live id to its durable lineage root before pinning', async () => {
@@ -404,6 +409,12 @@ describe('host.sessions session-list mutations', () => {
 
     expect($sidebarSessionOrderManual.get()).toBe(true)
     expect($sidebarSessionOrderIds.get()).toEqual(['c', 'a', 'b'])
+
+    // Empty list = clear the manual order, back to the default sort.
+    host.sessions.reorder([])
+
+    expect($sidebarSessionOrderManual.get()).toBe(false)
+    expect($sidebarSessionOrderIds.get()).toEqual([])
   })
 
   it('setColor writes the durable-keyed colour override and clears with null', async () => {

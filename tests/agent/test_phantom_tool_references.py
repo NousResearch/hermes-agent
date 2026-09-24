@@ -105,3 +105,98 @@ class TestEssentialOnlySync:
         assert result["copied"] == ["hermes-agent"]
         assert (home / "skills" / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
         assert not (home / "skills" / "media").exists()
+
+
+class TestSeedEssentialsOptOut:
+    """`skills.seed_essentials: false` is the locked-down-home opt-out: essentials
+    are no longer seeded into a `.no-bundled-skills` home, and an explicit
+    `skills.disabled: [hermes-agent]` is honoured instead of silently dropped."""
+
+    @staticmethod
+    def _config(home: Path, body: str) -> None:
+        (home / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_opt_out_lets_disabled_name_through(self, monkeypatch, tmp_path):
+        import agent.skill_utils as su
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        self._config(home, "skills:\n  seed_essentials: false\n  disabled:\n    - hermes-agent\n")
+        monkeypatch.setattr(su, "get_config_path", lambda: home / "config.yaml")
+        su._RAW_CONFIG_CACHE.clear()
+        disabled = su.get_disabled_skill_names(platform="cli")
+        assert "hermes-agent" in disabled
+
+    def test_default_still_strips_essentials(self, monkeypatch, tmp_path):
+        import agent.skill_utils as su
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        self._config(home, "skills:\n  disabled:\n    - hermes-agent\n")
+        monkeypatch.setattr(su, "get_config_path", lambda: home / "config.yaml")
+        su._RAW_CONFIG_CACHE.clear()
+        disabled = su.get_disabled_skill_names(platform="cli")
+        assert "hermes-agent" not in disabled
+
+    def test_cli_writer_keeps_essential_in_opt_out_home(self, monkeypatch, tmp_path):
+        import agent.skill_utils as su
+        import hermes_cli.skills_config as sc
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        self._config(home, "skills:\n  seed_essentials: false\n")
+        monkeypatch.setattr(su, "get_config_path", lambda: home / "config.yaml")
+        su._RAW_CONFIG_CACHE.clear()
+        saved = {}
+        monkeypatch.setattr(sc, "save_config", lambda cfg: saved.update(cfg))
+        cfg = {"skills": {"seed_essentials": False}}
+        sc.save_disabled_skills(cfg, {"hermes-agent", "other"})
+        assert cfg["skills"]["disabled"] == ["hermes-agent", "other"]
+
+    def test_delete_guard_lifted_in_opt_out_home(self, monkeypatch, tmp_path):
+        import agent.skill_utils as su
+        from tools.skill_manager_guards import _pinned_guard
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        self._config(home, "skills:\n  seed_essentials: false\n")
+        monkeypatch.setattr(su, "get_config_path", lambda: home / "config.yaml")
+        su._RAW_CONFIG_CACHE.clear()
+        assert _pinned_guard("hermes-agent") is None
+
+    def test_delete_guard_holds_by_default(self, monkeypatch, tmp_path):
+        import agent.skill_utils as su
+        from tools.skill_manager_guards import _pinned_guard
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(su, "get_config_path", lambda: home / "config.yaml")
+        su._RAW_CONFIG_CACHE.clear()
+        msg = _pinned_guard("hermes-agent")
+        assert msg is not None and "essential" in msg.lower()
+
+    def test_opt_out_sync_seeds_nothing(self, monkeypatch, tmp_path):
+        import tools.skills_sync as ss
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ss.NO_BUNDLED_SKILLS_MARKER).write_text("", encoding="utf-8")
+        self._config(home, "skills:\n  seed_essentials: false\n")
+        import agent.skill_utils as su
+        monkeypatch.setattr(su, "get_config_path", lambda: home / "config.yaml")
+        su._RAW_CONFIG_CACHE.clear()
+
+        bundled = tmp_path / "bundled"
+        d = bundled / "autonomous-ai-agents" / "hermes-agent"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: hermes-agent\ndescription: x\n---\nbody\n", encoding="utf-8")
+
+        monkeypatch.setattr(ss, "_hermes_home", lambda: home)
+        monkeypatch.setattr(ss, "_get_bundled_dir", lambda: bundled)
+        monkeypatch.setattr(ss, "_build_external_skill_index", lambda: set())
+
+        result = ss.sync_skills(quiet=True)
+
+        assert result["skipped_opt_out"] is True
+        assert result["copied"] == []
+        assert not (home / "skills" / "autonomous-ai-agents" / "hermes-agent").exists()

@@ -293,13 +293,24 @@ def _home_relative(p: Path) -> Path:
 
 
 # Never disableable: `hermes-agent` is the agent's own operating manual and the
-# system prompt points at it unconditionally.
+# system prompt points at it unconditionally. Locked-down deployments that
+# review everything the model can read can opt out per home via
+# `skills.seed_essentials: false` — see `seed_essentials_enabled`.
 ESSENTIAL_SKILLS: frozenset = frozenset({"hermes-agent"})
+
+
+def seed_essentials_enabled() -> bool:
+    """Whether the essential skills belong in this home. Default true; an explicit
+    `skills.seed_essentials: false` is a locked-down home that reviews everything
+    the model can read, so essentials are neither seeded nor protected there."""
+    return _skills_cfg_get("seed_essentials") is not False
 
 
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Disabled skill names from config.yaml: global list ∪ platform list
-    (*platform* defaults to ``HERMES_PLATFORM`` / ``HERMES_SESSION_PLATFORM``)."""
+    (*platform* defaults to ``HERMES_PLATFORM`` / ``HERMES_SESSION_PLATFORM``).
+    Essential skills are protected only while the home hasn't opted out of
+    seeding them (``skills.seed_essentials: false`` lifts the protection)."""
     skills_cfg = _skills_cfg()
     if skills_cfg is None:
         return set()
@@ -309,7 +320,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
     if platform_disabled is not None:
         disabled |= _normalize_string_set(platform_disabled)
-    return disabled - ESSENTIAL_SKILLS
+    return disabled - ESSENTIAL_SKILLS if seed_essentials_enabled() else disabled
 
 
 def parse_config_string_list(value) -> List[str]:

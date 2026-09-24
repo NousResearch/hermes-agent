@@ -71,14 +71,18 @@ def _make_codex_agent(
     return agent
 
 
-def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0):
-    """Keep the resolver on its implicit branch while scaling time for tests."""
+def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0, **overrides):
+    """Keep the resolver on its implicit branch while scaling time for tests.
+
+    ``timeout`` shortens ``idle_timeout``; ``overrides`` set any other resolved field."""
     monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
     original = helpers._resolve_nonstream_watchdogs
 
     def resolve(agent, api_kwargs):
         watchdogs = original(agent, api_kwargs)
         watchdogs.idle_timeout = timeout
+        for field, value in overrides.items():
+            setattr(watchdogs, field, value)
         return watchdogs
 
     monkeypatch.setattr(helpers, "_resolve_nonstream_watchdogs", resolve)
@@ -343,15 +347,7 @@ def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    original = h._resolve_nonstream_watchdogs
-
-    def resolve(agent, kwargs):
-        wd = original(agent, kwargs)
-        wd.ttfb_timeout = 0.9
-        wd.progress_timeout = 0.9
-        return wd
-
-    monkeypatch.setattr(h, "_resolve_nonstream_watchdogs", resolve)
+    _shorten_implicit_idle_watchdog(monkeypatch, h, ttfb_timeout=0.9, progress_timeout=0.9)
     closes = []
 
     def stream_attempt():

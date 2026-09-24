@@ -977,6 +977,44 @@ class TestReviewRound3:
         assert matched[0].info["name"] == "chrome.exe"
         assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
 
+    def test_implicit_singleton_owner_and_failed_close(self, tmp_path, monkeypatch):
+        """An implicit main browser owns the lock even if only crashpad names the dir."""
+        import hermes_cli.browser_connect as bc
+        import psutil
+
+        src = str(tmp_path / "profile")
+        class Proc:
+            def __init__(self, pid, name, args):
+                self.pid = pid
+                self.info = {"name": name, "cmdline": args}
+                self.terminated = False
+
+            def children(self, recursive=False):
+                return []
+
+            def terminate(self):
+                self.terminated = True
+
+        owner = Proc(321, "chrome", ["/opt/google/chrome/chrome", "http://localhost"])
+        other = Proc(322, "chrome", ["/opt/google/chrome/chrome", "--user-data-dir=/other"])
+        crashpad = Proc(323, "chrome_crashpad_handler",
+                        ["chrome_crashpad_handler", f"--database={src}/Crash Reports"])
+        procs = [owner, other, crashpad]
+        monkeypatch.setattr(bc, "_linux_singleton_pid", lambda _: 321)
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs: iter(procs))
+        assert list(bc._processes_holding_profile(src)) == [owner, crashpad]
+
+        monkeypatch.setattr(psutil, "wait_procs", lambda targets, timeout: (targets, []))
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda *args: False)
+        monkeypatch.setattr(bc, "_resolve_source_profile", lambda _: ("Default", None))
+        monkeypatch.setattr(bc, "time", type("Clock", (), {
+            "monotonic": staticmethod(iter([0, 0, 1]).__next__),
+            "sleep": staticmethod(lambda _: None),
+        }))
+        ok, message = bc.close_browser_holding_profile(src, timeout=0.5)
+        assert not ok and "still present" in message
+        assert owner.terminated and crashpad.terminated and not other.terminated
+
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         called = {"n": 0}
         with patch.object(bt_cloud, "_use_real_profile", return_value=False), \

@@ -528,15 +528,31 @@ def _real_profile_autoclose() -> bool:
     return bool(_browser_setting("real_profile_autoclose") or False)
 
 
+def _linux_singleton_pid(src: str) -> int | None:
+    """Return the local Linux SingletonLock owner (not a remote-host PID)."""
+    if platform.system() != "Linux":
+        return None
+    try:
+        host, pid = os.readlink(os.path.join(src, "SingletonLock")).rsplit("-", 1)
+        if host == socket.gethostname() and pid.isdecimal():
+            return int(pid)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _processes_holding_profile(src: str):
-    """Yield psutil.Process instances holding ``src`` open: Chromium-family binaries whose
-    cmdline references THIS user-data-dir — never an unrelated same-PID process. An unreadable
-    cmdline is skipped."""
+    """Yield Chromium processes bound to ``src`` by argv or Linux SingletonLock PID.
+
+    The lock identifies the default-dir main process, whose argv omits --user-data-dir.
+    Unreadable cmdlines and explicitly different profile directories are not matched.
+    """
     try:
         import psutil
     except ImportError:  # hard dep; defensive
         return
     norm = os.path.normcase(os.path.normpath(src))
+    singleton_pid = _linux_singleton_pid(src)
     browser_bins = (
         "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
         "brave", "brave.exe", "msedge", "msedge.exe", "google chrome")
@@ -550,9 +566,16 @@ def _processes_holding_profile(src: str):
         argv0 = cmd[0].lower() if cmd else ""  # some platforms report a generic name
         if not any(b in name or b in argv0 for b in browser_bins):
             continue
-        # Binding: the exact user-data-dir must appear in the cmdline, normalized.
+        # The lock PID must refer to a main browser process, not a helper or
+        # a browser explicitly pointed at a different user-data-dir.
+        implicit_owner = (singleton_pid is not None and getattr(proc, "pid", None) == singleton_pid
+                          and bool(cmd)
+                          and "crashpad" not in name and "crashpad" not in argv0
+                          and not any(arg.startswith(("--user-data-dir", "--type="))
+                                      for arg in cmd[1:]))
         if (norm in os.path.normcase(os.path.normpath(joined))
-                or f"--user-data-dir={src}".lower() in joined.lower()):
+                or f"--user-data-dir={src}".lower() in joined.lower()
+                or implicit_owner):
             yield proc
 
 
@@ -581,16 +604,19 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
         with contextlib.suppress(*gone_errs):
             p.kill()
     psutil.wait_procs(alive, timeout=3.0)
-    # The lock releases slightly after the process exits on Windows; poll.
+    # Cookie DB readability is not a lock probe on POSIX. Require the bound
+    # processes and Linux SingletonLock owner to disappear as well.
     source_profile = _resolve_source_profile(src)[0] or _last_used_profile(src)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not _profile_is_locked(src, source_profile):
+        if (not list(_processes_holding_profile(src))
+                and _linux_singleton_pid(src) is None
+                and not _profile_is_locked(src, source_profile)):
             return True, "closed the browser and the profile lock released."
         time.sleep(0.5)
     return False, (
-        "closed the browser processes but the profile is still locked — "
-        "another instance may have relaunched (background/tray mode).")
+        "the browser or profile lock is still present — another instance may have "
+        "relaunched (background/tray mode), or its process could not be closed.")
 
 
 def _sync_local_state(src: str, dst: str, source_profile: str) -> None:

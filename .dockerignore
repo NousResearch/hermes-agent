@@ -59,6 +59,9 @@ htmlcov/
 
 # Documentation
 *.md
+# ...except the business templates, whose prompts and sample knowledge are Markdown and
+# part of the bundle `nova template new` writes (tests/platform/test_templates.py).
+!nova/templates/library/**
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/

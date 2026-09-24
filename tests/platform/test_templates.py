@@ -110,3 +110,14 @@ def test_the_cli_writes_a_validated_bundle(tmp_path, capsys):
                  "--company", "Acme Accounts", "--email", "ar@acme.example", "--budget", "60"]) == 0
     out = capsys.readouterr().out
     assert "validated" in out and "GOOGLE_SHEETS_SERVICE_ACCOUNT_B64" in out
+
+
+def test_the_image_keeps_the_templates_markdown():
+    """.dockerignore drops *.md from the build context; a template's prompts and knowledge are
+    Markdown, so without the exception `nova template new` in the image wrote bundles whose
+    prompt files were missing."""
+    lines = [line.strip() for line in (REPO / ".dockerignore").read_text().splitlines()]
+    assert "*.md" in lines
+    assert lines.index("!nova/templates/library/**") > lines.index("*.md"), (
+        "the exception must come after *.md — .dockerignore applies the last matching rule"
+    )

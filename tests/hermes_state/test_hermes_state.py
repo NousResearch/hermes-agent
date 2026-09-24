@@ -5208,6 +5208,25 @@ def test_find_session_by_origin_matching_rules(db):
     ) is None
 
 
+def test_find_session_by_origin_prefers_flat_over_newer_thread(db):
+    # Regression for #121721: with no thread filter, the flat session wins
+    # over a later-started thread sibling, so delivery mirrors land where the
+    # reply can reach them. An explicit thread filter still resolves it.
+    db.create_session(
+        "gw-flat", "feishu", user_id="u1",
+        session_key="agent:main:feishu:dm:CHAT", chat_id="CHAT", chat_type="dm",
+    )
+    db.create_session(
+        "gw-thread", "feishu", user_id="u1",
+        session_key="agent:main:feishu:dm:CHAT:THREAD", chat_id="CHAT",
+        chat_type="thread", thread_id="THREAD",
+    )
+    assert db.find_session_by_origin(platform="feishu", chat_id="CHAT") == "gw-flat"
+    assert db.find_session_by_origin(
+        platform="feishu", chat_id="CHAT", thread_id="THREAD"
+    ) == "gw-thread"
+
+
 
 
 

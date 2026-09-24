@@ -424,7 +424,7 @@ class SessionSessionsMixin:
         if not platform or chat_id in (None, ""):
             return None
         query = """
-            SELECT id, user_id, started_at FROM sessions
+            SELECT id, user_id, started_at, COALESCE(thread_id, '') AS thread_id FROM sessions
             WHERE LOWER(source) = LOWER(?)
               AND session_key IS NOT NULL
               AND chat_id = ?
@@ -445,6 +445,14 @@ class SessionSessionsMixin:
                 return None
         elif len({u for u in (str(r.get("user_id") or "").strip() for r in rows) if u}) > 1:
             return None
+        if thread_id is None:
+            # Prefer the flat session (#121721): with no thread filter,
+            # newest-wins otherwise lands the mirror in a later-started thread
+            # sibling the reply can never reach. Applied AFTER user matching so
+            # exact-sender and multi-user contamination rules are unchanged.
+            flat = [r for r in rows if not (r.get("thread_id") or "").strip()]
+            if flat:
+                rows = flat
         return str(rows[0]["id"])
 
     # Orphaned gateway-session repair: widest plausible gap between a keyed predecessor going

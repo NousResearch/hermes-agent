@@ -40,6 +40,46 @@ def _claimed_running(conn, *, pid: int, started_at, max_runtime=None) -> str:
     return tid
 
 
+def test_worker_registration_survives_dispatcher_exit_and_fences_stale_runs(board):
+    conn = board
+    tid = kb.create_task(conn, title="orphan window", assignee="worker")
+    claimed = kb.claim_task(conn, tid)
+    identity = dict(expected_run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
+
+    # The dispatcher vanished after spawn; the child identifies itself before its turn.
+    assert kbd._set_worker_pid(conn, tid, os.getpid(), **identity)
+    assert kbd._set_worker_pid(conn, tid, os.getpid(), **identity)
+    assert len([e for e in kb.list_events(conn, tid) if e.kind == "spawned"]) == 1
+    assert conn.execute("SELECT worker_pid FROM task_runs WHERE id = ?",
+                        (claimed.current_run_id,)).fetchone()[0] == os.getpid()
+    conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (int(time.time()) - 3600, tid))
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).status == "running"
+
+    assert not kbd._set_worker_pid(conn, tid, os.getpid() + 1, **identity)
+    assert not kbd._set_worker_pid(conn, tid, os.getpid(), expected_run_id=claimed.current_run_id + 1,
+                                    claim_lock=claimed.claim_lock)
+    assert not kbd._set_worker_pid(conn, tid, os.getpid(), expected_run_id=claimed.current_run_id,
+                                    claim_lock="superseded")
+
+
+def test_registration_during_reclaim_selection_prevents_duplicate(board, monkeypatch):
+    conn = board
+    tid = kb.create_task(conn, title="late registration", assignee="worker")
+    claimed = kb.claim_task(conn, tid)
+    conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (int(time.time()) - 3600, tid))
+
+    def register_during_reclaim(*args, **kwargs):
+        assert kbd._set_worker_pid(conn, tid, os.getpid(),
+                                   expected_run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
+        return {"status": "not_started"}
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", register_during_reclaim)
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).worker_pid == os.getpid()
+    assert kb.get_task(conn, tid).status == "running"
+
+
 def test_recycled_pid_is_reclaimed_without_being_signalled(board):
     """Our own live PID with a foreign fingerprint models a post-reboot recycle: the claim is released
     (dead worker), no signal is sent, and max-runtime enforcement does not SIGTERM the stranger either."""

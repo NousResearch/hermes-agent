@@ -471,9 +471,12 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 def _save_custom_provider(base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
                           key_env=""):
-    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
-    existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret.
+    """Save a custom endpoint to ``custom_providers`` in config.yaml.
+
+    Entries are deduplicated by their display name and endpoint, allowing named
+    credential scopes to intentionally share an endpoint. *key_env* set means
+    the caller already wrote the key to ``.env``; the entry references it
+    instead of inlining the secret.
 
     See #69449.
     """
@@ -482,10 +485,39 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
-    for entry in providers:
-        if not (isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")):
-            continue
+    requested_name = str(name or "").strip()
+    normalized_base_url = str(base_url or "").rstrip("/")
+    url_matches = [
+        entry for entry in providers
+        if isinstance(entry, dict) and str(entry.get("base_url", "") or "").rstrip("/") == normalized_base_url
+    ]
+    entry = None
+    if requested_name:
+        entry = next(
+            (candidate for candidate in url_matches if str(candidate.get("name", "") or "").strip() == requested_name),
+            None,
+        )
+        if entry is None:
+            entry = next(
+                (candidate for candidate in url_matches if not str(candidate.get("name", "") or "").strip()),
+                None,
+            )
+    elif len(url_matches) == 1:
+        entry = url_matches[0]
+    elif len(url_matches) > 1 and any(str(candidate.get("name", "") or "").strip() for candidate in url_matches):
+        raise ValueError(
+            f"Cannot save a custom provider for {normalized_base_url!r} without a scope name: "
+            "multiple entries share that URL and at least one is named."
+        )
+    elif url_matches:
+        # Preserve legacy behavior for multiple fully nameless rows.
+        entry = url_matches[0]
+
+    if entry is not None:
         changed = False
+        if requested_name and not str(entry.get("name", "") or "").strip():
+            entry["name"] = requested_name
+            changed = True
         if model and entry.get("model") != model:
             entry["model"] = model
             changed = True
@@ -508,7 +540,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
             save_config(cfg)
         return  # already saved, updated if needed
 
-    name = name or _auto_provider_name(base_url)
+    name = requested_name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
     if key_env:
         entry["key_env"] = key_env

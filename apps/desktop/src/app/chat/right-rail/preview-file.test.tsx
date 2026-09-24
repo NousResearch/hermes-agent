@@ -1,5 +1,8 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { setAlwaysExternalLinks } from '@/store/external-links'
+import { $previewTabs } from '@/store/preview'
 
 import { MarkdownPreview } from './preview-file'
 
@@ -11,6 +14,8 @@ import { MarkdownPreview } from './preview-file'
 describe('MarkdownPreview', () => {
   afterEach(() => {
     cleanup()
+    $previewTabs.set([])
+    setAlwaysExternalLinks(false)
   })
 
   it('renders block and inline math through KaTeX', () => {
@@ -42,12 +47,58 @@ describe('MarkdownPreview', () => {
     expect(img?.getAttribute('src')).toBe('https://example.com/chart.png')
   })
 
-  it('renders external links to open in a new tab safely', () => {
-    const { container } = render(<MarkdownPreview text={'[docs](https://example.com/docs)'} />)
+  it('opens an https link in the in-app browser instead of a blank window', async () => {
+    render(<MarkdownPreview text={'[docs](https://example.com/docs)'} />)
 
-    const anchor = container.querySelector('a')
-    expect(anchor?.getAttribute('href')).toBe('https://example.com/docs')
-    expect(anchor?.getAttribute('target')).toBe('_blank')
-    expect(anchor?.getAttribute('rel')).toBe('noopener noreferrer')
+    const anchor = screen.getByRole('link', { name: 'docs' })
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+
+    anchor.dispatchEvent(click)
+    expect(click.defaultPrevented).toBe(true)
+
+    await waitFor(() => {
+      expect(
+        $previewTabs.get().some(tab => tab.target.kind === 'url' && tab.target.url === 'https://example.com/docs')
+      ).toBe(true)
+    })
+  })
+
+  it('scrolls a table-of-contents link to its heading without changing the app route', () => {
+    const hash = window.location.hash
+    const scroll = vi.fn()
+
+    HTMLElement.prototype.scrollIntoView = scroll
+
+    const { container } = render(
+      <MarkdownPreview text={'## Managed Tiered KV Cache\n\n[jump](#managed-tiered-kv-cache)'} />
+    )
+
+    const heading = container.querySelector('#managed-tiered-kv-cache')
+
+    expect(heading?.tagName).toBe('H2')
+    fireEvent.click(screen.getByRole('link', { name: 'jump' }))
+    expect(scroll).toHaveBeenCalled()
+    expect(window.location.hash).toBe(hash)
+    expect($previewTabs.get()).toEqual([])
+  })
+
+  it('opens a relative markdown link as the sibling file', async () => {
+    render(<MarkdownPreview filePath="/vault/notes/index.md" text={'[next](../other.md)'} />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'next' }))
+
+    await waitFor(() => {
+      expect($previewTabs.get().some(tab => tab.target.kind === 'file' && tab.target.path === '/vault/other.md')).toBe(
+        true
+      )
+    })
+  })
+
+  it('does not navigate a scriptable link', () => {
+    const { container } = render(<MarkdownPreview text={'[bad](javascript:alert(1))'} />)
+
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull()
+    expect(container.textContent).toMatch(/blocked/i)
+    expect($previewTabs.get()).toEqual([])
   })
 })

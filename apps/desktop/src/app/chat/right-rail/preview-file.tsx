@@ -7,8 +7,18 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Streamdown } from 'streamdown'
+import {
+  createContext,
+  Fragment,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
+import { defaultRemarkPlugins, Streamdown } from 'streamdown'
 
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
@@ -29,13 +39,21 @@ import {
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
+import { ExternalLink } from '@/lib/external-link'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
+import {
+  classifyPreviewMarkdownHref,
+  remarkPreviewFileLinks,
+  scrollPreviewHeading,
+  stampPreviewHeadingIds
+} from '@/lib/preview-markdown-links'
 import { cn } from '@/lib/utils'
-import type { PreviewTarget } from '@/store/preview'
+import { openPreview, type PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
@@ -379,16 +397,72 @@ function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
   )
 }
 
-function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
-  const isExternal = /^https?:\/\//i.test(href || '')
+const PreviewMarkdownFileContext = createContext<string | undefined>(undefined)
+
+async function openLinkedPreviewFile(path: string) {
+  const target = await normalizeOrLocalPreviewTarget(path)
+
+  if (target) {
+    openPreview(target)
+  }
+}
+
+function MarkdownLink({ children, className, href, node: _node, ...rest }: ComponentProps<'a'> & { node?: unknown }) {
+  const filePath = useContext(PreviewMarkdownFileContext)
+  const decision = classifyPreviewMarkdownHref(href, filePath)
+  const linkClass = cn('text-foreground underline underline-offset-2 hover:text-primary', className)
+
+  if (decision.kind === 'external') {
+    return (
+      <ExternalLink className={linkClass} href={decision.href}>
+        {children}
+      </ExternalLink>
+    )
+  }
+
+  if (decision.kind === 'inert') {
+    return <span className={linkClass}>{children}</span>
+  }
+
+  const activate = (event: React.KeyboardEvent<HTMLAnchorElement> | React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (decision.kind === 'hash') {
+      const root = event.currentTarget.closest('[data-preview-markdown]')
+
+      if (root instanceof HTMLElement) {
+        scrollPreviewHeading(root, decision.fragment)
+      }
+
+      return
+    }
+
+    void openLinkedPreviewFile(decision.path)
+  }
+
+  const { rel: _rel, target: _target, ...domRest } = rest
 
   return (
     <a
-      className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
-      href={href}
-      rel={isExternal ? 'noopener noreferrer' : undefined}
-      target={isExternal ? '_blank' : undefined}
-      {...rest}
+      {...domRest}
+      className={linkClass}
+      href={decision.kind === 'hash' ? `#${decision.fragment}` : undefined}
+      onAuxClick={event => {
+        event.preventDefault()
+      }}
+      onClick={activate}
+      onKeyDown={
+        decision.kind === 'file'
+          ? event => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                activate(event)
+              }
+            }
+          : undefined
+      }
+      role={decision.kind === 'file' ? 'link' : undefined}
+      tabIndex={decision.kind === 'file' ? 0 : undefined}
     >
       {children}
     </a>
@@ -416,21 +490,41 @@ const MARKDOWN_COMPONENTS = {
   a: MarkdownLink
 }
 
-export function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({ filePath, text }: { filePath?: string; text: string }) {
+  const rootRef = useRef<HTMLDivElement>(null)
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
 
+  const remarkPlugins = useMemo(
+    () => [...Object.values(defaultRemarkPlugins), [remarkPreviewFileLinks, { filePath }]],
+    [filePath]
+  )
+
+  useLayoutEffect(() => {
+    if (rootRef.current) {
+      stampPreviewHeadingIds(rootRef.current)
+    }
+  }, [mathText])
+
   return (
-    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown
-        components={MARKDOWN_COMPONENTS}
-        controls={false}
-        mode="static"
-        parseIncompleteMarkdown={false}
-        plugins={{ math: previewMathPlugin }}
+    <PreviewMarkdownFileContext.Provider value={filePath}>
+      <div
+        className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground"
+        data-preview-markdown=""
+        data-selectable-text="true"
+        ref={rootRef}
       >
-        {mathText}
-      </Streamdown>
-    </div>
+        <Streamdown
+          components={MARKDOWN_COMPONENTS}
+          controls={false}
+          mode="static"
+          parseIncompleteMarkdown={false}
+          plugins={{ math: previewMathPlugin }}
+          remarkPlugins={remarkPlugins}
+        >
+          {mathText}
+        </Streamdown>
+      </div>
+    </PreviewMarkdownFileContext.Provider>
   )
 }
 
@@ -1151,7 +1245,7 @@ export function LocalFilePreview({
         />
         <div className="min-h-0 flex-1 overflow-auto">
           {mode === 'rendered' ? (
-            <MarkdownPreview text={state.text} />
+            <MarkdownPreview filePath={filePath} text={state.text} />
           ) : mode === 'diff' ? (
             <FileDiffPanel
               className="mx-0 mb-0 h-full max-h-none"

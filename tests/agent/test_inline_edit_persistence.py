@@ -1,8 +1,4 @@
-"""Real edit -> executor -> SQLite -> history projection, without model calls.
-
-The module receipt lives in pytest's temporary root for optional cross-runtime
-renderer verification; the regression itself needs no pre-existing artifacts.
-"""
+"""Real edit -> executor -> SQLite -> history projection, without model calls."""
 import copy
 import contextlib
 import json
@@ -18,19 +14,10 @@ from tests.agent.test_tool_call_incremental_persistence import (
 )
 
 
-@pytest.fixture(scope="module")
-def receipts(tmp_path_factory):
-    records = {}
-    yield records
-    path = tmp_path_factory.getbasetemp() / "inline-edit-receipts.json"
-    path.write_text(json.dumps(records, indent=2), encoding="utf-8")
-    print(f"INLINE_EDIT_RECEIPTS={path}")
-
-
 @pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
 @pytest.mark.parametrize("edit", ["create", "replace", "patch", "noop", "failed"])
 def test_edit_preview_is_durable_before_emission_and_display_only(
-    tmp_path, monkeypatch, executor_mode, edit, receipts,
+    tmp_path, monkeypatch, executor_mode, edit,
 ):
     from agent.context_compressor import ContextCompressor
     from agent import secret_scope
@@ -129,7 +116,6 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
             if changed:
                 assert after.strip() in metadata["inline_diff"]
             with SessionDB(db_path=db_path) as cold:
-                rows = cold.get_messages(name)
                 conversation = cold.get_messages_as_conversation(name)
             projected = progress._history_to_messages(conversation)
             projected_tool = next(row for row in projected if row["role"] == "tool")
@@ -167,9 +153,28 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
                 active = cold.get_messages_as_conversation(name)
             assert next(m for m in archived if m["id"] == row["id"])["content"] == row["content"]
             assert next(m for m in active if m["role"] == "tool").get("display_metadata") == row.get("display_metadata")
-            receipts[name] = {"rows": rows, "projected": projected, "completion": completion, "changed": changed}
         finally:
             clear_task_env_overrides(name)
             db.close()
             env.cleanup()
             scope.close()
+
+
+def test_orphaned_preview_never_attaches_to_a_reused_call_id(monkeypatch):
+    import tui_gateway.server as progress
+
+    emitted = []
+    monkeypatch.setattr(progress, "_emit_tool_lifecycle", lambda kind, sid, name, args, payload: emitted.append(payload))
+    session = {"tool_result_metadata": {"call_0": {"inline_diff": "STALE"}}}
+    monkeypatch.setitem(progress._sessions, "reuse", session)
+    # The prepared call's flush failed, so its completion never fired; a later call reuses the id.
+    progress._on_tool_start("reuse", "call_0", "todo", {})
+    progress._on_tool_complete("reuse", "call_0", "todo", {}, '{"todos": []}')
+    assert emitted and not any("inline_diff" in payload for payload in emitted)
+    assert session["tool_result_metadata"] == {}
+
+    # A completion dropped as stale still consumes its prepared entry.
+    session["tool_result_metadata"]["call_1"] = {}
+    monkeypatch.setattr(progress, "_connector_lifecycle_is_stale", lambda *a: True)
+    progress._on_tool_complete("reuse", "call_1", "todo", {}, "{}")
+    assert session["tool_result_metadata"] == {}

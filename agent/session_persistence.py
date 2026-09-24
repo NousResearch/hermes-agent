@@ -352,12 +352,11 @@ class SessionPersistenceMixin:
         list used by the API call (#48677 is thus closed for every persist caller, not just this one).
         """
         from agent.agent_runtime_helpers import note_turn_persisted
-        from agent.message_sanitization import close_interrupted_tool_sequence
         with _persist_lock(self):
-            # Scaffolding is only on the tail when the turn leaves mid-recovery; close the tool tail it
-            # uncovers so the next user turn does not land as ``tool → user``.
-            if self._drop_trailing_empty_response_scaffolding(messages):
-                close_interrupted_tool_sequence(messages)
+            # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
+            # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``,
+            # ``handle_api_interrupt``): only it knows the reason to record.
+            self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.

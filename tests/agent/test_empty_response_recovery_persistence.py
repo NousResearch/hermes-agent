@@ -53,8 +53,8 @@ def _agent_with_stubbed_persistence():
 
 def test_persist_session_strips_trailing_empty_recovery_scaffolding():
     """Only the flagged scaffolding goes. The assistant(tool_calls) + tool pair
-    already ran and was saved before execution, so it stays; the tool tail it
-    leaves is closed so the next user message never lands as ``tool → user``.
+    already ran and was saved before execution, so it stays. The persist layer does
+    not author a closing row: the exit owner closes the tool tail with its reason.
     """
     agent = _agent_with_stubbed_persistence()
     messages = [
@@ -83,7 +83,7 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
 
     AIAgent._persist_session(agent, messages, conversation_history=[])
 
-    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant"]
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
     assert messages[1]["tool_calls"][0]["id"] == messages[2]["tool_call_id"]
     assert agent.flushed_session_db_messages[-1] == messages
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)

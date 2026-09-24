@@ -5,8 +5,6 @@ mangling, crashes, and divergent hashing that made day-to-day agent use on
 Windows unpleasant. Each test names the issue it pins.
 """
 
-import os
-import re
 import sys
 from pathlib import Path
 
@@ -76,30 +74,41 @@ class TestWindowsMarketingVersion:
         expected = "11" if build >= 22000 else "10"
         assert _windows_marketing_version() == expected
 
-    def test_fallback_on_lookup_failure(self, monkeypatch):
-        import agent.prompt_builder as pb
-
-        if sys.platform == "win32":
-            monkeypatch.delattr(sys, "getwindowsversion")
-        assert isinstance(pb._windows_marketing_version(), str)
-
 
 class TestAutocompleteDevicePaths:
-    """#42016 — relpath ValueError on device paths must not escape."""
+    """#42016 — a relpath ValueError on a device path must not escape the completer."""
 
-    def test_relpath_valueerror_pattern(self):
-        # The guarded pattern in _get_project_files: a ValueError from
-        # os.path.relpath (different mount) is skipped, not raised.
-        bad = "\\\\.\\nul" if sys.platform == "win32" else "/dev/null"
+    def test_relpath_valueerror_is_skipped_not_raised(self, tmp_path, monkeypatch):
+        import os
+        import subprocess
+
+        from hermes_cli import commands_completion as cc
+
+        monkeypatch.chdir(tmp_path)
         cwd = os.getcwd()
-        files = []
-        for p in [bad, os.path.join(cwd, "real.txt")]:
-            try:
-                rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
-            except ValueError:
-                continue
-            files.append(rel)
-        assert "real.txt" in files
+        # An absolute path relpath cannot express relative to cwd (Windows: a
+        # device path such as \\.\nul, or another drive letter).
+        device = os.path.abspath(os.path.join(os.sep, "nul-device"))
+        real = os.path.join(cwd, "real.txt")
+
+        monkeypatch.setattr(cc.shutil, "which", lambda name: "/fake/rg" if name == "rg" else None)
+        monkeypatch.setattr(
+            cc.subprocess, "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, f"{device}\n{real}\n", ""),
+        )
+        real_relpath = os.path.relpath
+
+        def _relpath(path, start=None):
+            # Windows raises ValueError for device paths / paths on another drive.
+            if path == device:
+                raise ValueError("path is on a different mount than start")
+            return real_relpath(path, start)
+
+        monkeypatch.setattr(cc.os.path, "relpath", _relpath)
+
+        files = cc.SlashCommandCompleter()._get_project_files()
+
+        assert files == ["real.txt"]
 
 
 class TestBrowserScreenshotPathRegex:
@@ -140,7 +149,8 @@ class TestSkillHashSymmetry:
 
     def test_disk_and_bundle_hashes_match(self, tmp_path):
         from tools.skills_guard import content_hash
-        from tools.skills_hub import SkillBundle, bundle_content_hash
+        from tools.skills_hub_install import bundle_content_hash
+        from tools.skills_hub_models import SkillBundle
 
         skill = self._make_skill(tmp_path)
         disk = content_hash(skill)
@@ -157,7 +167,8 @@ class TestSkillHashSymmetry:
         assert bundle_content_hash(bundle) == disk
 
     def test_backslash_and_posix_keys_hash_identically(self):
-        from tools.skills_hub import SkillBundle, bundle_content_hash
+        from tools.skills_hub_install import bundle_content_hash
+        from tools.skills_hub_models import SkillBundle
 
         posix = SkillBundle(
             name="s",

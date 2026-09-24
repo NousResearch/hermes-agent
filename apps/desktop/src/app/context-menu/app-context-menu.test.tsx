@@ -3,8 +3,9 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
-import { formatCombo } from '@/lib/keybinds/combo'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
 
@@ -83,6 +84,13 @@ describe('resolveDomTarget', () => {
     expect(resolveDomTarget(host.querySelector('textarea')).editable).toBeTruthy()
     expect(resolveDomTarget(host.querySelector('input')).editable).toBeNull()
   })
+
+  it('resolves the enclosing dialog as the menu portal container', () => {
+    const host = attach('<div data-slot="dialog-content"><a href="https://example.com">link</a></div>')
+    const dialog = host.firstElementChild
+
+    expect(resolveDomTarget(host.querySelector('a')).dialogPortalContainer).toBe(dialog)
+  })
 })
 
 describe('AppContextMenu', () => {
@@ -99,6 +107,23 @@ describe('AppContextMenu', () => {
     expect(screen.queryByText('Copy resolved URL')).toBeNull()
   })
 
+  // The url chip used to be a `<button>`: `resolveDomTarget` only knows
+  // `a[href]`, so the right-click fell through to the shell fallback menu.
+  it('offers the link verbs on a message url chip right-click', async () => {
+    installBridge()
+    mountMenu()
+    // The coordinator binds to window in the capture phase, so a second
+    // render alongside the menu is fine — same as a real transcript.
+    render(<DirectiveContent text="@url:`https://example.com/pr/1`" />)
+    const chip = document.querySelector('[data-slot="aui_directive-chip"]')!
+
+    fireEvent.contextMenu(chip)
+
+    expect(await screen.findByText('Open in in-app browser')).toBeTruthy()
+    expect(screen.getByText('Open in external browser')).toBeTruthy()
+    expect(screen.getByText('Copy URL')).toBeTruthy()
+  })
+
   it('opens the in-app browser from the link menu', async () => {
     installBridge()
     mountMenu()
@@ -108,6 +133,28 @@ describe('AppContextMenu', () => {
     fireEvent.click(await screen.findByText('Open in in-app browser'))
 
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
+  })
+
+  it('skips Open in in-app browser on the HUD — that window has no browser pane', async () => {
+    const originalLocation = window.location
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, search: '?win=hud' }
+    })
+
+    try {
+      installBridge()
+      mountMenu()
+      const host = attach('<a href="https://accounts.google.com/o/oauth2/auth">Sign in</a>')
+
+      fireEvent.contextMenu(host.querySelector('a')!)
+
+      expect(await screen.findByText('Open in external browser')).toBeTruthy()
+      expect(screen.queryByText('Open in in-app browser')).toBeNull()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
   })
 
   it('offers the resolved copy only for loopback links on a remote gateway', async () => {
@@ -158,26 +205,6 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
-  it('shows edit verbs without icons and with faded accelerators', async () => {
-    installBridge()
-    mountMenu()
-    const host = attach('<textarea></textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    // formatCombo picks ⌘/Ctrl from the host running the test, exactly like
-    // the menu itself — so the assertion is platform-honest, not hardcoded.
-    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(pasteItem.querySelector('[data-slot="dropdown-menu-shortcut"]')?.textContent).toBe(formatCombo('mod+v'))
-    expect(pasteItem.querySelector('.codicon')).toBeNull()
-
-    const selectAllItem = screen.getByText('Select all').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(selectAllItem.querySelector('[data-slot="dropdown-menu-shortcut"]')?.textContent).toBe(formatCombo('mod+a'))
-    expect(selectAllItem.querySelector('.codicon')).toBeNull()
-  })
-
   it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 
@@ -197,6 +224,43 @@ describe('AppContextMenu', () => {
 
     await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('copy'))
     expect($contextMenu.get()).toBeNull()
+    expect(document.activeElement).toBe(textarea)
+  })
+
+  it('keeps a modal textarea paste menu inside its dialog and restores focus', async () => {
+    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({
+      contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'],
+      readClipboard: vi.fn().mockResolvedValue('clipboard payload')
+    })
+    render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Modal editor</DialogTitle>
+            <textarea aria-label="modal textarea" />
+          </DialogContent>
+        </Dialog>
+      </MemoryRouter>
+    )
+    const textarea = screen.getByLabelText('modal textarea')
+
+    fireEvent.contextMenu(textarea)
+
+    const paste = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]') as HTMLElement
+
+    await waitFor(() => expect(paste.getAttribute('data-disabled')).toBeNull())
+
+    const menu = paste.closest('[data-slot="dropdown-menu-content"]')
+    const dialog = screen.getByRole('dialog')
+
+    expect(dialog.contains(menu)).toBe(true)
+
+    fireEvent.click(paste)
+
+    await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('paste'))
     expect(document.activeElement).toBe(textarea)
   })
 
@@ -258,22 +322,6 @@ describe('AppContextMenu', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
-  it('splits select all into its own section under the edit verbs', async () => {
-    installBridge()
-    mountMenu()
-    const host = attach('<textarea>text</textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const pasteItem = screen.getByText('Paste').closest('[data-slot="dropdown-menu-item"]')!
-
-    // Sections render as sibling `.contents` wrappers with the separator
-    // inside the later one — different wrappers = different sections.
-    expect(pasteItem.parentElement).not.toBe(selectAllItem.parentElement)
-    expect(selectAllItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
-  })
-
   it('grays out cut, copy, and select all in an empty field', async () => {
     installBridge()
     mountMenu()
@@ -290,22 +338,12 @@ describe('AppContextMenu', () => {
     expect(item('Select all').getAttribute('data-disabled')).not.toBeNull()
   })
 
-  it('grays out paste until the clipboard reports text', async () => {
-    const readClipboard = vi.fn().mockResolvedValue('clip content')
-
-    installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
-    mountMenu()
-    const host = attach('<textarea>text</textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    // The clipboard read is async — the item enables when it lands.
-    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
-
-    await waitFor(() => expect(pasteItem.getAttribute('data-disabled')).toBeNull())
-  })
-
-  it('keeps paste grayed out on an empty clipboard', async () => {
+  it('keeps paste clickable even when the clipboard probe reports empty', async () => {
+    // #91553: the dom paste action runs webContents.paste() in main — the
+    // same path Ctrl+V takes, which resolves the system clipboard itself.
+    // A renderer-side probe that comes back empty (as the Win32
+    // clipboard.readText() bridge can while that path succeeds) must not
+    // gray the item out; pasting on a truly empty clipboard is a no-op.
     const readClipboard = vi.fn().mockResolvedValue('')
 
     installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
@@ -316,8 +354,19 @@ describe('AppContextMenu', () => {
 
     const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
 
-    await waitFor(() => expect(readClipboard).toHaveBeenCalled())
-    expect(pasteItem.getAttribute('data-disabled')).not.toBeNull()
+    expect(pasteItem.getAttribute('data-disabled')).toBeNull()
+  })
+
+  it('keeps paste clickable when the bridge has no clipboard read at all', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea>text</textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
+
+    expect(pasteItem.getAttribute('data-disabled')).toBeNull()
   })
 
   it('offers the window verbs on bare chrome', async () => {
@@ -425,23 +474,6 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(await screen.findByText('Select all')).toBeTruthy()
     expect(screen.getByText('Inspect element')).toBeTruthy()
-    // The page verbs live on the browser bar only now.
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-    expect(screen.queryByText('Open in browser')).toBeNull()
-    expect(screen.queryByText('Show preview console')).toBeNull()
-  })
-
-  it('draws a line between select all and inspect element', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams(), guestHandle())
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const inspectItem = screen.getByText('Inspect element').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(selectAllItem.parentElement).not.toBe(inspectItem.parentElement)
-    expect(inspectItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
   })
 
   it('runs inspect element against the handle', async () => {
@@ -463,22 +495,7 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(await screen.findByText('Open in in-app browser')).toBeTruthy()
     expect(screen.getByText('Copy URL')).toBeTruthy()
-    // Inspect element rides every guest menu; the bar-only verbs do not.
     expect(screen.getByText('Inspect element')).toBeTruthy()
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-  })
-
-  it('keeps inspect element in guest editable menus', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams({ isEditable: true }), guestHandle())
-
-    expect(await screen.findByText('Paste')).toBeTruthy()
-    expect(screen.getByText('Inspect element')).toBeTruthy()
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-    expect(screen.queryByText('Open in browser')).toBeNull()
-    expect(screen.queryByText('Show preview console')).toBeNull()
   })
 
   it('grays out guest edit verbs from Chromium editFlags', async () => {
@@ -504,19 +521,6 @@ describe('AppContextMenu guest (in-app browser)', () => {
     expect(item('Copy').getAttribute('data-disabled')).not.toBeNull()
     expect(item('Select all').getAttribute('data-disabled')).not.toBeNull()
     expect(item('Paste').getAttribute('data-disabled')).toBeNull()
-  })
-
-  it('splits guest select all into its own section', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams({ isEditable: true }), guestHandle())
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const pasteItem = screen.getByText('Paste').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(pasteItem.parentElement).not.toBe(selectAllItem.parentElement)
-    expect(selectAllItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
   })
 
   it('dispatches guest edit verbs a frame after the menu closes', async () => {

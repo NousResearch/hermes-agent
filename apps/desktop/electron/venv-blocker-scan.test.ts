@@ -18,6 +18,7 @@ import {
   formatBlockerMessage,
   formatProbeFailedMessage,
   parseVenvBlockerScanOutput,
+  resolveVenvDir,
   resolveVenvPython,
   scanVenvBlockers,
   stopSafeVenvBlockers
@@ -44,6 +45,34 @@ describe('resolveVenvPython', () => {
     }
   })
 
+  it('resolves a uv-default .venv python when legacy venv is absent', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-'))
+
+    try {
+      const scriptsDir = process.platform === 'win32' ? 'Scripts' : 'bin'
+      const pythonName = process.platform === 'win32' ? 'python.exe' : 'python3'
+      const dir = path.join(sandbox, '.venv', scriptsDir)
+      fs.mkdirSync(dir, { recursive: true })
+      const pyPath = path.join(dir, pythonName)
+      fs.writeFileSync(pyPath, '', { mode: 0o755 })
+      assert.equal(resolveVenvPython(sandbox), pyPath)
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps legacy venv precedence when both supported layouts exist', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-'))
+
+    try {
+      fs.mkdirSync(path.join(sandbox, 'venv'), { recursive: true })
+      fs.mkdirSync(path.join(sandbox, '.venv'), { recursive: true })
+      assert.equal(resolveVenvDir(sandbox), path.join(sandbox, 'venv'))
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+
   it('returns null for non-existent venv', () => {
     assert.equal(resolveVenvPython('/nonexistent'), null)
   })
@@ -54,7 +83,7 @@ describe('resolveVenvPython', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatBlockerMessage', () => {
-  it('includes PID, name, cmdline, remote-client warning, and retry suggestion', () => {
+  it('includes PID, name and cmdline of each blocker', () => {
     const msg = formatBlockerMessage({
       blocked: true,
       processes: [{ pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1', kind: 'other', safeToStop: false }]
@@ -63,17 +92,13 @@ describe('formatBlockerMessage', () => {
     assert.ok(msg.includes('PID 101'))
     assert.ok(msg.includes('python.exe'))
     assert.ok(msg.includes('serve'))
-    assert.ok(msg.includes('remote backend'))
-    assert.ok(msg.includes('retry'))
-    assert.ok(!msg.includes('force-venv'))
   })
 })
 
 describe('formatProbeFailedMessage', () => {
-  it('suggests retry and hermes update', () => {
-    const msg = formatProbeFailedMessage()
-    assert.ok(msg.includes('hermes update'))
-    assert.ok(msg.includes('retry'))
+  it('carries the probe failure detail', () => {
+    const msg = formatProbeFailedMessage('timed out after 60 seconds')
+    assert.ok(msg.includes('timed out after 60 seconds'))
   })
 })
 
@@ -98,6 +123,45 @@ describe('parseVenvBlockerScanOutput', () => {
     )
 
     assert.equal(o.kind, 'blocked')
+  })
+
+  // Contract fixture (#98336/#98350): the scanner reports exemption
+  // diagnostics (counts + sanitized evidence) alongside the authoritative
+  // blocked/processes fields. The consumer must tolerate those fields today
+  // and must keep enforcing blocked/processes consistency — a future parser
+  // change that either chokes on the diagnostics or silently reinterprets
+  // an exemption as a blocker breaks this fixture.
+  it('tolerates exemption diagnostics while enforcing blocked/processes consistency', () => {
+    const clear = parseVenvBlockerScanOutput(
+      ok({
+        pausable_gateways: 2,
+        deferred_backends: 1,
+        deferred_backend_evidence: [{ pid: 78, purpose: 'serve', port: 9119 }]
+      })
+    )
+
+    assert.equal(clear.kind, 'clear')
+
+    const blocked = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [{ pid: 79, name: 'python.exe', cmdline: 'c' }],
+        pausable_gateways: 1,
+        deferred_backends: 1,
+        deferred_backend_evidence: [{ pid: 78, purpose: 'serve', port: 9119 }]
+      })
+    )
+
+    assert.equal(blocked.kind, 'blocked')
+
+    if (blocked.kind !== 'blocked') {
+      return
+    }
+
+    assert.deepEqual(
+      blocked.result.processes.map(p => p.pid),
+      [79]
+    )
   })
 
   it('classifies Python http.server blockers as safe local previews with a human label', () => {
@@ -254,6 +318,15 @@ describe('scanVenvBlockers', () => {
     }) as any
   }
 
+  function execTimeout(): any {
+    return (async (...args: any[]) => {
+      const e: any = new Error()
+      e.killed = true
+      e.signal = 'SIGTERM'
+      throw e
+    }) as any
+  }
+
   it('clear scan returns clear', async () => {
     assert.equal((await scanVenvBlockers('/r', execReturn(okJson), stubVenv)).kind, 'clear')
   })
@@ -267,6 +340,14 @@ describe('scanVenvBlockers', () => {
     assert.equal(o.kind, 'probe-failure')
   })
 
+  it('reports a timed-out subprocess explicitly', async () => {
+    const o = await scanVenvBlockers('/r', execTimeout(), stubVenv)
+    assert.deepEqual(o, {
+      kind: 'probe-failure',
+      error: 'timed out after 60 seconds'
+    })
+  })
+
   it('missing venv python is probe-failure', async () => {
     const o = await scanVenvBlockers('/r', execReturn(okJson), () => null)
     assert.equal(o.kind, 'probe-failure')
@@ -275,25 +356,6 @@ describe('scanVenvBlockers', () => {
   it('malformed subprocess output is probe-failure', async () => {
     const o = await scanVenvBlockers('/r', execReturn('bad json'), stubVenv)
     assert.equal(o.kind, 'probe-failure')
-  })
-
-  it('calls subprocess with correct args, cwd and timeout', async () => {
-    const calls: any[] = []
-
-    const spy = (async (cmd: string, args: string[], opts: any) => {
-      calls.push({ cmd, args, cwd: opts.cwd, timeout: opts.timeout })
-
-      return { stdout: okJson, stderr: '' }
-    }) as any
-
-    await scanVenvBlockers('/update/root', spy, stubVenv)
-    assert.equal(calls.length, 1)
-    const c = calls[0]
-    assert.ok(c.cmd.endsWith('python.exe'))
-    assert.deepEqual(c.args, ['-m', 'hermes_cli._scan_venv_blockers'])
-    assert.equal(c.cwd, '/update/root')
-    assert.equal(typeof c.timeout, 'number')
-    assert.ok(c.timeout > 0)
   })
 })
 

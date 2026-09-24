@@ -8,11 +8,10 @@ vi.mock('./right-rail/preview-console-store', () => ({
   forgetPreviewConsole: () => undefined
 }))
 
-import { contributesToWorkspace } from '@/components/pane-shell/workspace-scope'
 import { registry } from '@/contrib/registry'
-import { closeRightRail, openPreview } from '@/store/preview'
+import { $previewTabs, closeRightRail, noteBrowserPage, openPreview } from '@/store/preview'
 
-import { watchPreviewTiles } from './preview-tile'
+import { browserTabExternalUrl, browserTabLabel, watchPreviewTiles } from './preview-tile'
 
 beforeAll(() => {
   watchPreviewTiles()
@@ -22,44 +21,101 @@ afterEach(() => {
   closeRightRail()
 })
 
-function browserPane() {
-  return registry.getArea('panes').find(entry => entry.id === 'preview-tile:url:browser')
-}
+describe('browserTabLabel', () => {
+  const target = { kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' } as const
 
-describe('preview tiles in Bot Mode', () => {
-  it('registers the in-app Browser as a global pane so Bot Mode can show it', () => {
-    openPreview(
-      { kind: 'url', label: 'example.com', source: 'https://example.com', url: 'https://example.com' },
-      'explicit-link'
+  it('names the tab after the page', () => {
+    expect(browserTabLabel(target, { title: 'Hacker News', url: 'https://news.ycombinator.com/' })).toBe('Hacker News')
+  })
+
+  // Chromium hands back the address as the title when the page never set one,
+  // which is a worse tab label than the host it came from.
+  it('falls back to the host when the page has no title of its own', () => {
+    expect(browserTabLabel(target, { title: '', url: 'https://www.example.com/a/b' })).toBe('example.com')
+    expect(browserTabLabel(target, { title: 'https://example.com/a', url: 'https://example.com/a' })).toBe(
+      'example.com'
     )
+  })
 
-    const pane = browserPane()
+  it('falls back to the surface when there is no page and no host', () => {
+    expect(browserTabLabel(target)).toBe('Browser')
+    expect(browserTabLabel(target, { title: '', url: 'about:blank' })).toBe('Browser')
+  })
 
-    expect(pane).toBeTruthy()
-    expect(pane?.workspaceMode).toBeUndefined()
-    expect(contributesToWorkspace(pane, 'sessions')).toBe(true)
-    expect(contributesToWorkspace(pane, 'bots', 'bot:connection-a::default')).toBe(true)
+  // A tab restored from storage has reported nothing yet, so its target is all
+  // there is to name it by.
+  it('names an unreported tab from its target', () => {
+    expect(browserTabLabel({ ...target, url: 'https://github.com/nous' })).toBe('github.com')
   })
 })
 
-type DockData = { dock?: { pane?: string; pos?: string } } | undefined
+describe('browserTabExternalUrl', () => {
+  const openBrowser = (url: string) => {
+    openPreview({ kind: 'url', label: 'Browser', source: url, url })
+
+    return $previewTabs.get().find(tab => tab.target.kind === 'url')!.id
+  }
+
+  it('hands the live page to the OS browser, not the address the tab was opened with', () => {
+    const tabId = openBrowser('https://example.com')
+
+    noteBrowserPage(tabId, { title: 'Hacker News', url: 'https://news.ycombinator.com/' })
+
+    expect(browserTabExternalUrl(tabId)).toBe('https://news.ycombinator.com/')
+  })
+
+  it('falls back to the target when the tab has not reported a page yet', () => {
+    expect(browserTabExternalUrl(openBrowser('https://github.com/nous'))).toBe('https://github.com/nous')
+  })
+
+  it('refuses about:blank and other non-pages', () => {
+    expect(browserTabExternalUrl(openBrowser('about:blank'))).toBeNull()
+  })
+
+  it('is null for a file peek', () => {
+    openPreview(fileTarget('/tmp/a.ts'))
+
+    expect(browserTabExternalUrl('file:/tmp/a.ts')).toBeNull()
+  })
+})
+
+type DockData = { dock?: { pane?: string; pos?: string }; lifecycleKeepAlive?: boolean } | undefined
+
+function paneDataOf(paneId: string) {
+  return registry.getArea('panes').find(entry => entry.id === paneId)?.data as DockData
+}
 
 function dockOf(paneId: string) {
-  return (registry.getArea('panes').find(entry => entry.id === paneId)?.data as DockData)?.dock
+  return paneDataOf(paneId)?.dock
 }
 
 const fileTarget = (path: string) =>
   ({ kind: 'file', label: path.split('/').at(-1) ?? path, path, source: path, url: path }) as const
 
+// The zone reads this flag off the registered pane to offer Hide (kept-mounted,
+// inert body) instead of Minimize — so it has to come through the mirror, not
+// just be declared on the tile.
+describe('preview tiles keep a live page alive across Hide', () => {
+  it('registers a Browser tab with lifecycleKeepAlive while a text peek stays evictable', () => {
+    openPreview({ kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' })
+    openPreview(fileTarget('/tmp/a.ts'))
+
+    const browserId = $previewTabs.get().find(tab => tab.target.kind === 'url')!.id
+
+    expect(paneDataOf(`preview-tile:${browserId}`)?.lifecycleKeepAlive).toBe(true)
+    expect(paneDataOf('preview-tile:file:/tmp/a.ts')?.lifecycleKeepAlive).toBeFalsy()
+  })
+})
+
 describe('preview tiles stack, not split (#93610)', () => {
   it('docks the first preview right and stacks the second as a center tab in the same zone', () => {
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/a.ts'))
 
     const first = dockOf('preview-tile:file:/tmp/a.ts')
 
     expect(first?.pos).toBe('right')
 
-    openPreview(fileTarget('/tmp/b.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/b.ts'))
 
     const second = dockOf('preview-tile:file:/tmp/b.ts')
 
@@ -71,8 +127,8 @@ describe('preview tiles stack, not split (#93610)', () => {
   })
 
   it('stacks an artifact opened after a file into the same preview zone', () => {
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
-    openPreview({ kind: 'artifact', label: 'Chart', source: 'artifact-1', url: 'artifact-1' }, 'explicit-link')
+    openPreview(fileTarget('/tmp/a.ts'))
+    openPreview({ kind: 'artifact', label: 'Chart', source: 'artifact-1', url: 'artifact-1' })
 
     const artifact = dockOf('preview-tile:artifact:artifact-1')
 
@@ -81,11 +137,11 @@ describe('preview tiles stack, not split (#93610)', () => {
   })
 
   it('lets a lone preview open its own right-docked zone again after all tabs closed', () => {
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
-    openPreview(fileTarget('/tmp/b.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/a.ts'))
+    openPreview(fileTarget('/tmp/b.ts'))
     closeRightRail()
 
-    openPreview(fileTarget('/tmp/c.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/c.ts'))
 
     expect(dockOf('preview-tile:file:/tmp/c.ts')?.pos).toBe('right')
   })

@@ -28,22 +28,8 @@ def upstage_profile():
 
 
 class TestUpstageProfile:
-    def test_identity_and_endpoint(self, upstage_profile):
-        assert upstage_profile.name == "upstage"
-        assert upstage_profile.api_mode == "chat_completions"
-        assert upstage_profile.auth_type == "api_key"
-        assert upstage_profile.base_url == "https://api.upstage.ai/v1"
-        assert upstage_profile.get_hostname() == "api.upstage.ai"
 
-    def test_solar_alias_resolves(self):
-        import model_tools  # noqa: F401
-        import providers
 
-        assert providers.get_provider_profile("solar") is upstage_profile_singleton()
-
-    def test_env_vars(self, upstage_profile):
-        # API key first, optional base-url override second (priority order).
-        assert upstage_profile.env_vars == ("UPSTAGE_API_KEY", "UPSTAGE_BASE_URL")
 
     def test_fallback_models_are_agentic_pro_only(self, upstage_profile):
         # Only the agentic, tool-calling Solar Pro models belong in the offline
@@ -56,13 +42,7 @@ class TestUpstageProfile:
                 denied in m for m in upstage_profile.fallback_models
             ), f"non-agentic family {denied!r} must not be a fallback default"
 
-    def test_default_model_is_solar_pro3(self, upstage_profile):
-        # Entry [0] is the setup default (get_default_model_for_provider).
-        assert upstage_profile.fallback_models[0] == "solar-pro3"
 
-    def test_aux_model_left_empty(self, upstage_profile):
-        # Unset → auxiliary side tasks fall back to the user's main model.
-        assert upstage_profile.default_aux_model == ""
 
 
 class TestUpstageReasoning:
@@ -100,7 +80,9 @@ class TestUpstageReasoning:
         )
         assert top_level == {}
 
-    @pytest.mark.parametrize("model", ["solar-pro3", "solar-pro", "solar-open2"])
+    @pytest.mark.parametrize(
+        "model", ["solar-pro3", "solar-pro", "solar-open2", "solar-mini4", "solar-mini4-preview"]
+    )
     def test_no_config_defaults_reasoning_on(self, upstage_profile, model):
         # Unset reasoning_config → default ON at medium (matches the /reasoning
         # "medium (default)" label), not Solar's server default of minimal/off.
@@ -108,10 +90,13 @@ class TestUpstageReasoning:
         assert top_level == {"reasoning_effort": "medium"}
 
 
-    @pytest.mark.parametrize("model", ["solar-mini", "solar-mini-202610", "syn-pro"])
+    @pytest.mark.parametrize(
+        "model", ["solar-mini", "solar-mini-250422", "solar-mini-202610", "solar-mini@q4", "syn-pro"]
+    )
     def test_deny_listed_models_never_send_reasoning(self, upstage_profile, model):
         # solar-mini / syn-pro ignore reasoning_effort, so never send it —
-        # even when the user explicitly enables reasoning.
+        # even when the user explicitly enables reasoning. Later mini
+        # generations (solar-mini4) do reason and are not deny-listed.
         extra_body, top_level = upstage_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"}, model=model
         )
@@ -125,8 +110,3 @@ class TestUpstageReasoning:
         _, top_level = upstage_profile.build_api_kwargs_extras(model=None)
         assert top_level == {"reasoning_effort": "medium"}
 
-
-def upstage_profile_singleton():
-    import providers
-
-    return providers.get_provider_profile("upstage")

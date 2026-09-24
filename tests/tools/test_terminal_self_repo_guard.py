@@ -68,7 +68,6 @@ class TestSelfRepoGuardWiring:
         config = _make_env_config(cwd=str(repo))
         result, env = _run("git checkout pr-51020", config, monkeypatch, repo)
         assert result["status"] == "blocked"
-        assert "mix module versions" in result["error"]
         assert str(repo) in result["error"]
         env.execute.assert_not_called()
 

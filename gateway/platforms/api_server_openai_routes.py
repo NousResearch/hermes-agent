@@ -731,8 +731,13 @@ class OpenAICompatRoutesMixin:
                 approval_session_key=completion_id, **run_kwargs)
             # The completion id doubles as the run id: drop the approval mapping once the turn
             # ends so POST /v1/runs/{id}/approval answers 409 rather than resolving stale keys.
-            agent_task.add_done_callback(
-                lambda _fut: self._run_approval_sessions.pop(completion_id, None))
+            def _end_stream_run(fut):
+                self._run_approval_sessions.pop(completion_id, None)
+                if completion_id in self._run_statuses:  # terminal state for pollers of this id
+                    failed = not fut.cancelled() and fut.exception() is not None
+                    self._set_run_status(completion_id, "cancelled" if fut.cancelled()
+                                         else "failed" if failed else "completed")
+            agent_task.add_done_callback(_end_stream_run)
             # #13437 identity contract: an explicit-header client keeps addressing the id it
             # sent; the response echoes that stable id while reads/writes adopt the live tip,
             # so a rotation mid-turn (after these headers are prepared) never changes what the

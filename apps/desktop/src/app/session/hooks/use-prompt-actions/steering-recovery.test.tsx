@@ -353,6 +353,7 @@ it.each(rebuiltRuntimeCases)(
           appendAssistantDelta: vi.fn(),
           appendReasoningDelta: vi.fn(),
           completeAssistantMessage: vi.fn(),
+          completeReasoningSource: vi.fn(),
           failAssistantMessage: vi.fn(),
           flushQueuedDeltas: vi.fn(),
           dropQueuedDeltas: vi.fn(),

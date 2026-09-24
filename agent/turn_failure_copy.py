@@ -372,6 +372,20 @@ def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
     return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
 
 
+def _signin_owned_by_external_process(slug: str) -> bool:
+    """True for a registry ``external_process`` provider (copilot-acp is the built-in one): the CLI
+    subprocess it drives owns sign-in, so no ``hermes auth add`` form exists for it — only a
+    plugin-shipping ``auth_handler`` could add one."""
+    try:
+        from hermes_cli.auth_plugin_providers import plugin_auth_handler, registry_lookup
+
+        pconfig = registry_lookup(slug)
+        return (pconfig is not None and getattr(pconfig, "auth_type", "") == "external_process"
+                and plugin_auth_handler(slug) is None)
+    except Exception:  # pragma: no cover — advisory copy only
+        return False
+
+
 def oauth_relogin_command(provider: Any) -> str:
     """The exact re-login command for a rejected OAuth grant, naming the provider slug and the active
     named profile: a profile's credentials are its own (93889b770da), so a bare ``hermes auth`` from
@@ -382,6 +396,10 @@ def oauth_relogin_command(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
+    if _signin_owned_by_external_process(slug):
+        # `hermes auth add <slug> --type oauth` exits with "not implemented" here; the model
+        # picker's external-process flow runs the CLI's own login instead (#121290).
+        return f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
 
 

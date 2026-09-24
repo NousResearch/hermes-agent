@@ -427,7 +427,9 @@ class MicroCompactionMixin:
                 covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held)
             session_db.archive_and_compact(
                 session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark,
-                covered_ids=covered_ids, unresolved_held=unresolved_held)
+                covered_ids=covered_ids, unresolved_held=unresolved_held,
+                topic_id=getattr(self, "_active_topic_id", None),
+            )
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)

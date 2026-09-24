@@ -129,4 +129,101 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
     expect($voicePlayback.get().status).toBe('idle')
     expect(playSpeechText).toHaveBeenCalledTimes(1)
   })
+
+  // Tool-call completions append a bubble via `newAssistantFromCompletion()`
+  // with id `assistant-${Date.now()}` — NOT a live-tail id. Post-turn
+  // `hydrateFromStoredSession` then replaces the transcript with
+  // `toChatMessages()` ids like `${timestamp}-${index}-assistant` at the same
+  // assistant slot. Before the fix, `absorbSpokenReplyRewrite` only followed
+  // vanished `assistant-stream-*`/`inflight-assistant-*` ids, so this durable
+  // rewrite was missed, `pendingReply()` saw a "new" reply, and the same
+  // words got a second `playSpeechText` call — billed twice.
+  it('does not re-speak a tool-call reply once hydrate rewrites its durable id', async () => {
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+
+    const pendingReply = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+      const spoken = resolveSpokenReply(SESSION_ID, messages)
+
+      if (!last || last.id === spoken?.id) {
+        return null
+      }
+
+      return { id: last.id, pending: Boolean(last.pending), text: chatMessageText(last) }
+    }
+
+    const markSpoken = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+      if (last) {
+        markAssistantIdSpoken(SESSION_ID, messages, last.id)
+      }
+    }
+
+    let settleFallback: (() => void) | null = null
+
+    vi.mocked(playSpeechText).mockImplementation(async () => {
+      setVoicePlaybackState({
+        audioElement: null,
+        messageId: 'assistant-12345',
+        sequence: 0,
+        source: 'read-aloud',
+        status: 'preparing'
+      })
+
+      await new Promise<void>(resolve => {
+        settleFallback = resolve
+      })
+
+      // hydrateFromStoredSession rewrites the same assistant slot to its
+      // durable toChatMessages() id — not a live-tail id.
+      $messages.set([assistantMessage('1770-3-assistant', 'hello there')])
+
+      setVoicePlaybackState({
+        audioElement: null,
+        messageId: '1770-3-assistant',
+        sequence: 0,
+        source: 'read-aloud',
+        status: 'idle'
+      })
+
+      return true
+    })
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([assistantMessage('assistant-12345', 'hello there')])
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      settleFallback?.()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect($voicePlayback.get().status).toBe('idle')
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
+  })
 })

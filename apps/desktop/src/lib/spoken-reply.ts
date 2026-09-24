@@ -56,8 +56,21 @@ function lastVisibleAssistant(messages: readonly SpokenReplyMessage[]): SpokenRe
   return messages.findLast(message => message.role === 'assistant' && !message.hidden)
 }
 
-/** If a spoken live-tail row vanished and the same assistant slot now has a
- *  durable id, migrate the anchor. Leave durable ids and later turns alone. */
+/**
+ * If the spoken row vanished — live-tail (`assistant-stream-*`,
+ * `inflight-assistant-*`) OR durable (e.g. a tool-call completion's
+ * `assistant-${Date.now()}` bubble later rewritten by
+ * `hydrateFromStoredSession`'s `toChatMessages()` ids) — follow it to the same
+ * slot. Any id can be rewritten underneath a held reply, not just the live
+ * ones: gate on ordinal, not on id shape.
+ *
+ * The last visible assistant bubble at ordinal <= spoken.ordinal is the same
+ * turn rewritten (or merged, if a bubble in between collapsed and its ordinal
+ * dropped) — migrate. Ordinal > spoken.ordinal means a genuinely new turn
+ * appended — keep the old anchor so that new reply still gets spoken. Never
+ * fingerprint by text: a later distinct turn is allowed to say the same words
+ * ("Done.") and must still be spoken.
+ */
 export function absorbSpokenReplyRewrite(
   spoken: SpokenReplyAnchor | null,
   messages: readonly SpokenReplyMessage[]
@@ -70,10 +83,6 @@ export function absorbSpokenReplyRewrite(
     return spoken
   }
 
-  if (!isLiveTailReplyId(spoken.id)) {
-    return spoken
-  }
-
   const last = lastVisibleAssistant(messages)
 
   if (!last) {
@@ -82,7 +91,7 @@ export function absorbSpokenReplyRewrite(
 
   const ordinal = assistantReplyOrdinal(messages, last.id)
 
-  if (ordinal !== spoken.ordinal) {
+  if (ordinal > spoken.ordinal) {
     return spoken
   }
 

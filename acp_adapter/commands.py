@@ -156,12 +156,18 @@ class SlashCommandsMixin:
             from types import SimpleNamespace
             from agent.memory_manager import inject_memory_provider_tools
 
-            toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"])
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None))
+            tools = get_tool_definitions(
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                quiet_mode=True,
+            )
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={t.get("function", {}).get("name") for t in tools or [] if isinstance(t, dict)},
-                enabled_toolsets=toolsets, _memory_manager=getattr(state.agent, "_memory_manager", None),
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                _memory_manager=getattr(state.agent, "_memory_manager", None),
             )
             inject_memory_provider_tools(tool_view)
             tools = tool_view.tools

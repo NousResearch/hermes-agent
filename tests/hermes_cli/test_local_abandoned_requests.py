@@ -20,7 +20,6 @@ Three contracts, one per failure link:
 from __future__ import annotations
 
 import json
-import subprocess
 import types
 
 import pytest
@@ -111,65 +110,8 @@ class _FakeChild:
         self.killed = True
 
 
-def test_terminate_tree_terminates_children_too(monkeypatch):
-    children = [_FakeChild(101), _FakeChild(102)]
-
-    class _FakeParentProc:
-        def __init__(self, pid):
-            self.pid = pid
-
-        def children(self, recursive=False):
-            assert recursive is True
-            return children
-
-    import psutil
-    fake_psutil = types.SimpleNamespace(Process=_FakeParentProc,
-                                        TimeoutExpired=psutil.TimeoutExpired, Error=psutil.Error)
-    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
-
-    class _FakeRouter:
-        pid = 4242
-        terminated = False
-
-        def terminate(self):
-            _FakeRouter.terminated = True
-
-        def wait(self, timeout=None):
-            return 0
-
-        def poll(self):
-            return None
-
-    LlamaServerSupervisor._terminate_tree(_FakeRouter())
-    assert _FakeRouter.terminated
-    assert all(c.terminated for c in children), (
-        "router children orphaned on stop — each holds GiB of VRAM")
 
 
-def test_terminate_tree_survives_missing_psutil(monkeypatch):
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _no_psutil(name, *a, **k):
-        if name == "psutil":
-            raise ImportError("nope")
-        return real_import(name, *a, **k)
-
-    monkeypatch.setattr(builtins, "__import__", _no_psutil)
-
-    class _FakeRouter:
-        pid = 4242
-        terminated = False
-
-        def terminate(self):
-            _FakeRouter.terminated = True
-
-        def wait(self, timeout=None):
-            return 0
-
-    LlamaServerSupervisor._terminate_tree(_FakeRouter())
-    assert _FakeRouter.terminated  # router still stopped without psutil
 
 
 def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):

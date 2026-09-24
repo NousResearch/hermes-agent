@@ -906,6 +906,16 @@ TERMINAL_SSH_KEY=~/.ssh/hermes_agent_key
 
 The SSH connection details live in `.env` (not `config.yaml`) so they aren't checked in or shared along with profile exports. This keeps the gateway's messaging connections separate from the agent's command execution.
 
+## Trusted-by-placement extension points {#trusted-by-placement}
+
+Most third-party code Hermes can run is gated by an explicit allow-list: general plugins need `plugins.enabled`, shell hooks need a first-use approval (or `hooks_auto_accept`), MCP servers are listed in config. One surface is deliberately different:
+
+| Extension point | Loaded from | Loaded when | Opt-in |
+|-----------------|-------------|-------------|--------|
+| [Gateway event hooks](./features/hooks.md#gateway-event-hooks) | `<profile home>/hooks/<name>/` (`HOOK.yaml` + `handler.py`) | Gateway startup (`HookRegistry.discover_and_load()`), per served profile | **Placing the directory.** No `plugins.enabled` entry, no prompt; `HERMES_SAFE_MODE` does not skip it. |
+
+The gateway imports every valid hook directory in-process, with the gateway's own privileges. This is the documented contract (since `3988c3c245f`), not an oversight: the profile home is operator-owned configuration, and anyone who can write into it can already run code as you through `config.yaml` shell hooks or by editing `plugins.enabled`, so a separate consent gate for `hooks/` would add friction without moving the trust boundary. Treat the contents of `~/.hermes/hooks/` like the contents of `config.yaml` — review a `handler.py` before you place it, and include `ls ~/.hermes/hooks/` whenever you audit the rest of the profile home (the directory is not on the [protected-paths denylist](#file-write-safety), so it is ordinary writable state). Full details: [gateway hook trust model](./features/hooks.md#gateway-hook-trust).
+
 ## Supply-chain advisory checking
 
 Hermes ships with a built-in advisory scanner that flags Python packages in the active venv that match a curated catalog of known-compromised versions (supply-chain worms like the May 2026 `mistralai 2.4.6` poisoning). Implementation lives in `hermes_cli/security_advisories.py`.

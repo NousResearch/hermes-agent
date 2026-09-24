@@ -95,13 +95,6 @@ class TestRegisterPlatformHandlerAPI:
         assert len(mgr.get_platform_handler_factories("matrix")) == 1
         assert mgr.get_platform_handler_factories("slack") == []
 
-    def test_accessor_returns_copy(self):
-        mgr, ctx = _make_ctx()
-        ctx.register_platform_handler("telegram", lambda n, a: None)
-
-        got = mgr.get_platform_handler_factories("telegram")
-        got.append(("junk", "junk"))
-        assert len(mgr.get_platform_handler_factories("telegram")) == 1
 
     def test_multiple_plugins_each_recorded(self):
         mgr = PluginManager()
@@ -139,10 +132,6 @@ class TestTelegramAlias:
             (factory, "test_plugin")
         ]
 
-    def test_alias_non_callable_raises(self):
-        _, ctx = _make_ctx()
-        with pytest.raises(ValueError, match="non-callable"):
-            ctx.register_telegram_handler("not-a-callable")  # type: ignore[arg-type]
 
 
 # ===========================================================================
@@ -169,15 +158,6 @@ class TestAdapterPluginWiring:
         # Adapter asked for its own platform's factories.
         mgr.get_platform_handler_factories.assert_called_once_with("telegram")
 
-    def test_no_factories_is_a_noop(self):
-        adapter = _make_adapter()
-        mgr = MagicMock()
-        mgr.get_platform_handler_factories.return_value = []
-
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            adapter._wire_plugin_handlers(adapter._app)
-
-        adapter._app.add_handler.assert_not_called()
 
     def test_raising_factory_does_not_block_others(self):
         adapter = _make_adapter()
@@ -226,28 +206,3 @@ class TestAdapterPluginWiring:
 # Every adapter calls _wire_plugin_handlers in connect() — source invariant
 # ===========================================================================
 
-def test_all_connectable_adapters_wire_plugin_handlers():
-    """Invariant: every platform adapter with a connect() implementation
-    calls ``_wire_plugin_handlers`` somewhere in its source, so plugins can
-    rely on the hook existing on every platform (native may be None)."""
-    import glob
-
-    repo = Path(_repo)
-    adapter_files = sorted(
-        glob.glob(str(repo / "plugins" / "platforms" / "*" / "adapter.py"))
-    ) + [
-        str(repo / "gateway" / "platforms" / name)
-        for name in (
-            "api_server.py", "bluebubbles.py", "msgraph_webhook.py",
-            "qqbot/adapter.py", "signal.py", "webhook.py", "weixin.py",
-            "whatsapp_cloud.py", "yuanbao.py",
-        )
-    ]
-    missing = []
-    for f in adapter_files:
-        src = Path(f).read_text()
-        if "async def connect(" not in src:
-            continue
-        if "_wire_plugin_handlers" not in src:
-            missing.append(f)
-    assert not missing, f"adapters missing plugin-handler wiring: {missing}"

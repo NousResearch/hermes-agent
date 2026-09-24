@@ -2059,6 +2059,11 @@ class CLITuiMixin:
         for key in ('c-t', 'f6'):
             kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
                 lambda event: open_monitor(self))
+        # F7 is retained for terminals that forward the function-key sequence;
+        # Ctrl+R is the portable fallback because macOS often reserves F7 for
+        # a hardware control unless Fn/globe is held.
+        kb.add('c-r', filter=Condition(lambda: not modal_prompt_active(self)))(
+            lambda event: toggle_dock(self))
         kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
             lambda event: toggle_dock(self))
         return kb

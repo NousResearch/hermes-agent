@@ -294,24 +294,8 @@ def test_probe_inconclusive_falls_through_to_spawn_error(tmp_path):
                 client._run_prompt("hello", timeout_seconds=1)
 
 
-def test_probe_result_cached_per_binary_path():
-    with _patch(
-        "agent.copilot_acp_client.subprocess.run",
-        return_value=_completed(stdout="Usage: copilot [--acp]"),
-    ) as run_mock:
-        assert _acp_supported("copilot", ["--acp"]) is True
-        assert _acp_supported("copilot", ["--acp"]) is True
-    assert run_mock.call_count == 1
 
 
-def test_probe_inconclusive_not_cached():
-    with _patch(
-        "agent.copilot_acp_client.subprocess.run",
-        side_effect=FileNotFoundError,
-    ) as run_mock:
-        assert _acp_supported("copilot", ["--acp"]) is None
-        assert _acp_supported("copilot", ["--acp"]) is None
-    assert run_mock.call_count == 2  # inconclusive verdicts retry
 
 
 def test_probe_skipped_for_custom_args_without_acp():

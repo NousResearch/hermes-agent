@@ -20,6 +20,13 @@ else:
     # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch cwd from shadowing Hermes modules.
     hermes_bootstrap.harden_import_path()
 
+# `hermes-acp` runs without hermes_cli.main: repair a `hermes update` killed mid-pull here, before
+# importing anything else from the checkout (a no-op under `hermes acp`, which already did).
+from hermes_cli import _early_recovery
+
+if _early_recovery.restore_interrupted_pull():
+    _early_recovery.relaunch_after_restore()
+
 import argparse
 import asyncio
 import logging

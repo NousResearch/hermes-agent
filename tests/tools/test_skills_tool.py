@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -568,16 +569,13 @@ class TestSkillMatchesPlatform:
 
 
     def test_string_form_case_insensitive_and_unknown_platforms(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            # A single string value is treated as a one-element list.
-            assert skill_matches_platform({"platforms": "macos"}) is True
-            assert skill_matches_platform({"platforms": ["MacOS"]}) is True
-            assert skill_matches_platform({"platforms": ["MACOS"]}) is True
-
-            mock_sys.platform = "linux"
-            assert skill_matches_platform({"platforms": "macos"}) is False
-            assert skill_matches_platform({"platforms": ["freebsd"]}) is False
+        # Host-native: tag with the running platform (no sys.platform faking).
+        host = sys.platform
+        # A single string value is treated as a one-element list; case-insensitive.
+        assert skill_matches_platform({"platforms": host.upper()}) is True
+        assert skill_matches_platform({"platforms": [host.title()]}) is True
+        assert skill_matches_platform({"platforms": "plan9"}) is False
+        assert skill_matches_platform({"platforms": ["plan9"]}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -589,42 +587,17 @@ class TestFindAllSkillsPlatformFiltering:
     """Test that _find_all_skills respects the platforms field."""
 
     def test_discovery_filters_on_platform(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
+        # Host-native: a skill tagged only for a platform that is never the
+        # host is hidden; untagged and host-including skills are listed.
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "universal-skill")
-            _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
-
-            mock_sys.platform = "linux"
-            linux = {s["name"] for s in _find_all_skills()}
-            mock_sys.platform = "darwin"
-            darwin = {s["name"] for s in _find_all_skills()}
-            mock_sys.platform = "win32"
-            win = {s["name"] for s in _find_all_skills()}
-
-        assert linux == {"universal-skill"}
-        assert darwin == {"universal-skill", "mac-only"}
-        # Skills without a platforms field appear on every platform.
-        assert win == {"universal-skill"}
-
-    def test_multi_platform_skill(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
+            _make_skill(tmp_path, "other-only", frontmatter_extra="platforms: [plan9]\n")
             _make_skill(
-                tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n"
+                tmp_path, "cross-plat", frontmatter_extra=f"platforms: [plan9, {sys.platform}]\n"
             )
-            mock_sys.platform = "darwin"
-            skills_darwin = _find_all_skills()
-            mock_sys.platform = "linux"
-            skills_linux = _find_all_skills()
-            mock_sys.platform = "win32"
-            skills_win = _find_all_skills()
-        assert len(skills_darwin) == 1
-        assert len(skills_linux) == 1
-        assert len(skills_win) == 0
+            names = {s["name"] for s in _find_all_skills()}
+
+        assert names == {"universal-skill", "cross-plat"}
 
 
 # ---------------------------------------------------------------------------

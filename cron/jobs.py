@@ -2988,16 +2988,18 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     """Stale-schedule guard for a due cron instant; True when re-anchored without firing.
 
     A direct edit of schedule.expr leaves next_run_at on the old lattice, so re-anchor first (from
-    the current expr, so this converges). Two cases intentionally authorize one off-lattice fire
-    instead: an offset-representation migration that would otherwise swallow a never-fired
-    occurrence, and a quota recovery before a sparse cron's next natural occurrence.
-    Both fall through to fire ONCE (at-most-once holds: completion rewrites the instant)."""
+    the current expr, so this converges). Some instants are off the lattice on purpose and
+    authorize one fire instead: an offset-representation migration that would otherwise swallow
+    a never-fired occurrence, and the failure-path planners' parked instants (a quota recovery
+    before a sparse cron's next natural occurrence, an unreachable-model retry rung). All fall
+    through to fire ONCE (at-most-once holds: completion rewrites the instant)."""
     stale_class = _classify_stale_cron_next_run(d.schedule, d.raw_next_run_dt, d.next_run_dt)
     if stale_class == STALE_CRON_EXPR_EDIT:
         from cron.quota_hold import is_recovery_fire
-        if is_recovery_fire(d.job, d.next_run):
+        from cron.unreachable_retry import is_retry_fire
+        if is_recovery_fire(d.job, d.next_run) or is_retry_fire(d.job, d.next_run):
             logger.info(
-                "cron.quota_hold.recovery_fire job='%s' id=%s expr=%r at=%s",
+                "cron.off_lattice_fire job='%s' id=%s expr=%r at=%s",
                 d.label, d.job.get("id"), d.schedule.get("expr"), d.next_run)
             return False
         new_next = d.recompute_next()

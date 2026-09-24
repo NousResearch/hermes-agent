@@ -125,6 +125,36 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_first_observation_401_still_allows_in_place_refresh(tmp_path, monkeypatch):
+    """A 401 on the first disk observation seeds the baseline but must still
+    report refreshable when the SDK can refresh in place (GH#39551)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "srv.json").write_text(json.dumps({"access_token": "OLD"}), encoding="utf-8")
+
+    class _Ctx:
+        def can_refresh_token(self):
+            return True
+
+    class _Provider:
+        context = _Ctx()
+        _initialized = True
+
+    mgr = MCPOAuthManager()
+    provider = _Provider()
+    mgr._entries[mgr._key("srv")] = _ProviderEntry(
+        server_url="https://example.com/mcp", oauth_config=None, provider=provider,
+    )
+    assert await mgr.handle_401("srv", failed_access_token="OLD") is True
+    # Baseline seeding must not have torn down the live provider.
+    assert provider._initialized is True
+    assert mgr._entries[mgr._key("srv")].last_mtime_ns != 0
+
+
+@pytest.mark.asyncio
 async def test_handle_401_dedup_survives_even_if_task_reference_dropped(tmp_path, monkeypatch):
     """Concurrent 401s share one handler task and all callers resolve.
 

@@ -603,10 +603,17 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
+def _stream_env_stale_base() -> "tuple[float, bool]":
+    """(HERMES_STREAM_STALE_TIMEOUT or the implicit 180s, explicit) — like
+    ``AIAgent._resolved_api_call_stale_timeout_base``; an explicit env value is the
+    user's deadline, so it is never capped to the run budget."""
+    return env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), "HERMES_STREAM_STALE_TIMEOUT" in os.environ
+
+
 def _configured_stale_base(agent) -> float:
     """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
     cfg = get_provider_stale_timeout(agent.provider, agent.model)
-    return cfg if cfg is not None else env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+    return cfg if cfg is not None else _stream_env_stale_base()[0]
 
 
 def _local_stream_stale_timeout_default() -> float:
@@ -653,6 +660,18 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     return _cloud_stale_timeout_for(agent, api_kwargs)
 
 
+def cap_to_run_budget(agent, timeout: float) -> float:
+    """Cap an IMPLICIT stale timeout at half the remaining --run-budget (>= 60s), so one hung
+    call can't outlive the run and the wrap-up notice stays reachable (#97968). Shared by the
+    streaming and non-streaming resolvers; callers skip it for explicit user settings."""
+    run_budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if not run_budget or not started:
+        return timeout
+    remaining = float(run_budget) - (time.time() - float(started))
+    return min(timeout, max(60.0, remaining * 0.5))
+
+
 def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     """An explicit ``providers.<id>.stale_timeout_seconds`` is the operator's deadline and
     wins over every implicit floor — the context-size tier as well as the reasoning-model
@@ -661,20 +680,9 @@ def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     explicit = get_provider_stale_timeout(agent.provider, agent.model)
     if explicit is not None:
         return explicit
-    timeout = _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
-    if os.getenv("HERMES_STREAM_STALE_TIMEOUT") is not None:
-        return timeout
-    # Match non-streaming patience: leave time for recovery near the run deadline,
-    # without changing explicit settings or the separate local-provider branch.
-    run_budget = getattr(agent, "run_budget_seconds", None)
-    started = getattr(agent, "_run_budget_started_at", None)
-    if not run_budget or not started:
-        return timeout
-    try:
-        remaining = float(run_budget) - (time.time() - float(started))
-    except (TypeError, ValueError):
-        return timeout
-    return min(timeout, max(60.0, remaining * 0.5))
+    base, explicit_env = _stream_env_stale_base()
+    timeout = _cloud_stale_timeout(base, api_kwargs)
+    return timeout if explicit_env else cap_to_run_budget(agent, timeout)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":

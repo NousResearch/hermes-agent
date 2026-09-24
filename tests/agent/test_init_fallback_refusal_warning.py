@@ -92,3 +92,30 @@ def test_recovered_ladder_does_not_warn(tmp_path, monkeypatch, caplog):
     assert agent.provider == "kimi"
     assert agent._fallback_activated
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_explicit_provider_branch_warning_does_not_claim_no_provider_configured(
+    tmp_path, monkeypatch, caplog
+):
+    """An explicit non-OpenRouter primary raises the provider-specific missing-credentials
+    message; the refusal summary must still name every entry without asserting the
+    generic ``No LLM provider configured`` verdict that branch never produces."""
+    from agent import agent_init
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _refusing_router(monkeypatch)
+
+    agent = _agent()
+    agent.provider = "anthropic"
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        with pytest.raises(RuntimeError) as excinfo:
+            agent_init._routed_client_kwargs(agent, _LADDER, 60)
+
+    assert "No LLM provider configured" not in str(excinfo.value)
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    text = warnings[0].getMessage()
+    assert not text.startswith("No LLM provider configured")
+    assert "anthropic" in text
+    assert "deepseek" in text and "no usable credentials" in text
+    assert "kimi" in text and "kimi auth handshake refused" in text

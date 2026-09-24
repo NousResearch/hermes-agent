@@ -884,8 +884,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         agent.model = _fb_model or _fb["model"]
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _refused_entries:
+        # Neutral wording: the explicit-provider branch below raises the provider-specific
+        # missing-credentials message, not the generic "No LLM provider configured" one.
         logger.warning(
-            "No LLM provider configured: primary %r unresolvable and fallback entries refused: %s",
+            "Init-time provider resolution failed: primary %r unresolvable; fallback entries refused: %s",
             agent.provider,
             "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries),
         )

@@ -702,6 +702,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         _redact_process_result(notification)
         self.completion_queue.put(notification)
 
+    def heartbeat_is_current(self, evt: dict) -> bool:
+        """A queued heartbeat may be delivered long after its process exits."""
+        if evt.get("type") != "heartbeat":
+            return True
+        session = self.get(str(evt.get("session_id") or ""))
+        return bool(session and not session.exited and evt.get("started_at") == session.started_at)
+
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
         """Strip shell startup warnings from the beginning of output."""
@@ -1827,6 +1834,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             is_async_delegation = evt.get("type") == "async_delegation"
             if not self._owns_event(evt, session_key, owns_event, is_async_delegation):
                 requeue.append(evt)
+                continue
+            if not self.heartbeat_is_current(evt):
                 continue
             # Routing happened first so a foreign session cannot drop the owner's
             # event via its own consumed/observed state.

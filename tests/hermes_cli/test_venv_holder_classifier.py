@@ -30,6 +30,13 @@ class TestHolderSubcommand:
             (r"python -m hermes_cli.main -c mysession serve", "serve"),
             (r"C:\bin\hermes.exe dashboard", "dashboard"),
             (r"/usr/local/bin/hermes serve", "serve"),
+            (r"/venv/bin/python3 /venv/bin/hermes serve", "serve"),
+            (r"/venv/bin/python3 /venv/bin/hermes dashboard", "dashboard"),
+            (r"C:\x\venv\Scripts\python.exe C:\x\venv\Scripts\hermes.exe dashboard", "dashboard"),
+            # An exact Hermes path only identifies the entrypoint immediately after Python.
+            (r"python worker.py /venv/bin/hermes serve", None),
+            (r"python worker.py hermes serve", None),
+            (r"python worker.py --note 'hermes serve'", None),
             # no hermes entry at all
             (r"python -c import time; time.sleep(3)", None),
             # entry but no subcommand
@@ -38,5 +45,4 @@ class TestHolderSubcommand:
     )
     def test_parses_subcommand(self, cmdline, expected):
         assert _hermes_holder_subcommand(cmdline) == expected
-
 

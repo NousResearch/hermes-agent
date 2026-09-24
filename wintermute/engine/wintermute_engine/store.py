@@ -660,3 +660,37 @@ def tokens_used_on(day_utc: str) -> int:
 
 def tokens_used_today() -> int:
     return tokens_used_on(datetime.now(timezone.utc).date().isoformat())
+
+
+# Sources that count as "talking with him". His wakes ("cron"), his dreams ("dream") and
+# Hermes' own auxiliary calls ("aux:...") are not conversation.
+_NON_CONVERSATION = ("cron", "dream")
+
+
+def _is_conversation(src: str) -> bool:
+    src = str(src or "")
+    return src not in _NON_CONVERSATION and not src.startswith("aux:")
+
+
+def conversation_tokens_on(day_utc: str) -> int:
+    """Tokens spent talking with him on ``day_utc`` (UTC), excluding wakes, dreams and aux calls."""
+    total = 0
+    for path in _with_rotated(usage_path()):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    if day_utc not in line[:40]:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if str(record.get("ts", "")).startswith(day_utc) and _is_conversation(record.get("src")):
+                        total += int(record.get("tokens") or 0)
+        except OSError:
+            continue
+    return total
+
+
+def conversation_tokens_today() -> int:
+    return conversation_tokens_on(datetime.now(timezone.utc).date().isoformat())

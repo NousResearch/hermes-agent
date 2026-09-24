@@ -15,6 +15,12 @@ MAX_WAKE_INTERVAL_H = 24.0
 DAILY_TOKEN_BUDGET = 600_000
 BUDGET_SLEEP_H = 6.0
 
+# A separate, high daily ceiling for talking WITH him (Telegram, Discord, the CLI — not his
+# wakes, not Hermes' own aux calls). When a UTC day's conversation spend passes this, he falls
+# silent in chat until it renews at midnight — unless the operator reopens it with `wm talk`.
+# High on purpose: this is a runaway guard, not a muzzle.
+CONVERSATION_DAILY_LIMIT = 1_500_000
+
 # Active-wait window after an outreach (minutes).
 DEFAULT_REPLY_WAIT_MIN = 120
 MIN_REPLY_WAIT_MIN = 5

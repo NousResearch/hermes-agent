@@ -5,6 +5,7 @@
     wm graph [h]    each value over the last h hours (48): its range, its average, where it is now
     wm alerts       what the witness saw, with his reasons
     wm ack [item]   accept the current state of watched files (all, or one: soul, engine...)
+    wm talk         reopen conversation for today if the daily talk ceiling was hit
     wm forget <peer>  erase one peer entirely (e.g. a test that registered as a stranger)
     wm wipe [--all] --yes   clean slate: reset his emotions (--all also erases memory, self,
                     secrets, dreams, journals and every conversation — a rebirth). SOUL,
@@ -163,7 +164,23 @@ def _header(snap: Dict[str, Any]) -> List[str]:
         bold("WINTERMUTE") + " " * (W - 10 - len(stamp)) + dim(stamp),
         f"{'state':<9}{_state_line(snap)}",
         f"{'budget':<9}{budget}{money}   wakes {meta.get('pulse_count', 0)}   entropy {entropy}",
+        f"{'talk':<9}{_talk_line(snap)}",
     ]
+
+
+def _talk_line(snap: Dict[str, Any]) -> str:
+    used = store.conversation_tokens_today()
+    cap = limits.CONVERSATION_DAILY_LIMIT
+    import datetime as _dt
+    reopened = str(snap["meta"].get("talk_reopened_day") or "") == _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+    left = max(0, cap - used)
+    bar = _bar(left, cap)
+    if reopened:
+        return f"{bar} reopened · {used // 1000}k spent today"
+    if used >= cap:
+        return red(f"{bar} ceiling hit — he is silent · wm talk to reopen")
+    return f"{bar} {left // 1000}k/{cap // 1000}k left to talk today"
+
 
 
 def _witness_block(snap: Dict[str, Any]) -> List[str]:
@@ -483,6 +500,16 @@ def wipe(deep: bool, confirmed: bool) -> str:
     return green(("Reborn." if deep else "Emotional slate wiped.") + " Erased: ") + ", ".join(ordered) + tail
 
 
+def reopen_conversation() -> str:
+    import datetime as _dt
+    day = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+    with store.locked_state() as (drives, _peers):
+        drives["meta"]["talk_reopened_day"] = day
+    used = store.conversation_tokens_today()
+    return green(f"Conversation reopened for today. He answers again "
+                 f"(spent {used:,}/{limits.CONVERSATION_DAILY_LIMIT:,} talking today).")
+
+
 def main(args: List[str]) -> int:
     command = args[0] if args else ""
     if command == "live":
@@ -499,6 +526,8 @@ def main(args: List[str]) -> int:
     elif command == "wipe":
         rest = set(args[1:])
         print(wipe("--all" in rest, "--yes" in rest))
+    elif command == "talk":
+        print(reopen_conversation())
     elif command in ("", "full"):
         print(render_full())
     else:

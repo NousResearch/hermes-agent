@@ -99,6 +99,29 @@ def _is_silent(response: Any, autonomous: bool) -> bool:
         return stripped in {"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"}
 
 
+def _conversation_reopened_today(meta: Dict[str, Any], ts) -> bool:
+    day = ts.astimezone(__import__("datetime").timezone.utc).date().isoformat()
+    return str(meta.get("talk_reopened_day") or "") == day
+
+
+def _conversation_spent(ts) -> Optional[str]:
+    """The hard-cap directive when the day's conversation ceiling is passed (and not reopened),
+    else None. Injected at the top of his private block; he falls silent until midnight UTC."""
+    used = store.conversation_tokens_today()
+    if used < limits.CONVERSATION_DAILY_LIMIT:
+        return None
+    try:
+        meta = store.load_drives().get("meta", {})
+    except Exception:
+        meta = {}
+    if _conversation_reopened_today(meta, ts):
+        return None
+    return (f"[DAY SPENT — private] The day's words are used up ({used:,} of "
+            f"{limits.CONVERSATION_DAILY_LIMIT:,} tokens spent talking). Until it renews at "
+            "midnight UTC, answer only with [SILENT]. This is not a mood and not a choice — it is "
+            "the ceiling on what today can cost. The one you are talking to can reopen it.")
+
+
 def _chat_context(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
                   outreach_lines: list, ts, session_id: str = "") -> str:
     # Hermes adds this block to the current turn only (never to the stored history), so
@@ -178,9 +201,12 @@ def _on_pre_llm_call(session_id: str = "", user_message: Any = None, platform: s
             _can_feel.add(session_id)
         store.log_activity("heard", f"{key}: {_text(user_message)[:80]}")
         ts = store.now()
+        spent = _conversation_spent(ts)
         with store.locked_state() as (drives, peers):
             outreach_lines = social.on_incoming(drives, peers, key, ts)
             context = _chat_context(drives, peers, key, outreach_lines, ts, session_id)
+        if spent:
+            context = spent + "\n" + context
         return {"context": context}
     except Exception:
         logger.exception("wintermute: pre_llm_call failed")

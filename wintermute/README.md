@@ -176,6 +176,10 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
   (`session_rotation`, voir plus haut). Il ne perd rien d'essentiel : sa mémoire, son
   autoportrait, ses liens, et la fin de sa dernière pensée (reprise au premier message de la
   conversation suivante) ; les anciennes restent consultables avec `session_search`.
+- **Plafond de conversation** : en plus du budget des éveils, une limite haute par jour UTC pour
+  *lui parler* (`CONVERSATION_DAILY_LIMIT`, 1,5 M tokens ; éveils, rêves et appels aux non comptés).
+  Dépassé, il répond `[SILENT]` en conversation jusqu'à minuit UTC. `wm talk` rouvre la journée si tu
+  as vraiment besoin de lui parler. C'est un garde-fou anti-emballement, pas une muselière.
 - **Crédits OpenRouter** : le plugin lit le solde du compte (au plus toutes les 10 min, en
   arrière-plan) et l'affiche dans son état : « Credits: $4.54 left of $5.00 ».
 - **Outils du pulse** : `WINTERMUTE_TOOLSETS=wintermute,memory,web bash install.sh`. Moins

@@ -49,6 +49,46 @@ describe('mergePluginPackages', () => {
     expect(rows[0]).toMatchObject({ kind: 'both', desktop: null, desktopMissing: true })
   })
 
+  // Catalog install can land the desktop half at desktop-plugins/<name>/plugin.js
+  // with no .hermes-package.json. That copy is already loaded; the agent row
+  // must not stay on "copying…" as a second row.
+  it('pairs a marker-less app-root desktop copy with the agent package of the same folder name', () => {
+    const rows = mergePluginPackages(
+      [
+        desktop({
+          id: 'hermes-talk',
+          name: 'Hermes Talk',
+          description: 'GPT-Live subscription or explicit API voice, with Hermes task delegation.',
+          file: '/Users/me/.hermes/desktop-plugins/hermes-talk/plugin.js'
+        })
+      ],
+      [agent({ name: 'hermes-talk', has_desktop_half: true, version: '0.21.0' })]
+    )
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      key: 'hermes-talk',
+      name: 'Hermes Talk',
+      kind: 'both',
+      desktopMissing: false,
+      agentMissingInProfile: false
+    })
+    expect(rows[0].desktop?.id).toBe('hermes-talk')
+    expect(rows[0].agent?.name).toBe('hermes-talk')
+  })
+
+  it('leaves a same-named standalone desktop plugin alone when the agent package has no desktop half', () => {
+    const rows = mergePluginPackages(
+      [desktop({ id: 'clock', name: 'Clock', file: '/Users/me/.hermes/desktop-plugins/clock/plugin.js' })],
+      [agent({ name: 'clock' })]
+    )
+
+    expect(rows.map(row => [row.key, row.kind])).toEqual([
+      ['clock', 'agent'],
+      ['desktop:clock', 'desktop']
+    ])
+  })
+
   it('standalone desktop plugins and agent-only packages keep one empty side; unified rows sort first', () => {
     const rows = mergePluginPackages(
       [desktop({ id: 'bots', name: 'Bots', kind: 'bundled' }), desktop({ id: 'u', packageName: 'unified' })],

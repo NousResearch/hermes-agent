@@ -81,8 +81,13 @@ function collectSshConfigHosts(rootPath = '', deps: any = {}) {
     })
 
   const homeDir = deps.homeDir || os.homedir()
-  const root = rootPath || path.join(homeDir, '.ssh', 'config')
-  const sshDir = path.join(homeDir, '.ssh')
+  // Follow the path flavour of the home directory we were handed, not the one
+  // this process happens to run on: `homeDir` is injectable, and a POSIX home
+  // joined with `path.win32` produces `\home\u\.ssh\work`, which never matches
+  // the config keys the caller resolves against.
+  const pathApi = deps.pathApi || (homeDir.includes('\\') || /^[a-zA-Z]:/.test(homeDir) ? path.win32 : path.posix)
+  const root = rootPath || pathApi.join(homeDir, '.ssh', 'config')
+  const sshDir = pathApi.join(homeDir, '.ssh')
 
   const out: string[] = []
   const seen = new Set()
@@ -90,14 +95,14 @@ function collectSshConfigHosts(rootPath = '', deps: any = {}) {
 
   const resolveIncludePath = token => {
     if (token.startsWith('~/')) {
-      return path.join(homeDir, token.slice(2))
+      return pathApi.join(homeDir, token.slice(2))
     }
 
-    if (path.isAbsolute(token)) {
+    if (pathApi.isAbsolute(token)) {
       return token
     }
 
-    return path.join(sshDir, token)
+    return pathApi.join(sshDir, token)
   }
 
   const walk = (filePath, depth) => {

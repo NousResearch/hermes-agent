@@ -184,8 +184,10 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
 
     for guild in client.guilds:
         # Forum channels (type 15): creating a message auto-spawns a thread post.
-        forums = getattr(guild, "forum_channels", None) or []
-        for chs, ch_type in ((guild.text_channels, "channel"), (forums, "forum")):
+        # The attribute is Guild.forums -- discord.py has never exposed
+        # `forum_channels` (that is py-cord's name), so the old lookup always
+        # returned an empty list and forums never reached the directory.
+        for chs, ch_type in ((guild.text_channels, "channel"), (guild.forums, "forum")):
             for ch in chs:
                 # Obfuscated placeholders (no VIEW_CHANNEL) can never be posted to. #90154
                 if is_discord_channel_obfuscated(ch):

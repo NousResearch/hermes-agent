@@ -66,6 +66,26 @@ acceptance, unreadable policy or GitHub API failures. A repository without requi
 checks needs a local-only contract. `gh` must be authenticated with read access to
 the repository's checks and rules; no remote writes are performed by this gate.
 
+For a private repository where GitHub explicitly denies branch-protection inspection
+with its **GitHub Pro plan-limit** response, an operator can configure trusted legacy
+status contexts instead of disabling acceptance:
+
+```yaml
+kanban:
+  pr_acceptance_authorities:
+    OWNER/REPO:
+      - continuous-integration/jenkins/pr-merge
+```
+
+This per-repository fallback only runs when the plan-limit response is observed and
+no required checks were discoverable. It requires an exact-PR-head success from each
+configured context. Other failed Actions jobs remain vetoes unless their authenticated
+job record proves no runner and zero executed steps; skipped dependents are ignored
+only within the same failed-before-runner workflow run. Receipts label these exceptions,
+never relabel them green. Executed test failures and any missing/pending/failed
+authority remain fail-closed. Keep this allowlist narrow and audit the chosen CI
+context before enabling it; an arbitrary user-controlled status is not trustworthy.
+
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun

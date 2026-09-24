@@ -421,7 +421,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     if (rowId !== undefined) {
       for (const part of parts) {
-        if (part.type === 'text') {
+        if (part.type === 'text' || part.type === 'reasoning' || part.type === 'tool-call') {
           part.sourceRowId = rowId
         }
       }

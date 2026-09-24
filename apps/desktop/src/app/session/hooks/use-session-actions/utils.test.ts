@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -13,7 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
+import type { SessionInfo, SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -28,6 +28,7 @@ import {
   overlayConcurrentMessageChanges,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
+  reconcileDurableHistory,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
@@ -830,6 +831,295 @@ describe('preserveLocalPendingTurnMessages', () => {
       'assistant-stream-1',
       'user-2000',
       'assistant-stream-2'
+    ])
+  })
+
+  it('keeps an unpersisted mid-turn correction ahead of later tool work on a shifted history page', () => {
+    const prompt = msg('stored-prompt', 'user', 'Investigate', { rowId: 10 })
+
+    const before = streamingMsg('assistant-stream-before', 'Before correction', {
+      parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+      interim: true,
+      pending: false
+    })
+
+    const correction = msg('user-correction', 'user', 'Check the tests too')
+
+    const after = streamingMsg('assistant-stream-after', '', {
+      parts: [{ type: 'tool-call', toolCallId: 'call-after', toolName: 'patch' }]
+    })
+
+    const previous = [prompt, before, correction, after]
+
+    // The persisted original prompt has fallen off the newest page. The
+    // correction is still only in the live turn, but its later tool work is
+    // already present on that page under a different hydrated message id.
+    const next = [
+      streamingMsg('stored-before', 'Before correction', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+        rowId: 30,
+        pending: false
+      }),
+      streamingMsg('stored-after', '', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-after', toolName: 'patch' }],
+        rowId: 50,
+        pending: false
+      })
+    ]
+
+    const reconciled = preserveLocalPendingTurnMessages(next, previous)
+    expect(reconciled.map(message => message.id)).toEqual(['stored-before', 'user-correction', 'stored-after'])
+    expect(preserveLocalPendingTurnMessages(next, reconciled).map(message => message.id)).toEqual([
+      'stored-before',
+      'user-correction',
+      'stored-after'
+    ])
+  })
+
+  it('keeps a correction inside a single hydrated fold that spans tools before and after it', () => {
+    const raw: SessionMessage[] = [
+      {
+        id: 30,
+        role: 'assistant',
+        content: 'Before correction',
+        tool_calls: [{ id: 'call-before', function: { name: 'read_file', arguments: '{}' } }]
+      },
+      { id: 31, role: 'tool', content: 'read complete', tool_call_id: 'call-before' },
+      {
+        id: 50,
+        role: 'assistant',
+        content: 'After correction',
+        reasoning: 'Post-correction analysis',
+        tool_calls: [{ id: 'call-after', function: { name: 'patch', arguments: '{}' } }]
+      },
+      { id: 51, role: 'tool', content: 'patch complete', tool_call_id: 'call-after' }
+    ]
+
+    const stored = toChatMessages(raw)
+
+    expect(stored).toHaveLength(1)
+    expect(stored[0].parts.filter(part => part.type === 'tool-call').map(part => part.toolCallId)).toEqual([
+      'call-before',
+      'call-after'
+    ])
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Investigate', { rowId: 10 }),
+      streamingMsg('assistant-stream-before', 'Before correction', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+        interim: true,
+        pending: false
+      }),
+      msg('user-correction', 'user', 'Check the tests too'),
+      streamingMsg('assistant-stream-after', 'After correction', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-after', toolName: 'patch' }]
+      })
+    ]
+
+    const reconciled = reconcileDurableHistory(stored, previous)
+    const correctionIndex = reconciled.findIndex(message => chatMessageText(message) === 'Check the tests too')
+
+    const beforeIndex = reconciled.findIndex(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-before')
+    )
+
+    const afterIndex = reconciled.findIndex(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-after')
+    )
+
+    expect(beforeIndex).toBeLessThan(correctionIndex)
+    expect(correctionIndex).toBeLessThan(afterIndex)
+    expect(reconciled[beforeIndex].parts.some(part => part.type === 'text' && part.text === 'Before correction')).toBe(
+      true
+    )
+    expect(reconciled[afterIndex].parts.some(part => part.type === 'text' && part.text === 'After correction')).toBe(
+      true
+    )
+    expect(
+      reconciled[afterIndex].parts.some(part => part.type === 'reasoning' && part.text === 'Post-correction analysis')
+    ).toBe(true)
+    expect(reconciled.filter(message => chatMessageText(message) === 'Check the tests too')).toHaveLength(1)
+    expect(reconciled.reduce((count, message) => count + (message.serverRowSpan ?? 1), 0)).toBe(
+      stored.reduce((count, message) => count + (message.serverRowSpan ?? 1), 0) + 1
+    )
+    const again = reconcileDurableHistory(stored, reconciled)
+    expect(again.filter(message => chatMessageText(message) === 'Check the tests too')).toHaveLength(1)
+    expect(again.findIndex(message => chatMessageText(message) === 'Check the tests too')).toBeGreaterThan(0)
+
+    const projection = {
+      session_id: 'runtime',
+      inflight: {
+        user: 'Investigate',
+        assistant: '',
+        streaming: true,
+        corrections: ['Check the tests too'],
+        correction_offsets: [0]
+      }
+    }
+
+    const resumed = reconcileDurableHistory(appendLiveSessionProjection(stored, projection), again)
+    expect(resumed.filter(message => chatMessageText(message) === 'Check the tests too')).toHaveLength(1)
+    expect(resumed.findIndex(message => chatMessageText(message) === 'Check the tests too')).toBeLessThan(
+      resumed.findIndex(message =>
+        message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-after')
+      )
+    )
+  })
+
+  it('keeps two unpersisted corrections between three tool rounds in one hydrated fold', () => {
+    const rows: SessionMessage[] = ['one', 'two', 'three'].flatMap((label, index) => [
+      {
+        id: 40 + index * 2,
+        role: 'assistant' as const,
+        content: label,
+        tool_calls: [{ id: `call-${label}`, function: { name: 'read_file', arguments: '{}' } }]
+      },
+      { id: 41 + index * 2, role: 'tool' as const, content: 'ok', tool_call_id: `call-${label}` }
+    ])
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Investigate', { rowId: 10 }),
+      streamingMsg('assistant-stream-one', 'one', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-one', toolName: 'read_file' }],
+        interim: true
+      }),
+      msg('user-correction-one', 'user', 'First correction'),
+      streamingMsg('assistant-stream-two', 'two', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-two', toolName: 'read_file' }],
+        interim: true
+      }),
+      msg('user-correction-two', 'user', 'Second correction'),
+      streamingMsg('assistant-stream-three', 'three', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-three', toolName: 'read_file' }]
+      })
+    ]
+
+    const stored = toChatMessages(rows)
+    expect(stored).toHaveLength(1)
+    const result = reconcileDurableHistory(stored, previous)
+    expect(
+      result.flatMap(message =>
+        message.role === 'user'
+          ? [chatMessageText(message)]
+          : message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+      )
+    ).toEqual(['call-one', 'First correction', 'call-two', 'Second correction', 'call-three'])
+    const repeated = reconcileDurableHistory(stored, result)
+    expect(
+      repeated.flatMap(message =>
+        message.role === 'user'
+          ? [chatMessageText(message)]
+          : message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+      )
+    ).toEqual(['call-one', 'First correction', 'call-two', 'Second correction', 'call-three'])
+  })
+
+  it('does not invent an intra-row boundary for parallel calls in the same persisted assistant row', () => {
+    const rows: SessionMessage[] = [
+      {
+        id: 30,
+        role: 'assistant',
+        content: 'Parallel work',
+        tool_calls: [
+          { id: 'call-before', function: { name: 'read_file', arguments: '{}' } },
+          { id: 'call-after', function: { name: 'read_file', arguments: '{}' } }
+        ]
+      }
+    ]
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Investigate', { rowId: 10 }),
+      streamingMsg('assistant-stream-before', '', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+        interim: true
+      }),
+      msg('user-correction', 'user', 'Check this too'),
+      streamingMsg('assistant-stream-after', '', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-after', toolName: 'read_file' }]
+      })
+    ]
+
+    const messages = reconcileDurableHistory(toChatMessages(rows), previous)
+    expect(messages[0].parts.filter(part => part.type === 'tool-call').map(part => part.toolCallId)).toEqual([
+      'call-before',
+      'call-after'
+    ])
+    expect(messages.filter(message => chatMessageText(message) === 'Check this too')).toHaveLength(1)
+  })
+
+  it('does not append a second gateway-projected correction below its own later tool work', () => {
+    const before = streamingMsg('stored-before', '', {
+      parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+      rowId: 30,
+      pending: false
+    })
+
+    const after = streamingMsg('stored-after', '', {
+      parts: [{ type: 'tool-call', toolCallId: 'call-after', toolName: 'patch' }],
+      rowId: 50,
+      pending: false
+    })
+
+    const correction = 'Check the tests too'
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Investigate', { rowId: 10 }),
+      streamingMsg('assistant-stream-before', '', {
+        parts: before.parts,
+        interim: true,
+        pending: false
+      }),
+      msg('user-correction', 'user', correction),
+      streamingMsg('assistant-stream-after', '', { parts: after.parts })
+    ]
+
+    const projection = {
+      session_id: 'runtime',
+      inflight: {
+        user: 'Investigate',
+        assistant: '',
+        streaming: true,
+        corrections: [correction],
+        correction_offsets: [0]
+      }
+    }
+
+    const reconciled = reconcileDurableHistory(appendLiveSessionProjection([before, after], projection), previous)
+    expect(reconciled.filter(message => chatMessageText(message) === correction)).toHaveLength(1)
+    expect(reconciled.findIndex(message => chatMessageText(message) === correction)).toBeLessThan(
+      reconciled.findIndex(message => message.id === 'stored-after')
+    )
+    const again = reconcileDurableHistory(appendLiveSessionProjection([before, after], projection), reconciled)
+    expect(again.filter(message => chatMessageText(message) === correction)).toHaveLength(1)
+    expect(again.findIndex(message => chatMessageText(message) === correction)).toBeLessThan(
+      again.findIndex(message => message.id === 'stored-after')
+    )
+  })
+
+  it('does not move a correction across a foreign persisted user boundary or unrelated tools', () => {
+    const tool = (id: string, callId: string) =>
+      streamingMsg(id, '', {
+        parts: [{ type: 'tool-call', toolCallId: callId, toolName: 'read_file' }],
+        pending: false
+      })
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Inspect', { rowId: 1 }),
+      tool('assistant-stream-before', 'call-before'),
+      msg('user-correction', 'user', 'Check tests too'),
+      tool('assistant-stream-after', 'call-after')
+    ]
+
+    const foreign = msg('foreign-user', 'user', 'Another request', { rowId: 40 })
+    const withForeign = [tool('stored-before', 'call-before'), foreign, tool('stored-after', 'call-after')]
+    expect(preserveLocalPendingTurnMessages(withForeign, previous).map(message => message.id)).toEqual([
+      ...withForeign.map(message => message.id),
+      'user-correction'
+    ])
+    const unrelated = [tool('stored-before', 'call-before'), tool('other-turn', 'call-other')]
+    expect(preserveLocalPendingTurnMessages(unrelated, previous).map(message => message.id)).toEqual([
+      ...unrelated.map(message => message.id),
+      'user-correction'
     ])
   })
 

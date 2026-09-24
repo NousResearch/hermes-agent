@@ -974,7 +974,180 @@ export function preserveLocalPendingTurnMessages(
   const withReplacements =
     replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
 
-  return preserved.length ? [...withReplacements, ...preserved] : withReplacements
+  // A redirect is a user row in the live transcript, but may not have a
+  // durable row yet. A refresh page can contain tool work on BOTH sides of it
+  // while omitting the prompt that began the turn. Appending that uncommitted
+  // row after the page moves the correction below work done hours later.
+  // Reinsert only when independent tool identities bracket it on this page;
+  // prose, timestamps and role ordinals cannot establish the boundary.
+  const storedToolIndex = (local: ChatMessage): number => {
+    const ids = toolCallIdsOf(local).filter(Boolean)
+
+    return ids.length
+      ? withReplacements.findIndex(
+          candidate => candidate.role === 'assistant' && toolCallIdsOf(candidate).some(id => ids.includes(id))
+        )
+      : -1
+  }
+
+  const insertions = new Map<number, ChatMessage[]>()
+  const foldBoundaries = new Map<number, { cut: number; rowId: number; correction: ChatMessage }[]>()
+  const relocated = new Set<ChatMessage>()
+  const supersededProjections = new Set<string>()
+
+  // The acknowledged boundary may itself land on a post-correction tool
+  // bubble on a subsequent refresh. Inspect the cached user occurrence even
+  // then; no durable user row has acknowledged that correction yet.
+  for (const [localIndex, message] of previousMessages.entries()) {
+    if (
+      message.role !== 'user' ||
+      !message.id.startsWith('user-') ||
+      message.rowId !== undefined ||
+      nextIds.has(message.id)
+    ) {
+      continue
+    }
+
+    const precedingUser = previousMessages.findLastIndex((row, index) => index < localIndex && isPrompt(row))
+    const nextUser = previousMessages.findIndex((row, index) => index > localIndex && isPrompt(row))
+    const before = previousMessages.slice(precedingUser + 1, localIndex)
+    const after = previousMessages.slice(localIndex + 1, nextUser < 0 ? undefined : nextUser)
+    const beforeIndex = Math.max(-1, ...before.map(storedToolIndex))
+    const afterIndex = after.map(storedToolIndex).find(index => index >= 0) ?? -1
+
+    if (
+      beforeIndex < 0 ||
+      afterIndex < beforeIndex ||
+      withReplacements.slice(beforeIndex + 1, afterIndex).some(row => row.role === 'user') ||
+      before.some(row => preserved.includes(row) && !relocated.has(row))
+    ) {
+      continue
+    }
+
+    if (afterIndex === beforeIndex) {
+      // Hydration folds adjacent tool rounds into one assistant bubble when
+      // the correction has not reached the DB. Split only at a proven source
+      // row boundary; a parallel batch within ONE source row is not a safe cut.
+      const fold = withReplacements[afterIndex]
+      const priorCalls = new Set(before.flatMap(toolCallIdsOf))
+      const laterCalls = new Set(after.flatMap(toolCallIdsOf))
+      const beforePart = fold.parts.findLastIndex(part => part.type === 'tool-call' && priorCalls.has(part.toolCallId))
+
+      const afterPart = fold.parts.findIndex(
+        (part, index) => index > beforePart && part.type === 'tool-call' && laterCalls.has(part.toolCallId)
+      )
+
+      const priorSource = fold.parts[beforePart]?.sourceRowId
+      const laterSource = fold.parts[afterPart]?.sourceRowId
+      const cut = fold.parts.findIndex(part => part.sourceRowId === laterSource)
+
+      if (
+        priorSource === undefined ||
+        laterSource === undefined ||
+        priorSource >= laterSource ||
+        cut <= beforePart ||
+        cut > afterPart ||
+        foldBoundaries.get(afterIndex)?.some(boundary => boundary.cut === cut)
+      ) {
+        continue
+      }
+
+      foldBoundaries.set(afterIndex, [
+        ...(foldBoundaries.get(afterIndex) ?? []),
+        { cut, rowId: laterSource, correction: message }
+      ])
+
+      for (const local of after) {
+        if (
+          local.role === 'assistant' &&
+          preserved.includes(local) &&
+          local.parts.length > 0 &&
+          local.parts.every(
+            part =>
+              part.type === 'tool-call' &&
+              fold.parts
+                .slice(cut)
+                .some(
+                  durable =>
+                    durable.type === 'tool-call' &&
+                    durable.toolCallId === part.toolCallId &&
+                    (part.result === undefined || part.result === durable.result)
+                )
+          )
+        ) {
+          relocated.add(local)
+        }
+      }
+    } else {
+      insertions.set(afterIndex, [...(insertions.get(afterIndex) ?? []), message])
+    }
+
+    relocated.add(message)
+
+    // A reconnect can independently project the same accepted correction
+    // from inflight.corrections at the tail. Keep its richer cached occurrence
+    // at the proven boundary, not a duplicate after the fresh tool page.
+    const projection = withReplacements.find(
+      (row, index) =>
+        index > afterIndex &&
+        row.role === 'user' &&
+        row.id.startsWith('user-inflight-correction-') &&
+        !supersededProjections.has(row.id) &&
+        textWithoutReferenceLines(chatMessageText(row)) === textWithoutReferenceLines(chatMessageText(message))
+    )
+
+    if (projection) {
+      supersededProjections.add(projection.id)
+    }
+  }
+
+  const trailing = preserved.filter(message => !relocated.has(message))
+
+  if (!insertions.size && !foldBoundaries.size) {
+    return trailing.length ? [...withReplacements, ...trailing] : withReplacements
+  }
+
+  const ordered = withReplacements.flatMap((fold, index) => {
+    if (supersededProjections.has(fold.id)) {
+      return []
+    }
+
+    const boundaries = foldBoundaries.get(index)?.sort((a, b) => a.cut - b.cut)
+
+    if (!boundaries?.length) {
+      return [...(insertions.get(index) ?? []), fold]
+    }
+
+    const fragments: ChatMessage[] = [...(insertions.get(index) ?? [])]
+    let from = 0
+    let source = fold.rowId
+
+    for (const boundary of boundaries) {
+      // Only the final fragment counts the original durable rows. Intermediate
+      // segments are presentation-only and add no server rows to backfill.
+      fragments.push({
+        ...fold,
+        id: from === 0 ? fold.id : `${fold.id}-after-${source}`,
+        parts: fold.parts.slice(from, boundary.cut),
+        ...(source !== undefined ? { rowId: source } : {}),
+        serverRowSpan: 0
+      })
+      fragments.push(boundary.correction)
+      from = boundary.cut
+      source = boundary.rowId
+    }
+
+    fragments.push({
+      ...fold,
+      id: `${fold.id}-after-${source}`,
+      parts: fold.parts.slice(from),
+      ...(source !== undefined ? { rowId: source } : {})
+    })
+
+    return fragments
+  })
+
+  return [...ordered, ...trailing]
 }
 
 /**

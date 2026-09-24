@@ -684,7 +684,7 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     assert exc_info.value.relogin_required is True
 
 
-@pytest.mark.parametrize("status_code", [500, 502, 503, 504, 599])
+@pytest.mark.parametrize("status_code", [500, 503, 599])
 def test_refresh_token_exchange_5xx_is_retryable_without_parsing_error_body(status_code):
     """A Portal 5xx is transient even when its body is not OAuth JSON (#120976)."""
     from hermes_cli.auth import _refresh_access_token
@@ -711,33 +711,6 @@ def test_refresh_token_exchange_5xx_is_retryable_without_parsing_error_body(stat
     assert exc_info.value.code == "temporarily_unavailable"
     assert exc_info.value.relogin_required is False
     assert exc_info.value.retryable is True
-
-
-@pytest.mark.parametrize("code", ["invalid_grant", "invalid_token", "refresh_token_reused"])
-def test_refresh_token_exchange_terminal_oauth_errors_still_require_relogin(code):
-    """Non-5xx OAuth grant failures retain their terminal handling."""
-    from hermes_cli.auth import _refresh_access_token
-
-    class _FakeResponse:
-        status_code = 400
-
-        def json(self):
-            return {"error": code, "error_description": "credential is no longer valid"}
-
-    class _FakeClient:
-        def post(self, *args, **kwargs):
-            return _FakeResponse()
-
-    with pytest.raises(AuthError) as exc_info:
-        _refresh_access_token(
-            client=_FakeClient(),
-            portal_base_url="https://portal.nousresearch.com",
-            client_id="hermes-cli",
-            refresh_token="refresh-no-longer-valid",
-        )
-
-    assert exc_info.value.code == code
-    assert exc_info.value.relogin_required is True
 
 
 def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):

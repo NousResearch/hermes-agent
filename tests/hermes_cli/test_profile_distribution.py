@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -824,3 +825,81 @@ class TestManifestCrashDurability:
 
         mode = stat.S_IMODE(mf.stat().st_mode)
         assert mode == 0o644, f"new manifest created as {oct(mode)}"
+
+
+class TestRemoveExistingTransientRetry:
+    """#52330: a transient handle lock (Explorer/AV/indexer, Windows WinError 145)
+    must not lose a destination entry — _remove_existing retries rmtree with backoff."""
+
+    def test_transient_rmtree_failure_is_retried_and_recovers(self, tmp_path, monkeypatch):
+        import hermes_cli.profile_distribution as pd
+
+        dest = tmp_path / "skills"
+        (dest / "alpha").mkdir(parents=True)
+        (dest / "alpha" / "SKILL.md").write_text("x")
+
+        real_sleep = pd.time.sleep
+        sleeps = []
+        monkeypatch.setattr(pd.time, "sleep", lambda s: sleeps.append(s))
+
+        calls = {"n": 0}
+
+        def flaky_rmtree(path, *a, **kw):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                # Windows WinError 145 signature (directory not empty)
+                raise OSError(145, "The directory is not empty")
+
+        monkeypatch.setattr(pd.shutil, "rmtree", flaky_rmtree)
+
+        pd._remove_existing(dest)
+
+        assert calls["n"] == 3
+        assert len(sleeps) == 2
+        # bounded backoff: 0.1 then 0.2
+        assert sleeps == [0.1, 0.2]
+
+    def test_persistent_failure_raises_after_bounded_attempts(self, tmp_path, monkeypatch):
+        import hermes_cli.profile_distribution as pd
+
+        dest = tmp_path / "skills"
+        (dest / "alpha").mkdir(parents=True)
+        (dest / "alpha" / "SKILL.md").write_text("x")
+
+        monkeypatch.setattr(pd.time, "sleep", lambda s: None)
+
+        calls = {"n": 0}
+
+        def always_failing_rmtree(path, *a, **kw):
+            calls["n"] += 1
+            raise OSError(145, "The directory is not empty")
+
+        monkeypatch.setattr(pd.shutil, "rmtree", always_failing_rmtree)
+        # Last attempt goes through rmtree_readonly, which retries PermissionError
+        # internally; OSError (WinError 145) propagates as-is.
+        monkeypatch.setattr(pd, "rmtree_readonly", lambda path, **kw: always_failing_rmtree(path))
+
+        with pytest.raises(OSError):
+            pd._remove_existing(dest)
+
+        assert calls["n"] == 3
+
+    def test_non_transient_error_raises_immediately(self, tmp_path, monkeypatch):
+        import hermes_cli.profile_distribution as pd
+
+        dest = tmp_path / "skills"
+        (dest / "alpha").mkdir(parents=True)
+
+        monkeypatch.setattr(pd.time, "sleep", lambda s: None)
+
+        def non_transient(path, *a, **kw):
+            raise OSError(2, "No such file or directory")  # winerror 2: not transient-lock
+
+        monkeypatch.setattr(pd.shutil, "rmtree", non_transient)
+
+        with pytest.raises(OSError):
+            pd._remove_existing(dest)
+
+        # no retry happened (first attempt raises straight through)
+        monkeypatch.setattr(pd.shutil, "rmtree", non_transient)
+

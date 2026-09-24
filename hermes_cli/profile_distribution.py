@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -359,10 +360,49 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             yield src, rel_parts
 
 
+def _rmtree_with_retry(path: Path, attempts: int = 3, initial_delay: float = 0.1) -> None:
+    """``shutil.rmtree`` with bounded retry/backoff for transient Windows handle locks.
+
+    Each retry clears the read-only bits first (Git/package trees) and backs off
+    (0.1s, 0.2s) so an indexer or AV releasing the handle has a chance to finish.
+    The last attempt uses plain ``shutil.rmtree`` semantics so genuine failures
+    still raise.
+    """
+    delay = initial_delay
+    for attempt in range(attempts):
+        try:
+            if attempt == attempts - 1:
+                rmtree_readonly(path)
+            else:
+                shutil.rmtree(path)
+            return
+        except (PermissionError, OSError) as exc:
+            if attempt == attempts - 1:
+                raise
+            # Transient-lock signatures: Windows WinError 145 (directory not
+            # empty), WinError 5/32 (access denied, sharing violation), and their
+            # POSIX analogues ENOTEMPTY / EBUSY / EACCES-adjacent PermissionError.
+            if not (isinstance(exc, PermissionError)
+                    or getattr(exc, "winerror", None) in (5, 32, 145)
+                    or getattr(exc, "errno", None) in (5, 16, 32, 39, 145)):
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
+
+
 def _remove_existing(path: Path) -> None:
-    """Remove one destination entry without following a destination symlink."""
+    """Remove one destination entry without following a destination symlink.
+
+    A transient handle lock (Explorer/AV/indexer, Windows ``WinError 145``) can fail
+    ``shutil.rmtree`` on an otherwise healthy tree (#52330); retry briefly with a
+    short backoff before giving up so a background indexer releasing a handle is not
+    fatal. Permission-style failures additionally get the read-only-tree treatment
+    from ``rmtree_readonly``.
+    """
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        _rmtree_with_retry(path)
     elif os.path.lexists(path):
         # Covers files, dangling/any symlinks, fifos and sockets alike.
         path.unlink()

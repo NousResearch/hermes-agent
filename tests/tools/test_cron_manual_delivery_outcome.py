@@ -1,5 +1,6 @@
 """Manual completion must report the exact execution's delivery outcome (#94926)."""
 
+import os
 import time
 
 import pytest
@@ -80,3 +81,43 @@ def test_completion_does_not_infer_delivery_from_a_later_job_record(monkeypatch,
     assert "delivery confirmed" not in summary
     assert "saved locally" not in summary
     assert ("unverified" in summary or "suppressed" in summary)
+
+
+@pytest.mark.parametrize("response,target,wording", [
+    ("local fixture output", "local", "locally only"),
+    ("[SILENT]", "telegram:123", "delivery suppressed"),
+])
+def test_completion_reads_outcome_from_real_external_worker(
+    monkeypatch, response, target, wording
+):
+    """A separate interpreter persists the outcome; no in-memory collector can supply it."""
+    from cron import executions, jobs
+    from hermes_constants import get_hermes_home
+    from tools import cronjob_tools as tool
+    from tools.process_registry import GatewayChildDispatch
+
+    scripts = get_hermes_home() / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "outcome_fixture.py").write_text(f"print({response!r})\n", encoding="utf-8")
+    # Select the existing direct-subprocess strategy without pretending this host
+    # has systemd. Launch, adoption, script execution and ledger writes stay real.
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **kwargs: GatewayChildDispatch("degraded", command),
+    )
+    job = jobs.create_job(
+        prompt="fixture", schedule="every 1h", script="outcome_fixture.py",
+        no_agent=True, deliver=target,
+    )
+    result = tool._execute_job_now(job)
+    record = executions.latest_execution(job["id"])
+
+    assert result["success"], result
+    assert record["status"] == "completed"
+    assert record["delivery_outcome"] == result["delivery_outcome"] == "suppressed"
+    assert record["pid"] != os.getpid()
+    summary = tool._manual_run_completion(
+        result, job["id"], "fixture", target, time.time()
+    )["summary"]
+    assert wording in summary
+    assert "delivery confirmed" not in summary

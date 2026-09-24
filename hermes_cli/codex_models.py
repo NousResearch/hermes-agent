@@ -154,13 +154,20 @@ def _ranked_slugs(entries: object) -> List[str]:
 def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
+        # Real Codex access tokens are JWTs; a custom base's gateway key is not one. Refusing to
+        # probe non-JWT credentials keeps the key off chatgpt.com (#121486) and skips a request
+        # that can never answer for it — mirroring the quota probe's gate in auth_codex.
+        from hermes_cli.auth_constants import DEFAULT_CODEX_BASE_URL, _decode_jwt_claims
+        if not access_token or not _decode_jwt_claims(access_token):
+            return []
+        catalog_base = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
         import httpx
         # The per-account catalog needs ChatGPT-Account-ID (else ``{"models":[]}`` with HTTP 200
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
         from agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
         from agent.model_metadata import fetch_codex_catalog_entries
-        entries, _status = fetch_codex_catalog_entries(lambda url: httpx.get(url, headers=headers, timeout=10))
+        entries, _status = fetch_codex_catalog_entries(lambda url: httpx.get(url, headers=headers, timeout=10), base_url=catalog_base)
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []

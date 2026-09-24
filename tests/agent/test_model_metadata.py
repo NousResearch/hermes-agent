@@ -34,6 +34,19 @@ from agent.model_metadata import (
 )
 
 
+def _codex_jwt(subject: str) -> str:
+    """JWT-shaped test stand-in: the live-probe path gates on the token parsing as a JWT
+    (a gateway key is not a ChatGPT credential and must stay off chatgpt.com, #121486);
+    the signature itself is never verified client-side."""
+    import base64 as _b64
+    import json as _json
+    def _enc(raw: bytes) -> str:
+        return _b64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    header = _enc(b'{"alg":"RS256"}')
+    payload = _enc(_json.dumps({"sub": subject}).encode())
+    return f"{header}.{payload}.test-signature"
+
+
 # =========================================================================
 # Token estimation
 # =========================================================================
@@ -440,26 +453,26 @@ class TestCodexOAuthContextLength:
             first = get_model_context_length(
                 "gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="token-account-a",
+                api_key=_codex_jwt("token-account-a"),
                 provider="openai-codex",
             )
             first_again = get_model_context_length(
                 "gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="token-account-a",
+                api_key=_codex_jwt("token-account-a"),
                 provider="openai-codex",
             )
             second = get_model_context_length(
                 "gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="token-account-b",
+                api_key=_codex_jwt("token-account-b"),
                 provider="openai-codex",
             )
 
         assert (first, first_again, second) == (272_000, 272_000, 372_000)
         assert mock_get.call_count == 2
-        assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer token-account-a"
-        assert mock_get.call_args_list[1].kwargs["headers"]["Authorization"] == "Bearer token-account-b"
+        assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == f"Bearer {_codex_jwt('token-account-a')}"
+        assert mock_get.call_args_list[1].kwargs["headers"]["Authorization"] == f"Bearer {_codex_jwt('token-account-b')}"
         assert mock_save.call_count == 2
         assert all(
             "token-account" not in key
@@ -481,11 +494,48 @@ class TestCodexOAuthContextLength:
             ctx = get_model_context_length(
                 model="gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="expired-token",
+                api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
 
+    def test_gateway_key_never_probes_the_direct_catalog(self):
+        """A custom base's credential is the gateway's key, not a ChatGPT token: sending it to
+        chatgpt.com leaks it to a service it does not belong to and can never answer (#121486).
+        The probe must decline (falling back to the static table) instead of firing."""
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+
+        with patch("agent.model_metadata.requests.get") as mock_get:
+            live, fresh = mm._fetch_codex_oauth_context_lengths_with_source("gateway-pool-key")
+
+        assert (live, fresh) == ({}, False)
+        mock_get.assert_not_called()
+
+    def test_custom_base_probes_its_own_catalog(self):
+        """A JWT reached through a custom Codex base probes that base's ``/models``, never the
+        hard-coded chatgpt.com host (#121486)."""
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": "gpt-5.5", "context_window": 272_000}]
+        }
+        with patch("agent.model_metadata.requests.get", return_value=fake_response) as mock_get, \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.5",
+                base_url="https://codex-gw.example/backend-api/codex",
+                api_key=_codex_jwt("acct"),
+                provider="openai-codex",
+            )
+
+        assert ctx == 272_000
+        assert mock_get.call_args.args[0].startswith(
+            "https://codex-gw.example/backend-api/codex/models?client_version=")
 
     @pytest.mark.parametrize(
         "stale_context,live_context",
@@ -522,7 +572,7 @@ class TestCodexOAuthContextLength:
             ctx = mm.get_model_context_length(
                 model="gpt-5.5",
                 base_url=base_url,
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
 
@@ -554,7 +604,7 @@ class TestCodexOAuthContextLength:
             ctx = get_model_context_length(
                 model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
@@ -579,7 +629,7 @@ class TestCodexOAuthContextLength:
                 ctx = get_model_context_length(
                     model="gpt-5.6-sol-900k",
                     base_url="https://chatgpt.com/backend-api/codex",
-                    api_key="fake-token",
+                    api_key=_codex_jwt("fake-token"),
                     provider="openai-codex",
                 )
             assert ctx == advertised, f"advertised {advertised} must be trusted"
@@ -603,7 +653,7 @@ class TestCodexOAuthContextLength:
             ctx = get_model_context_length(
                 model="gpt-5.6-luna-900k",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == expected
@@ -624,7 +674,7 @@ class TestCodexOAuthContextLength:
             ctx = get_model_context_length(
                 model="gpt-5.6-sol",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
@@ -646,7 +696,7 @@ class TestCodexOAuthContextLength:
             ctx = get_model_context_length(
                 model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="expired-token",
+                api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
         assert ctx == 900_000
@@ -666,7 +716,7 @@ class TestCodexOAuthContextLength:
             ctx = get_model_context_length(
                 model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="expired-token",
+                api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
@@ -719,7 +769,7 @@ class TestCodexOAuthContextLength:
             ctx = get_model_context_length(
                 model=model_id,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == expected_ctx

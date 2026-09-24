@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
-from agent.subprocess_utils import create_subprocess
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 from agent.lsp.protocol import (
@@ -28,6 +27,10 @@ from agent.lsp.protocol import (
 )
 
 logger = logging.getLogger("agent.lsp.client")
+
+# asyncio's 64 KiB StreamReader default makes readline() raise on one long LSP
+# stderr line (#31417); 16 MiB covers realistic output while staying bounded.
+_STREAM_LIMIT = 16 * 1024 * 1024
 
 # Timeouts (seconds).
 INITIALIZE_TIMEOUT = 45.0
@@ -253,8 +256,8 @@ class LSPClient:
             # the gateway's pgid and mcp_tool's orphan sweeper can killpg() the TUI parent with it.
             # windows_hide_flags() suppresses the console window a .cmd shim would flash from a
             # console-less host (CREATE_NO_WINDOW; 0 on POSIX).
-            self._proc = await create_subprocess(
-                cmd[0], *cmd[1:],
+            self._proc = await asyncio.create_subprocess_exec(
+                cmd[0], *cmd[1:], limit=_STREAM_LIMIT,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=delegated_child_subprocess_env({**os.environ, **(self._env or {})}), cwd=self._cwd,
                 start_new_session=True, creationflags=windows_hide_flags(),

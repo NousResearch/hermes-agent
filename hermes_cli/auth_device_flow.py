@@ -320,9 +320,10 @@ def _poll_device_token_generic(
     on_timeout: Callable[[], Exception]) -> Dict[str, Any]:
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 
-    ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
-    Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
-    via the supplied factories so each caller keeps its exact error contract.
+    ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by
+    5s (cap 30s), per RFC 8628 §3.5. Every other error, a non-JSON error body, and the
+    deadline become provider-specific exceptions via the supplied factories so each
+    caller keeps its exact error contract.
     """
     deadline = time.monotonic() + max(1, expires_in)
     current_interval = poll_interval
@@ -342,7 +343,10 @@ def _poll_device_token_generic(
             time.sleep(current_interval)
             continue
         if error_code == "slow_down":
-            current_interval = min(current_interval + 1, 30)
+            # RFC 8628 §3.5: the interval MUST increase by 5s "for this and all
+            # subsequent requests". The old +1s kept the client above the server's
+            # rate limit, so every poll kept drawing slow_down (#121254).
+            current_interval = min(current_interval + 5, 30)
             time.sleep(current_interval)
             continue
         raise on_error(response, error_payload)

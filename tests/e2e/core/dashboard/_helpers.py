@@ -31,6 +31,8 @@ import yaml
 
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
+from . import _reaper
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TOKEN_HEADER = "X-Hermes-Session-Token"
 PROVIDER_KEY_ENV = "DASH_PROVIDER_KEY"  # same NAME in every profile's .env, distinct VALUE
@@ -129,6 +131,7 @@ class Profile:
 class Sandbox:
     root: Path
     profiles: dict[str, Profile]
+    _released: bool = False
 
     @property
     def home(self) -> Path:
@@ -141,31 +144,28 @@ class Sandbox:
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         return hermetic_env(self.home, extra)
 
-    def stop(self) -> None:
-        for p in self.profiles.values():
-            if p.srv is not None:
-                p.srv.stop()
-        reap_sandbox(self.home)
-
-
-def reap_sandbox(home: Path) -> list[int]:
-    """SIGKILL every process whose environment points HOME into this sandbox.
-
-    Detached children (``hermes gateway restart`` spawned by a dashboard action, keep-alive PTY
-    helpers) start their own session and escape the dashboard's process group; without this a
-    regression that lets such a route fire would leak processes past the test."""
-    needle = f"HOME={home}".encode()
-    killed = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit() or int(entry.name) == os.getpid():
-            continue
+    def finish(self, *also: _reaper.Finder) -> None:
+        """Stop the providers, then wait for every sandbox process (HOME in this sandbox, plus
+        whatever ``also`` reports) to exit on its own; see ``_reaper``. Survivors past the
+        deadline are killed and fail the test as a leak, AFTER all cleanup has run. Call from a
+        fixture finalizer: a teardown error is reported on its own and never merges into a strict
+        xfail's call outcome."""
         try:
-            if needle in (entry / "environ").read_bytes().split(b"\0"):
-                os.kill(int(entry.name), signal.SIGKILL)
-                killed.append(int(entry.name))
-        except (OSError, ProcessLookupError):
-            continue
-    return killed
+            for p in self.profiles.values():
+                if p.srv is not None:
+                    p.srv.stop()
+            leaks = _reaper.reap(_reaper.with_home(self.home), *also)
+        finally:
+            if not self._released:
+                self._released = True
+                _reaper.release_orphans()
+        if leaks:
+            raise SandboxLeak(f"{len(leaks)} sandbox process(es) outlived the test by "
+                              f"{_reaper.REAP_TIMEOUT:.0f}s and were killed:\n  " + "\n  ".join(leaks))
+
+
+class SandboxLeak(AssertionError):
+    """A process spawned inside the sandbox was still running after teardown's deadline."""
 
 
 def write_profile_home(p: Profile, extra_config: dict[str, Any] | None = None) -> None:
@@ -190,6 +190,7 @@ def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
     that accepts only its own key, so every recorded request proves WHO sent it."""
     hermes_home = root / "home" / ".hermes"
     profiles: dict[str, Profile] = {}
+    _reaper.adopt_orphans()  # before any spawn: every detached descendant stays reapable
     for name in names:
         home = hermes_home if name == "default" else hermes_home / "profiles" / name
         p = Profile(name=name, home=home)
@@ -303,30 +304,10 @@ class Dashboard:
         self._log.close()
 
 
-def pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    stat = Path(f"/proc/{pid}/stat")
-    return not (stat.exists() and stat.read_text().split(") ", 1)[-1].startswith("Z"))
-
-
-def group_pids(pgid: int) -> list[int]:
-    """Live, non-zombie pids of a process group (the dashboard runs as its own group leader)."""
-    out: list[int] = []
-    for d in Path("/proc").iterdir():
-        if not d.name.isdigit():
-            continue
-        try:
-            fields = (d / "stat").read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            continue
-        if fields[0] != "Z" and int(fields[2]) == pgid:
-            out.append(int(d.name))
-    return out
+def group_members(pgid: int) -> dict[_reaper.Identity, str]:
+    """Live members of a process group (the dashboard runs as its own group leader), by identity."""
+    return {(pid, int(fields[19])): _reaper.cmdline(pid)
+            for pid, fields in _reaper.all_stats().items() if int(fields[2]) == pgid}
 
 
 # State readers -------------------------------------------------------------------------------------

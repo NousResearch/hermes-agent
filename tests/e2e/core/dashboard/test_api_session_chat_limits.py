@@ -43,7 +43,7 @@ def gateway(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Sandbox,
     finally:
         if gw is not None:
             gw.stop()
-        sb.stop()
+        sb.finish()
 
 
 def _long_message(n: int) -> tuple[str, str, str]:

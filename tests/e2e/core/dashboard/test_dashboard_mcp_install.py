@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.e2e.core.dashboard._helpers import make_sandbox
+from tests.e2e.core.dashboard._helpers import Sandbox, make_sandbox
 from tests.e2e.core.dashboard._issue_helpers import Issue120527, PtyDashboard, xfail_known
 
 INSTALL_DEADLINE_S = 30.0  # a healthy install (write config + spawn/probe a local server) takes ~2 s
@@ -41,6 +41,15 @@ KNOWN: dict[str, tuple[str, type]] = {
         "#120527 dashboard MCP catalog install reaches the interactive tool checklist on the serve "
         "worker thread when stdin is a TTY and wedges _SKILLS_PROFILE_LOCK", Issue120527),
 }
+
+
+@pytest.fixture
+def sb(tmp_path: Path):
+    sandbox = make_sandbox(tmp_path)
+    try:
+        yield sandbox
+    finally:
+        sandbox.finish()
 
 
 def _write_catalog(root: Path, name: str) -> Path:
@@ -68,12 +77,11 @@ def _ws_opens(url: str, timeout: float) -> str:
         return f"{type(exc).__name__}: {exc}"
 
 
-def _install_and_probe(tmp_path: Path, *, tty: bool, wedge_exc: type[AssertionError]) -> dict:
+def _install_and_probe(sb: Sandbox, tmp_path: Path, *, tty: bool, wedge_exc: type[AssertionError]) -> dict:
     """Install the fixture entry through the dashboard, then probe the server's liveness.
 
     Raises ``wedge_exc`` when the install misses its deadline or a follow-up request stalls;
     returns the installed ``mcp_servers.<name>`` block when the install answered 200."""
-    sb = make_sandbox(tmp_path)
     name = f"dashfix-{sb.profiles['default'].tag}"
     catalog = _write_catalog(tmp_path, name)
     dash = PtyDashboard(sb, tmp_path / "dashboard.log", extra_env={"HERMES_OPTIONAL_MCPS": str(catalog)}, tty=tty)
@@ -124,18 +132,17 @@ def _install_and_probe(tmp_path: Path, *, tty: bool, wedge_exc: type[AssertionEr
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
         dash.close()
-        sb.stop()
 
 
-def test_catalog_install_from_headless_dashboard_completes_with_all_probed_tools(tmp_path: Path) -> None:
+def test_catalog_install_from_headless_dashboard_completes_with_all_probed_tools(sb: Sandbox, tmp_path: Path) -> None:
     """Control (enforced): the same install from a stdin=/dev/null dashboard answers 200 promptly,
     leaves the server responsive, and — the manifest declaring no default_enabled — writes no tool
     filter, so both probed fixture tools stay enabled."""
-    block = _install_and_probe(tmp_path, tty=False, wedge_exc=AssertionError)
+    block = _install_and_probe(sb, tmp_path, tty=False, wedge_exc=AssertionError)
     assert block, "headless install did not answer 200"
     assert block.get("enabled") is True and "tools" not in block, f"unexpected tool filter: {block}"
 
 
 @xfail_known(KNOWN, "test_catalog_install_from_tty_launched_dashboard_never_wedges_the_server")
-def test_catalog_install_from_tty_launched_dashboard_never_wedges_the_server(tmp_path: Path) -> None:
-    _install_and_probe(tmp_path, tty=True, wedge_exc=Issue120527)
+def test_catalog_install_from_tty_launched_dashboard_never_wedges_the_server(sb: Sandbox, tmp_path: Path) -> None:
+    _install_and_probe(sb, tmp_path, tty=True, wedge_exc=Issue120527)

@@ -80,7 +80,7 @@ def env(tmp_path_factory: pytest.TempPathFactory):
         yield sb, p, d
     finally:
         d.close()
-        sb.stop()
+        sb.finish()
 
 
 def _read_round(d: H.Dashboard, committed: Callable[[], int]) -> list[str]:

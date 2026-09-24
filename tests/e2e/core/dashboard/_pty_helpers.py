@@ -12,24 +12,23 @@ separate writes, and the CR is only sent once the text is echoed in the composer
 Process bookkeeping (``ProcessLedger``) records every descendant of the dashboard by (pid, start
 time) plus the session ids they lead: ``ptyprocess`` makes each TUI a session leader outside the
 dashboard's process group, so a group kill does not reach it and only the dashboard's own shutdown
-path can.
+path can. Cleanup of what it records goes through ``_reaper`` like every other sandbox process.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
-import signal
 import threading
 import time
-from pathlib import Path
 from typing import Any, Callable
 
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 from tests.e2e.core.terminal._vt import Screen
+
+from ._reaper import Identity, all_stats, cmdline
 
 _WS = re.compile(r"\s+")
 _DIGITS = re.compile(r"\d")
@@ -167,45 +166,19 @@ class WsTerm:
 # -- process bookkeeping ---------------------------------------------------------------------------
 
 
-def _stat(pid: int) -> list[str] | None:
-    """Fields after ``comm`` of a live, non-zombie process (state is index 0)."""
-    try:
-        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-    except (OSError, IndexError):
-        return None
-    return None if fields[0] in ("Z", "X") else fields
-
-
-def _start_time(pid: int) -> int | None:
-    fields = _stat(pid)
-    return int(fields[19]) if fields else None
-
-
-def cmdline(pid: int) -> str:
-    try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
-    except OSError:
-        return "?"
-
-
-def _all_stats() -> dict[int, list[str]]:
-    out = {}
-    for entry in os.listdir("/proc"):
-        if entry.isdigit() and (fields := _stat(int(entry))) is not None:
-            out[int(entry)] = fields
-    return out
-
-
 class ProcessLedger:
-    """Every process the dashboard (transitively) spawned, keyed by (pid, start time)."""
+    """Every process the dashboard (transitively) spawned, keyed by (pid, start time).
+
+    ``identities`` is a ``_reaper`` finder: the fixture hands it to ``Sandbox.finish`` so the
+    ledger's processes go through the same wait-then-identity-checked-kill as the sandbox's."""
 
     def __init__(self, root_pid: int) -> None:
         self.root_pid = root_pid
-        self.seen: dict[tuple[int, int], str] = {}
+        self.seen: dict[Identity, str] = {}
         self.sids: set[int] = set()
 
     def snapshot(self) -> list[int]:
-        stats = _all_stats()
+        stats = all_stats()
         children: dict[int, list[int]] = {}
         for pid, fields in stats.items():
             children.setdefault(int(fields[1]), []).append(pid)
@@ -222,22 +195,9 @@ class ProcessLedger:
             self.seen.setdefault((pid, int(stats[pid][19])), cmdline(pid))
         return sorted(found)
 
-    def survivors(self) -> list[str]:
-        live = {pid for pid, started in self.seen if _start_time(pid) == started}
-        live |= {pid for pid, fields in _all_stats().items() if int(fields[3]) in self.sids}
-        return [f"{pid}: {cmdline(pid)[:160]}" for pid in sorted(live)]
-
-    def kill_survivors(self) -> list[str]:
-        """Hard cleanup of exactly the processes recorded here (identity-checked, never by pattern).
-        Uses the real ``kill(2)``: a survivor reparented to init is outside pytest's subtree, which
-        the suite-wide live-system guard would otherwise refuse, yet it is provably ours (same pid
-        AND kernel start time as recorded while it descended from the dashboard)."""
-        import posix
-        left = self.survivors()
-        for (pid, started) in list(self.seen):
-            if _start_time(pid) == started:
-                try:
-                    posix.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-        return left
+    def identities(self) -> dict[Identity, str]:
+        """Recorded processes plus current members of any recorded PTY session."""
+        live = dict(self.seen)
+        live.update({(pid, int(fields[19])): cmdline(pid)
+                     for pid, fields in all_stats().items() if int(fields[3]) in self.sids})
+        return live

@@ -44,7 +44,7 @@ def fleet(tmp_path_factory: pytest.TempPathFactory):
         yield sb, d
     finally:
         d.close()
-        sb.stop()
+        sb.finish()
 
 
 def _files(sb: H.Sandbox) -> dict[str, bytes]:

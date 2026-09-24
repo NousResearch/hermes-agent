@@ -31,8 +31,9 @@ from typing import Any
 import httpx
 
 from tests.e2e.core.dashboard._helpers import (
-    _READY_RE, _TOKEN_RE, Dashboard, Sandbox, group_pids, kill_group, poll,
+    _READY_RE, _TOKEN_RE, Dashboard, Sandbox, group_members, kill_group, poll,
 )
+from tests.e2e.core.dashboard._reaper import kill_identified
 
 
 class KnownIssue(AssertionError):
@@ -117,13 +118,11 @@ class PtyDashboard(Dashboard):
     def close(self) -> None:
         with contextlib.suppress(Exception):
             self.http.close()
-        pids = group_pids(self.proc.pid)
+        members = group_members(self.proc.pid)
         kill_group(self.proc)  # SIGKILL: a wedged worker thread blocks any graceful exit
         with contextlib.suppress(Exception):
             self.proc.wait(timeout=15)
-        for pid in pids:  # anything that left the group (setsid'd MCP children) but was ours
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signal.SIGKILL)
+        kill_identified(members)  # recorded members that left the group since (setsid'd MCP children)
         if self.pty_master >= 0:
             with contextlib.suppress(OSError):
                 os.close(self.pty_master)

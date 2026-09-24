@@ -17,8 +17,9 @@ Contract under test (``hermes_cli/web_routers/chat_ws.py::pty_ws`` + ``hermes_cl
 Not a cell: "dashboard shutdown leaves no TUI behind". It holds, but it cannot be made red from the
 dashboard side: with ``PtySessionRegistry.close_all`` disabled (and even with the child ignoring
 SIGHUP) the TUI still exits when the dying dashboard's PTY master closes (kernel hangup / EIO) and
-its ``tui_gateway`` exits on stdin EOF. The fixture still waits for, reports and reaps any
-descendant that outlives the dashboard, so a leak cannot poison later tests.
+its ``tui_gateway`` exits on stdin EOF. The fixture still waits for every descendant to exit and
+fails the test (after an identity-checked kill) on any that outlives the dashboard, so a leak is
+reported and cannot poison later tests.
 """
 
 from __future__ import annotations
@@ -182,14 +183,7 @@ def dash_env(tmp_path: Path):
         try:
             dash.close()
         finally:
-            try:
-                poll(lambda: not ledger.survivors(), 30, "dashboard descendants to exit")
-            except AssertionError:
-                pass
-            left = ledger.kill_survivors()
-            if left:
-                print("teardown killed dashboard leftovers:\n  " + "\n  ".join(left), file=sys.stderr)
-            sb.stop()
+            sb.finish(ledger.identities)
 
 
 def _assert_labelled(term: WsTerm, profile: str) -> None:

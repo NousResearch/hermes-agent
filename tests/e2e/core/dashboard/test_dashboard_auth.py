@@ -54,7 +54,7 @@ def dash(tmp_path_factory: pytest.TempPathFactory):
         yield d
     finally:
         d.close()
-        sb.stop()
+        sb.finish()
 
 
 @pytest.fixture(scope="module")

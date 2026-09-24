@@ -569,9 +569,14 @@ class MCPServerTransportMixin:
             # the MCP spec's transport-fallback behavior describes. Never on reconnect after a
             # proven session (``_ever_connected``: a genuine rejection on an established
             # transport must not silently switch transports), never on a timeout (not a
-            # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
-            # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
-            if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
+            # transport mismatch — ``_is_streamable_http_rejection`` matches neither), never
+            # with ``strict_redirect_headers`` (SSE cannot enforce that boundary), and never
+            # when the recorder saw a 5xx: mcp >= 2.0 folds that too into the opaque -32603,
+            # but it is a server fault, not a transport mismatch — re-raise so the transient
+            # retry ladder retries over Streamable HTTP (#121933).
+            if (self._ever_connected or common[-1]
+                    or self._http_rejection.get("status", 0) >= 500
+                    or not _is_streamable_http_rejection(exc)):
                 if http_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
                     raise ConnectionError(f"MCP server '{self.name}': Streamable HTTP connect failed "
                                           f"({http_detail})") from exc

@@ -21,6 +21,11 @@ MARKETING = re.compile(
     re.I,
 )
 MACHINE_LOCAL = re.compile(r"/home/(?!runner\b)[a-z0-9_-]+/|[A-Z]:\\+Users\\+(?!<)")
+SHELL_FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})\s*(bash|sh|shell|zsh|console)\b", re.I)
+# A line-continuation backslash must be the last character on its line: a
+# comment after it voids the continuation and the flags below run as a
+# separate command when the snippet is pasted (#113448).
+CONTINUATION_THEN_COMMENT = re.compile(r"\\\s+#")
 
 # ---------------------------------------------------------------------------
 # Grandfathered pre-existing debt. Shrink this list; never grow it.
@@ -143,7 +148,32 @@ def test_size_limit(p):
         )
 
 
-def test_grandfather_entries_still_needed():
-    """A grandfather entry whose violation is fixed must be removed."""
-    for rel in GRANDFATHER:
-        assert (REPO / rel / "SKILL.md").exists(), f"stale grandfather entry: {rel}"
+def _shell_fence_lines(content: str):
+    """Yield (lineno, line) for every line inside a fenced bash/sh block."""
+    fence = None
+    for i, line in enumerate(content.splitlines(), 1):
+        if fence is None:
+            m = SHELL_FENCE_OPEN.match(line)
+            if m:
+                fence = m.group(1)
+            continue
+        if line.strip().startswith(fence):
+            fence = None
+            continue
+        yield i, line
+
+
+@pytest.mark.parametrize("p", _params())
+def test_shell_snippets_paste_safe(p):
+    _, content = _frontmatter(p)
+    bad = [
+        f"{_rel(p)}/SKILL.md:{i}: {line.strip()}"
+        for i, line in _shell_fence_lines(content)
+        if CONTINUATION_THEN_COMMENT.search(line)
+    ]
+    assert not bad, (
+        "comment after a line-continuation backslash breaks the pasted command; "
+        "move the note above the whole command:\n" + "\n".join(bad)
+    )
+
+

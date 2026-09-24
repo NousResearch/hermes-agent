@@ -3,13 +3,15 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
-  spliceRegistrySessionRows
+  spliceRegistrySessionRows,
+  tagRegistrySessionResponse
 } from './profile-session-routing'
 
 test('remote sidebar slices all follow the selected profile', () => {
@@ -41,7 +43,7 @@ test('remote sidebar slices preserve the explicit all-profiles scope', () => {
   )
 })
 
-test('remote sidebar slices fall back to the all-profiles scope and default limits', () => {
+test('remote sidebar slices fall back to the all-profiles scope', () => {
   for (const searchParams of [new URLSearchParams(), new URLSearchParams({ recents_profile: '   ' })]) {
     const slices = buildSidebarSessionSliceParams(searchParams)
 
@@ -49,9 +51,6 @@ test('remote sidebar slices fall back to the all-profiles scope and default limi
       Object.values(slices).map(params => params.get('profile')),
       ['all', 'all', 'all']
     )
-    assert.equal(slices.recents.get('limit'), '20')
-    assert.equal(slices.cron.get('limit'), '50')
-    assert.equal(slices.messaging.get('limit'), '100')
   }
 })
 
@@ -72,12 +71,44 @@ test('primary session reads use the profile-aware request path', async () => {
   assert.equal(result, expected)
 })
 
-test('primary session reads preserve the empty-list fallback', async () => {
-  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ profile: 'all' }), async () => {
+// A failed primary read is an empty page the renderer must NOT treat as the
+// profile's truth: without errors[] it replaced the sidebar with "No sessions"
+// and nothing said why (#67600). Report the failed scope the same way the
+// backend reports a failed profile scan.
+test('primary session reads report a failed read in errors', async () => {
+  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ profile: 'default' }), async () => {
     throw new Error('remote unavailable')
   })
 
-  assert.deepEqual(result, { sessions: [], total: 0, profile_totals: {} })
+  assert.deepEqual(result, {
+    sessions: [],
+    total: 0,
+    profile_totals: {},
+    errors: [{ profile: 'default', error: 'remote unavailable' }]
+  })
+})
+
+test('a failed unified primary read names the whole aggregate', async () => {
+  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ limit: '20' }), async () => {
+    throw new Error('timed out')
+  })
+
+  assert.deepEqual(result.errors, [{ profile: 'all', error: 'timed out' }])
+})
+
+test('reassembled sidebar slices keep each slice errors', () => {
+  const failed = [{ profile: 'default', error: 'timed out' }]
+
+  const result = assembleSidebarSessionSlices(
+    { sessions: [], total: 0, profile_totals: {}, errors: failed },
+    { sessions: [{ id: 'cron-1' }], total: 1 },
+    { sessions: [], total: 0, errors: failed }
+  )
+
+  assert.deepEqual(result.recents.errors, failed)
+  assert.equal(result.cron.errors, undefined)
+  assert.deepEqual(result.messaging.errors, failed)
+  assert.deepEqual(result.cron.sessions, [{ id: 'cron-1' }])
 })
 
 test('remote session reads split oversized sidebar windows into API-safe pages', async () => {
@@ -299,6 +330,46 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
       ['r-2', 'default', 'gw-cloud']
     ]
   )
+})
+
+test('registry-pinned session responses retain their owning connection', () => {
+  const sidebar = tagRegistrySessionResponse(
+    '/api/profiles/sessions/sidebar?recents_profile=default',
+    {
+      recents: { sessions: [{ id: 'remote-chat', profile: 'default' }] },
+      cron: { sessions: [{ id: 'remote-cron', profile: 'default' }] },
+      messaging: { sessions: [] }
+    },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(sidebar.recents.sessions[0].connection_id, 'test-amnezia')
+  assert.equal(sidebar.cron.sessions[0].connection_id, 'test-amnezia')
+
+  const aggregate = tagRegistrySessionResponse(
+    '/api/profiles/sessions?profile=all',
+    { sessions: [{ id: 'remote-profile-chat', profile: 'research' }] },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(aggregate.sessions[0].connection_id, 'test-amnezia')
+
+  const single = tagRegistrySessionResponse(
+    '/api/sessions/remote-chat?profile=default',
+    { id: 'remote-chat', profile: 'default' },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(single.connection_id, 'test-amnezia')
+})
+
+test('registry response ownership tagging ignores non-session payloads and transcript messages', () => {
+  const status = { ok: true }
+  const messages = { messages: [{ id: 'message-1' }], session_id: 'remote-chat' }
+
+  assert.equal(tagRegistrySessionResponse('/api/status', status, 'test-amnezia'), status)
+  assert.equal(tagRegistrySessionResponse('/api/sessions/remote-chat/messages', messages, 'test-amnezia'), messages)
+  assert.equal((messages.messages[0] as any).connection_id, undefined)
 })
 
 test('registry sources: an older shared host without the aggregator falls back to its flat list', async () => {

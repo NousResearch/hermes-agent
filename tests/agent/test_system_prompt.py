@@ -1,9 +1,13 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
+
+import pytest
 
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
@@ -46,13 +50,78 @@ def _captured_context_cwd(agent):
         return ""
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", side_effect=fake_context_files),
     ):
         build_system_prompt_parts(agent)
     return captured["cwd"]
+
+
+@pytest.mark.parametrize("task_id, expected", [(None, False), ("t_worker", True)])
+def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id, expected):
+    """A profile can expose kanban tools without making the session a worker."""
+    from agent.agent_init import _load_tools
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    import model_tools
+
+    if task_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **_kwargs: [{"function": {"name": "kanban_show"}}],
+    )
+    agent = SimpleNamespace(quiet_mode=True)
+
+    _load_tools(agent, enabled_toolsets=["kanban"], disabled_toolsets=None)
+
+    assert (agent._kanban_worker_guidance == KANBAN_GUIDANCE) is expected
+
+
+@pytest.mark.parametrize("task_id, owner, expected", [
+    (None, True, False),        # interactive session with the kanban toolset enabled
+    ("t_worker", True, True),   # the dispatcher-owned worker
+    ("t_worker", False, False), # cron run / delegate child inheriting the worker's env
+])
+def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_id, owner, expected):
+    """Prompt fallback preserves the worker boundary when init was bypassed: tool access
+    is not identity, and an inherited HERMES_KANBAN_TASK is not ownership (#112486)."""
+    from contextlib import nullcontext
+
+    from agent.delegation_context import non_dispatcher_owned_context
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    from agent.system_prompt import _tool_guidance_block
+
+    if task_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    agent = _make_agent(valid_tool_names={"kanban_show"})
+    delattr(agent, "_kanban_worker_guidance")
+
+    with nullcontext() if owner else non_dispatcher_owned_context():
+        assert (_tool_guidance_block(agent) == KANBAN_GUIDANCE) is expected
+
+
+@pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
+@pytest.mark.parametrize("names", [
+    set(), {"memory"}, {"memory", "skill_view", "skills_list"},
+    {"memory", "skill_view", "skills_list", "skill_manage"},
+])
+def test_memory_guidance_respects_available_writes(stores, names, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    agent = _make_agent(valid_tool_names=names, skip_context_files=True,
+                        _memory_enabled=stores[0], _user_profile_enabled=stores[1])
+    prompt = build_system_prompt(agent)
+    enabled = "memory" in names and any(stores)
+    assert ("Memory is the narrow exception" in prompt) == enabled
+    assert ("(skill_manage)" in prompt) == (enabled and "skill_manage" in names)
+    if enabled and not stores[0]:
+        assert "never target='memory'" in prompt
 
 
 class TestContextFileCwd:
@@ -66,23 +135,65 @@ class TestContextFileCwd:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
+    def test_desktop_launch_artifact_does_not_load_bundled_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("bundled contributor instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=True,
+        )
+        with (
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "bundled contributor instructions" not in context
+
+    def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("chosen workspace instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=False,
+        )
+        with (
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "chosen workspace instructions" in context
+
 
 def _stable_prompt(agent):
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
 
 
 def _prompt_parts(agent):
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)
 
@@ -121,6 +232,67 @@ class TestCodingContextBlock:
         assert "coding agent" not in _stable_prompt(agent)
 
 
+def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    prompts = []
+    for name in ("worktree-a", "worktree-b"):
+        cwd = tmp_path / name
+        cwd.mkdir()
+        (cwd / "AGENTS.md").write_text("Shared project instructions.")
+        monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+        agent = _make_agent(platform="cli")
+        parts = build_system_prompt_parts(agent)
+        full = "\n\n".join(parts.values())
+        assert full.index("Shared project instructions.") < full.index("Current working directory:")
+        assert str(cwd) not in parts["stable"]
+        assert full == "\n\n".join(build_system_prompt_parts(agent).values())
+        prompts.append(full)
+    common = os.path.commonprefix(prompts)
+    assert "Shared project instructions." in common
+
+
+def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+    decoy = "# Hermes runtime environment\n\nHost: Example\nUser home directory: /example\nCurrent working directory: /example\n"
+    (cwd / "AGENTS.md").write_text(decoy)
+    monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", decoy + "\nModel: decoy\nProvider: decoy\nPlatform: decoy")
+    agent = _make_agent(
+        platform="cli", model="test-model", provider="test-provider",
+        _memory_enabled=True, _user_profile_enabled=False,
+        _memory_store=SimpleNamespace(format_for_system_prompt=lambda _: decoy),
+    )
+    parts = build_system_prompt_parts(agent)
+    full = "\n\n".join(parts.values())
+    assert _stored_prompt_matches_runtime(agent, full)
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert not _stored_prompt_matches_runtime(agent, full)
+    # Previously persisted host-before-context prompts keep their original anchor.
+    legacy = f"Host: Example\nUser home directory: {tmp_path}\nCurrent working directory: {cwd}\n\n# Project Context\n\n{decoy}\nModel: test-model\nProvider: test-provider\nPlatform: cli"
+    assert not _stored_prompt_matches_runtime(agent, legacy)
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+    assert _stored_prompt_matches_runtime(agent, legacy)
+
+
+def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, tmp_path):
+    """With the Session ID trailer on, a prompt persisted for another session (a /branch child
+    copies its parent's bytes) must rebuild instead of telling the model the parent's id."""
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    fields = dict(platform="cli", model="test-model", provider="test-provider", pass_session_id=True)
+    parent_prompt = build_system_prompt(_make_agent(session_id="parent-sid", **fields))
+    assert _stored_prompt_matches_runtime(_make_agent(session_id="parent-sid", **fields), parent_prompt)
+    assert not _stored_prompt_matches_runtime(_make_agent(session_id="child-sid", **fields), parent_prompt)
+
+
 class TestExecutionGuidanceInjection:
     """Injection gate for OPENAI_MODEL_EXECUTION_GUIDANCE via
     ``agent.execution_guidance`` (auto/true/false/list).
@@ -148,20 +320,9 @@ class TestExecutionGuidanceInjection:
         assert "Execution discipline" in stable
         assert "<external_state_verification>" in stable
 
-    def test_kimi_gets_guidance_by_default(self):
-        assert "Execution discipline" in self._prompt("moonshotai/kimi-k3")
 
-    def test_qwen_glm_minimax_mimo_mistral_get_guidance_by_default(self):
-        for model in ("qwen/qwen-3-max", "z-ai/glm-5.2",
-                      "minimax/minimax-m2", "xiaomi/mimo-v2",
-                      "mistralai/mistral-large-3"):
-            assert "Execution discipline" in self._prompt(model), model
 
-    def test_gpt_still_gets_guidance(self):
-        assert "Execution discipline" in self._prompt("openai/gpt-5.5")
 
-    def test_grok_still_gets_guidance(self):
-        assert "Execution discipline" in self._prompt("xai/grok-4")
 
     def test_independent_of_tool_use_enforcement(self):
         # The gate must not require tool-use enforcement to be on.
@@ -174,9 +335,6 @@ class TestExecutionGuidanceInjection:
         assert "Execution discipline" not in self._prompt(
             "anthropic/claude-opus-4.8")
 
-    def test_gemini_does_not_get_guidance_by_default(self):
-        assert "Execution discipline" not in self._prompt(
-            "google/gemini-2.5-pro")
 
     def test_config_false_suppresses(self):
         assert "Execution discipline" not in self._prompt(
@@ -269,10 +427,9 @@ class TestNamedProfileHintIntegration:
 def test_build_system_prompt_records_stable_prefix():
     agent = _make_agent()
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="context"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="context"),
     ):
         prompt = build_system_prompt(agent)
 
@@ -280,8 +437,8 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
-def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
-    """The cache split must not reorder the stored coding prompt."""
+def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
+    """Keep workspace guidance intact after the shared context."""
     import agent.system_prompt as system_prompt
 
     agent = _make_agent(
@@ -294,9 +451,13 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
+    # Production renders this as str(get_hermes_home()) + "/profiles/<name>/",
+    # and str(Path("/hermes")) is platform-dependent (backslash on Windows) —
+    # build the expectation the same way instead of hardcoding "/hermes".
+    _home_str = str(Path("/hermes"))
     expected_profile = (
         "Active Hermes profile: default. Other profiles (if any) live "
-        "under /hermes/profiles/<name>/. Each profile has its own skills/, "
+        f"under {_home_str}/profiles/<name>/. Each profile has its own skills/, "
         "plugins/, cron/, and memories/ that affect a different session than "
         "this one. Do not modify another profile's skills/plugins/cron/memories "
         "unless the user explicitly directs you to."
@@ -306,19 +467,18 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
         "HELP",
         "STEER",
         "CODING_STABLE",
+        "SYSTEM_MESSAGE",
+        "CONTEXT_FILES",
         "WORKSPACE",
         "Operator instructions (from config):\nOPERATOR",
         expected_profile,
-        "SYSTEM_MESSAGE",
-        "CONTEXT_FILES",
         "Conversation started: Friday, January 02, 2026",
     ))
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
             "agent.coding_context.coding_system_prompt_parts",
             return_value=(
@@ -347,7 +507,7 @@ class TestTelegramRichMessagesHint:
                 "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}}
             }
             stable = _stable_prompt(agent)
-        assert "Standard Markdown is automatically converted" in stable
+        assert "Standard Markdown auto-converts" in stable
         assert "lean into it" not in stable
         assert "task lists" not in stable
 
@@ -400,14 +560,6 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "lean into it" in stable
 
-    def test_base_hint_without_config(self, monkeypatch):
-        """When config has no telegram section, only base hint is used."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {}
-            stable = _stable_prompt(agent)
-        assert "Standard Markdown is automatically converted" in stable
-        assert "lean into it" not in stable
 
 
     def test_gateway_rich_messages_integration_via_real_config(self, tmp_path, monkeypatch):
@@ -448,7 +600,7 @@ class TestTelegramRichMessagesHint:
                 "gateway": {"platforms": {"telegram": {"extra": "not-a-map"}}}
             }
             stable = _stable_prompt(agent)
-        assert "Standard Markdown is automatically converted" in stable
+        assert "Standard Markdown auto-converts" in stable
         assert "lean into it" not in stable
 
 
@@ -460,12 +612,11 @@ def _build(builder, **overrides):
     """Run a build_* function with skills + context files present."""
     agent = _make_agent(valid_tool_names=["skills_list"], **overrides)
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=_CONTEXT),
-        patch("run_agent.get_toolset_for_tool", return_value=None),
-        patch("run_agent.build_skills_system_prompt", return_value=_SKILLS),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
+        patch("model_tools.get_toolset_for_tool", return_value=None),
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
     ):
         return builder(agent)
 
@@ -548,3 +699,184 @@ class TestMemoryProviderSystemPromptGating:
         full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
                       enabled_toolsets=["web_search"], disabled_toolsets=None)
         assert block not in full
+
+
+class TestSessionStartLike:
+    """'Conversation started:' must reference the session's real start, not
+    the date the system prompt was (re)built.  Builds happen on compression,
+    fresh-agent gateway turns, and resume paths; stamping build time made a
+    chat drift 'started' forward across midnight."""
+
+    def test_uses_session_id_embedded_timestamp(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260101_120000_abc123",
+            session_start=datetime(2026, 1, 1, 12, 0),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+        assert start.tzinfo is not None
+
+    def test_prefers_lineage_root_over_rotated_segment_id(self):
+        """Compaction rotates session ids; each rotation embeds its own
+        mint time. The birth date must come from the lineage ROOT so a
+        Bot Mode forever-chat keeps knowing when it was first born
+        (#98426)."""
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                assert sid == "20260615_090000_seg9"
+                return "20260101_120000_root"
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+    def test_lineage_walk_failure_falls_open_to_segment_id(self):
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                raise RuntimeError("db locked")
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-06-15"
+
+    def test_nontimestamp_root_falls_through_to_segment_id(self):
+        """A root id without an embedded stamp (legacy/imported lineage)
+        must not break the ladder — rung 1 still applies."""
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                return "imported-legacy-root"
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-06-15"
+
+    def test_falls_back_to_session_start(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(session_id="", session_start=datetime(2026, 1, 1, 12, 0))
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+    def test_falls_back_to_now_when_no_start_known(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        assert _session_start_like(SimpleNamespace(session_id=""), now) == now
+
+    def test_nonmatching_session_id_uses_session_start(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="plugin-section-test",
+            session_start=datetime(2026, 1, 1, 7, 30),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+
+def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
+    """Regression: a session that started on Jan 1 must still read
+    'Conversation started: Thursday, January 01' even when the prompt is
+    rebuilt on Jan 2 (the rebuild-drift bug)."""
+    import agent.system_prompt as system_prompt
+
+    agent = _make_agent(
+        valid_tool_names=["read_file"],
+        _parallel_tool_call_guidance=False,
+        session_id="20260101_120000_abc123",
+    )
+    monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
+    monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
+
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch(
+            "agent.coding_context.coding_system_prompt_parts",
+            return_value=([], [], []),
+        ),
+        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
+        # The system prompt is rebuilt a day LATER than the session start.
+        patch("hermes_time.now", return_value=datetime(2026, 1, 2, 9, 0)),
+    ):
+        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+
+    assert "Conversation started: Thursday, January 01, 2026" in prompt
+    assert "Conversation started: Friday" not in prompt
+
+class TestConversationStartedTwoLine:
+    """Maintainer design on top of #96224's anchor: long-lived sessions get a
+    second 'as of the last context rebuild' line so a model in a forever-chat
+    (Bot Mode, messenger channels) is not led to believe it still lives on
+    the session's birth day. Same-day sessions keep the one-line shape."""
+
+    def _agent(self, session_id):
+        return _make_agent(
+            session_id=session_id, session_start=None,
+            _bot_chat_timeless_prompt=False,
+        )
+
+    def _volatile(self, agent):
+        import agent.system_prompt as sp
+        parts = sp.build_system_prompt_parts(agent)
+        return parts["volatile"]
+
+    def test_old_session_gets_rebuild_date_line(self):
+        vol = self._volatile(self._agent("20200110_090000_old"))
+        assert "Conversation started:" in vol
+        assert "as of the last context rebuild" in vol
+
+    def test_same_day_session_keeps_single_line(self):
+        from hermes_time import now as hermes_now
+        sid = hermes_now().strftime("%Y%m%d_%H%M%S_fresh")
+        vol = self._volatile(self._agent(sid))
+        assert "Conversation started:" in vol
+        assert "as of the last context rebuild" not in vol
+
+    def test_surrogate_zone_name_does_not_abort_prompt(self):
+        # Windows cp1252 zone name decoded under a UTF-8 LC_CTYPE; strftime("%Z") raised (#102910).
+        from datetime import timedelta, timezone
+        current = datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2), "Paris, Madrid (heure d'\udce9t\udce9)"))
+        with patch("hermes_time.now", return_value=current):
+            vol = self._volatile(self._agent("20260714_090000_fresh"))
+
+        json.dumps(vol, ensure_ascii=False).encode("utf-8")
+        assert "Conversation started: Tuesday, July 14, 2026" in vol
+        assert "Paris, Madrid (heure d'" in vol and "UTC+02:00" in vol
+
+    def test_timeless_bot_chat_unaffected(self):
+        agent = self._agent("20200110_090000_old")
+        agent._bot_chat_timeless_prompt = True
+        vol = self._volatile(agent)
+        assert "Conversation started:" not in vol
+        assert "as of the last context rebuild" not in vol

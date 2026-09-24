@@ -1,0 +1,14 @@
+name: watchline
+repo: https://github.com/qordinate-ai/watchline-hermes-plugin
+sha: d3d2424336af16cae94e4bbcb47e6edd07a88062
+description: Watchline delivery adapter for Hermes Agent. Polls a Watchline pull channel and forwards
+  matched events into the Hermes gateway as inbound messages.
+maintainer: qordinate-ai
+tier: community
+category: platform
+docs_url: https://github.com/qordinate-ai/watchline-hermes-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

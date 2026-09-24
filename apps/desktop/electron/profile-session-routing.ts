@@ -20,6 +20,52 @@ function rowsOf(data: unknown): unknown[] {
   return Array.isArray(data.sessions) ? data.sessions : []
 }
 
+function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
+  for (const row of rows) {
+    if (row && typeof row === 'object') {
+      const session = row as Record<string, unknown>
+      session.connection_id = connectionId
+    }
+  }
+}
+
+/** Preserve the registry source that served a session REST response.
+ *
+ * A registry-pinned request is dispatched directly to that remote host, so its
+ * own session rows naturally omit Desktop's synthetic `connection_id`. Without
+ * restoring that provenance, a `profile: "default"` row later resumes through
+ * the legacy local primary instead of the active registry gateway. */
+export function tagRegistrySessionResponse(path: string, data: unknown, connectionId: string): unknown {
+  if (!data || typeof data !== 'object') {
+    return data
+  }
+
+  const pathname = path.split('?', 1)[0].replace(/\/+$/, '')
+
+  if (pathname === '/api/sessions' || pathname === '/api/profiles/sessions') {
+    tagRowsWithConnection(rowsOf(data), connectionId)
+
+    return data
+  }
+
+  if (pathname === '/api/profiles/sessions/sidebar') {
+    const response = data as Record<string, unknown>
+
+    for (const key of ['recents', 'cron', 'messaging']) {
+      tagRowsWithConnection(rowsOf(response[key]), connectionId)
+    }
+
+    return data
+  }
+
+  if (/^\/api\/sessions\/[^/]+$/.test(pathname)) {
+    const session = data as Record<string, unknown>
+    session.connection_id = connectionId
+  }
+
+  return data
+}
+
 function sessionId(row: unknown): string | null {
   if (!row || typeof row !== 'object' || !('id' in row)) {
     return null
@@ -118,15 +164,63 @@ export function buildSidebarSessionSliceParams(searchParams: URLSearchParams): S
   }
 }
 
-/** Fetch the primary backend's profile-aware session slice, falling back to an empty result when unavailable. */
+interface SessionScanError {
+  profile: string
+  error: string
+}
+
+function errorsOf(data: unknown): SessionScanError[] | undefined {
+  const errors = data && typeof data === 'object' ? (data as { errors?: unknown }).errors : undefined
+
+  return Array.isArray(errors) && errors.length ? (errors as SessionScanError[]) : undefined
+}
+
+/** Fetch the primary backend's profile-aware session slice. A failed read is
+ *  still an empty page, but it carries `errors` naming the requested scope
+ *  (`all` for the unified list), like the backend's failed profile scan, so the
+ *  renderer keeps the rows it could not re-read instead of clearing them. */
 export async function fetchPrimaryProfileSessions(
   searchParams: URLSearchParams,
   fetchJsonForProfile: FetchJsonForProfile
 ): Promise<ProfileSessionsResponse> {
   try {
     return (await fetchJsonForProfile(null, `/api/profiles/sessions?${searchParams}`)) as ProfileSessionsResponse
-  } catch {
-    return { sessions: [], total: 0, profile_totals: {} }
+  } catch (error) {
+    const profile = (searchParams.get('profile') || '').trim() || 'all'
+
+    return {
+      sessions: [],
+      total: 0,
+      profile_totals: {},
+      errors: [{ profile, error: error instanceof Error ? error.message : String(error) }]
+    }
+  }
+}
+
+/** Reassemble the batched sidebar response from its three per-slice reads,
+ *  keeping each slice's `errors` so a failed scan is never read as an
+ *  authoritative empty slice. */
+export function assembleSidebarSessionSlices(recents: unknown, cron: unknown, messaging: unknown) {
+  const slice = (data: unknown) => {
+    const errors = errorsOf(data)
+
+    return { sessions: rowsOf(data), ...(errors ? { errors } : {}) }
+  }
+
+  const recentsSlice = recents as Partial<ProfileSessionsResponse> | undefined
+
+  return {
+    recents: {
+      ...slice(recents),
+      total: Number(recentsSlice?.total) || 0,
+      profile_totals: recentsSlice?.profile_totals || {}
+    },
+    cron: slice(cron),
+    messaging: {
+      ...slice(messaging),
+      total: Number((messaging as Partial<SessionListResponse> | undefined)?.total) || rowsOf(messaging).length
+    },
+    errors: []
   }
 }
 

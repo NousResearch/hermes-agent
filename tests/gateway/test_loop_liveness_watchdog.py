@@ -3,22 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from gateway.shutdown_watchdog import (
-    _arm_loop_floor_timer,
+    loop_heartbeat_forever,
     start_loop_liveness_watchdog,
 )
-
-
-def _immediate_loop() -> MagicMock:
-    loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    loop.call_soon_threadsafe.side_effect = lambda callback: callback()
-    return loop
 
 
 def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
@@ -272,41 +265,93 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     assert cfg.loop_watchdog_max_strikes == 12
 
 
-def test_gateway_runner_liveness_guards_start_and_stop():
-    from gateway.run import GatewayRunner
+def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
+    """The terminal watchdog observation must be visible before ``os._exit``."""
+    from gateway.status import read_runtime_status, write_runtime_status
 
-    runner = object.__new__(GatewayRunner)
-    runner._loop_floor_timer_handle = None
-    runner._loop_liveness_watchdog = None
-    runner.config = None
+    write_runtime_status(gateway_state="running", exit_reason=None)
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    floor_timer = MagicMock()
-    watchdog = MagicMock()
-    watchdog.is_alive.return_value = True
+    fired = threading.Event()
+    exit_codes = []
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
 
     with (
-        patch(
-            "gateway.run._arm_loop_floor_timer", return_value=floor_timer
-        ) as arm_floor,
-        patch(
-            "gateway.run.start_loop_liveness_watchdog", return_value=watchdog
-        ) as start_watchdog,
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
     ):
-        runner._start_loop_liveness_guards(loop)
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=2
+        )
+        assert handle is not None
+        assert fired.wait(timeout=2.0), "watchdog did not reach its restart exit"
+        handle.stop()
+        handle.join(timeout=1.0)
 
-    arm_floor.assert_called_once_with(loop)
-    start_watchdog.assert_called_once_with(
-        loop,
-        probe_interval=30.0,
-        probe_timeout=10.0,
-        max_strikes=3,
+    record = read_runtime_status()
+    assert exit_codes == [75]
+    assert record["gateway_state"] == "degraded"
+    assert record["exit_reason"] == "loop_liveness_watchdog"
+    assert record["restart_requested"] is True
+
+
+
+
+def test_heartbeat_write_does_not_block_the_loop_it_monitors():
+    """The heartbeat write must not freeze the loop the watchdog is watching.
+
+    ``write_loop_heartbeat`` ends in ``atomic_json_write`` -> ``os.fsync``, and on
+    a stalling filesystem that fsync blocks whichever thread runs it. Run inline,
+    that thread was the gateway loop — so the loop-liveness watchdog would time
+    out its probe (10s, 3 strikes, a ~90-120s budget) and kill the loop for being
+    unresponsive at the moment it was blocked inside the watchdog's own write. A
+    WSL2 VHDX under io pressure was measured stalling a trivial stat-and-fsync
+    probe at p99 31s, max 112s — longer than the whole budget.
+
+    Bounded by a fixed sleep rather than an Event handshake on purpose: if the
+    write ever goes back on-loop this fails on the tick count instead of hanging.
+    """
+    block_s = 0.30
+
+    def slow_write(**_kwargs):
+        time.sleep(block_s)
+        return pathlib.Path("/dev/null")
+
+    async def scenario() -> int:
+        ticks = 0
+
+        async def ticker() -> None:
+            nonlocal ticks
+            deadline = time.monotonic() + block_s
+            while time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        with patch(
+            "gateway.shutdown_watchdog.write_loop_heartbeat", slow_write
+        ):
+            # should_continue False -> exactly one write, then return.
+            hb = asyncio.create_task(
+                loop_heartbeat_forever(interval_s=60.0, should_continue=lambda: False)
+            )
+            await ticker()
+            await asyncio.wait_for(hb, timeout=5.0)
+        return ticks
+
+    ticks = asyncio.run(scenario())
+    # Off-loop, the ticker gets roughly block_s / 0.02 ticks. Inline it gets at
+    # most one, because the loop cannot run anything while fsync blocks it.
+    assert ticks >= 5, (
+        "the loop made only %d tick(s) while the heartbeat was writing — "
+        "the write is blocking the loop again" % ticks
     )
-    assert runner._loop_floor_timer_handle is floor_timer
-    assert runner._loop_liveness_watchdog is watchdog
 
-    runner._stop_loop_liveness_guards()
 
-    watchdog.stop.assert_called_once_with()
-    floor_timer.cancel.assert_called_once_with()
-    assert runner._loop_liveness_watchdog is None
-    assert runner._loop_floor_timer_handle is None
+
+
+
+
+
+

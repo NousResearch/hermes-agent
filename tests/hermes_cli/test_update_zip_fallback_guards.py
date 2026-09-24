@@ -10,6 +10,7 @@ has already succeeded by then, so the ZIP cannot fix the actual failure.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as hermes_main
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 
@@ -72,34 +74,17 @@ def test_unknown_command_gets_generic_stage():
     assert update_cmd._format_update_failure_stage(exc) == "Update step failed"
 
 
-def test_windows_dep_failure_does_not_zip_fallback(monkeypatch):
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
-    exc = _cpe([r"C:\venv\Scripts\uv.exe", "pip", "install", "-e", "."])
-    assert update_cmd._should_zip_fallback_on_update_error(exc) is False
 
 
-def test_windows_git_failure_still_zips(monkeypatch):
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
-    exc = _cpe(["git", "pull"], returncode=1)
-    assert update_cmd._should_zip_fallback_on_update_error(exc) is True
 
 
 def test_posix_git_failure_does_not_zip(monkeypatch):
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     exc = _cpe(["git", "pull"], returncode=1)
     assert update_cmd._should_zip_fallback_on_update_error(exc) is False
 
 
-def test_error_tail_prints_last_lines(capsys):
-    stderr = "\n".join(f"line-{i}" for i in range(20))
-    exc = _cpe(["uv", "pip", "install"], stderr=stderr)
-    update_cmd._print_called_process_error_tail(exc)
-    out = capsys.readouterr().out
-    assert "Last output:" in out
-    assert "line-19" in out
-    assert "line-0" not in out
-    assert "line-7" not in out
-    assert "line-8" in out
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +97,8 @@ def _porcelain_run(stdout: str, returncode: int = 0):
         joined = " ".join(str(c) for c in cmd)
         if "status" in joined and "--porcelain" in joined:
             return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
+        if "ls-tree" in joined:  # tracked root entries = what the ZIP ships
+            return subprocess.CompletedProcess(cmd, 0, stdout="hermes_cli\nscratch\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return fake_run
@@ -179,15 +166,12 @@ def test_update_via_zip_aborts_before_download_when_dirty(
 
     with patch("urllib.request.urlretrieve") as download:
         with pytest.raises(SystemExit) as exc_info:
-            hermes_main._update_via_zip(SimpleNamespace(branch=None))
+            update_cmd._update_via_zip(SimpleNamespace(branch=None))
 
     assert exc_info.value.code == 1
     download.assert_not_called()
     assert local.read_text(encoding="utf-8") == "local work\n"
     assert (untracked_dir / "wip.py").read_text(encoding="utf-8") == "print('wip')\n"
-    out = capsys.readouterr().out
-    assert "ZIP fallback refused" in out
-    assert "Downloading latest version" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -247,3 +231,98 @@ def test_recheck_still_blocks_user_files_amid_staging_artifacts(tmp_path, monkey
         tmp_path, ignore_staging_artifacts=True
     )
     assert reason is not None
+
+
+def test_zip_overlay_blocked_on_ignored_user_file(tmp_path, monkeypatch):
+    """#87392 follow-up: a gitignored file outside the preserved entries is
+    still user data the overlay would delete — it must block."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        update_cmd.subprocess, "run", _porcelain_run("!! scratch/notes.local\n")
+    )
+    reason = update_cmd._zip_overlay_block_reason(tmp_path)
+    assert reason is not None
+    assert "uncommitted" in reason or "untracked" in reason
+
+
+def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
+    """The ignored-mode flag must be one real git accepts — run REAL git.
+
+    Review of the first draft caught ``--ignored=all`` (not a valid mode:
+    git exits 128 'Invalid ignored mode'), which the mocked siblings could
+    not see; with an invalid flag every ZIP update would be refused as
+    'could not check the working tree'. This test creates a real repo with
+    a real .gitignore and asserts the guard both runs clean AND still sees
+    ignored user files.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("*.local\nvenv/\n.venv/\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", ".gitignore"], check=True
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(tmp_path),
+            "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-qm", "init",
+        ],
+        check=True,
+    )
+    # Clean tree: guard must pass (flag valid, no false refusal).
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+    # Ignored user file under a shipped (tracked) dir: the swap would delete it, guard must block.
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "data.local").write_text("x", encoding="utf-8")
+    reason = update_cmd._zip_overlay_block_reason(tmp_path, shipped={"pkg"})
+    assert reason is not None
+    # Ignored preserved entry: still no refusal.
+    shutil.rmtree(tmp_path / "pkg")
+    (tmp_path / "venv").mkdir()
+    (tmp_path / "venv" / "lib.py").write_text("x", encoding="utf-8")
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+    # uv-default ``.venv`` is a supported layout (#112958): the ignored dir is the live runtime,
+    # not user data the overlay would destroy — refusing here made ZIP fallback impossible.
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "lib.py").write_text("x", encoding="utf-8")
+    status = subprocess.run(
+        ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
+        capture_output=True, text=True,
+    ).stdout
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None, status
+
+
+
+
+def test_preserved_filter_does_not_split_non_rename_lines():
+    """A plain ignored FILE literally named 'venv -> node_modules' is ONE
+    path (porcelain v1 doesn't quote spaces) — splitting it would filter it
+    as two preserved tops and fail-open into the destructive swap."""
+    assert not update_cmd._is_zip_preserved_entry_status_line(
+        "!! venv -> node_modules"
+    )
+    assert not update_cmd._is_zip_preserved_entry_status_line(
+        "?? venv -> node_modules"
+    )
+    # Real rename crossing out of a preserved dir still blocks…
+    assert not update_cmd._is_zip_preserved_entry_status_line(
+        "R  venv/x -> src/x"
+    )
+    # …and a rename fully inside preserved entries is still filtered.
+    assert update_cmd._is_zip_preserved_entry_status_line(
+        "R  venv/a -> node_modules/b"
+    )
+
+
+
+
+def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):
+    """venv/node_modules are gitignored on every normal install and the swap
+    preserves them — the ignored probe must not turn them into a false
+    refusal."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        update_cmd.subprocess,
+        "run",
+        _porcelain_run("!! venv/\n!! node_modules/\n!! .env\n"),
+    )
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None

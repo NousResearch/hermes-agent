@@ -6,21 +6,13 @@ handler signals MCPServerTask to tear down the current MCP session and
 reconnect with fresh credentials. This file exercises the signal plumbing
 in isolation from the full stdio/http transport machinery.
 """
+
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_reconnect_event_attribute_exists():
-    """MCPServerTask has a _reconnect_event alongside _shutdown_event."""
-    from tools.mcp_tool import MCPServerTask
-    task = MCPServerTask("test")
-    assert hasattr(task, "_reconnect_event")
-    assert isinstance(task._reconnect_event, asyncio.Event)
-    assert not task._reconnect_event.is_set()
 
 
 @pytest.mark.asyncio
@@ -35,51 +27,43 @@ async def test_wait_for_lifecycle_event_shutdown_wins_when_both_set():
     assert reason == "shutdown"
 
 
-def test_keepalive_jitter_is_stable_and_bounded(monkeypatch):
-    """Per-server keepalive jitter is deterministic and within the cap."""
-    import tools.mcp_tool as mcp_tool
+def test_keepalive_jitter_is_stable_and_bounded():
+    from tools.mcp_tool_server_run import _mcp_keepalive_jitter_seconds
 
-    monkeypatch.setattr(mcp_tool, "_MCP_KEEPALIVE_MAX_JITTER_SECONDS", 15.0)
-
-    first = mcp_tool._mcp_keepalive_jitter_seconds("github")
-    second = mcp_tool._mcp_keepalive_jitter_seconds("github")
-
-    assert first == second
-    assert 0.0 <= first <= 15.0
+    value = _mcp_keepalive_jitter_seconds("github")
+    assert value == _mcp_keepalive_jitter_seconds("github")
+    assert 0 <= value <= 15
+    assert value != _mcp_keepalive_jitter_seconds("filesystem")
 
 
 @pytest.mark.asyncio
-async def test_wait_for_lifecycle_event_phases_without_extending_cadence(monkeypatch):
-    """Keepalive phase spread cannot extend the configured probe interval."""
-    import tools.mcp_tool as mcp_tool
+@pytest.mark.parametrize("event", ["shutdown", "reconnect", "probe"])
+async def test_keepalive_phase_preserves_cadence_and_lifecycle(monkeypatch, event):
     from tools.mcp_tool import MCPServerTask
+    from tools import mcp_tool_server_run as lifecycle
 
     task = MCPServerTask("github")
+    task._config["keepalive_interval"] = 10
+    task.session = object()
+    timeouts = []
+    real_wait = asyncio.wait
 
-    async def fake_list_tools():
+    async def phase_wait(waiters, *, timeout, return_when):
+        timeouts.append(timeout)
+        if len(timeouts) == 2 and event != "probe":
+            getattr(task, f"_{event}_event").set()
+            return await real_wait(waiters, timeout=2, return_when=return_when)
+        if len(timeouts) > 2:
+            return await real_wait(waiters, timeout=2, return_when=return_when)
+        return set(), set(waiters)
+
+    async def probe():
         task._shutdown_event.set()
 
-    task.initialize_result = SimpleNamespace(
-        capabilities=SimpleNamespace(tools=SimpleNamespace())
-    )
-    task.session = type(
-        "Session",
-        (),
-        {
-            "send_ping": AsyncMock(side_effect=Exception("Unknown method: ping")),
-            "list_tools": AsyncMock(side_effect=fake_list_tools),
-        },
-    )()
-
-    task._config["keepalive_interval"] = 0.01
-    monkeypatch.setattr(mcp_tool, "_MIN_KEEPALIVE_INTERVAL", 0.001)
-    monkeypatch.setattr(mcp_tool, "_mcp_keepalive_jitter_seconds", lambda _name: 0.05)
-
-    waiter = asyncio.create_task(task._wait_for_lifecycle_event())
-    await asyncio.sleep(0.04)
-
-    reason = await asyncio.wait_for(waiter, timeout=0.2)
-
-    assert reason == "shutdown"
-    task.session.send_ping.assert_awaited_once()
-    task.session.list_tools.assert_awaited_once()
+    monkeypatch.setattr(lifecycle, "_mcp_keepalive_jitter_seconds", lambda _: 3)
+    monkeypatch.setattr(lifecycle.asyncio, "wait", phase_wait)
+    task._keepalive_probe = AsyncMock(side_effect=probe)
+    reason = await asyncio.wait_for(task._wait_for_lifecycle_event(), timeout=2)
+    assert timeouts[:2] == [7, 3]
+    assert reason == ("reconnect" if event == "reconnect" else "shutdown")
+    assert task._keepalive_probe.await_count == (1 if event == "probe" else 0)

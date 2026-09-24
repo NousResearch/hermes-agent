@@ -1196,7 +1196,7 @@ With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `su
 
 ### `pre_gateway_dispatch`
 
-Fires **once per incoming `MessageEvent`** in the gateway, after the internal-event guard but **before** auth/pairing and agent dispatch. This is the interception point for gateway-level message-flow policies (listen-only windows, human handover, per-chat routing, etc.) that don't fit cleanly into any single platform adapter.
+Fires **once per incoming `MessageEvent`** in the gateway, after the internal-event guard but **before** auth/pairing and agent dispatch. This includes messages arriving during an active turn: they are screened before steering, interrupting, or queueing, and are not screened again when a queued message drains. An adapter-only fallback queue is screened at drain time. This is the interception point for gateway-level message-flow policies (listen-only windows, human handover, per-chat routing, etc.) that don't fit cleanly into any single platform adapter.
 
 **Callback signature:**
 
@@ -1206,11 +1206,11 @@ def my_callback(event, gateway, session_store, **kwargs):
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `event` | `MessageEvent` | The normalized inbound message (has `.text`, `.source`, `.message_id`, `.internal`, etc.). |
+| `event` | `MessageEvent` | The normalized inbound message (has `.text`, `.source`, `.message_id`, `.internal`, etc.). `event._gateway_busy_followup` is `True` for busy-session follow-ups; otherwise absent. |
 | `gateway` | `GatewayRunner` | The active gateway runner, so plugins can call `gateway.adapters[platform].send(...)` for side-channel replies (owner notifications, etc.). |
 | `session_store` | `SessionStore` | For silent transcript ingestion via `session_store.append_to_transcript(...)`. |
 
-**Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
+**Fires:** During cold-message admission or busy-session admission (`gateway/run_busy.py`); adapter-only fallback messages are screened before becoming another turn (`gateway/run_turn.py`). **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
 
 **Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
 

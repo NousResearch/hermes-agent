@@ -774,6 +774,17 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        if not event.internal:
+            # This event may be steered immediately or drained as another turn. Admit at
+            # arrival, before authorization or any mutation of the running agent, and
+            # remember the decision so a queued copy is not screened a second time.
+            event._gateway_busy_followup = True
+            admitted = self._hm_pre_gateway_dispatch_hook(event, event.source)
+            if admitted is None:
+                return True
+            event.text = admitted.text  # the adapter retains the original event on fallback
+            event._pre_gateway_dispatch_admitted = True
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -786,7 +797,7 @@ class GatewayBusySessionMixin:
                 event.source.platform.value if event.source.platform else "unknown", session_key,
             )
             return True  # handled (silently dropped); do not fall through
-        # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
+        # A steered follow-up never reaches _hm_admit_event, so the budget is charged here.
         if not self._admit_bot_message_for_source(event.source):
             return True
         event._bot_loop_admitted = True

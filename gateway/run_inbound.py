@@ -222,9 +222,10 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = self._hm_pre_gateway_dispatch_hook(event, source)
-        if event is None:
-            return None
+        if not getattr(event, "_pre_gateway_dispatch_admitted", False):
+            event = self._hm_pre_gateway_dispatch_hook(event, source)
+            if event is None:
+                return None
         source = event.source
 
         if not self._is_user_authorized_for_source(source):

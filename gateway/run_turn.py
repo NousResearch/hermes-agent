@@ -3610,7 +3610,19 @@ class GatewayTurnMixin:
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
-            if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
+            skipped_pending = False
+            # Adapter-only fallback queues without visiting the runner's busy handler.
+            # Admit those at the drain; already-admitted busy events must not run twice.
+            if pending_event and not pending_event.internal and not getattr(
+                pending_event, "_pre_gateway_dispatch_admitted", False
+            ):
+                pending_event._gateway_busy_followup = True
+                pending_event = self._hm_pre_gateway_dispatch_hook(pending_event, pending_event.source)
+                if pending_event is None:
+                    skipped_pending = True
+                else:
+                    pending_event._pre_gateway_dispatch_admitted = True
+            if result.get("interrupted") and not pending_event and not skipped_pending and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):
                     logger.info(

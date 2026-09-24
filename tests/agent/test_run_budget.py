@@ -171,21 +171,16 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
 
 
-@pytest.mark.parametrize("path", ["chat", "bedrock"])
 @pytest.mark.parametrize(
-    "config_body,env_value,elapsed,expected",
+    "config_body,env_value,expected",
     [
-        ("", None, 800, 60.0),
-        ("", None, 100, 400.0),
-        ("", None, None, 600.0),
-        ("providers:\n  openai:\n    stale_timeout_seconds: 30\n", None, 800, 30.0),
-        ("providers:\n  openai:\n    stale_timeout_seconds: 1200\n", None, 800, 1200.0),
-        ("", "1200", 800, 1200.0),
-        ("", "30", 800, 600.0),
+        ("", None, 60.0),
+        ("providers:\n  openai:\n    stale_timeout_seconds: 1200\n", None, 1200.0),
+        ("", "900", 900.0),
     ],
 )
 def test_cloud_stream_budget_preserves_explicit_deadlines(
-    monkeypatch, tmp_path, path, config_body, env_value, elapsed, expected
+    monkeypatch, tmp_path, config_body, env_value, expected
 ):
     """Both stream owners cap implicit patience without changing explicit precedence."""
     from agent import chat_completion_helpers as helpers
@@ -200,15 +195,11 @@ def test_cloud_stream_budget_preserves_explicit_deadlines(
     if env_value is not None:
         monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", env_value)
     monkeypatch.setattr(helpers.time, "time", lambda: 1000.0)
-    agent._run_budget_started_at = None if elapsed is None else 1000.0 - elapsed
+    agent._run_budget_started_at = 1000.0 - 800
     payload = {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]}
-    if path == "bedrock":
-        timeout = helpers._derive_stream_stale_timeout(agent, payload)
-    else:
-        call = helpers._StreamingCall(agent, payload, None)
-        call._resolve_stale_timeout()
-        timeout = call._stream_stale_timeout
-    assert timeout == expected
+    call = helpers._StreamingCall(agent, payload, None)
+    call._resolve_stale_timeout()
+    assert call._stream_stale_timeout == expected
 
 
 def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_path):

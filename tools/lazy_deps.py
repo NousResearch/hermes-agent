@@ -64,6 +64,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tts.mistral": ("mistralai==2.4.8",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
+    "tts.kokoro": ("kokoro>=0.9.4,<0.11",),  # 82M local neural TTS; pre-1.0 pin (mistralai precedent)
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
     "stt.mistral": ("mistralai==2.4.8",),

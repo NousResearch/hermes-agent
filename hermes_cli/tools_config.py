@@ -237,6 +237,8 @@ TOOL_CATEGORIES = {
                  [_key("GEMINI_API_KEY", "Gemini API key", "https://aistudio.google.com/app/apikey")], tts_provider="gemini"),
             _row("KittenTTS", "local · free", "Lightweight local ONNX TTS (~25MB), no API key", tts_provider="kittentts",
                  post_setup="kittentts"),
+            _row("Kokoro", "local · free", "82M local neural TTS, 54 voices, 8 languages (GPU when available)",
+                 tts_provider="kokoro", post_setup="kokoro"),
             _row("Piper", "local · free", "Local neural TTS, 44 languages (voices ~20-90MB)", tts_provider="piper",
                  post_setup="piper"),
             _row("DeepInfra TTS", "paid", "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com", [_DEEPINFRA_KEY],

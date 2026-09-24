@@ -24,7 +24,8 @@ from tools.tts_command_provider import (
     render_command_template as _render_command_tts_template)
 from tools.tts_tool_delivery import _origin
 from tools.tts_tool_local import (
-    _LOCAL_TTS_MODEL_CACHES, _load_kittentts_model_for_config, _load_piper_voice_for_config)
+    _LOCAL_TTS_MODEL_CACHES, _load_kittentts_model_for_config, _load_kokoro_pipeline_for_config,
+    _load_piper_voice_for_config)
 from tools.tts_tool_plugins import _lookup_plugin_provider
 
 logger = logging.getLogger("tools.tts_tool")
@@ -43,7 +44,8 @@ def _local_tts_warmers() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
     """Provider name → loader populating that engine's cache slot (same key synthesis uses)."""
     return {
         "piper": lambda cfg: _load_piper_voice_for_config(cfg)[0],
-        "kittentts": lambda cfg: _load_kittentts_model_for_config(cfg)[0]}
+        "kittentts": lambda cfg: _load_kittentts_model_for_config(cfg)[0],
+        "kokoro": lambda cfg: _load_kokoro_pipeline_for_config(cfg)[0]}
 
 
 # tools.lazy_deps feature key for providers whose SDK installs on first use.

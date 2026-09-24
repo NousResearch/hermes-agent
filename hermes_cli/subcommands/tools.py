@@ -40,10 +40,10 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         description="Run the install/bootstrap hook a tool backend declares — the\n"
             "same step `hermes tools` runs after you pick a provider that\n"
             "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
-            "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI, Codex). Stable,\n"
+            "KittenTTS/Piper/Kokoro, ddgs, Spotify, Langfuse, xAI, Codex). Stable,\n"
             "non-interactive target the dashboard spawns to drive backend\n"
             "setup. Keys: agent_browser, camofox, cua_driver, kittentts,\n"
-            "piper, ddgs, spotify, langfuse, xai_grok, openai_codex.")
+            "kokoro, piper, ddgs, spotify, langfuse, xai_grok, openai_codex.")
     tools_postsetup_p.add_argument(
         "post_setup_key", metavar="KEY",
         help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)")

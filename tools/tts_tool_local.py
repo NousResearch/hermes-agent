@@ -21,6 +21,9 @@ logger = logging.getLogger("tools.tts_tool")
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
+DEFAULT_KOKORO_MODEL = "hexgrad/Kokoro-82M"  # 82M params, Apache-2.0
+DEFAULT_KOKORO_VOICE = "af_heart"  # voice = <lang><gender>_<name>, e.g. bf_emma (British female)
+KOKORO_SAMPLE_RATE = 24000  # KPipeline emits 24 kHz float32 (Result has no .sr attribute)
 _NEUTTS_SAMPLES = Path(__file__).parent / "neutts_samples"
 
 # --- Bounded model caches ---
@@ -33,8 +36,10 @@ _TTS_MODEL_CACHE_MAX = 3
 # (+cuda flag); KittenTTS on model name.
 _piper_voice_cache: Dict[str, Any] = {}
 _kittentts_model_cache: Dict[str, Any] = {}
+_kokoro_pipeline_cache: Dict[str, Any] = {}
 _LOCAL_TTS_MODEL_CACHES: Dict[str, Dict[str, Any]] = {
-    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache}
+    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache,
+    "kokoro": _kokoro_pipeline_cache}
 
 
 def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
@@ -191,4 +196,45 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     import soundfile as sf
     wav_path = _wav_sidecar_path(output_path)
     sf.write(wav_path, audio, 24000)
+    return _finalize_wav_output(wav_path, output_path)
+
+
+# --- Kokoro (local neural TTS, 82M params, Apache-2.0) ---
+def _load_kokoro_pipeline_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+    """Load (or fetch from cache) the Kokoro KPipeline; returns ``(pipeline, kokoro_config)``.
+
+    Voices are prefixed with a single-character language code (a/b English, e Spanish,
+    f French, h Hindi, i Italian, p Portuguese, j Japanese, z Chinese); the pipeline's
+    lang_code is derived from the voice so non-English voices phonemize correctly.
+    Cache is keyed on model+language — switching languages reloads the phonemizer.
+    """
+    KPipeline = _origin()._import_kokoro()
+    kk_config = _section(tts_config, "kokoro")
+    model_name = kk_config.get("model") or DEFAULT_KOKORO_MODEL
+    voice = kk_config.get("voice") or DEFAULT_KOKORO_VOICE
+    lang_code = (voice.split(",")[0].strip().split("_")[0][:1]) or "a"
+
+    def _load_kokoro_pipeline():
+        logger.info("[Kokoro] Loading model: %s (lang=%s)", model_name, lang_code)
+        p = KPipeline(lang_code=lang_code, repo_id=model_name)
+        logger.info("[Kokoro] Model loaded successfully")
+        return p
+
+    return _tts_cache_get_or_load(_kokoro_pipeline_cache, f"{model_name}|{lang_code}",
+                                  _load_kokoro_pipeline), kk_config
+
+
+def _generate_kokoro(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    pipe, kk_config = _load_kokoro_pipeline_for_config(tts_config)
+    voice = kk_config.get("voice") or DEFAULT_KOKORO_VOICE
+    speed = float(kk_config.get("speed", 1.0))
+    # KPipeline.__call__ yields per-sentence Result objects: .audio is a float32
+    # torch tensor at 24 kHz (no .sr attribute — see KOKORO_SAMPLE_RATE).
+    import numpy as np
+    import soundfile as sf
+    parts = [np.asarray(r.audio, dtype=np.float32).flatten()
+             for r in pipe(text, voice=voice, speed=speed)]
+    audio = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+    wav_path = _wav_sidecar_path(output_path)
+    sf.write(wav_path, audio, KOKORO_SAMPLE_RATE)
     return _finalize_wav_output(wav_path, output_path)

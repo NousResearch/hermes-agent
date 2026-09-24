@@ -28,6 +28,7 @@ import {
   $sessionTiles,
   isSessionInForeground,
   publishSessionState,
+  rekeySessionTile,
   releaseSessionTranscript
 } from '@/store/session-states'
 
@@ -186,6 +187,15 @@ export function useSessionStateCache({
           // tracks compression without needing a dummy state write.
           if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
             runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+
+            // Re-home any open tile keyed on the pre-rotation id (#98622).
+            // Ungated on the active runtime: a background tile's conversation
+            // rotates here too, and its pane would otherwise keep the stale id
+            // (duplicate/differently-titled tabs). Mirrors handleTransition's
+            // rekey, which this path can skip when the state updater is a no-op.
+            if (storedSessionId) {
+              rekeySessionTile(existing.storedSessionId, storedSessionId, sessionId)
+            }
 
             // A rotation event needs a real next id — a null/cleared stored id
             // is a detach, not a rotation the route-follow effect should chase.

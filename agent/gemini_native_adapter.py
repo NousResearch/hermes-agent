@@ -530,12 +530,9 @@ def build_gemini_request(
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
+    gemini_tools = _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)
     tool_config = _translate_tool_choice_to_gemini(tool_choice)
-    optional = (
-        ("systemInstruction", system_instruction),
-        ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
-        ("toolConfig", tool_config),
-    )
+    optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
@@ -545,10 +542,14 @@ def build_gemini_request(
     )
     json_output = _translate_response_format(response_format, json_schema=tools_as_json_schema)
     # Gemini 400s when forced function calling (mode ANY, from ``tool_choice="required"`` or a named
-    # function) is combined with a JSON responseMimeType — pre-Gemini-3 models reject JSON output
-    # alongside function declarations at all. The forced call wins; JSON can come on a later turn.
-    if json_output and (tool_config or {}).get("functionCallingConfig", {}).get("mode") == "ANY":
-        logger.debug("Gemini: dropping JSON response_format — tool_choice forces function calling (mode ANY)")
+    # function) is combined with a JSON responseMimeType, and pre-Gemini-3 models reject JSON output
+    # alongside ANY function declarations ("Function calling with a response mime type:
+    # 'application/json' is unsupported"); only Gemini 3+ combines tools with structured output.
+    # The tools win; JSON can come on a later turn, and callers tolerate an unconstrained reply.
+    forced_call = (tool_config or {}).get("functionCallingConfig", {}).get("mode") == "ANY"
+    if json_output and (forced_call or (gemini_tools and not is_gemini3)):
+        logger.debug("Gemini: dropping JSON response_format — %s",
+                     "tool_choice forces function calling (mode ANY)" if forced_call else "pre-Gemini-3 model with tools")
         json_output = {}
     request["generationConfig"] = {**{k: v for k, v in generation if v is not None}, **json_output}
     return request

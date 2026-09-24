@@ -145,8 +145,8 @@ class Cells:
         self.results[name] = (not problem, f"{problem}\n--- screen ---\n{screen}" if problem else "")
 
     def harness_error(self, name: str, detail: str) -> None:
-        """The cell could not be judged (its precondition never held): a real failure, never a
-        KNOWN xfail, and it leaves the scenario's other cells alone."""
+        """The cell could not be judged (its precondition never held): a real failure, never
+        swallowed by a KNOWN pin, and it leaves the scenario's other cells alone."""
         self.errors[name] = f"PHASE={self.phase}: {detail}"
 
     def check(self, name: str, known: dict[str, tuple[str, str]] | None = None) -> None:

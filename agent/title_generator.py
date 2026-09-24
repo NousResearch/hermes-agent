@@ -177,30 +177,153 @@ def _model_title_upgrade_enabled() -> bool:
         return True
 
 
+def _normalize_title_route_base_url(base_url: Any) -> str:
+    """Canonical route spelling without importing migration-capable config helpers."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    return normalize_route_base_url(base_url)
+
+
+def _explicit_title_route_base_url(provider: str, base_url: Any) -> str:
+    """Effective explicit aux URL, including the local-alias ``/v1`` rule from auxiliary_client."""
+    route = _normalize_title_route_base_url(base_url)
+    if not route:
+        return ""
+    provider = str(provider or "").strip().lower()
+    try:
+        from agent.auxiliary_client import _LOCAL_SERVER_ALIASES
+        is_local_alias = provider in _LOCAL_SERVER_ALIASES
+    except Exception:
+        is_local_alias = False
+    if not is_local_alias:
+        return route
+
+    # Ollama/vLLM/llama.cpp aliases append /v1 to a bare host before the
+    # request is sent (#106010). Compare the URL the client will really use,
+    # not the config spelling, or the title race slips through again.
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parsed = urlsplit(route)
+        if parsed.scheme and parsed.hostname and not parsed.path.strip("/"):
+            route = _normalize_title_route_base_url(
+                urlunsplit((parsed.scheme, parsed.netloc, "/v1", parsed.query, ""))
+            )
+    except (TypeError, ValueError):
+        pass
+    return route
+
+
+def _read_only_named_custom_title_base_url(provider: str) -> Optional[str]:
+    """Configured named-custom route; ``None`` means lookup failed, ``""`` means no match.
+
+    This deliberately stays on ``load_config_readonly()``. Title scheduling runs at turn
+    start, and merely deciding whether to defer a background request must never trigger config
+    migrations/writes.
+    """
+    provider = str(provider or "").strip().lower()
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        from hermes_cli.providers import custom_provider_aliases
+        config = load_config_readonly() or {}
+        entries = get_compatible_custom_providers(config)
+    except Exception:
+        logger.debug("Named custom title-route lookup failed", exc_info=True)
+        return None
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        aliases = custom_provider_aliases(
+            str(entry.get("name") or ""), str(entry.get("provider_key") or "")
+        )
+        if provider in aliases:
+            return _normalize_title_route_base_url(entry.get("base_url"))
+    return ""
+
+
+def _title_provider_shares_custom_main(
+    main_provider: str, pinned_provider: str, *, main_base_url: str, pinned_base_url: str,
+) -> bool:
+    """Whether the configured title route resolves back to the live custom main endpoint.
+
+    Auxiliary routing accepts several identities for the same route: ``auto`` and ``main``
+    inherit the live runtime; local-server aliases fall through to that same custom runtime when
+    unpinned; named custom providers accept both ``custom:<name>`` and ``<name>``; bare
+    ``custom`` keeps the historical shared-endpoint behavior. The scheduler follows the
+    effective route rather than one provider spelling.
+    """
+    main_provider = str(main_provider or "").strip().lower()
+    pinned_provider = str(pinned_provider or "").strip().lower()
+    main_route = _normalize_title_route_base_url(main_base_url)
+
+    from hermes_cli.route_identity import is_custom_endpoint_provider
+    if not is_custom_endpoint_provider(main_provider):
+        return False
+
+    # An explicit auxiliary URL is the strongest route identity we have. Mirror
+    # local-server alias URL shaping before comparing it to the live main route.
+    if pinned_base_url:
+        pinned_route = _explicit_title_route_base_url(pinned_provider, pinned_base_url)
+        return bool(main_route and pinned_route == main_route)
+
+    if pinned_provider in ("", "auto", "main", "custom"):
+        return True
+
+    # With no explicit URL these aliases normalize to the custom branch, which
+    # reuses main_runtime before trying process-global custom fallbacks.
+    try:
+        from agent.auxiliary_client import _LOCAL_SERVER_ALIASES
+        if pinned_provider in _LOCAL_SERVER_ALIASES:
+            return True
+    except Exception:
+        pass
+
+    if pinned_provider == main_provider:
+        return True
+    if main_provider.startswith("custom:"):
+        main_name = main_provider.split(":", 1)[1].strip()
+        if main_name and pinned_provider == main_name:
+            return True
+
+    # A bare/custom runtime can still be the same configured named endpoint.
+    # Use the read-only provider view; if that lookup itself is unavailable,
+    # fail closed by deferring the title call. The cost is only delayed titling,
+    # while fail-open can corrupt the assistant transcript on a one-slot server.
+    named_route = _read_only_named_custom_title_base_url(pinned_provider)
+    if named_route is None:
+        return True
+    return bool(named_route and main_route and named_route == main_route)
+
+
 def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
-    A ``custom`` main route (llama.cpp, Ollama, vLLM, LM Studio…) whose ``auxiliary.title_generation``
-    is not pinned elsewhere shares one local server between the streaming main request and the
-    concurrent ``response_format: json_schema`` title request. Single-slot servers then serve the
-    title grammar/completion into the main turn: the user's reply arrives as ``{"title": ...}``, is
+    A self-hosted/user-supplied main route (custom, named custom, LM Studio, llama.cpp,
+    Ollama, or vLLM family) whose
+    ``auxiliary.title_generation`` route resolves back to that same endpoint shares one local
+    server between the streaming main request and the concurrent
+    ``response_format: json_schema`` title request. Single-slot servers then serve the title
+    grammar/completion into the main turn: the user's reply arrives as ``{"title": ...}``, is
     persisted as a genuine assistant row and replayed, and the model adopts the format (#117296).
+
     Running the title call after the turn settles keeps the two requests off the wire at once.
-    Hosted providers multiplex requests independently and keep the turn-start timing.
+    Hosted providers or a genuinely different auxiliary endpoint keep the turn-start timing.
     """
-    provider = str((main_runtime or {}).get("provider") or "").strip().lower()
-    if provider != "custom":
+    runtime = main_runtime or {}
+    provider = str(runtime.get("provider") or "").strip().lower()
+    main_base_url = runtime.get("base_url")
+    from hermes_cli.route_identity import is_custom_endpoint_provider
+    if not is_custom_endpoint_provider(provider):
         return False
     try:
         cfg = _title_config()
     except Exception:
         return True
-    pinned_provider = str(cfg.get("provider") or "").strip().lower()
-    pinned_base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
-    main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
-    if pinned_provider and pinned_provider not in ("", "auto", "custom"):
-        return False
-    return not pinned_base_url or pinned_base_url == main_base_url
+    return _title_provider_shares_custom_main(
+        provider,
+        cfg.get("provider"),
+        main_base_url=main_base_url,
+        pinned_base_url=cfg.get("base_url"),
+    )
 
 
 def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:

@@ -130,9 +130,13 @@ def test_result_stamps_failing_session_identity():
     assert "provider" not in surface and "model" not in surface
 
 
-def test_result_timeout_on_custom_endpoint_is_endpoint_layer():
+@pytest.mark.parametrize(
+    "provider",
+    ["custom", "custom:gptoss-local", "local", "llama.cpp", "llamacpp", "llama-cpp", "ollama", "lmstudio", "vllm"],
+)
+def test_result_timeout_on_custom_endpoint_is_endpoint_layer(provider):
     surface = build_error_surface_from_result(
-        _failed_result("timeout"), provider="custom"
+        _failed_result("timeout"), provider=provider
     )
     assert surface["layer"] == LAYER_ENDPOINT
 

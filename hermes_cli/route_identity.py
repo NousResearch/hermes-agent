@@ -6,6 +6,20 @@ from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 
+# Provider ids whose endpoint is user-supplied/self-hosted rather than a fixed hosted-vendor
+# route. Keep this identity family here with URL route normalization so callers that need to
+# reason about endpoint ownership do not grow divergent provider allowlists.
+_CUSTOM_ENDPOINT_PROVIDER_IDS = frozenset({
+    "custom", "local", "llama.cpp", "llamacpp", "llama-cpp", "ollama", "lmstudio", "vllm",
+})
+
+
+def is_custom_endpoint_provider(provider: Any) -> bool:
+    """True when *provider* denotes a user-supplied/self-hosted endpoint route."""
+    normalized = str(provider or "").strip().lower()
+    return normalized in _CUSTOM_ENDPOINT_PROVIDER_IDS or normalized.startswith("custom:")
+
+
 def normalize_route_base_url(base_url: Any) -> str:
     """Canonicalize only proven-equivalent endpoint URL components."""
     raw = str(base_url or "")

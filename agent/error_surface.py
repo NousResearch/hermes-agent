@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from hermes_cli.route_identity import is_custom_endpoint_provider
+
 logger = logging.getLogger(__name__)
 
 LAYER_PROVIDER = "provider"
@@ -57,9 +59,6 @@ _NON_RETRYABLE_REASONS = {
     "context_overflow", "interpreter_shutdown", "upstream_blocked",
 }
 
-# Providers whose base_url is user-supplied rather than a known vendor.
-_CUSTOM_ENDPOINT_PROVIDERS = {"custom", "local", "llama.cpp", "llamacpp", "ollama", "lmstudio", "vllm"}
-
 # Mid-stream drop markers. Deliberately narrow: our own retry-exhaustion
 # summaries plus the OpenAI SDK's stream-abort errors.
 _STREAM_DROP_FRAGMENTS = (
@@ -77,8 +76,7 @@ _API_EXC_MODULE_PREFIXES = (
 
 
 def _is_custom_endpoint(provider: Optional[str]) -> bool:
-    p = (provider or "").strip().lower()
-    return p in _CUSTOM_ENDPOINT_PROVIDERS or p.startswith("custom:")
+    return is_custom_endpoint_provider(provider)
 
 
 def _looks_like_stream_drop(message: str) -> bool:

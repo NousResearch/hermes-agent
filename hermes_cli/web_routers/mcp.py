@@ -549,7 +549,9 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     try:
         await scoped_to_thread(
             effective_profile,
-            lambda: mcp_catalog.install_entry(entry, enable=body.enable, preloaded_env=body.env or None),
+            lambda: mcp_catalog.install_entry(
+                entry, enable=body.enable, preloaded_env=body.env or None, interactive=False,
+            ),
         )
     except HTTPException:
         raise

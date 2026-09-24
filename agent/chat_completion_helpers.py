@@ -1157,7 +1157,11 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     est_tokens = estimate_request_context_tokens(api_kwargs)
     effort_floor = _high_effort_silence_floor(agent) if codex else 0.0
     codex_floor = 0.0
-    if codex:
+    # Local Responses servers keep their configured local stale/TTFB grace: the hosted
+    # large-context floor, hard ceiling and TTFB scale-up/cap below must not tighten it.
+    base_url = getattr(agent, "base_url", None)
+    local = bool(base_url) and is_local_endpoint(base_url)
+    if codex and not local:
         # Raise the stale floor for large payloads so healthy gateway-scale
         # requests aren't aborted mid-prefill.
         codex_floor = openai_codex_stale_timeout_floor(est_tokens)
@@ -1180,7 +1184,7 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if ttfb_timeout <= 0:
         ttfb_enabled = False
-    elif codex:
+    elif codex and not local:
         # Large requests legitimately spend tens of seconds in admission/prefill before the
         # first SSE event: scale the cutoff up to the idle default unless TTFB_STRICT is set.
         disable_above = env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
@@ -1198,7 +1202,7 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "(context=~%s tokens) per HERMES_CODEX_TTFB_MAX_SECONDS.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
-    elif not ttfb_explicit and (base_url := getattr(agent, "base_url", None)) and is_local_endpoint(base_url):
+    elif not ttfb_explicit and local:
         # A local server prefills for minutes before its first event; the chat-completions
         # siblings already grant local endpoints the local stale ceiling, so the Responses
         # transport gets the same grace instead of the 120s hosted cutoff (#92302).

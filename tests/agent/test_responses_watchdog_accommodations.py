@@ -5,6 +5,8 @@ Ensures:
    the large-context stale timeout floor (e.g. 1200s at >100K tokens, 900s at >50K tokens)
    in interruptible_api_call. A baseline short timeout of 0.2s is elevated so a 0.5s call succeeds without stale_call_kill.
 2. Large requests scale TTFB timeout for xai-oauth (codex_responses) instead of killing at a short TTFB cutoff.
+3. The 1500s codex hard ceiling clamps hosted codex_responses (xAI) but does not tighten a local
+   Responses endpoint's (e.g. 127.0.0.1) configured stale timeout.
 """
 
 from __future__ import annotations
@@ -134,3 +136,19 @@ def test_xai_responses_ttfb_scaled_for_large_requests(monkeypatch):
     result = h.interruptible_api_call(agent, {"messages": [{"role": "user", "content": large_text}], "stream": True})
     assert result.ok is True
     assert "codex_ttfb_kill" not in closes
+
+
+def test_hard_ceiling_clamps_hosted_but_not_local_responses_endpoints(monkeypatch):
+    """The 1500s hard ceiling bounds hosted codex_responses (xAI) but must not tighten a
+    local Responses server's configured stale timeout."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.delenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
+    kwargs = {"input": [{"role": "user", "content": "hi"}]}
+    hosted = _make_mock_agent()
+    local = _make_mock_agent(provider="custom", base_url="http://127.0.0.1:1234/v1")
+    for agent in (hosted, local):
+        agent._compute_non_stream_stale_timeout = lambda api_kwargs: 3000.0
+
+    assert h._resolve_nonstream_watchdogs(hosted, kwargs).stale_timeout == 1500.0
+    assert h._resolve_nonstream_watchdogs(local, kwargs).stale_timeout == 3000.0

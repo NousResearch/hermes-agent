@@ -229,6 +229,27 @@ def test_scoped_flat_channel_seed_key_matches_scoped_reply_key():
     )
 
 
+def test_thread_and_inchannel_seeds_are_assistant_turns():
+    """Both continuation surfaces persist the delivered brief as Hermes's
+    response, so the next human message is not mistaken for a reply to the
+    cron job operator (#118863)."""
+    adapter = MagicMock()
+    adapter._session_store = MagicMock()
+
+    with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror:
+        _seed_cron_thread_session(
+            {"id": "thread-job", "name": "digest"}, adapter, "slack",
+            "C0AAAAAAAA", "171234.0001", "Thread brief", is_dm=False,
+        )
+        _seed_cron_channel_session(
+            {"id": "channel-job", "name": "digest"}, adapter, "slack",
+            "C0AAAAAAAA", "Channel brief", is_dm=False, user_id="U0B5F8EEYAD",
+        )
+
+    assert mirror.call_count == 2
+    assert all(call.kwargs["role"] == "assistant" for call in mirror.call_args_list)
+
+
 def test_seeds_do_not_collide_across_workspaces():
     """Two workspaces sharing a Slack chat id must seed DISTINCT keys —
     the exact cross-tenant collision the workspace key segment exists to

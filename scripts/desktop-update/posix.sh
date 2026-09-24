@@ -26,7 +26,8 @@
 # polls /progress for the current stage or a terminal event and reacts. The
 # stages come from the gates below, never from child output. It owns nothing --
 # relaunch, result file, marker hygiene all happen here, identically, when
-# no renderer exists. No chromium-family browser found = no UI, fine.
+# no renderer exists. No chromium-family browser found = no UI, fine; macOS
+# never opens one (see find_browser).
 #
 # ORDERING (the durable-truth rule): swap and relaunch are DECIDED AND
 # EXECUTED before the result file is written, the marker is removed, or a
@@ -184,16 +185,16 @@ find_browser() {
   # (#88682). The throwaway --user-data-dir below cannot block either; the
   # remaining Chromium-family browsers carry no first-run chrome of their
   # own into a fresh profile.
-  if [ "$(uname)" = "Darwin" ]; then
-    for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-             "/Applications/Chromium.app/Contents/MacOS/Chromium"; do
-      [ -x "$c" ] && { echo "$c"; return; }
-    done
-  else
-    for c in google-chrome google-chrome-stable chromium chromium-browser; do
-      command -v "$c" 2>/dev/null && return
-    done
-  fi
+  #
+  # No browser at all on macOS. A second --user-data-dir is a second instance
+  # of the same bundle, and the Dock records every one as a new recent-app
+  # tile it never merges with the pinned browser: one more duplicate Chrome
+  # icon per update (#96374). A stable profile would not help (still a second
+  # instance). notify_fallback + the next-boot result dialog carry the outcome.
+  [ "$(uname)" = "Darwin" ] && return
+  for c in google-chrome google-chrome-stable chromium chromium-browser; do
+    command -v "$c" 2>/dev/null && return
+  done
 }
 
 # The shim is decoration; launching a browser the user does NOT use is not.
@@ -204,28 +205,9 @@ find_browser() {
 # the durable result file carry the outcome. Best-effort on purpose: any
 # detection failure keeps today's behavior (0 = allowed).
 default_browser_is_chromium() {
-  local py="$1" handler=""
-  if [ "$(uname)" = "Darwin" ]; then
-    local plist="$HOME/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist"
-    # No explicit https handler registered = the OS default (Safari).
-    [ -f "$plist" ] || return 1
-    handler="$("$py" -c '
-import plistlib, sys
-with open(sys.argv[1], "rb") as f:
-    data = plistlib.load(f)
-for entry in data.get("LSHandlers", []):
-    if entry.get("LSHandlerURLScheme") == "https":
-        print(entry.get("LSHandlerRoleAll", ""))
-        break
-' "$plist" 2>/dev/null)" || return 0
-    # Parsed but empty = no https override = Safari default.
-    [ -n "$handler" ] || return 1
-    case "$handler" in
-      com.google.[Cc]hrome*|org.chromium.[Cc]hromium*) return 0 ;;
-      *) return 1 ;;
-    esac
-  fi
-  # Linux: xdg-settings is the authority; missing tool = permissive.
+  local handler=""
+  # Linux only (find_browser never picks one on macOS). xdg-settings is the
+  # authority; missing tool = permissive.
   command -v xdg-settings >/dev/null 2>&1 || return 0
   handler="$(xdg-settings get default-web-browser 2>/dev/null)" || return 0
   [ -n "$handler" ] || return 0
@@ -241,7 +223,7 @@ start_ui() {
   py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
   [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
   browser="$(find_browser)"
-  if [ -n "$browser" ] && [ -n "$py" ] && ! default_browser_is_chromium "$py"; then
+  if [ -n "$browser" ] && ! default_browser_is_chromium; then
     log "shim: default browser is not Chromium-family; skipping UI window"
     browser=""
   fi

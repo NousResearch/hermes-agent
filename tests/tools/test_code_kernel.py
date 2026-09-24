@@ -18,6 +18,8 @@ tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -26,7 +28,7 @@ import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -102,6 +104,608 @@ class TestSessionStatePersistence(unittest.TestCase):
 
 
 class TestKernelLifecycle(unittest.TestCase):
+    @pytest.mark.linux_only
+    def test_cross_uid_rpc_listener_rejects_unexpected_peer_before_serving(self):
+        from tools.code_kernel import _UidFilteringSocket
+
+        unexpected = Mock()
+        unexpected.getsockopt.return_value = (
+            (123).to_bytes(4, sys.byteorder)
+            + (os.geteuid() + 1).to_bytes(4, sys.byteorder)
+            + (456).to_bytes(4, sys.byteorder)
+        )
+        expected = Mock()
+        expected.getsockopt.return_value = (
+            (789).to_bytes(4, sys.byteorder)
+            + os.geteuid().to_bytes(4, sys.byteorder)
+            + (456).to_bytes(4, sys.byteorder)
+        )
+        listener = Mock()
+        listener.accept.side_effect = [(unexpected, None), (expected, None)]
+
+        accepted, address = _UidFilteringSocket(listener, os.geteuid()).accept()
+
+        unexpected.close.assert_called_once_with()
+        self.assertIs(accepted, expected)
+        self.assertIsNone(address)
+
+    @pytest.mark.linux_only
+    def test_cross_uid_rpc_listener_closes_peer_when_credential_read_fails(self):
+        from tools.code_kernel import _UidFilteringSocket
+
+        unreadable = Mock()
+        unreadable.getsockopt.side_effect = OSError("peer disappeared")
+        expected = Mock()
+        expected.getsockopt.return_value = (
+            (789).to_bytes(4, sys.byteorder)
+            + os.geteuid().to_bytes(4, sys.byteorder)
+            + os.getegid().to_bytes(4, sys.byteorder)
+        )
+        listener = Mock()
+        listener.accept.side_effect = [(unreadable, None), (expected, None)]
+
+        accepted, address = _UidFilteringSocket(listener, os.geteuid()).accept()
+
+        unreadable.close.assert_called_once_with()
+        self.assertIs(accepted, expected)
+        self.assertIsNone(address)
+
+    @pytest.mark.linux_only
+    def test_runner_imports_generated_tools_without_listing_staging_dir(self):
+        from tools.code_kernel import KERNEL_RUNNER_SOURCE
+
+        with tempfile.TemporaryDirectory() as outer:
+            staging = Path(outer, "staging")
+            staging.mkdir(mode=0o700)
+            Path(staging, "hermes_tools.py").write_text(
+                "VALUE = 42\n", encoding="utf-8"
+            )
+            runner = Path(staging, "hermes_kernel_runner.py")
+            runner.write_text(KERNEL_RUNNER_SOURCE, encoding="utf-8")
+            for path in (runner, Path(staging, "hermes_tools.py")):
+                path.chmod(0o644)
+            staging.chmod(0o311)
+
+            work = Path(outer, "work")
+            work.mkdir()
+            env = os.environ.copy()
+            env.update(
+                HERMES_KERNEL_SENTINEL="@@TEST@@",
+                HERMES_KERNEL_SPILL_DIR=str(work),
+                HERMES_KERNEL_TOOLS_PATH=str(Path(staging, "hermes_tools.py")),
+            )
+            runner_fd = os.open(runner, os.O_RDONLY)
+            try:
+                proc = subprocess.run(
+                    [sys.executable, f"/proc/self/fd/{runner_fd}"],
+                    input=json.dumps({
+                        "id": "import",
+                        "code": "import hermes_tools; print(hermes_tools.VALUE)",
+                    })
+                    + "\n",
+                    cwd=work,
+                    env=env,
+                    pass_fds=(runner_fd,),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            finally:
+                os.close(runner_fd)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('"status": "ok"', proc.stdout)
+        self.assertIn('"stdout": "42\\n"', proc.stdout)
+
+    def test_plain_kernel_teardown_does_not_import_linux_broker(self):
+        from tools.code_kernel import SessionKernel
+
+        proc = Mock()
+        proc.poll.return_value = 1
+        kernel = SessionKernel(("plain-teardown",))
+        kernel.proc = proc
+        real_import = __import__
+
+        def import_without_linux_broker(name, *args, **kwargs):
+            if name == "tools.local_exec_broker":
+                raise ModuleNotFoundError("fcntl")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_linux_broker):
+            kernel.teardown()
+
+    @pytest.mark.linux_only
+    def test_configured_local_broker_launches_kernel_and_holds_lease(self):
+        from tools.code_kernel import SessionKernel, _spawn
+
+        class Connection:
+            def __init__(self):
+                self.closed = False
+
+            def setblocking(self, _blocking):
+                pass
+
+            def recv(self, _size):
+                raise BlockingIOError
+
+            def close(self):
+                self.closed = True
+
+        launched = {}
+        connection = Connection()
+
+        def request_launch(socket_path, **kwargs):
+            launched["socket_path"] = socket_path
+            launched.update(kwargs)
+            return connection, {"ok": True, "pid": 4321, "start_time": 100}, b""
+
+        kernel = SessionKernel(("broker-launch",))
+        broker_uid = os.geteuid() + 1
+        with (
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={
+                    "terminal": {
+                        "local_exec_broker": {
+                            "socket": "/run/hermes-broker/broker.sock",
+                            "uid": broker_uid,
+                        }
+                    }
+                },
+            ),
+            patch("tools.local_exec_broker.request_launch", side_effect=request_launch),
+            patch("tools.code_kernel.threading.Thread.start"),
+            patch("tools.code_kernel._ensure_background_reaper"),
+        ):
+            _spawn(
+                kernel,
+                task_id="broker-launch",
+                child_python=sys.executable,
+                child_cwd="",
+                sandbox_tools=frozenset(),
+                max_tool_calls=1,
+            )
+
+        try:
+            self.assertEqual(launched["socket_path"], "/run/hermes-broker/broker.sock")
+            self.assertEqual(launched["expected_peer_uid"], broker_uid)
+            self.assertIsInstance(launched["runner_fd"], int)
+            self.assertIsInstance(launched["stdin_fd"], int)
+            self.assertIsInstance(launched["stdout_fd"], int)
+            self.assertIsInstance(launched["stderr_fd"], int)
+            self.assertNotEqual(launched["stdout_fd"], launched["stderr_fd"])
+            self.assertEqual(Path(kernel.tmpdir).parent, Path("/tmp"))
+            self.assertEqual(os.stat(kernel.tmpdir).st_mode & 0o777, 0o711)
+            self.assertEqual(
+                os.stat(Path(kernel.tmpdir, "hermes_tools.py")).st_mode & 0o777,
+                0o644,
+            )
+            rpc_path = Path(launched["env"]["HERMES_RPC_SOCKET"])
+            self.assertEqual(rpc_path.parent, Path(kernel.tmpdir))
+            self.assertEqual(os.stat(rpc_path).st_mode & 0o777, 0o666)
+            self.assertEqual(os.stat(rpc_path.parent).st_mode & 0o777, 0o711)
+            self.assertIsNone(launched["cwd"])
+            self.assertTrue(launched["scratch"])
+            self.assertEqual(launched["env"]["HERMES_KERNEL_INLINE_SPILL"], "1")
+            self.assertNotEqual(launched["env"].get("TMPDIR"), str(Path(kernel.tmpdir, "work")))
+            self.assertNotIn("HERMES_KERNEL_SPILL_DIR", launched["env"])
+            self.assertFalse(Path(kernel.tmpdir, "work").exists())
+            self.assertFalse(Path(kernel.tmpdir, "spill").exists())
+            self.assertEqual(kernel.proc.pid, 4321)
+            self.assertIs(kernel.broker_lease, connection)
+            self.assertIsNone(kernel.death_pipe_w)
+            self.assertIn("b", kernel.proc.stdin.mode)
+            self.assertIn("b", kernel.proc.stdout.mode)
+            self.assertIn("b", kernel.proc.stderr.mode)
+            self.assertIsNot(kernel.proc.stdout, kernel.proc.stderr)
+        finally:
+            kernel.teardown()
+
+    @pytest.mark.linux_only
+    def test_broker_kernel_launch_does_not_reclose_transferred_pipe_fd(self):
+        from tools.code_kernel import _spawn_through_broker
+
+        class Connection:
+            def close(self):
+                pass
+
+        reused = []
+
+        def request_launch(*_args, **_kwargs):
+            return Connection(), {"pid": 123, "start_time": 100}, b""
+
+        def failing_process(
+            _conn,
+            _pid,
+            _start_time,
+            stdin_fd,
+            stdout_fd,
+            stderr_fd,
+            _remainder,
+        ):
+            os.close(stdin_fd)
+            replacement = os.open("/dev/null", os.O_RDONLY)
+            os.dup2(replacement, stdin_fd)
+            if replacement != stdin_fd:
+                os.close(replacement)
+            reused.append(stdin_fd)
+            os.close(stdout_fd)
+            os.close(stderr_fd)
+            raise RuntimeError("constructor failed after taking descriptor ownership")
+
+        with tempfile.NamedTemporaryFile() as runner:
+            try:
+                with (
+                    patch(
+                        "tools.local_exec_broker.request_launch",
+                        side_effect=request_launch,
+                    ),
+                    patch("tools.code_kernel._BrokerKernelProcess", failing_process),
+                    self.assertRaisesRegex(RuntimeError, "constructor failed"),
+                ):
+                    _spawn_through_broker(
+                        runner.name,
+                        sys.executable,
+                        "",
+                        {},
+                        ("/run/test-broker.sock", os.geteuid()),
+                    )
+                os.fstat(reused[0])
+            finally:
+                if reused:
+                    try:
+                        os.close(reused[0])
+                    except OSError:
+                        pass
+
+    def test_inline_broker_spill_is_materialized_in_host_staging(self):
+        from tools.code_kernel import SessionKernel, _materialize_inline_spill
+
+        kernel = SessionKernel(("broker-spill",))
+        kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_test_")
+        payload = {
+            "execution_count": 7,
+            "stdout_clipped": True,
+            "stdout_spill_content": "full output\nfrom worker",
+            "stdout_spill_path": "",
+        }
+
+        try:
+            _materialize_inline_spill(kernel, payload)
+            spill = Path(payload["stdout_spill_path"])
+            self.assertEqual(spill.parent, Path(kernel.tmpdir))
+            self.assertEqual(spill.read_text(encoding="utf-8"), "full output\nfrom worker")
+            self.assertEqual(os.stat(spill).st_mode & 0o777, 0o600)
+            self.assertNotIn("stdout_spill_content", payload)
+        finally:
+            kernel.teardown()
+
+    def test_stdout_reader_reports_non_object_frame_as_protocol_error(self):
+        from tools.code_kernel import SessionKernel, _stdout_reader
+
+        body = b"[1, 2]"
+        kernel = SessionKernel(("non-object-frame",))
+        kernel.sentinel = "@@FRAME@@"
+        kernel.proc = Mock()
+        kernel.proc.stdout.read1.side_effect = [
+            b"\n@@FRAME@@ " + str(len(body)).encode() + b"\n" + body,
+            b"",
+        ]
+
+        _stdout_reader(kernel)
+
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "protocol-error"})
+
+    @pytest.mark.linux_only
+    def test_configured_local_broker_failure_does_not_fall_back_to_popen(self):
+        from tools.code_kernel import SessionKernel, _spawn
+        from tools.local_exec_broker import BrokerError
+
+        kernel = SessionKernel(("broker-refusal",))
+        with (
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={
+                    "terminal": {
+                        "local_exec_broker": {
+                            "socket": "/run/hermes-broker/broker.sock",
+                            "uid": os.geteuid(),
+                        }
+                    }
+                },
+            ),
+            patch(
+                "tools.local_exec_broker.request_launch",
+                side_effect=BrokerError("unauthorized", "refused"),
+            ),
+            patch("tools.code_kernel.subprocess.Popen") as popen,
+        ):
+            with self.assertRaisesRegex(BrokerError, "unauthorized: refused"):
+                _spawn(
+                    kernel,
+                    task_id="broker-refusal",
+                    child_python=sys.executable,
+                    child_cwd="",
+                    sandbox_tools=frozenset(),
+                    max_tool_calls=1,
+                )
+        popen.assert_not_called()
+        kernel.teardown()
+
+    @pytest.mark.linux_only
+    def test_broker_teardown_cleans_remaining_handles_after_bad_exit_reply(self):
+        from tools.code_kernel import SessionKernel
+        from tools.local_exec_broker import BrokerError
+
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = BrokerError("bad_reply", "malformed exit status")
+        proc.pid = 4321
+        lease = Mock()
+        server_sock = Mock()
+        kernel = SessionKernel(("broker-bad-reply",))
+        kernel.proc = proc
+        kernel.broker_lease = lease
+        kernel.server_sock = server_sock
+
+        kernel.teardown()
+
+        proc.kill.assert_called_once_with()
+        lease.close.assert_called_once_with()
+        server_sock.close.assert_called_once_with()
+        assert kernel.broker_lease is None
+        assert kernel.server_sock is None
+
+    @pytest.mark.linux_only
+    def test_broker_teardown_retires_output_handles_after_wait_timeout(self):
+        from tools.code_kernel import SessionKernel
+
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = subprocess.TimeoutExpired("local execution broker", 5)
+        proc.pid = 4321
+        kernel = SessionKernel(("broker-timeout",))
+        kernel.proc = proc
+        kernel.broker_lease = Mock()
+
+        kernel.teardown()
+
+        proc._close_owned_handles.assert_called_once_with()
+
+    @pytest.mark.linux_only
+    def test_broker_teardown_cleans_up_when_alive_check_gets_bad_reply(self):
+        from tools.code_kernel import SessionKernel, _BrokerKernelProcess
+
+        lease, peer = socket.socketpair()
+        stdin_r, stdin_w = os.pipe()
+        stdout_r, stdout_w = os.pipe()
+        stderr_r, stderr_w = os.pipe()
+        proc = _BrokerKernelProcess(
+            lease, 4321, 100, stdin_w, stdout_r, stderr_r, b"{}\n"
+        )
+        os.close(stdin_r)
+        stdin_r = -1
+        os.close(stdout_w)
+        stdout_w = -1
+        os.close(stderr_w)
+        stderr_w = -1
+        server_sock = Mock()
+        kernel = SessionKernel(("broker-bad-alive-reply",))
+        kernel.proc = proc
+        kernel.broker_lease = lease
+        kernel.server_sock = server_sock
+        try:
+            kernel.teardown()
+            server_sock.close.assert_called_once_with()
+            assert kernel.broker_lease is None
+            assert kernel.server_sock is None
+        finally:
+            peer.close()
+            lease.close()
+            for fd in (stdin_r, stdout_w, stderr_w):
+                if fd >= 0:
+                    os.close(fd)
+
+    @pytest.mark.linux_only
+    def test_broker_process_releases_owned_handles_on_every_terminal_path(self):
+        from tools.code_kernel import _BrokerKernelProcess
+        from tools.local_exec_broker import BrokerError
+
+        for action, remainder in (
+            ("kill", b""),
+            ("exit", b'{"exit": 0}\n'),
+            ("malformed", b"{}\n"),
+        ):
+            with self.subTest(action=action):
+                lease, peer = socket.socketpair()
+                stdin_r, stdin_w = os.pipe()
+                stdout_r, stdout_w = os.pipe()
+                stderr_r, stderr_w = os.pipe()
+                proc = _BrokerKernelProcess(
+                    lease,
+                    os.getpid(),
+                    100,
+                    stdin_w,
+                    stdout_r,
+                    stderr_r,
+                    remainder,
+                )
+                os.close(stdin_r)
+                os.close(stdout_w)
+                os.close(stderr_w)
+                try:
+                    if action == "kill":
+                        with patch(
+                            "tools.local_exec_broker._process_start_time",
+                            return_value=101,
+                        ):
+                            proc.kill()
+                            assert proc.poll() == -9
+                    elif action == "malformed":
+                        with self.assertRaises(BrokerError):
+                            proc.poll()
+                    else:
+                        self.assertEqual(proc.poll(), 0)
+                    self.assertTrue(proc.stdin.closed)
+                    self.assertTrue(proc.stdout.closed)
+                    self.assertTrue(proc.stderr.closed)
+                    self.assertEqual(lease.fileno(), -1)
+                finally:
+                    peer.close()
+                    if not proc.stdin.closed:
+                        proc.stdin.close()
+                    if not proc.stdout.closed:
+                        proc.stdout.close()
+                    if not proc.stderr.closed:
+                        proc.stderr.close()
+                    lease.close()
+
+    @pytest.mark.linux_only
+    def test_broker_kill_closes_lease_before_retiring_stdout(self):
+        from tools.code_kernel import _BrokerKernelProcess
+
+        class GuardedStdout:
+            closed = False
+
+            def close(self):
+                assert lease.fileno() == -1
+                self.closed = True
+
+        lease, peer = socket.socketpair()
+        stdin_r, stdin_w = os.pipe()
+        stdout_r, stdout_w = os.pipe()
+        stderr_r, stderr_w = os.pipe()
+        proc = _BrokerKernelProcess(
+            lease, 4321, 100, stdin_w, stdout_r, stderr_r, b""
+        )
+        guard = GuardedStdout()
+        try:
+            os.close(stdin_r)
+            stdin_r = -1
+            os.close(stdout_w)
+            stdout_w = -1
+            os.close(stderr_w)
+            stderr_w = -1
+            proc.stdout.close()
+            proc.stdout = guard
+            with patch(
+                "tools.local_exec_broker._process_start_time",
+                return_value=101,
+            ):
+                proc.kill()
+                assert lease.fileno() == -1
+                assert guard.closed is False
+                assert proc.poll() == -9
+                assert guard.closed is True
+        finally:
+            peer.close()
+            lease.close()
+            for fd in (
+                stdin_r,
+                stdin_w,
+                stdout_r,
+                stdout_w,
+                stderr_r,
+                stderr_w,
+            ):
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    @pytest.mark.linux_only
+    def test_broker_poll_does_not_close_output_held_by_reader_thread(self):
+        import threading
+
+        from tools.code_kernel import _BrokerKernelProcess
+
+        lease, peer = socket.socketpair()
+        stdin_r, stdin_w = os.pipe()
+        stdout_r, stdout_w = os.pipe()
+        stderr_r, stderr_w = os.pipe()
+        proc = _BrokerKernelProcess(
+            lease, 4321, 100, stdin_w, stdout_r, stderr_r, b""
+        )
+        reader_started = threading.Event()
+        reader_done = threading.Event()
+        poll_done = threading.Event()
+        result = []
+
+        def read_stdout():
+            reader_started.set()
+            proc.stdout.read()
+            reader_done.set()
+
+        def poll_process():
+            result.append(proc.poll())
+            poll_done.set()
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        poller = threading.Thread(target=poll_process, daemon=True)
+        try:
+            os.close(stdin_r)
+            stdin_r = -1
+            os.close(stderr_w)
+            stderr_w = -1
+            reader.start()
+            assert reader_started.wait(1)
+            time.sleep(0.05)
+            with patch(
+                "tools.local_exec_broker._process_start_time",
+                return_value=101,
+            ):
+                proc.kill()
+                poller.start()
+                assert poll_done.wait(1), "poll blocked closing stdout under its reader"
+            self.assertEqual(result, [-9])
+            self.assertFalse(proc.stdout.closed)
+        finally:
+            peer.close()
+            lease.close()
+            if stdout_w >= 0:
+                os.close(stdout_w)
+                stdout_w = -1
+            reader.join(timeout=1)
+            poller.join(timeout=1)
+            for stream in (proc.stdout, proc.stderr):
+                if not stream.closed:
+                    stream.close()
+            for fd in (stdin_r, stdout_w, stderr_w):
+                if fd >= 0:
+                    os.close(fd)
+
+    @pytest.mark.linux_only
+    def test_broker_process_does_not_wait_on_a_reused_pid(self):
+        from tools.code_kernel import _BrokerKernelProcess
+
+        lease, peer = socket.socketpair()
+        stdin_r, stdin_w = os.pipe()
+        stdout_r, stdout_w = os.pipe()
+        stderr_r, stderr_w = os.pipe()
+        try:
+            with patch(
+                "tools.local_exec_broker._process_start_time",
+                return_value=101,
+            ):
+                proc = _BrokerKernelProcess(
+                    lease, 4321, 100, stdin_w, stdout_r, stderr_r, b""
+                )
+                os.close(stdin_r)
+                stdin_r = -1
+                os.close(stdout_w)
+                stdout_w = -1
+                os.close(stderr_w)
+                stderr_w = -1
+                proc.kill()
+                self.assertEqual(proc.poll(), -9)
+        finally:
+            peer.close()
+            lease.close()
+            for fd in (stdin_r, stdout_w, stderr_w):
+                if fd != -1:
+                    os.close(fd)
+
     def test_kernel_exits_when_its_backend_parent_dies(self):
         """A kernel must not outlive the host that spawned it, even when the
         host dies without cleanup (SIGKILL/OOM/crash). Windows: inherited

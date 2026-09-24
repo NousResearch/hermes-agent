@@ -1297,25 +1297,56 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
-        the correct sandbox context."""
+        the correct sandbox context. A configured local broker deliberately owns these
+        workers: restarting that broker terminates them rather than abandoning processes
+        outside its containment boundary."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
-        bg_command = (
-            f"mkdir -p {q(temp_dir)} && "
-            f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
-            f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
+        worker = (
+            f"bash -lc {q(command)} > {q(log_path)} 2>&1; "
+            f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)}"
+        )
+        broker_background = _IS_LINUX and getattr(
+            env, "_local_exec_broker_socket", None
+        )
+        if broker_background:
+            bg_command = (
+                f"mkdir -p {q(temp_dir)} && printf '%s\\n' \"$$\" > {q(pid_path)} && "
+                f"exec bash -c {q(worker)}"
+            )
+        else:
+            launcher = f"( nohup {worker} )"
+            bg_command = (
+                f"mkdir -p {q(temp_dir)} && {{ {launcher} & "
+                f"echo $! > {q(pid_path)} && cat {q(pid_path)}; }}"
+            )
         try:
-            result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
-            output = result.get("output", "").strip()
-            session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
-            # No PID from the wrapper (syntax error, broken redirect): a failed launch,
-            # not a fake running session.
-            if session.pid is None:
-                session.mark_exited(int(result.get("returncode", -1)) or -1, "failed_start", "failed_start")
-                session.output_buffer = output
+            if broker_background:
+                (
+                    session.pid,
+                    session.host_start_time,
+                    session.systemd_unit,
+                ) = env._start_broker_background(
+                    bg_command, timeout=timeout
+                )
+            else:
+                result = env.execute(
+                    bg_command, timeout=timeout, rewrite_compound_background=False
+                )
+                output = result.get("output", "").strip()
+                session.pid = next(
+                    (int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()),
+                    None,
+                )
+                if session.pid is None:
+                    session.mark_exited(
+                        int(result.get("returncode", -1)) or -1,
+                        "failed_start",
+                        "failed_start",
+                    )
+                    session.output_buffer = output
         except Exception as e:
             session.mark_exited(-1, "failed_start", "failed_start")
             session.output_buffer = f"Failed to start: {e}"
@@ -1475,6 +1506,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         q = shlex.quote
         # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
         prev_output_bytes = 0
+        broker_pid_artifact_confirmed = False
         while not session.exited:
             time.sleep(2)
             try:
@@ -1505,6 +1537,62 @@ class ProcessRegistry(ProcessCheckpointMixin):
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
+
+                broker_background = _IS_LINUX and bool(
+                    getattr(env, "_local_exec_broker_socket", None)
+                )
+                if broker_background and not broker_pid_artifact_confirmed:
+                    pid_str = env.execute(
+                        f"cat {q(pid_path)} 2>/dev/null", timeout=5
+                    ).get("output", "").strip()
+                    try:
+                        artifact_pid = int(pid_str.splitlines()[-1].strip())
+                    except (ValueError, IndexError):
+                        artifact_pid = None
+                    if artifact_pid == session.pid:
+                        broker_pid_artifact_confirmed = True
+                    else:
+                        # The broker replied after Popen, before the shell necessarily wrote
+                        # its setup artifacts. A live, identity-matched launcher is still
+                        # starting; do not turn scheduling delay into an untracked orphan.
+                        if (
+                            session.host_start_time is not None
+                            and self._host_pid_is_ours(
+                                session.pid, session.host_start_time
+                            )
+                        ):
+                            continue
+                        exit_str = env.execute(
+                            f"cat {q(exit_path)} 2>/dev/null", timeout=5
+                        ).get("output", "").strip()
+                        if not exit_str:
+                            session.mark_exited(
+                                -1, "failed_start", "failed_start"
+                            )
+                            self._move_to_finished(session)
+                            return
+
+                if broker_background:
+                    # This is a host PID supplied by the broker, not merely a sandbox
+                    # artifact. Keep checking its immutable start time so PID reuse cannot
+                    # turn an unrelated process into permanent proof that the worker lives.
+                    if (
+                        session.host_start_time is not None
+                        and self._host_pid_is_ours(
+                            session.pid, session.host_start_time
+                        )
+                    ):
+                        continue
+                    exit_str = env.execute(
+                        f"cat {q(exit_path)} 2>/dev/null", timeout=5
+                    ).get("output", "").strip()
+                    try:
+                        exit_code = int(exit_str.splitlines()[-1].strip())
+                    except (ValueError, IndexError):
+                        exit_code = -1
+                    session.exit_code = exit_code
+                    self._finish_exited(session, exit_code)
+                    return
 
                 check = env.execute(
                     f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
@@ -2074,6 +2162,52 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "status": status, "command": session.command,
             **ProcessRegistry._exit_fields(session), **_completion_output(session)}
 
+    @staticmethod
+    def _stop_session_systemd_unit(session: ProcessSession) -> bool:
+        """Stop a session scope through the user manager that created it."""
+        unit = session.systemd_unit
+        if not unit:
+            return True
+        env = session.env_ref
+        if env is None or not getattr(env, "_local_exec_broker_socket", None):
+            return _stop_systemd_unit(unit)
+
+        # Broker-launched scopes belong to the broker uid's user manager. Running
+        # local ``systemctl --user`` would address Hermes' manager instead and
+        # silently leave setsid/double-fork descendants alive in cross-uid setups.
+        broker_uid = getattr(env, "_local_exec_broker_uid", None)
+        if not isinstance(broker_uid, int) or broker_uid < 0:
+            return False
+        # The stop command itself runs through the broker, but its environment
+        # otherwise comes from the requesting Hermes process. Point sd-bus at
+        # the broker uid's user manager and discard any peer-provided bus path.
+        command = (
+            "env -u DBUS_SESSION_BUS_ADDRESS "
+            f"XDG_RUNTIME_DIR=/run/user/{broker_uid} "
+            f"systemctl --user stop {shlex.quote(unit)}"
+        )
+        try:
+            result = env.execute(command, timeout=15)
+        except Exception as exc:
+            logger.debug("broker systemctl --user stop %s failed: %s", unit, exc)
+            return False
+        returncode = result.get("returncode")
+        output = str(result.get("output", "")).strip()
+        if returncode == 0:
+            return True
+        if any(
+            marker in output.lower()
+            for marker in ("not loaded", "not found", "does not exist")
+        ):
+            return True
+        logger.debug(
+            "broker systemctl --user stop %s exited %s: %s",
+            unit,
+            returncode,
+            output,
+        )
+        return False
+
     def kill_process(
         self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
     ) -> dict:
@@ -2094,8 +2228,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # above (reviewer gap #2). ``systemctl --user stop`` sends SIGTERM to every process in the
             # cgroup and escalates to SIGKILL after TimeoutStopSec. This is additive — the PID-based kill
             # above already handled the main process; this catches stragglers.
-            if session.systemd_unit:
-                _stop_systemd_unit(session.systemd_unit)
+            if session.systemd_unit and not self._stop_session_systemd_unit(session):
+                return {
+                    "status": "error",
+                    "error": f"failed to stop process scope {session.systemd_unit}",
+                }
             with session._lock:
                 result = self._exit_snapshot(session, "already_exited")
             # Only suppress the autonomous turn after its output is present in
@@ -2109,8 +2246,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 return early
             # Additive to the PID kill: stopping the scope reaps double-forked
             # descendants reparented inside the cgroup.
-            if session.systemd_unit:
-                _stop_systemd_unit(session.systemd_unit)
+            if session.systemd_unit and not self._stop_session_systemd_unit(session):
+                return {
+                    "status": "error",
+                    "error": f"failed to stop process scope {session.systemd_unit}",
+                }
             # Post-kill verification (#115490): the signals above can leave
             # survivors (SIGTERM-ignoring daemons, scope escapees). A kill that
             # leaves a live tree must not write a killed receipt or prune the
@@ -2171,7 +2311,38 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            if _IS_LINUX and getattr(
+                session.env_ref, "_local_exec_broker_socket", None
+            ):
+                if session.host_start_time is None or not self._host_pid_is_ours(
+                    session.pid, session.host_start_time
+                ):
+                    if session.systemd_unit and not self._stop_session_systemd_unit(
+                        session
+                    ):
+                        return {
+                            "status": "error",
+                            "error": f"failed to stop process scope {session.systemd_unit}",
+                        }
+                    with session._lock:
+                        session.exited = True
+                        session.exit_code = None
+                        output = _output_tail(session, 2000)
+                    if consume_output:
+                        self._completion_consumed.add(session_id)
+                    self._move_to_finished(session)
+                    return {
+                        "status": "already_exited",
+                        "exit_code": session.exit_code,
+                        "output": output,
+                    }
+                session.env_ref.execute(
+                    f"kill -TERM -- -{session.pid} 2>/dev/null || "
+                    f"kill -TERM {session.pid} 2>/dev/null",
+                    timeout=5,
+                )
+            else:
+                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Identity check, not bare liveness: a gone/recycled PID means our
             # process exited — never tree-kill the stranger. Still stop an owned
@@ -2180,8 +2351,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # returning: a daemonized descendant may still be alive there even though the wrapper PID exited
             # or was recycled across the gateway restart (#70716, teknium1 review).
             if not self._host_pid_is_ours(session.pid, session.host_start_time):
-                if session.systemd_unit:
-                    _stop_systemd_unit(session.systemd_unit)
+                if session.systemd_unit and not self._stop_session_systemd_unit(session):
+                    return {
+                        "status": "error",
+                        "error": f"failed to stop process scope {session.systemd_unit}",
+                    }
                 with session._lock:
                     session.exited = True
                     session.exit_code = None

@@ -145,7 +145,6 @@ def test_stream_ending_before_message_stop_is_not_accepted(runs: dict[str, Any])
     assert (sent, rows) == (2, [FINAL]), f"requests={sent} rows={rows}"
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["validation_retried"])
 def test_validation_exception_is_surfaced_once_without_retry(runs: dict[str, Any]) -> None:
     run = runs["validation"]
     result: ChatResult = run["result"]

@@ -1024,6 +1024,9 @@ def _status_403(c: _Ctx) -> Verdict:
 
 
 def _status_404(c: _Ctx) -> Verdict:
+    # AWS identifies a missing model/resource by code even when its message is generic.
+    if c.provider_slug == "bedrock" and c.code == "resourcenotfoundexception":
+        return _V_MODEL_NOT_FOUND
     # Structured billing code first, as in _status_429: this handler always returns,
     # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
     if c.code in _BILLING_ERROR_CODES:
@@ -1379,7 +1382,13 @@ def _status_of(exc: Any) -> Optional[int]:
     if isinstance(code, int):
         return code
     code = getattr(exc, "status", None)  # some SDKs use .status
-    return code if isinstance(code, int) and 100 <= code < 600 else None
+    if isinstance(code, int) and 100 <= code < 600:
+        return code
+    # botocore ClientError carries the parsed AWS response, not an HTTP response object.
+    response = getattr(exc, "response", None)
+    metadata = response.get("ResponseMetadata") if isinstance(response, dict) else None
+    code = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+    return code if type(code) is int and 100 <= code < 600 else None
 
 
 def _body_of(exc: Any) -> Optional[dict]:
@@ -1387,6 +1396,12 @@ def _body_of(exc: Any) -> Optional[dict]:
     if isinstance(body, dict):
         return body
     response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        aws_error = response.get("Error")
+        if isinstance(aws_error, dict):
+            # Normalize at the SDK boundary so existing code/message rules also
+            # work through wrapped exceptions without importing optional botocore.
+            return {"error": {"code": aws_error.get("Code"), "message": aws_error.get("Message")}}
     try:
         json_body = response.json() if response is not None else None
     except Exception:

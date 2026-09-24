@@ -220,7 +220,7 @@ _CONFIG_GETTERS = {
     "thinking_mode": _cfg_get_thinking_mode,
     "density": lambda params: {"value": "on" if bool(_display_raw().get("tui_compact", False)) else "off"},
     "theme": lambda params: {"value": _display_word("tui_theme", "auto", {"auto", "light", "dark"})},
-    "statusbar": lambda params: {"value": _coerce_statusbar(_display_cfg().get("tui_statusbar", "top"))},
+    "statusbar": lambda params: {"value": _coerce_statusbar(_effective_statusbar_raw())},
     "focus": lambda params: {"value": "on" if bool(_display_cfg().get("focus_view", False)) else "off",
                              "tool_progress": _load_tool_progress_mode()},
     "mouse": lambda params: {"value": _display_mouse_tracking(_load_cfg().get("display"))},

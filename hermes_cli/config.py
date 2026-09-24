@@ -971,6 +971,10 @@ _EXTRA_KNOWN_ROOT_KEYS = {
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
+# Runtime readers sometimes intentionally omit a default so an absent canonical key can fall
+# back to a legacy setting. These exact paths remain recognized without opening their section.
+_UNSEEDED_RUNTIME_CONFIG_KEYS = frozenset({"display.statusbar"})
+
 # Valid fields inside a custom_providers list entry (key_env is read at runtime by
 # runtime_provider.py and auxiliary_client.py).
 _VALID_CUSTOM_PROVIDER_FIELDS = {
@@ -3109,6 +3113,9 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     """
     if not key:
         return False, None
+
+    if key in _UNSEEDED_RUNTIME_CONFIG_KEYS:
+        return True, None
 
     segments = _split_key_path(key)
     top = segments[0]

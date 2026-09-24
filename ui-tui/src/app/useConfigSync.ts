@@ -19,7 +19,11 @@ import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
+  '0': 'off',
   bottom: 'bottom',
+  false: 'off',
+  hidden: 'off',
+  no: 'off',
   off: 'off',
   on: 'top',
   top: 'top'
@@ -306,7 +310,7 @@ export const applyDisplay = (
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
-    statusBar: normalizeStatusBar(d.tui_statusbar),
+    statusBar: normalizeStatusBar(hasOwn(d, 'statusbar') ? d.statusbar : d.tui_statusbar),
     statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —

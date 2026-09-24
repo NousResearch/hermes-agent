@@ -85,6 +85,8 @@ export interface ConfigDisplayConfig {
   sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
+  /** Canonical status-bar setting shared with the classic CLI. */
+  statusbar?: unknown
   /** CLI/TUI status-bar field visibility filter (shared with the classic
    *  CLI bar — see display.status_bar.fields in configuration docs).
    *  Raw YAML: callers must runtime-validate entries. */

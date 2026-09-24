@@ -266,6 +266,42 @@ pre.prism-code.language-ascii code {
     background-color: rgba(0, 0, 0, 0.6);
   }
 
+  /* Mobile header: collapse text-heavy navigation into the hamburger drawer. */
+  .navbar {
+    min-height: 3.5rem;
+  }
+
+  .navbar__toggle {
+    align-items: center;
+    border: 1px solid rgba(255, 215, 0, 0.18);
+    border-radius: 10px;
+    display: inline-flex;
+    height: 2.5rem;
+    justify-content: center;
+    margin-right: 0.5rem;
+    width: 2.5rem;
+  }
+
+  .navbar__toggle:focus-visible {
+    outline: 2px solid var(--ifm-color-primary);
+    outline-offset: 2px;
+  }
+
+  .navbar__title,
+  .navbar__items:not(.navbar__items--right) .navbar__item,
+  .navbar__items--right {
+    display: none;
+  }
+
+  .navbar__brand {
+    margin-right: auto;
+    min-width: 0;
+  }
+
+  .navbar__logo {
+    margin-right: 0;
+  }
+
   /* Sidebar width on mobile — use more of the screen */
   .navbar-sidebar {
     width: 85vw;

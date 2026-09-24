@@ -2801,6 +2801,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
+    # Same-profile workers retain provider credentials, but the 1Password
+    # bootstrap token only unlocks the parent and must never reach the child.
+    env.pop("OP_SERVICE_ACCOUNT_TOKEN", None)
+    env.pop("_HERMES_FORCE_OP_SERVICE_ACCOUNT_TOKEN", None)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP

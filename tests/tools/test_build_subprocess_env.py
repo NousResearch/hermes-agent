@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from tools.environments.local import build_subprocess_env
+from tools.environments.local import _make_run_env, build_subprocess_env
 
 
 # ---------------------------------------------------------------------------
@@ -19,6 +19,24 @@ def test_scrub_on_strips_provider_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
     env = build_subprocess_env()
     assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_scrub_on_strips_onepassword_bootstrap_token(monkeypatch):
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "op-bootstrap-secret")
+
+    env = build_subprocess_env()
+
+    assert "OP_SERVICE_ACCOUNT_TOKEN" not in env
+
+
+def test_terminal_run_env_strips_onepassword_bootstrap_token(monkeypatch):
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "op-bootstrap-secret")
+
+    env = _make_run_env({
+        "_HERMES_FORCE_OP_SERVICE_ACCOUNT_TOKEN": "forced-op-bootstrap-secret",
+    })
+
+    assert "OP_SERVICE_ACCOUNT_TOKEN" not in env
 
 
 def test_scrub_on_strips_dynamic_internal_secret(monkeypatch):

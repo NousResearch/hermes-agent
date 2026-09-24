@@ -125,7 +125,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         f"[Note: model was just switched from {_display_old} to {_display_new} "
         f"via {result.provider_label or result.target_provider}. "
         f"{'This override applies to the next turn only. ' if one_turn else ''}"
-        f"Adjust your self-identification accordingly.]")
+        f"This is the requested route; if a fallback serves this turn, identify as the active runtime instead.]")
     _cprint(f"  ✓ Model switched: {_display_new}")
     _cprint(f"    Provider: {result.provider_label or result.target_provider}")
     if result.target_provider == "moa":

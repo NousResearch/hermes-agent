@@ -2214,6 +2214,8 @@ def _snapshot_primary_runtime(agent):
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        "reasoning_config": dict(agent.reasoning_config) if isinstance(getattr(agent, "reasoning_config", None), dict) else None,
+        "service_tier": getattr(agent, "service_tier", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,

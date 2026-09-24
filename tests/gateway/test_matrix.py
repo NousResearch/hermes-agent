@@ -3243,3 +3243,252 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+class TestMatrixReadReceiptsMode:
+    """Read receipts are configurable via config.yaml ``matrix.read_receipts``.
+
+    Three modes gate when an ``m.read`` receipt is sent for an inbound message:
+    ``immediate`` (on arrival, the historical default), ``after_processing``
+    (once the agent finishes the turn), and ``disabled`` (never). A legacy
+    ``MATRIX_READ_RECEIPTS`` env var is honored as a fallback; the YAML value
+    wins when both are present.
+    """
+
+    @staticmethod
+    def _parse(extra=None, env=None):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        cfg = PlatformConfig(enabled=True, token="t", extra=dict(extra or {}))
+        with patch.dict("os.environ", env or {}, clear=False):
+            # Ensure a stray real env var can't perturb the extra-only cases.
+            if not env:
+                import os
+                os.environ.pop("MATRIX_READ_RECEIPTS", None)
+            return MatrixAdapter._parse_read_receipts_mode(cfg)
+
+    def test_default_is_immediate(self):
+        assert self._parse() == "immediate"
+
+    def test_explicit_modes_from_yaml(self):
+        assert self._parse({"read_receipts": "immediate"}) == "immediate"
+        assert self._parse({"read_receipts": "after_processing"}) == "after_processing"
+        assert self._parse({"read_receipts": "disabled"}) == "disabled"
+
+    def test_case_and_whitespace_insensitive(self):
+        assert self._parse({"read_receipts": "  DISABLED "}) == "disabled"
+        assert self._parse({"read_receipts": "After_Processing"}) == "after_processing"
+
+    def test_legacy_boolean_spellings(self):
+        # Pre-mode releases exposed a boolean; truthy → immediate, falsy → disabled.
+        assert self._parse({"read_receipts": True}) == "immediate"
+        assert self._parse({"read_receipts": False}) == "disabled"
+        assert self._parse({"read_receipts": "false"}) == "disabled"
+        assert self._parse({"read_receipts": "no"}) == "disabled"
+        assert self._parse({"read_receipts": "on"}) == "immediate"
+
+    def test_unrecognized_value_falls_back_to_default(self):
+        assert self._parse({"read_receipts": "sometimes"}) == "immediate"
+
+    def test_env_var_fallback_when_yaml_unset(self):
+        assert self._parse(env={"MATRIX_READ_RECEIPTS": "disabled"}) == "disabled"
+        assert self._parse(env={"MATRIX_READ_RECEIPTS": "after_processing"}) == "after_processing"
+
+    def test_yaml_wins_over_env(self):
+        assert self._parse(
+            {"read_receipts": "disabled"},
+            env={"MATRIX_READ_RECEIPTS": "immediate"},
+        ) == "disabled"
+
+    # --- behavior: immediate marks read on arrival -------------------------
+
+    async def _dispatch(self, adapter, is_dm=True):
+        adapter._is_dm_room = AsyncMock(return_value=is_dm)
+        adapter._get_display_name = AsyncMock(return_value="Alice")
+        adapter._require_mention = True
+        adapter._free_rooms = set()
+        adapter.handle_message = AsyncMock()
+        await adapter._handle_text_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$rr-test",
+            event_ts=0.0,
+            source_content={"msgtype": "m.text", "body": "hello"},
+            relates_to={},
+        )
+
+    @pytest.mark.asyncio
+    async def test_immediate_sends_receipt_on_arrival(self):
+        adapter = _make_adapter()
+        adapter._read_receipts_mode = "immediate"
+        adapter._background_read_receipt = MagicMock()
+        await self._dispatch(adapter)
+        adapter._background_read_receipt.assert_called_once_with(
+            "!room:example.org", "$rr-test"
+        )
+
+    @pytest.mark.asyncio
+    async def test_disabled_never_sends_receipt_on_arrival(self):
+        adapter = _make_adapter()
+        adapter._read_receipts_mode = "disabled"
+        adapter._background_read_receipt = MagicMock()
+        await self._dispatch(adapter)
+        adapter._background_read_receipt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_after_processing_defers_receipt_from_arrival(self):
+        adapter = _make_adapter()
+        adapter._read_receipts_mode = "after_processing"
+        adapter._background_read_receipt = MagicMock()
+        await self._dispatch(adapter)
+        # Not sent on arrival — the deferred path handles it later.
+        adapter._background_read_receipt.assert_not_called()
+
+    # --- behavior: after_processing marks read on completion ---------------
+
+    @staticmethod
+    def _completion_event():
+        event = MagicMock()
+        event.message_id = "$rr-test"
+        event.source.chat_id = "!room:example.org"
+        return event
+
+    @pytest.mark.asyncio
+    async def test_after_processing_sends_receipt_on_success(self):
+        from plugins.platforms.matrix.adapter import ProcessingOutcome
+        adapter = _make_adapter()
+        adapter._read_receipts_mode = "after_processing"
+        adapter._reactions_enabled = False  # isolate the receipt path
+        adapter._background_read_receipt = MagicMock()
+        await adapter.on_processing_complete(
+            self._completion_event(), ProcessingOutcome.SUCCESS
+        )
+        adapter._background_read_receipt.assert_called_once_with(
+            "!room:example.org", "$rr-test"
+        )
+
+    @pytest.mark.asyncio
+    async def test_after_processing_skips_receipt_on_cancel(self):
+        from plugins.platforms.matrix.adapter import ProcessingOutcome
+        adapter = _make_adapter()
+        adapter._read_receipts_mode = "after_processing"
+        adapter._reactions_enabled = False
+        adapter._background_read_receipt = MagicMock()
+        await adapter.on_processing_complete(
+            self._completion_event(), ProcessingOutcome.CANCELLED
+        )
+        adapter._background_read_receipt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_immediate_mode_does_not_double_send_on_completion(self):
+        from plugins.platforms.matrix.adapter import ProcessingOutcome
+        adapter = _make_adapter()
+        adapter._read_receipts_mode = "immediate"
+        adapter._reactions_enabled = False
+        adapter._background_read_receipt = MagicMock()
+        await adapter.on_processing_complete(
+            self._completion_event(), ProcessingOutcome.SUCCESS
+        )
+        # The completion path is only for after_processing mode.
+        adapter._background_read_receipt.assert_not_called()
+
+
+class TestMatrixReactionsToggle:
+    """Lifecycle reactions are configurable via config.yaml ``matrix.reactions``.
+
+    When enabled (default), the adapter annotates every processed message with
+    an eyes reaction on start and a checkmark/cross on completion. Setting
+    ``reactions: false`` disables both. A legacy ``MATRIX_REACTIONS`` env var is
+    honored as a fallback; the YAML value wins when both are present.
+    """
+
+    @staticmethod
+    def _parse(extra=None, env=None):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        cfg = PlatformConfig(enabled=True, token="t", extra=dict(extra or {}))
+        with patch.dict("os.environ", env or {}, clear=False):
+            if not env:
+                import os
+                os.environ.pop("MATRIX_REACTIONS", None)
+            return MatrixAdapter._parse_reactions_enabled(cfg)
+
+    def test_default_is_enabled(self):
+        assert self._parse() is True
+
+    def test_explicit_bool_from_yaml(self):
+        assert self._parse({"reactions": True}) is True
+        assert self._parse({"reactions": False}) is False
+
+    def test_string_spellings(self):
+        assert self._parse({"reactions": "false"}) is False
+        assert self._parse({"reactions": "off"}) is False
+        assert self._parse({"reactions": "no"}) is False
+        assert self._parse({"reactions": "0"}) is False
+        assert self._parse({"reactions": "true"}) is True
+        assert self._parse({"reactions": "on"}) is True
+
+    def test_case_and_whitespace_insensitive(self):
+        assert self._parse({"reactions": "  FALSE "}) is False
+        assert self._parse({"reactions": "Off"}) is False
+
+    def test_env_var_fallback_when_yaml_unset(self):
+        assert self._parse(env={"MATRIX_REACTIONS": "false"}) is False
+        assert self._parse(env={"MATRIX_REACTIONS": "true"}) is True
+
+    def test_yaml_wins_over_env(self):
+        assert self._parse(
+            {"reactions": False},
+            env={"MATRIX_REACTIONS": "true"},
+        ) is False
+        assert self._parse(
+            {"reactions": True},
+            env={"MATRIX_REACTIONS": "false"},
+        ) is True
+
+    # --- behavior: reactions gate the eyes/checkmark lifecycle -------------
+
+    @staticmethod
+    def _event():
+        event = MagicMock()
+        event.message_id = "$react-test"
+        event.source.chat_id = "!room:example.org"
+        return event
+
+    @pytest.mark.asyncio
+    async def test_enabled_adds_eyes_on_start(self):
+        adapter = _make_adapter()
+        adapter._reactions_enabled = True
+        adapter._send_reaction = AsyncMock(return_value="$eyes")
+        await adapter.on_processing_start(self._event())
+        adapter._send_reaction.assert_awaited_once_with(
+            "!room:example.org", "$react-test", "\U0001f440"
+        )
+
+    @pytest.mark.asyncio
+    async def test_disabled_no_eyes_on_start(self):
+        adapter = _make_adapter()
+        adapter._reactions_enabled = False
+        adapter._send_reaction = AsyncMock()
+        await adapter.on_processing_start(self._event())
+        adapter._send_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_enabled_adds_checkmark_on_success(self):
+        from plugins.platforms.matrix.adapter import ProcessingOutcome
+        adapter = _make_adapter()
+        adapter._reactions_enabled = True
+        adapter._read_receipts_mode = "disabled"  # isolate the reaction path
+        adapter._send_reaction = AsyncMock(return_value="$check")
+        await adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+        adapter._send_reaction.assert_awaited_once_with(
+            "!room:example.org", "$react-test", "\u2705"
+        )
+
+    @pytest.mark.asyncio
+    async def test_disabled_no_checkmark_on_success(self):
+        from plugins.platforms.matrix.adapter import ProcessingOutcome
+        adapter = _make_adapter()
+        adapter._reactions_enabled = False
+        adapter._read_receipts_mode = "disabled"
+        adapter._send_reaction = AsyncMock()
+        await adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+        adapter._send_reaction.assert_not_called()

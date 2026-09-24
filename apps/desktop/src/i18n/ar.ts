@@ -2384,6 +2384,7 @@ export const ar = defineLocale({
     goalWaiting: 'الهدف قيد الانتظار',
     subagents: count => `${count} ${count === 1 ? 'وكيل فرعي' : 'وكيل فرعي'}`,
     todos: (done, total) => `المهام ${done}/${total}`,
+    previousTodos: (done, total) => `المهام السابقة ${done}/${total}`,
     running: 'قيد التشغيل',
     stop: 'إيقاف',
     dismiss: 'تجاهل',

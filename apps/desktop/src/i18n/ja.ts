@@ -2789,6 +2789,7 @@ export const ja = defineLocale({
     goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
+    previousTodos: (done, total) => `以前のタスク ${done}/${total}`,
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',

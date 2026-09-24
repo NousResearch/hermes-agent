@@ -88,6 +88,7 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
+import { $retainedTodosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -1111,6 +1112,7 @@ describe('resumeSession failure recovery', () => {
     $removedSessionIds.set(new Set())
     $sessionMutationsInFlight.set(new Set())
     clearClarifyRequest()
+    clearSessionTodos('runtime-1')
     vi.restoreAllMocks()
   })
 
@@ -1481,6 +1483,52 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('partial answer')
     expect(renderedMessages).toContain('newest prompt')
     expect(resumedState?.turnStartedAt).toBe(1_700_000_000_000)
+  })
+
+  it('restores a paused checklist from REST when deferred resume has no todo_state', async () => {
+    const todos = [{ id: 'next', content: 'Next task', status: 'in_progress' as const }]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: 'stored-1',
+      messages: [
+        { id: 1, role: 'user', content: 'Work through the list', timestamp: 1 },
+        {
+          id: 2,
+          role: 'assistant',
+          content: '',
+          timestamp: 2,
+          tool_calls: [{ id: 'todo-call', type: 'function', function: { name: 'todo_list', arguments: '{}' } }]
+        },
+        {
+          id: 3,
+          role: 'tool',
+          tool_call_id: 'todo-call',
+          tool_name: 'todo_list',
+          content: JSON.stringify({ todos, revision: 3 }),
+          timestamp: 3
+        },
+        { id: 4, role: 'assistant', content: 'Continuing later', timestamp: 4 }
+      ]
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          messages_omitted: true,
+          messages: [],
+          message_count: 4,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+    expect($retainedTodosBySession.get()['runtime-1']).toEqual(todos)
   })
 
   it('preserves a runtime-cache delta that arrives while cold resume waits for REST', async () => {

@@ -24,7 +24,13 @@ import {
   setSelectedStoredSessionId
 } from '@/store/session'
 import { $sessionStates, $sessionTiles, clearAllSessionStates } from '@/store/session-states'
-import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
+import {
+  $retainedTodosBySession,
+  $todosBySession,
+  clearSessionTodos,
+  restoreSessionTodosFromSnapshot,
+  setSessionTodos
+} from '@/store/todos'
 import type { SessionMessage } from '@/types/hermes'
 
 import {
@@ -232,6 +238,88 @@ afterEach(() => {
   localStorage.clear()
   vi.useRealTimers()
   vi.restoreAllMocks()
+})
+
+it('keeps an idle Todo snapshot for review when post-turn history refresh clears the live panel', async () => {
+  const todos = [{ id: 'next', content: 'Next task', status: 'in_progress' as const }]
+
+  const saved: SessionMessage[] = [
+    ...history,
+    {
+      id: 4,
+      role: 'assistant',
+      content: '',
+      timestamp: 4,
+      tool_calls: [{ id: 'todo-call', type: 'function', function: { name: 'todo_list', arguments: '{}' } }]
+    },
+    {
+      id: 5,
+      role: 'tool',
+      content: JSON.stringify({ todos, revision: 3 }),
+      timestamp: 5,
+      tool_call_id: 'todo-call',
+      tool_name: 'todo_list'
+    },
+    { id: 6, role: 'assistant', content: FINAL, timestamp: 6 }
+  ]
+
+  render(<Harness />)
+  act(() => restoreSessionTodosFromSnapshot(RUNTIME, { todos, revision: 3 }, false))
+  expect($retainedTodosBySession.get()[RUNTIME]).toEqual(todos)
+  vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({ session_id: STORED, messages: saved })
+
+  await act(async () => {
+    await hydrateStoredSessionTranscript({
+      attempts: 1,
+      storedSessionId: STORED,
+      runtimeSessionId: RUNTIME,
+      storedProfile: 'default',
+      updateSessionState: cache.updateSessionState
+    })
+  })
+  expect($todosBySession.get()[RUNTIME]).toBeUndefined()
+  expect($retainedTodosBySession.get()[RUNTIME]).toEqual(todos)
+
+  // Deferred Desktop resumes initially return no todo_state. The subsequent
+  // persisted transcript fetch must provide the same read-only list by itself.
+  act(() => clearSessionTodos(RUNTIME))
+  vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({ session_id: STORED, messages: saved })
+  await act(async () => {
+    await hydrateStoredSessionTranscript({
+      attempts: 1,
+      storedSessionId: STORED,
+      runtimeSessionId: RUNTIME,
+      storedProfile: 'default',
+      updateSessionState: cache.updateSessionState
+    })
+  })
+  expect($retainedTodosBySession.get()[RUNTIME]).toEqual(todos)
+
+  // A legacy unversioned empty result is still an explicit clear. An older
+  // revisioned snapshot must not keep the previous button pinned.
+  const cleared: SessionMessage[] = [
+    ...saved,
+    {
+      id: 7,
+      role: 'assistant',
+      content: '',
+      timestamp: 7,
+      tool_calls: [{ id: 'clear-call', type: 'function', function: { name: 'todo_list', arguments: '{"todos":[]}' } }]
+    },
+    { id: 8, role: 'tool', content: '{"todos":[]}', timestamp: 8, tool_call_id: 'clear-call', tool_name: 'todo_list' }
+  ]
+
+  vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({ session_id: STORED, messages: cleared })
+  await act(async () => {
+    await hydrateStoredSessionTranscript({
+      attempts: 1,
+      storedSessionId: STORED,
+      runtimeSessionId: RUNTIME,
+      storedProfile: 'default',
+      updateSessionState: cache.updateSessionState
+    })
+  })
+  expect($retainedTodosBySession.get()[RUNTIME]).toBeUndefined()
 })
 
 it.each([false, true])(

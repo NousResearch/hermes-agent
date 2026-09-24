@@ -814,7 +814,8 @@ def _resume_deferred(ctx: _Resume) -> dict:
     sid, source, cwd = ctx.mint()
     with _profile_build_scope(ctx.profile_home):
         overrides = _stored_session_runtime_overrides(ctx.found)
-    record = ctx.record(source, cwd, [], overrides)
+    record = ctx.record(source, cwd, [], overrides,
+                        todo_state=_todo_state_from_db(ctx.db, ctx.target))
     record.update(resume_history_ready=threading.Event(), resume_hydrating=True,
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:

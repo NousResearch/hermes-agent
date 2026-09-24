@@ -157,6 +157,24 @@ def _attach_todo_state(payload: dict, session: dict) -> dict:
     return payload
 
 
+def _todo_state_from_db(db, session_id: str) -> dict | None:
+    """Cold-resume Todo snapshot without the REST page or model-history limits."""
+    from tools.todo_tool import MAX_TODO_RESULT_CHARS
+    getter = getattr(db, "get_latest_todo_result", None)
+    if not callable(getter):
+        return None
+    try:
+        content = getter(session_id)
+        if not isinstance(content, str) or len(content) > MAX_TODO_RESULT_CHARS:
+            return None
+        return _normalize_todo_state(json.loads(content))
+    except (TypeError, ValueError):
+        return None
+    except Exception:
+        logger.debug("failed to read persisted todo state", exc_info=True)
+        return None
+
+
 def _todo_state_from_history(history) -> dict | None:
     """Latest todo snapshot from a loaded transcript, for resume paths that answer before an AIAgent (and
     its live TodoStore) exists: the newest tool result paired with an assistant ``todo`` call IS it."""

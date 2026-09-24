@@ -26,6 +26,7 @@ import {
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
@@ -1600,6 +1601,14 @@ export function useSessionActions({
                 clearedClarifyProjection?.messages ??
                 activatedMessages
 
+              if (!running) {
+                restoreSessionTodosFromSnapshot(
+                  cachedRuntimeId,
+                  latestSessionTodoSnapshot(visibleActivatedMessages),
+                  false
+                )
+              }
+
               releaseTranscriptView()
 
               const reconcileActivatedState = (state: ClientSessionState): ClientSessionState => {
@@ -1944,6 +1953,14 @@ export function useSessionActions({
         )
 
         restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
+
+        if (!resumedRunning && prefetchApplied && prefetchMatchesResumedSession && prefetchedTranscriptMessages) {
+          restoreSessionTodosFromSnapshot(
+            resumed.session_id,
+            latestSessionTodoSnapshot(prefetchedTranscriptMessages),
+            false
+          )
+        }
 
         // Crash-survivable turn progress: fold a journaled in-flight tail
         // (persisted by use-session-state-cache while the turn streamed;

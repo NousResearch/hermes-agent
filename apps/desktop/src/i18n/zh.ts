@@ -3703,6 +3703,7 @@ export const zh = defineLocale({
     goalWaiting: '目标等待中',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
+    previousTodos: (done, total) => `以往任务 ${done}/${total}`,
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',

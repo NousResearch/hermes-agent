@@ -22,6 +22,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
+import { $retainedTodosBySession, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import {
   $transcriptTailBySessionId,
   clearTranscriptTailPaging,
@@ -78,7 +79,17 @@ describe('wipeSessionListsForGatewaySwitch', () => {
   })
 
   it('clears lists and arms loading so sidebar skeletons retrigger', () => {
+    restoreSessionTodosFromSnapshot(
+      's1',
+      {
+        revision: 2,
+        todos: [{ id: 'task', content: 'Old gateway task', status: 'in_progress' }]
+      },
+      false
+    )
     wipeSessionListsForGatewaySwitch()
+
+    expect($retainedTodosBySession.get().s1).toBeUndefined()
 
     expect($sessions.get()).toEqual([])
     expect($sessionProfilesTruncated.get()).toEqual({})

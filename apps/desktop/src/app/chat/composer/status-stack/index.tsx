@@ -17,6 +17,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { todoTree } from '@/lib/todos'
 import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
@@ -34,6 +35,7 @@ import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
+import { $retainedTodosBySession } from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -121,6 +123,8 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // across unrelated writes, so the slice hook bails out unless OUR session's
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
+  const retainedTodos = useSessionSlice($retainedTodosBySession, sessionId)
+  const busy = useStore(useSessionView().$busy)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
   const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
@@ -286,6 +290,37 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
               onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
               onOpen={() => openSubagent(item)}
               onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
+            />
+          ))}
+        </StatusSection>
+      )
+    })
+  }
+
+  // A settled snapshot is reviewable but never re-enters the live progress
+  // feed. Only show this disclosure once the live Todo section has retired.
+  if (!busy && retainedTodos.length > 0 && !groups.some(group => group.type === 'todo')) {
+    const done = retainedTodos.filter(todo => todo.status === 'completed').length
+    sections.push({
+      key: 'retained-todo',
+      node: (
+        <StatusSection
+          defaultCollapsed
+          icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
+          label={t.statusStack.previousTodos(done, retainedTodos.length)}
+        >
+          {todoTree(retainedTodos).map(([todo, depth]) => (
+            <StatusItemRow
+              historical
+              item={{
+                depth,
+                id: `retained-todo:${todo.id}`,
+                state: 'done',
+                title: todo.content,
+                todoStatus: todo.status,
+                type: 'todo'
+              }}
+              key={todo.id}
             />
           ))}
         </StatusSection>

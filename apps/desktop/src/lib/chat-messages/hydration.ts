@@ -2,6 +2,7 @@ import { skillInvocationText } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import { isTodoToolName } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
 import {
@@ -255,6 +256,37 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   // (see ChatMessage.serverRowSpan).
   let pendingToolRows = 0
   let activeAssistantIndex: null | number = null
+  // Todo history is stateful. Only a result from the nearest prior assistant
+  // call in this turn may update it; a display-only orphan can still render.
+  let nearestAssistant: null | SessionMessage = null
+
+  const pairedTodoResult = (toolMessage: SessionMessage): boolean => {
+    const id = toolMessage.tool_call_id
+
+    if (!id || !Array.isArray(nearestAssistant?.tool_calls)) {
+      return false
+    }
+
+    return nearestAssistant.tool_calls.some((call, index) => {
+      const part = toolPartFromStoredCall(call, index)
+
+      if (part.type !== 'tool-call' || part.toolCallId !== id) {
+        return false
+      }
+
+      if (isTodoToolName(part.toolName)) {
+        return true
+      }
+
+      const args = part.args as { calls?: unknown }
+
+      return (
+        part.toolName === 'tool_call' &&
+        Array.isArray(args?.calls) &&
+        args.calls.some(inner => inner && typeof inner === 'object' && isTodoToolName(inner.name))
+      )
+    })
+  }
 
   const clearPendingTools = () => {
     pendingToolParts = []
@@ -317,7 +349,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    if (message.role === 'assistant') {
+      nearestAssistant = message
+    } else if (message.role === 'user' || message.role === 'system') {
+      nearestAssistant = null
+    }
+
     if (message.role === 'tool') {
+      if (isTodoToolName(message.tool_name) && !pairedTodoResult(message)) {
+        pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
+        pendingToolTimestamp ??= message.timestamp
+        pendingToolRows += 1
+
+        return
+      }
+
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 
       if (updatedPendingToolParts) {

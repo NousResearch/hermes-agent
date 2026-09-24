@@ -3039,6 +3039,7 @@ export const ru = defineLocale({
     goalWaiting: 'Цель ожидает',
     subagents: count => `${count} ${RU_PLURAL(count, 'субагент', 'субагента', 'субагентов')}`,
     todos: (done, total) => `Задачи ${done}/${total}`,
+    previousTodos: (done, total) => `Прошлые задачи ${done}/${total}`,
     running: 'Выполняется',
     stop: 'Стоп',
     dismiss: 'Скрыть',

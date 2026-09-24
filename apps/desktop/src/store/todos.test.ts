@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TodoItem } from '@/lib/todos'
 
 import {
+  $retainedTodosBySession,
   $todoRevisionsBySession,
   $todosBySession,
   clearActiveSessionTodos,
@@ -133,6 +134,20 @@ describe('revisioned snapshots', () => {
 
     restoreSessionTodosFromSnapshot('s1', snapshot, true)
     expect($todosBySession.get().s1?.[0]?.id).toBe('active')
+  })
+
+  it('keeps an idle snapshot available for review without reviving live work', () => {
+    const saved = [todo('a', 'completed'), todo('b', 'in_progress')]
+    restoreSessionTodosFromSnapshot('s1', { revision: 7, todos: saved }, false)
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($retainedTodosBySession.get().s1).toEqual(saved)
+
+    restoreSessionTodosFromSnapshot('s1', { revision: 6, todos: [todo('old', 'pending')] }, false)
+    expect($retainedTodosBySession.get().s1).toEqual(saved)
+
+    restoreSessionTodosFromSnapshot('s1', { revision: 8, todos: [] }, false)
+    expect($retainedTodosBySession.get().s1).toBeUndefined()
   })
 
   it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {

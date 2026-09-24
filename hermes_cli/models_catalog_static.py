@@ -187,10 +187,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "xai": list(_XAI_MODELS),
     # Nemotron flagships, then third-party agentic models hosted on build.nvidia.com.
+    # z-ai/glm-5.2 and minimaxai/minimax-m3 are omitted: retired upstream (410 Gone,
+    # EOL 2026-08-21 / 2026-09-09) for every account. moonshotai/kimi-k2.6 stays — it
+    # is still listed and serves accounts provisioned for it.
     "nvidia": [
         "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3.5-lightning-30b-a3b", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        "z-ai/glm-5.3", "z-ai/glm-5.2", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3",
+        "z-ai/glm-5.3", "moonshotai/kimi-k2.6",
     ],
     "kimi-coding": [
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-for-coding", "kimi-for-coding-highspeed",

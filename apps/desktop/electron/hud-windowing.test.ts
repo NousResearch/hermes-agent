@@ -111,12 +111,14 @@ test('the renderer view is a boolean slice of the profile', () => {
     clientPlacement: false,
     controlDrag: false,
     nativeDrag: true,
+    solid: false,
     workspaceTransfer: false
   })
   assert.deepEqual(x11, {
     clientPlacement: true,
     controlDrag: true,
     nativeDrag: false,
+    solid: true,
     workspaceTransfer: true
   })
 })

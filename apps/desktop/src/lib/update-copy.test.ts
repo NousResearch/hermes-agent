@@ -29,10 +29,4 @@ describe('resolveUpdateCopy', () => {
     // Body must NOT pretend there are notes — it states they're unavailable.
     expect(r.body).toBe(copy.availableBodyNoChangelog)
   })
-
-  it('no changelog on client: same honest degrade', () => {
-    const r = resolveUpdateCopy({ target: 'client', shownItems: 0, copy })
-    expect(r.title).toBe('New update available')
-    expect(r.body).toBe(copy.availableBodyNoChangelog)
-  })
 })

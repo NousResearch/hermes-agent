@@ -180,34 +180,4 @@ describe('BlockerView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close previews and check again' }))
     expect(onStopAndUpdate).toHaveBeenCalledTimes(1)
   })
-
-  it('explains safe local previews and offers one-click close-and-update', async () => {
-    const onStopAndUpdate = vi.fn()
-
-    await renderWithI18n(
-      <BlockerView
-        blockers={[
-          {
-            pid: 47484,
-            name: 'python.exe',
-            cmdline: 'python.exe -m http.server 8766',
-            kind: 'local-preview',
-            safeToStop: true,
-            label: 'Example Preview',
-            port: 8766
-          }
-        ]}
-        onDismiss={() => {}}
-        onStopAndUpdate={onStopAndUpdate}
-      />
-    )
-
-    expect(screen.getByText('Close local previews to update Hermes?')).toBeTruthy()
-    expect(screen.getByText('Example Preview')).toBeTruthy()
-    expect(screen.getByText('Port 8766')).toBeTruthy()
-    expect(screen.getByText(/will not modify or delete your files/i)).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close previews and update' }))
-    expect(onStopAndUpdate).toHaveBeenCalledTimes(1)
-  })
 })

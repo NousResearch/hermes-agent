@@ -40,7 +40,7 @@ docker run -it --rm \
 This drops you into the setup wizard, which will prompt you for your API keys and write them to `~/.hermes/.env`. You only need to do this once. It is highly recommended to set up a chat system for the gateway to work with at this point.
 
 :::tip
-Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](/integrations/nous-portal).
+Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ## Running in gateway mode
@@ -71,14 +71,11 @@ See the [Where the logs go](#where-the-logs-go) section below for the full routi
 :::
 
 :::note Tool-loop hard stops for unattended gateways
-The `tool_loop_guardrails.hard_stop_enabled` setting defaults to `false`, which is reasonable for interactive CLI and TUI sessions where a person can see repeated tool-call warnings. In unattended gateway or server deployments, warnings alone may not stop an agent that gets stuck in a repeated tool-call loop. Operators who want circuit-breaker behavior should explicitly enable hard stops in the profile's `config.yaml`:
+Unattended gateway and cron sessions enable tool-loop hard stops by default through `non_interactive_hard_stop_enabled`. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only. To opt an unattended deployment out in the profile's `config.yaml`:
 
 ```yaml
 tool_loop_guardrails:
-  hard_stop_enabled: true
-  hard_stop_after:
-    exact_failure: 5
-    idempotent_no_progress: 5
+  non_interactive_hard_stop_enabled: false
 ```
 :::
 
@@ -138,6 +135,24 @@ There are three bundled ways to satisfy the second condition:
 
 Whichever you choose, the gate redirects callers to a login page before they can reach any protected route. See [Web Dashboard → Authentication](features/web-dashboard.md#authentication-gated-mode) for all three providers.
 
+When a reverse proxy such as Traefik or nginx runs in another container, its
+bridge-network address is not trusted by default. Set the dashboard's public
+URL and trust only that proxy's exact IP, or a bounded CIDR for a dedicated
+proxy network, in the mounted `config.yaml`:
+
+```yaml
+dashboard:
+  public_url: "https://dashboard.example.com"
+  trusted_proxies:
+    - "172.20.0.5"
+    # Or, if the proxy address is dynamic on a dedicated network:
+    # - "172.20.0.0/24"
+```
+
+This allows the proxy's `X-Forwarded-Proto: https` to control secure OAuth
+cookies while leaving forwarding headers from other peers untrusted. Do not
+use `*`, `0.0.0.0/0`, or `::/0`; Hermes rejects those unbounded entries.
+
 If no provider is registered and the bind is non-loopback, the dashboard **fails closed at startup** with a specific error pointing at the missing env var. There is no longer an escape hatch that serves the dashboard unauthenticated on a public bind: `HERMES_DASHBOARD_INSECURE=1` is now a deprecated no-op (it logs a warning and is ignored). Configure a provider, or bind `HERMES_DASHBOARD_HOST=127.0.0.1` and reach the dashboard over an SSH tunnel / Tailscale instead.
 
 :::warning Why `--insecure` was removed
@@ -180,6 +195,19 @@ The `/opt/data` volume is the single source of truth for all Hermes state. It ma
 | `logs/` | Runtime logs |
 | `skins/` | Custom CLI skins |
 
+### Filesystem requirements for `state.db` in containers
+
+Hermes keeps sessions in a SQLite database (`/opt/data/state.db`) that is opened in WAL journal mode by default. WAL relies on shared memory (`state.db-shm`) being coherent between every process that has the file open. Bind mounts that cross a VM boundary do not provide that: **virtiofs** (Docker Desktop and Podman on macOS, OrbStack) and **9p / drvfs** (Docker Desktop on Windows) both let concurrent writers silently corrupt a WAL database while the main file still passes `PRAGMA integrity_check`.
+
+What Hermes does about it (since v2026.9.14):
+
+- A **fresh** database whose directory is on a virtiofs/9p mount is created in rollback (`DELETE`) journal mode and a one-time warning is logged. Nothing to do.
+- An **existing** WAL database on such a mount is never live-downgraded — other Hermes processes may hold it open, and a live switch destroys their uncheckpointed commits. Instead, every process logs a one-time error at startup and `hermes doctor` flags the database. Fix it one of two ways:
+  1. Stop every Hermes process that uses the database, then run a one-time offline conversion with the Python that ships in the image (it has no `sqlite3` shell): `docker exec hermes python3 -c "import sqlite3; print(sqlite3.connect('/opt/data/state.db').execute('PRAGMA journal_mode=DELETE').fetchone()[0])"`. Set `database.journal_mode: delete` in `config.yaml` so a later open does not switch it back to WAL.
+  2. Move the data directory onto a native volume — a named Docker volume (`-v hermes-data:/opt/data`) lives on the VM's own ext4 filesystem and supports WAL normally.
+
+Detection reads `/proc/self/mountinfo` inside the container, so it works regardless of the host operating system. It does not classify NFS, SMB, or generic FUSE mounts; on those, set `database.journal_mode: delete` explicitly. Hermes does not offer SQLite's `locking_mode=EXCLUSIVE` as an alternative because the gateway, cron, and worker processes open the database concurrently.
+
 ### Immutable install tree
 
 In hosted and published Docker images, `/opt/hermes` is the installed application tree. It is root-owned and read-only to the runtime `hermes` user, so agent turns, gateway sessions, dashboard actions, and normal `docker exec hermes hermes ...` commands cannot edit the core source, bundled `.venv`, `node_modules`, or TUI bundle in place.
@@ -206,6 +234,8 @@ Each profile created with `hermes profile create <name>` gets:
 - Auto-restart on crash, backoff-managed by `s6-supervise`.
 - Per-profile rotated logs at `${HERMES_HOME}/logs/gateways/<name>/current` (10 archives × 1 MB each).
 - State persistence across container restarts: the boot-time reconciler reads `gateway_state.json` from each profile directory and brings the slot back up only for profiles whose last recorded state was `running`. Only a gateway you explicitly stopped (`hermes gateway stop`) stays down across a restart — a container restart, image upgrade, or unexpected exit leaves the recorded state as `running`, so the gateway auto-starts on the next boot.
+
+A profile created from the **host** against a bind-mounted `~/.hermes` gets its directory but no slot (the host process cannot reach the container's `/run/service`). Inside the container, `hermes -p <name> gateway start` registers the missing slot on demand and starts it — no `docker restart` needed. Only `start` does this, and only for a real profile directory (one carrying `SOUL.md`); `stop`/`restart` on an unregistered profile and a mistyped `-p` name still fail with `✗ no such gateway`.
 
 The lifecycle commands you'd run on the host work the same way from inside the container:
 
@@ -420,6 +450,7 @@ services:
     volumes:
       - ~/.hermes:/opt/data
       - /run/user/${HERMES_UID}/pulse:/run/user/${HERMES_UID}/pulse
+      # no-tmp: ok — path inside the container
       - ~/.config/pulse/cookie:/tmp/pulse-cookie:ro
       - ./asound.conf:/etc/asound.conf:ro
     environment:
@@ -427,6 +458,7 @@ services:
       - HERMES_GID=${HERMES_GID}
       - XDG_RUNTIME_DIR=/run/user/${HERMES_UID}
       - PULSE_SERVER=unix:/run/user/${HERMES_UID}/pulse/native
+      # no-tmp: ok — path inside the container
       - PULSE_COOKIE=/tmp/pulse-cookie
 ```
 
@@ -471,12 +503,12 @@ docker run -d \
 
 The official image is based on `debian:13.4` and includes:
 
-- Python 3.13 with dependencies synced from the lockfile via `uv sync --frozen --no-install-project` for the baked extras (`all`, `messaging`, Anthropic/Bedrock/Azure identity, Hindsight, Matrix), followed by a no-dependency editable install of Hermes itself.
+- Python 3.13 with dependencies synced from the lockfile via `uv sync --frozen --no-install-project` for the baked extras (`all`, `messaging`, Anthropic/Bedrock/Azure identity, Matrix), followed by a no-dependency editable install of Hermes itself. Catalog plugins such as the Hindsight memory provider are not baked in; `hermes plugins install hindsight` installs the plugin and its dependencies into `HERMES_LAZY_INSTALL_TARGET` (`/opt/data/lazy-packages`) at install time.
 - Node.js 26 + npm (for browser automation, WhatsApp bridge, TUI/Desktop bundles, and workspace build tooling)
 - Playwright with Chromium (`npx playwright install --with-deps chromium --only-shell`)
 - ripgrep, ffmpeg, git, and `xz-utils` as system utilities
 - **`docker-cli`** — so agents running inside the container can drive the host's Docker daemon (bind-mount `/var/run/docker.sock` to opt in) for `docker build`, `docker run`, container inspection, etc.
-- **`openssh-client`** — enables the [SSH terminal backend](/user-guide/configuration#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
+- **`openssh-client`** — enables the [SSH terminal backend](./configuration.md#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
 - The WhatsApp bridge (`scripts/whatsapp-bridge/`)
 - **[`s6-overlay`](https://github.com/just-containers/s6-overlay) v3** as PID 1 (replaces the older `tini`) — supervises the dashboard and per-profile gateways with auto-restart on crash, reaps zombie subprocesses, and forwards signals.
 
@@ -500,6 +532,23 @@ The container ENTRYPOINT is now the `entrypoint-dispatch.sh` dispatcher (which d
 
 :::warning Privilege model
 Do not override the image entrypoint unless you keep `/init` (or, equivalently, the legacy `docker/entrypoint.sh` shim that forwards to the stage2 hook) in the command chain. s6-overlay's `/init` runs as root so it can chown the volume on first boot, then drops to the `hermes` user via `s6-setuidgid` for every supervised service AND for the main program. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
+:::
+
+:::warning Overriding `entrypoint:` also removes the zombie reaper
+`/init` is what reaps orphaned grandchildren (headless browsers, MCP servers, `git`/`npm` helpers spawned by tools). A Compose service that overrides `entrypoint:` to call `hermes` directly — for example to run the dashboard as a non-root user — makes the hermes process itself PID 1, and nothing above it ever calls `wait()`: every orphan stays a `<defunct>` entry forever (one deployment reached 284 zombies in under three hours). Hermes prints `[hermes] WARNING: this process is PID 1 with no init above it` at startup in that configuration.
+
+If you must override the entrypoint, add Docker's init as PID 1 so orphans are reaped:
+
+```yaml
+services:
+  hermes-dashboard:
+    image: nousresearch/hermes-agent:latest
+    init: true                                      # docker-init becomes PID 1 and reaps orphans
+    entrypoint: ["/opt/hermes/.venv/bin/hermes"]
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--skip-build"]
+```
+
+(`docker run --init …` is the equivalent flag.) This fixes the zombie accumulation only — with `/init` out of the chain, the s6 supervision tree is still gone: the dashboard, `hermes gateway run` and per-profile gateways are unsupervised, exactly as the dispatcher's own non-PID-1 warning says. Keep the default `ENTRYPOINT` whenever you can.
 :::
 
 ### `docker exec` automatically drops to the `hermes` user
@@ -802,6 +851,10 @@ docker run -d \
 
 `docker exec hermes <cmd>` automatically drops to UID 10000 too — see [`docker exec` automatically drops to the `hermes` user](#docker-exec-automatically-drops-to-the-hermes-user) for details and the per-invocation opt-out.
 
+### Shared data directory keeps resetting to `0700`
+
+Outside a container Hermes locks `HERMES_HOME` (and its `cron/`, `sessions/`, `logs/`, `memories/` subdirectories) to owner-only `0700` on every start. Inside a container it leaves directory modes alone, so a bind mount shared with a sibling container running as a different UID (a web UI, a permissions fixer) keeps whatever mode and ACLs you set on the host. To force a specific directory mode anyway, set `HERMES_HOME_MODE` (octal, e.g. `HERMES_HOME_MODE=0755`); it is applied in containers too.
+
 ### "Permission denied" on every `docker exec` (install dir locked to 0700)
 
 Images built before late August 2026 had a bug where writing a credential file directly under `/opt/hermes` restricted that directory to `0700`, locking the `hermes` user (UID 10000) out of the install tree. Every new `docker exec` then fails with `Permission denied`.
@@ -811,6 +864,10 @@ Pulling a newer image and recreating the container fixes it permanently (the ins
 ```sh
 docker exec -u root hermes chmod 0755 /opt/hermes
 ```
+
+### Zombie (`<defunct>`) processes piling up under PID 1
+
+`ps -eo stat,ppid,comm | awk '$1 ~ /^Z/'` inside the container lists dead children that were never reaped. This happens when hermes itself is PID 1 — almost always because a Compose service overrides `entrypoint:` and so skips `docker/entrypoint-dispatch.sh` → `/init`. Hermes also warns about it at startup (`this process is PID 1 with no init above it`). Restore the default entrypoint, or add `init: true` (Compose) / `docker run --init` so `docker-init` reaps orphans; see [What the Dockerfile does](#what-the-dockerfile-does). Recreating the container clears the existing zombies.
 
 ### Browser tools not working
 

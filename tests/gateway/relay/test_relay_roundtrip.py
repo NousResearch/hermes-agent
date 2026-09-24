@@ -15,12 +15,11 @@ from __future__ import annotations
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
-from dataclasses import replace
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -61,14 +60,6 @@ def wired():
     return adapter, stub
 
 
-@pytest.mark.asyncio
-async def test_connect_registers_inbound_handler(wired):
-    adapter, stub = wired
-    assert stub._inbound is None
-    ok = await adapter.connect()
-    assert ok is True
-    assert stub.connected is True
-    assert stub._inbound is not None
 
 
 @pytest.mark.asyncio

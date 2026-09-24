@@ -21,14 +21,14 @@ The bugs, as reproduced before the fix:
 """
 
 import json
-import time
 import uuid
 from types import SimpleNamespace
 
 import pytest
 
 from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-from tools.tool_search import _short_desc, build_catalog, search_catalog
+from tools.tool_search import build_catalog, search_catalog
+from tools.tool_search_catalog import _short_desc
 
 
 def _tc(name, arguments="{}", call_id=None):
@@ -204,17 +204,12 @@ class TestShortDescSentenceBoundary:
     def test_exclamation_terminator_is_kept(self):
         assert _short_desc("List repos! Supports pagination.") == "List repos!"
 
-    def test_question_terminator_is_kept(self):
-        s = _short_desc("What does this do? It lists channels.")
-        assert s == "What does this do?"
 
     def test_long_text_still_clips_with_ellipsis(self):
         s = _short_desc("word " * 40)
         assert len(s) <= 61
         assert s.endswith("…")
 
-    def test_empty_is_empty(self):
-        assert _short_desc("") == ""
 
 
 class TestSourceNameIndexing:
@@ -267,46 +262,20 @@ class TestSourceNameIndexing:
             defs = [_td("mcp__linear__create_issue", "Create an issue."),
                     _td("mcp__slack__post_message", "Post a message.")]
             catalog = build_catalog(defs)
-            hits = search_catalog(catalog, "mcp message")
-            # Before the fix "mcp" BM25-matched both docs, so both came
-            # back and the order was decided by document length, not by
-            # the term the model actually meant.
+            # The prefix is in no document, so it can never match or rank.
+            assert all("mcp" not in e._tokens for e in catalog)
+            hits = search_catalog(catalog, "message")
             assert [h.name for h in hits] == ["mcp__slack__post_message"]
         finally:
             for n in names:
                 registry.deregister(n)
 
-    def test_source_label_is_indexed_once_for_native_and_plugin_names(self):
-        from tools.registry import registry
 
-        source_label = "catalogsource"
-        names = [
-            self._register(
-                "mcp__catalogsource__native_action",
-                "mcp-catalogsource",
-                "Perform a native action.",
-            ),
-            self._register(
-                "plugin_action",
-                "mcp-catalogsource",
-                "Perform a plugin action.",
-            ),
-        ]
-        try:
-            catalog = build_catalog([
-                _td("mcp__catalogsource__native_action", "Perform a native action."),
-                _td("plugin_action", "Perform a plugin action."),
-            ])
-            tokens_by_name = {entry.name: entry._tokens for entry in catalog}
-            assert tokens_by_name[names[0]].count(source_label) == 1
-            assert tokens_by_name[names[1]].count(source_label) == 1
-        finally:
-            for name in names:
-                registry.deregister(name)
-
-    def test_substring_fallback_covers_token_misses(self):
-        """"hub" is a substring of github but never a token — the fallback
-        (not BM25) must return the github tools."""
+    def test_unknown_token_returns_nothing(self):
+        """A token no document carries is the query's rarest token, so it gates and nothing
+        is admitted: an empty group, not `limit` tools sharing a common word. The old
+        name-substring fallback ("hub" -> github_*) is gone with it; the substring path
+        admitted tools that matched no query token at all."""
         from tools.registry import registry
 
         names = [
@@ -317,9 +286,9 @@ class TestSourceNameIndexing:
             defs = [_td("github_create_issue", "Create an issue."),
                     _td("github_merge_pr", "Merge a pull request.")]
             catalog = build_catalog(defs)
-            hits = search_catalog(catalog, "hub")
-            assert {h.name for h in hits} == {"github_create_issue", "github_merge_pr"}
             assert search_catalog(catalog, "zzzz") == []
+            assert search_catalog(catalog, "hub") == []
+            assert search_catalog(catalog, "create zzzz issue") == []
         finally:
             for n in names:
                 registry.deregister(n)

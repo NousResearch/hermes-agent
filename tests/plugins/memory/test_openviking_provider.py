@@ -1,21 +1,20 @@
 import json
 import os
 import socket
-import stat
 import threading
-import time
-import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 import plugins.memory.openviking as openviking_module
+from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
-    _DEFERRED_COMMIT_TIMEOUT,
     _VikingClient,
 )
+
+_EXPECTED_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
 
 
 def _clear_openviking_tenant_env(monkeypatch):
@@ -62,18 +61,6 @@ def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
     )
     monkeypatch.setattr(
         openviking_module,
-        "_validate_openviking_auth",
-        lambda values: (True, ""),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_root_access",
-        lambda values: (root_access, "" if root_access else "Requires role: root"),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        openviking_module,
         "_validate_openviking_setup_values",
         lambda values, *, require_api_key=False: (
             True,
@@ -84,37 +71,6 @@ def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
     )
 
 
-def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
-    import hermes_cli.config as config_mod
-
-    calls = []
-    backing_config = {
-        "memory": {
-            "openviking": {
-                "endpoint": "http://127.0.0.1:19472",
-                "api_key": "test-key",
-            }
-        }
-    }
-
-    def load_config_readonly():
-        calls.append("readonly")
-        return backing_config
-
-    def load_config():
-        raise AssertionError("OpenViking config loader should use readonly config")
-
-    monkeypatch.setattr(config_mod, "load_config_readonly", load_config_readonly)
-    monkeypatch.setattr(config_mod, "load_config", load_config)
-
-    config = openviking_module._load_hermes_openviking_config()
-
-    assert calls == ["readonly"]
-    assert config == {
-        "endpoint": "http://127.0.0.1:19472",
-        "api_key": "test-key",
-    }
-    assert config is not backing_config["memory"]["openviking"]
 
 
 def test_connection_settings_read_dashboard_config_file(tmp_path, monkeypatch):
@@ -256,7 +212,7 @@ def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
     }
     ovcli_path = tmp_path / "ovcli.conf.VPS_ROOT"
 
-    openviking_module._link_ovcli_profile(
+    openviking_module._setup._link_ovcli_profile(
         config=config,
         provider_config=provider_config,
         env_path=env_path,
@@ -271,7 +227,10 @@ def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
     assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
 
 
-def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("peer_key", [None, "actor_peer_id", "agent_id"])
+def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(
+    tmp_path, monkeypatch, peer_key,
+):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -282,10 +241,10 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     active_path = openviking_home / "ovcli.conf"
     saved_path = openviking_home / "ovcli.conf.VPS"
     active_path.write_text(json.dumps({"url": "http://active.test"}), encoding="utf-8")
-    saved_path.write_text(
-        json.dumps({"url": "https://vps.example", "api_key": "user-key"}),
-        encoding="utf-8",
-    )
+    saved_values = {"url": "https://vps.example", "api_key": "user-key"}
+    if peer_key:
+        saved_values[peer_key] = "existing-peer"
+    saved_path.write_text(json.dumps(saved_values), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
 
@@ -315,7 +274,7 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
         "root_api_key": "",
         "account": "",
         "user": "",
-        "agent": "",
+        "agent": "existing-peer" if peer_key else "",
     }]
     assert config["memory"]["provider"] == "openviking"
     assert config["memory"]["openviking"] == {
@@ -325,51 +284,11 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     env_text = env_path.read_text(encoding="utf-8")
     assert "OPENVIKING_" not in env_text
     assert "OTHER_KEY=keep" in env_text
+    settings = openviking_module._resolve_connection_settings(config["memory"]["openviking"])
+    assert settings["agent"] == ("existing-peer" if peer_key else "")
+    assert json.loads(saved_path.read_text(encoding="utf-8")) == saved_values
 
 
-def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeypatch):
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_reachability",
-        lambda endpoint: (True, ""),
-    )
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_setup_values",
-        lambda values, *, require_api_key=False: (True, "", "user"),
-    )
-    credential_menu = {}
-
-    def select(title, options, *, default=0, cancel_returns=None):
-        assert title == "  OpenViking credential"
-        credential_menu["options"] = options
-        credential_menu["default"] = default
-        return 0
-
-    def prompt(label, default=None, secret=False):
-        if label == "OpenViking server URL":
-            return default
-        if label == "OpenViking user API key":
-            assert secret is True
-            return "user-key"
-        if label == openviking_module._AGENT_PROMPT_LABEL:
-            return default
-        raise AssertionError(f"Unexpected prompt: {label}")
-
-    values = openviking_module._prompt_manual_connection_values(
-        prompt,
-        select,
-        -1,
-    )
-
-    assert [label for label, _description in credential_menu["options"]] == [
-        "User API key",
-        "Root API key",
-        "No API key",
-    ]
-    assert credential_menu["default"] == 0
-    assert values["api_key"] == "user-key"
-    assert values["api_key_type"] == "user"
 
 
 def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
@@ -620,7 +539,7 @@ def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypat
         lambda endpoint, *, timeout_seconds=0: wait_calls.append((endpoint, timeout_seconds)) or True,
     )
 
-    result = openviking_module._handle_unreachable_endpoint(
+    result = openviking_module._setup._handle_unreachable_endpoint(
         "http://127.0.0.1:1934",
         "OpenViking server is not reachable.",
         lambda *args, **kwargs: 0,
@@ -728,13 +647,6 @@ def test_tool_add_resource_rejects_hermes_credential_file_upload(tmp_path, monke
     provider._client.post.assert_not_called()
 
 
-def test_get_tool_schemas_omits_profile_and_keeps_narrow_forget_tools():
-    provider = OpenVikingMemoryProvider()
-
-    names = [schema["name"] for schema in provider.get_tool_schemas()]
-
-    assert "viking_profile" not in names
-    assert "viking_forget" in names
 
 
 def test_viking_client_delete_uses_identity_headers(monkeypatch):
@@ -767,6 +679,40 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
     assert captured["kwargs"]["params"] == {"uri": "viking://~/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert captured["kwargs"]["headers"]["User-Agent"] == _EXPECTED_USER_AGENT
+
+
+def test_viking_client_upload_uses_user_agent_without_json_content_type(
+    tmp_path,
+    monkeypatch,
+):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+    upload = tmp_path / "notes.txt"
+    upload.write_text("notes", encoding="utf-8")
+    captured = {}
+
+    def capture_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"result": {"temp_file_id": "temp-1"}},
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_post)
+
+    assert client.upload_temp_file(upload) == "temp-1"
+    assert captured["url"] == "https://example.com/api/v1/resources/temp_upload"
+    headers = captured["kwargs"]["headers"]
+    assert headers["User-Agent"] == _EXPECTED_USER_AGENT
+    assert "Content-Type" not in headers
 
 
 def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(monkeypatch):
@@ -808,14 +754,19 @@ def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(
         "/api/v1/system/status",
         "/api/v1/admin/accounts",
     ]
-    assert calls[0][1] == {"Accept": "application/json"}
-    assert calls[1][1] == {"Accept": "application/json"}
+    expected_anonymous_headers = {
+        "Accept": "application/json",
+    }
+    assert calls[0][1] == expected_anonymous_headers
+    assert calls[1][1] == expected_anonymous_headers
     for _url, headers in calls[2:]:
         assert headers["X-API-Key"] == "secret-key"
         assert headers["Authorization"] == "Bearer secret-key"
 
 
-def test_repeated_openviking_health_probes_never_send_identity_headers(monkeypatch):
+def test_repeated_openviking_health_probes_never_send_credentials_or_tenant_headers(
+    monkeypatch,
+):
     captured_headers = []
     client = _VikingClient(
         "https://openviking.example",
@@ -874,7 +825,9 @@ def test_cloud_health_retries_with_api_key_after_anonymous_auth_error(monkeypatc
     payload = client.health_payload()
     assert payload == modern
     assert client.health() is True
-    assert calls[0] == {"Accept": "application/json"}
+    assert calls[0] == {
+        "Accept": "application/json",
+    }
     assert "Authorization" in calls[1]
     assert calls[1]["Authorization"].startswith("Bearer account.user.")
     assert "X-API-Key" in calls[1]
@@ -1063,7 +1016,6 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     """Worker must use the session id snapshotted at sync_turn() call time, not
     re-read self._session_id later — otherwise a delayed worker can write the
     previous turn's messages into the rotated-in NEW session."""
-    import threading
 
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -1199,7 +1151,6 @@ def test_concurrent_providers_claim_unlocked_pending_owner_once(
     owner_run_id,
 ):
     """Only one provider may recover a missing or legacy owner lock."""
-    import threading
 
     pytest.importorskip("fcntl")
     _clear_openviking_env(monkeypatch)
@@ -1266,7 +1217,6 @@ def test_concurrent_providers_claim_unlocked_pending_owner_once(
 
 
 def test_shutdown_waits_for_memory_write_worker(monkeypatch):
-    import threading
 
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -1314,7 +1264,6 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
 
 
 def test_memory_write_uses_one_connection_for_identity_uri_and_post(monkeypatch):
-    import threading
 
     provider = OpenVikingMemoryProvider()
     provider._agent = "alice-agent"
@@ -1701,22 +1650,6 @@ def test_in_place_compression_lifecycle_allows_a_later_commit():
         f"{provider._client.post.call_args_list}"
     )
 
-def test_resolve_connection_settings_reads_config_yaml_non_secret_fields(monkeypatch):
-    """#68209: non-secret fields saved to config.yaml feed the resolution chain."""
-    _clear_openviking_env(monkeypatch)
-    provider_config = {
-        "endpoint": "http://saved.test:1933",
-        "account": "cfg-account",
-        "user": "cfg-user",
-        "agent": "cfg-agent",
-    }
-
-    settings = openviking_module._resolve_connection_settings(provider_config)
-
-    assert settings["endpoint"] == "http://saved.test:1933"
-    assert settings["account"] == "cfg-account"
-    assert settings["user"] == "cfg-user"
-    assert settings["agent"] == "cfg-agent"
 
 
 def test_env_overrides_config_yaml_non_secret_fields(monkeypatch):

@@ -95,26 +95,32 @@ def test_null_usage_aux_stream_is_normalized_without_create_retry():
     assert created == []
 
 
+def _anthropic_agent(stream_factory, provider="custom"):
+    from run_agent import AIAgent
+
+    agent = AIAgent(api_key="k", base_url="https://api.minimax.io/anthropic", model="MiniMax-M2",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent.api_mode, agent.provider, agent._interrupt_requested = "anthropic_messages", provider, False
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: stream_factory()))
+    agent._anthropic_client = client
+    agent._create_request_anthropic_client = lambda *a, **k: client
+    return agent
+
+
 def test_null_usage_stream_is_normalized_before_sdk_accumulation():
     # #60683 main turn: MiniMax sends usage:null on message_start/message_delta; the SDK's
     # accumulate_event() crashes mid-iteration unless _call_anthropic normalizes the raw events.
-    from anthropic import NOT_GIVEN
-    from anthropic._models import construct_type_unchecked
-    from anthropic.lib.streaming import MessageStream
-    from anthropic.types import RawMessageStreamEvent
-
-    from agent.anthropic_adapter import normalize_stream_usage
-
-    raw = [construct_type_unchecked(type_=RawMessageStreamEvent, value=v) for v in (
-        {"type": "message_start", "message": {"id": "m", "type": "message", "role": "assistant",
-                                              "model": "MiniMax-M2", "content": [], "usage": None}},
-        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
-        {"type": "content_block_stop", "index": 0},
-        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": None},
-        {"type": "message_stop"},
-    )]
-    stream = normalize_stream_usage(MessageStream(iter(raw), output_format=NOT_GIVEN))
-    list(stream)
-    final = stream.get_final_message()
+    agent = _anthropic_agent(lambda: _Ctx(_minimax_sdk_stream()))
+    final = agent._interruptible_streaming_api_call({"model": "MiniMax-M2", "messages": [], "max_tokens": 8})
     assert final.content[0].text == "hi" and final.stop_reason == "end_turn"
+
+
+@pytest.mark.parametrize("provider,disabled", [("custom", True), ("bedrock", False)])
+def test_main_turn_event_order_error_disables_streaming(provider, disabled):
+    # #72833 main turn: a custom anthropic_messages provider's out-of-order SSE must switch the
+    # retry to non-streaming; Bedrock keeps turn_recovery's Converse fallback instead.
+    err = RuntimeError('Unexpected event order, got content_block_delta before "message_start"')
+    agent = _anthropic_agent(lambda: _BrokenStream(err), provider=provider)
+    with pytest.raises(RuntimeError, match="Unexpected event order"):
+        agent._interruptible_streaming_api_call({"model": "MiniMax-M2", "messages": [], "max_tokens": 8})
+    assert bool(getattr(agent, "_disable_streaming", False)) is disabled

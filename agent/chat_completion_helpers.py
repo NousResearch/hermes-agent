@@ -3393,7 +3393,8 @@ class _StreamingCall(StreamingWaitMonitor):
     def _maybe_disable_streaming(self, e) -> None:
         """Flip to non-streaming for failures streaming itself cannot survive, or that
         re-streaming can only repeat: the provider rejecting streams outright,
-        AnthropicBedrock IAM lacking InvokeModelWithResponseStream, or a gateway answering
+        AnthropicBedrock IAM lacking InvokeModelWithResponseStream, a custom anthropic_messages
+        provider emitting SSE events out of order (#72833), or a gateway answering
         with contentless SSE keepalive frames (a degraded gateway answers every
         streaming request that way, so the retry must change channel to make progress)."""
         if _is_provider_stream_empty_frame_error(e):
@@ -3409,23 +3410,32 @@ class _StreamingCall(StreamingWaitMonitor):
                 "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
                 "without streaming (streaming stays off for this session).")
             return
+        from agent.anthropic_adapter import _is_stream_unavailable_error
+        if not _is_stream_unavailable_error(e):
+            return
         _err_lower = str(e).lower()
         _is_stream_unsupported = "stream" in _err_lower and "not supported" in _err_lower
-        _is_bedrock_stream_denied = False
-        if not _is_stream_unsupported and "invokemodelwithresponsestream" in _err_lower:
-            # Message pre-check first: importing bedrock_adapter triggers a lazy boto3 install.
-            from agent.bedrock_adapter import is_streaming_access_denied_error
-            _is_bedrock_stream_denied = is_streaming_access_denied_error(e)
-        if _is_stream_unsupported or _is_bedrock_stream_denied:
+        if "unexpected event order" in _err_lower and not _is_stream_unsupported:
+            # Custom anthropic_messages SSE out of order (#72833): re-streaming repeats it.
+            # Bedrock keeps turn_recovery's sticky Converse switch instead.
+            if self.agent.api_mode != "anthropic_messages" or self.agent.provider == "bedrock":
+                return
             self.agent._disable_streaming = True
             self.agent._safe_print(
-                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. Switching to non-streaming.\n"
-                "   Grant that action to restore streaming output.\n"
-                if _is_bedrock_stream_denied else
-                "\n⚠  Streaming is not supported for this model/provider. Switching to non-streaming.\n"
-                "   To avoid this delay, set display.streaming: false in config.yaml\n",
+                "\n⚠  Provider sent Anthropic stream events out of order. Switching to non-streaming.\n",
                 diagnostic=True,
             )
+            return
+        # Remaining matches: stream rejected outright, or Bedrock IAM stream denial.
+        self.agent._disable_streaming = True
+        self.agent._safe_print(
+            "\n⚠  Streaming is not supported for this model/provider. Switching to non-streaming.\n"
+            "   To avoid this delay, set display.streaming: false in config.yaml\n"
+            if _is_stream_unsupported else
+            "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. Switching to non-streaming.\n"
+            "   Grant that action to restore streaming output.\n",
+            diagnostic=True,
+        )
 
     def _handle_stream_error(self, e: Exception, attempt: int, max_retries: int) -> bool:
         """Classify a failed attempt: True = retry; False = stop with

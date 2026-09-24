@@ -467,7 +467,9 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         # no trailing whitespace ("Let me check.") sits in the chunker until
         # end-of-turn. Mirror the CLI speaker pipeline: poll with a timeout and
         # flush when the producer goes idle — immediately when the buffer ends
-        # on sentence punctuation, after a longer quiet spell otherwise.
+        # on sentence punctuation, after a longer quiet spell otherwise. The
+        # quiet-spell flush emits whole words only: a stall mid-word would
+        # otherwise synthesize each half of the word as a separate request.
         idle_poll_seconds = 0.5
         idle_polls_before_force_flush = 4  # ~2s of silence
 
@@ -481,8 +483,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                     buffered = chunker.buf.strip()
                     if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
                         continue
-                    if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
+                    if buffered.endswith((".", "!", "?", "…", ":")):
                         yield from chunker.flush()
+                    elif idle_polls >= idle_polls_before_force_flush:
+                        yield from chunker.flush_complete_words()
                     continue
                 idle_polls = 0
                 if delta is None:

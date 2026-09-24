@@ -62,6 +62,12 @@ def take_speech_interrupted() -> bool:
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
+# A possibly unfinished word at the end of an idle buffer: up to 48 letters or digits after
+# whitespace (or the start of the text) with nothing after them. Longer runs are not words worth
+# holding (runaway tokens), and scripts written without spaces (Han, kana, Thai) have no word end
+# to wait for. The whitespace stays with the held word so the next idle poll still sees a word.
+_TRAILING_WORD_RE = re.compile(
+    r"(?:\A|\s+)[^\W\u0e00-\u0e7f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]{1,48}\Z")
 
 
 class SentenceChunker:
@@ -101,9 +107,28 @@ class SentenceChunker:
         return out
 
     def flush(self) -> List[str]:
-        """Drain the tail (end-of-text or long-idle flush)."""
+        """Drain the whole tail: end-of-text, or an idle buffer that already ends a sentence."""
         tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf).strip(), ""
         return [tail] if tail else []
+
+    def flush_complete_words(self) -> List[str]:
+        """Idle flush that never splits a word: like ``flush()``, but when the buffer ends inside
+        a word, that word stays buffered for the next delta (or the end-of-text ``flush()``).
+
+        Deltas arrive on arbitrary character boundaries, so a stalled producer often leaves the
+        buffer ending mid-word, and each flushed fragment is a separate synthesis request: the
+        halves come out as two broken words. Only a short trailing run of letters/digits is held;
+        once it is all that is left, it waits. A script written without spaces, a tail too long to
+        be a word, or a buffer ending on punctuation or markup drains exactly like ``flush()``.
+        An unclosed ``<think>`` is held whole, as ``feed()`` does."""
+        if "<think" in self.buf and "</think>" not in self.buf:
+            return []
+        cleaned = _THINK_BLOCK_RE.sub("", self.buf)
+        tail = _TRAILING_WORD_RE.search(cleaned)
+        if tail is None:
+            return self.flush()
+        head, self.buf = cleaned[: tail.start()].strip(), cleaned[tail.start():]
+        return [head] if head else []
 
 
 class StreamingTTSProvider(ABC):

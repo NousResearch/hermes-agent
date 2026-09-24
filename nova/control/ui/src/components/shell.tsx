@@ -10,6 +10,7 @@ import {
   LayoutDashboard, ListChecks, Moon, ScrollText, ShieldCheck, Sun, Target, X, Settings2 } from "lucide-react";
 import { GlassPanel, StatusDot, type State } from "@/components/glass";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/tooltip";
+import { usePanel } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
 export type NavItem = {
@@ -199,6 +200,8 @@ export function TopBar({
           </Tooltip>
         ) : null}
 
+        <SignedIn />
+
         <button
           type="button"
           onClick={onToggleTheme}
@@ -209,6 +212,23 @@ export function TopBar({
         </button>
       </div>
     </header>
+  );
+}
+
+/** Who is signed in, and the way out — only for a Cognito sign-in through the load
+ *  balancer. A loopback or tunnel session has no sign-out to offer: AWS decided who opened
+ *  the tunnel, and closing it is closing the terminal. */
+function SignedIn() {
+  const who = usePanel<{ name: string; role: string; via: string; sign_out: string }>("/whoami", 0);
+  if (who.state !== "ok" || who.data.via !== "cognito") return null;
+  return (
+    <div className="glass text-ink-muted flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px]">
+      <span className="text-ink max-w-[14ch] truncate font-medium" title={who.data.name}>{who.data.name}</span>
+      <span className="text-ink-faint">{who.data.role}</span>
+      {who.data.sign_out ? (
+        <a href={who.data.sign_out} className="text-ink hover:underline">Sign out</a>
+      ) : null}
+    </div>
   );
 }
 

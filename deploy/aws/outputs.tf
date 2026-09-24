@@ -68,3 +68,18 @@ output "console_command" {
   description = "Open the Control Centre on http://localhost:8787 (needs the Session Manager plugin)."
   value       = "deploy/aws/console.sh ${aws_instance.runtime.id} ${aws_ssm_document.console.name} ${var.region}"
 }
+
+output "web_console_url" {
+  description = "The Control Centre's web address, when web_console_enabled."
+  value       = var.web_console_enabled ? "https://${var.web_domain_name}/" : ""
+}
+
+output "web_load_balancer_dns" {
+  description = "Point web_domain_name at this (a CNAME, or a Route 53 alias)."
+  value       = var.web_console_enabled ? aws_lb.web[0].dns_name : ""
+}
+
+output "web_user_pool_id" {
+  description = "Invite people here (Cognito → Users → Create user) and add them to nova-admin or nova-viewer."
+  value       = var.web_console_enabled ? aws_cognito_user_pool.console[0].id : ""
+}

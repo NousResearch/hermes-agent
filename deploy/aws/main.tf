@@ -303,6 +303,15 @@ locals {
     # Empty deploys the control plane alone, which creates durable tasks that nothing
     # claims. See variables.tf for why executing work needs the other image.
     worker_image_uri = var.worker_image_uri
+    # Sign-in through the web console's load balancer (web.tf): the control plane binds
+    # beyond loopback, behind the load balancer's TLS, and verifies Cognito tokens.
+    web_env = local.web_enabled ? join("\n", [
+      "NOVA_BIND_HOST=0.0.0.0",
+      "NOVA_BEHIND_TLS_PROXY=1",
+      "NOVA_OIDC_ISSUER=${local.web_oidc_issuer}",
+      "NOVA_OIDC_CLIENT_ID=${aws_cognito_user_pool_client.console[0].id}",
+      "NOVA_OIDC_LOGOUT_URL=${local.web_logout_url}",
+    ]) : ""
   })
 }
 

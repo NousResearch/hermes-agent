@@ -351,3 +351,41 @@ variable "console_iam_group_enabled" {
   type        = bool
   default     = false
 }
+
+# -- the Control Centre on the web (web.tf) -------------------------------------------
+
+variable "web_console_enabled" {
+  description = "Serve the Control Centre at web_domain_name behind a load balancer that signs people in with Cognito (MFA required). Off: SSM port forward only (access.tf)."
+  type        = bool
+  default     = false
+}
+
+variable "web_domain_name" {
+  description = "The console's address, e.g. console.example.com. Point its DNS at the load balancer (output web_load_balancer_dns)."
+  type        = string
+  default     = ""
+}
+
+variable "web_certificate_arn" {
+  description = "ACM certificate for web_domain_name, in this region."
+  type        = string
+  default     = ""
+}
+
+variable "web_public_subnet_ids" {
+  description = "Two or more public subnets, in different availability zones, for the load balancer."
+  type        = list(string)
+  default     = []
+}
+
+variable "web_allowed_cidrs" {
+  description = "Who may reach the sign-in page. Narrow it to the customer's office or VPN ranges where possible; 0.0.0.0/0 must be stated, never defaulted."
+  type        = list(string)
+  default     = []
+}
+
+variable "web_cognito_domain_prefix" {
+  description = "Prefix of the Cognito sign-in domain (<prefix>.auth.<region>.amazoncognito.com). Globally unique."
+  type        = string
+  default     = ""
+}

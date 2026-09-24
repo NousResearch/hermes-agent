@@ -44,6 +44,7 @@ from urllib.parse import parse_qs, urlparse
 
 from nova.control.api import ControlAPI
 from nova.control.auth import LOCAL_ADMIN, API_PREFIX_LEN, Principal, PrincipalStore
+from nova.control.oidc import ACCESS_TOKEN_HEADER, CognitoVerifier, NotInAGroup, TokenRejected
 from nova.errors import NovaError
 
 #: Largest write body accepted. A decision is a few hundred bytes; a note that needs more
@@ -96,6 +97,11 @@ class _Handler(BaseHTTPRequestHandler):
     #: True when TLS is terminated by a proxy in front of this server. Only affects what
     #: the operator was required to acknowledge; the socket here is plain either way.
     behind_tls_proxy: bool = False
+    #: Sign-in through a load balancer and Cognito (nova.control.oidc), when configured.
+    oidc: Optional["CognitoVerifier"] = None
+    #: Why the last authentication failed, for the refusal this request gets.
+    _auth_problem: str = ""
+    _auth_status: int = 401
 
     # -- plumbing -------------------------------------------------------------
 
@@ -140,8 +146,25 @@ class _Handler(BaseHTTPRequestHandler):
         recorded in the access log — ``via=loopback`` versus a principal's name — so an
         operator can always tell how a request was authorised.
         """
+        self._auth_problem, self._auth_status = "", 401
         if self._is_loopback_client():
             return LOCAL_ADMIN
+        if self.oidc is not None:
+            token = self.headers.get(ACCESS_TOKEN_HEADER, "")
+            if token:
+                try:
+                    return self.oidc.principal(token)
+                except NotInAGroup as exc:
+                    self._auth_problem, self._auth_status = str(exc), 403
+                    return None
+                except TokenRejected as exc:
+                    logger.warning("refused a sign-in token: %s", exc)
+                    self._auth_problem = f"sign-in not accepted: {exc}"
+                    return None
+                except Exception as exc:  # noqa: BLE001 — a key fetch failure must refuse
+                    logger.warning("could not check a sign-in token: %s", exc)
+                    self._auth_problem = "sign-in could not be checked right now; try again"
+                    return None
         if not self.principals.configured:
             return None
         header = self.headers.get("Authorization", "")
@@ -149,6 +172,36 @@ class _Handler(BaseHTTPRequestHandler):
         if not header.startswith(prefix):
             return None
         return self.principals.authenticate(header[len(prefix) :])
+
+    def _refuse_unauthenticated(self) -> None:
+        status = self._auth_status
+        message = self._auth_problem or "missing or invalid token"
+        self._send_json(status, {"error": {"status": status, "message": message}})
+
+    def _whoami(self, principal: Principal) -> None:
+        """Who the dashboard is being used as, and where signing out goes."""
+        body = principal.to_dict()
+        body["sign_out"] = "/logout" if (self.oidc is not None and principal.via == "cognito") else ""
+        self._send_json(200, body)
+
+    def _logout(self) -> None:
+        """End a load-balancer sign-in: expire its session cookies, then the pool's session.
+
+        The load balancer keeps the session in AWSELBAuthSessionCookie-0.. (split when
+        large); clearing them alone would sign straight back in on the next request, because
+        Cognito's own session is still alive — hence the redirect to its logout endpoint.
+        """
+        self.send_response(302)
+        for index in range(4):
+            self.send_header(
+                "Set-Cookie",
+                f"AWSELBAuthSessionCookie-{index}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax",
+            )
+        self.send_header("Location", (self.oidc.logout_url if self.oidc else "") or "/")
+        self.send_header("Content-Length", "0")
+        for key, value in SECURITY_HEADERS.items():
+            self.send_header(key, value)
+        self.end_headers()
 
     # -- methods --------------------------------------------------------------
 
@@ -208,9 +261,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         principal = self._principal()
         if principal is None:
-            self._send_json(
-                401, {"error": {"status": 401, "message": "missing or invalid token"}}
-            )
+            self._refuse_unauthenticated()
             return
 
         reason = self._cross_site()
@@ -322,9 +373,14 @@ class _Handler(BaseHTTPRequestHandler):
 
         principal = self._principal()
         if principal is None:
-            self._send_json(
-                401, {"error": {"status": 401, "message": "missing or invalid token"}}
-            )
+            self._refuse_unauthenticated()
+            return
+
+        if path == "/logout" and self.oidc is not None:
+            self._logout()
+            return
+        if path.startswith("/platform/") and path[API_PREFIX_LEN:] == "/whoami":
+            self._whoami(principal)
             return
 
         if path.startswith("/platform/") and not principal.may(path[API_PREFIX_LEN:] or "/"):
@@ -401,6 +457,7 @@ def build_server(
     tls_certfile: str = "",
     tls_keyfile: str = "",
     behind_tls_proxy: bool = False,
+    oidc: Optional["CognitoVerifier"] = None,
 ) -> ThreadingHTTPServer:
     """Construct the server without starting it. Refuses unsafe binds.
 
@@ -419,11 +476,12 @@ def build_server(
     principals = principals or PrincipalStore()
 
     if host not in LOOPBACK_HOSTS:
-        if not principals.configured:
+        if not principals.configured and oidc is None:
             raise NovaError(
-                f"refusing to bind {host} with no principals file: every caller would be "
-                "treated as a local admin. Create one with `nova token new`, or bind "
-                "127.0.0.1 and use an SSH tunnel"
+                f"refusing to bind {host} with no principals file and no sign-in: every "
+                "caller would be treated as a local admin. Create one with `nova token new`, "
+                "configure Cognito sign-in (--oidc-issuer/--oidc-client-id), or bind "
+                "127.0.0.1 and use an SSM or SSH tunnel"
             )
         if not tls_certfile and not behind_tls_proxy:
             raise NovaError(
@@ -436,7 +494,7 @@ def build_server(
     handler = type(
         "_BoundHandler",
         (_Handler,),
-        {"api": api, "principals": principals, "behind_tls_proxy": behind_tls_proxy},
+        {"api": api, "principals": principals, "behind_tls_proxy": behind_tls_proxy, "oidc": oidc},
     )
     server = ThreadingHTTPServer((host, port), handler)
 
@@ -466,6 +524,7 @@ def serve(
     tls_certfile: str = "",
     tls_keyfile: str = "",
     behind_tls_proxy: bool = False,
+    oidc: Optional["CognitoVerifier"] = None,
     ready: Optional[callable] = None,
 ) -> None:
     """Serve until interrupted. ``ready`` is called with the bound address once listening."""
@@ -477,6 +536,7 @@ def serve(
         tls_certfile=tls_certfile,
         tls_keyfile=tls_keyfile,
         behind_tls_proxy=behind_tls_proxy,
+        oidc=oidc,
     )
     bound_host, bound_port = server.server_address[:2]
     if ready is not None:

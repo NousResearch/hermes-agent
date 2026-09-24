@@ -22,6 +22,11 @@
 #   NOVA_TLS_CERT          <unset>
 #   NOVA_TLS_KEY           <unset>
 #   NOVA_BEHIND_TLS_PROXY  <unset>                any non-empty value sets the flag
+#   NOVA_OIDC_ISSUER       <unset>                Cognito sign-in via the load balancer:
+#   NOVA_OIDC_CLIENT_ID    <unset>                  the user pool issuer and app client id
+#   NOVA_OIDC_ADMIN_GROUP  nova-admin             Cognito group that makes an admin
+#   NOVA_OIDC_VIEWER_GROUP nova-viewer            Cognito group that makes a viewer
+#   NOVA_OIDC_LOGOUT_URL   <unset>                where Sign out goes (the pool's /logout)
 #   NOVA_APPLY_ON_START    <unset>                any non-empty value runs `nova apply` first
 #   NOVA_PRUNE_ORPHANS     <unset>                with APPLY_ON_START, also `--prune`
 #   NOVA_LOG_LEVEL         <unset>                read by nova itself
@@ -68,6 +73,11 @@ serve_flags() {
     [ -n "${NOVA_TLS_CERT:-}" ] && set -- "$@" --tls-cert "$NOVA_TLS_CERT"
     [ -n "${NOVA_TLS_KEY:-}" ] && set -- "$@" --tls-key "$NOVA_TLS_KEY"
     [ -n "${NOVA_BEHIND_TLS_PROXY:-}" ] && set -- "$@" --behind-tls-proxy
+    [ -n "${NOVA_OIDC_ISSUER:-}" ] && set -- "$@" --oidc-issuer "$NOVA_OIDC_ISSUER"
+    [ -n "${NOVA_OIDC_CLIENT_ID:-}" ] && set -- "$@" --oidc-client-id "$NOVA_OIDC_CLIENT_ID"
+    [ -n "${NOVA_OIDC_ADMIN_GROUP:-}" ] && set -- "$@" --oidc-admin-group "$NOVA_OIDC_ADMIN_GROUP"
+    [ -n "${NOVA_OIDC_VIEWER_GROUP:-}" ] && set -- "$@" --oidc-viewer-group "$NOVA_OIDC_VIEWER_GROUP"
+    [ -n "${NOVA_OIDC_LOGOUT_URL:-}" ] && set -- "$@" --oidc-logout-url "$NOVA_OIDC_LOGOUT_URL"
     printf '%s\n' "$@"
 }
 

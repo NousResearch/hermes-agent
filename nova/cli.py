@@ -197,6 +197,18 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="who may call the control plane (default: <home>/control-principals.yaml)",
     )
+    serve_cmd.add_argument(
+        "--oidc-issuer", default="", metavar="URL",
+        help="sign-in through a load balancer and Cognito: the user pool's issuer "
+             "(https://cognito-idp.<region>.amazonaws.com/<pool-id>)",
+    )
+    serve_cmd.add_argument("--oidc-client-id", default="", metavar="ID", help="the pool's app client id")
+    serve_cmd.add_argument("--oidc-admin-group", default="nova-admin", metavar="GROUP")
+    serve_cmd.add_argument("--oidc-viewer-group", default="nova-viewer", metavar="GROUP")
+    serve_cmd.add_argument(
+        "--oidc-logout-url", default="", metavar="URL",
+        help="where Sign out sends the browser (the pool's /logout with client_id and logout_uri)",
+    )
     serve_cmd.add_argument("--tls-cert", default="", metavar="FILE", help="TLS certificate")
     serve_cmd.add_argument("--tls-key", default="", metavar="FILE", help="TLS private key")
     serve_cmd.add_argument(
@@ -1181,11 +1193,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     f"no principals file at {principals_path} — serving loopback only, "
                     "every local caller is admin. Add one with `nova token new`."
                 )
+            oidc = None
+            if args.oidc_issuer or args.oidc_client_id:
+                from nova.control.oidc import CognitoVerifier
+
+                try:
+                    oidc = CognitoVerifier(
+                        issuer=args.oidc_issuer, client_id=args.oidc_client_id,
+                        admin_groups=(args.oidc_admin_group,),
+                        viewer_groups=(args.oidc_viewer_group,),
+                        logout_url=args.oidc_logout_url,
+                    )
+                except ValueError as exc:
+                    raise NovaError(f"Cognito sign-in is half-configured: {exc}") from None
+                print(f"sign-in: Cognito ({oidc.issuer}); admins {args.oidc_admin_group}, "
+                      f"viewers {args.oidc_viewer_group}")
             serve(
                 api,
                 host=args.host,
                 port=args.port,
                 principals=principals,
+                oidc=oidc,
                 tls_certfile=args.tls_cert,
                 tls_keyfile=args.tls_key,
                 behind_tls_proxy=args.behind_tls_proxy,

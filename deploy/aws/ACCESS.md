@@ -18,8 +18,8 @@ Control Centre port on this one instance.
 
 Everyone who gets in is an admin of the Control Centre. Loopback callers are trusted, and
 anyone who can reach loopback on this host could already read its files. **Give this policy
-only to people who should administer the tenant.** Per-person roles (admin/viewer) and a
-normal web address arrive with the load balancer + Cognito option.
+only to people who should administer the tenant.** For per-person roles (admin/viewer) and a
+normal web address, see option C.
 
 ---
 
@@ -78,12 +78,50 @@ in with MFA**.
 This works today, but it means long-lived access keys per person. Move to option A when you
 can.
 
+## Option C: the Control Centre as a website (for the customer's own staff)
+
+`web_console_enabled = true` (web.tf) serves the Control Centre at the customer's own
+address, behind an HTTPS load balancer that signs people in with **Amazon Cognito**:
+password plus a required authenticator app, and people are invited by an administrator only.
+
+| | |
+|---|---|
+| Roles | Cognito groups: **nova-admin** (everything) and **nova-viewer** (read only). Signed in but in neither group is refused with a sentence saying so. |
+| How NOVA knows who it is | The load balancer forwards the user pool's access token. NOVA **verifies its signature** against the pool's published keys and checks issuer, app client, token type and expiry (`nova/control/oidc.py`). It does not trust the header just because of where it came from. |
+| Network | The load balancer's security group admits `web_allowed_cidrs` on 443 (80 only redirects). The instance admits the Control Centre port from the load balancer and nothing else. |
+| Sign out | The top bar shows who is signed in and a **Sign out** link. It clears the load balancer session, then Cognito's. |
+
+**What the customer provides:** a domain name (`web_domain_name`), an ACM certificate for it
+in the deployment region, two public subnets in different availability zones, the address
+ranges allowed to reach the sign-in page (`web_allowed_cidrs`; state `0.0.0.0/0` explicitly
+if it really is the whole internet), and a unique `web_cognito_domain_prefix`.
+
+**After apply:**
+1. Point the domain at `terraform output web_load_balancer_dns`.
+2. Invite people: Cognito → the pool (`terraform output web_user_pool_id`) → *Create user* with
+   their email → add them to `nova-admin` or `nova-viewer`. Cognito emails a temporary
+   password, and they register an authenticator app on first sign-in.
+
+**Two things change in this mode:**
+- **The SSM tunnel needs a sign-in too.** Behind a load balancer the control plane stops
+  trusting loopback, because the load balancer's traffic would otherwise all look local.
+  Operators are nova-admin members and use the website like everyone else.
+- **An existing instance needs its environment updated once.** The bootstrap runs only at
+  first boot (see README, "Changing the bootstrap"), so a deployment that already exists gets
+  the web settings either by `terraform apply -replace=aws_instance.runtime` (the state
+  volume is kept), or by appending the five `NOVA_BIND_HOST` / `NOVA_BEHIND_TLS_PROXY` /
+  `NOVA_OIDC_*` lines (from the rendered bootstrap) to `/etc/nova.env` and restarting
+  `nova.service`.
+
+Cost: roughly $20–25 a month for the load balancer, plus Cognito, whose free tier covers a
+small team. Check the current Cognito pricing page for the tier and user count you expect.
+
 ## What not to do
 
 - **Do not use the deployment user** (the one that runs Terraform) to open the Control
   Centre. It can do far more than open a tunnel.
-- **Do not publish port 8787**, not through a security group and not by binding the control
-  plane to `0.0.0.0`. The control plane refuses a non-loopback bind without a principals
-  file and TLS, and it is right to.
+- **Do not publish port 8787** to anything but the load balancer's own security group, which
+  is the only rule option C adds. The control plane refuses a non-loopback bind without
+  sign-in (a principals file or Cognito) and TLS in front of it, and it is right to.
 
 `terraform output -raw console_command` prints the exact command for a deployment.

@@ -20,6 +20,13 @@ from hermes_cli._subprocess_compat import bounded_probe_run
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
 
+# Bounds for the venv pip bootstrap. The probe is fail-open: it must never hold the post-swap deps
+# phase open, and an abandoned ``pip --version`` child is worse than a hang — it keeps the venv
+# interpreter mapped, so every later ``hermes update`` refuses on the venv-holder guard (#120169).
+# ``ensurepip`` is a real install step, so it gets the roomier bound.
+_VENV_PIP_PROBE_TIMEOUT_SECONDS = 120
+_VENV_ENSUREPIP_TIMEOUT_SECONDS = 600
+
 # Files defining the editable install; a pull touching none of them cannot invalidate it.
 _INSTALL_DEFINING_FILES = "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "uv.lock"
 
@@ -259,13 +266,42 @@ def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
 
 def _ensure_venv_pip(pip_cmd: list, python_exe: str) -> None:
     """Bootstrap pip back into the venv via ensurepip when ``pip --version`` fails
-    (some environments lose it); call before the editable install."""
+    (some environments lose it); call before the editable install.
+
+    The probe runs through ``bounded_probe_run``, not ``subprocess.run``: on Windows run()'s
+    post-timeout cleanup joins the captured pipe readers unbounded, and an abandoned
+    ``pip --version`` child is worse than a hang — it keeps the venv interpreter mapped, so every
+    later ``hermes update`` refuses on the venv-holder guard (#120169). A probe that timed out is
+    skipped rather than answered with an ensurepip install; the editable install surfaces a
+    genuinely missing pip loudly.
+    """
     from hermes_cli.update_cmd import _m
+    project_root = str(_m().PROJECT_ROOT)
     try:
-        subprocess.run(pip_cmd + ["--version"], cwd=_m().PROJECT_ROOT, check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        subprocess.run(
-            [python_exe, "-m", "ensurepip", "--upgrade", "--default-pip"], cwd=_m().PROJECT_ROOT, check=True)
+        probe = bounded_probe_run(
+            pip_cmd + ["--version"], timeout=_VENV_PIP_PROBE_TIMEOUT_SECONDS, cwd=project_root,
+            raise_on_spawn_failure=True)
+    except OSError:
+        # pip is not even spawnable: exactly the "this venv lost pip" case this bootstraps.
+        probe = None
+    else:
+        if probe is None:
+            logger.warning(
+                "venv pip probe timed out after %ss; skipping the ensurepip bootstrap",
+                _VENV_PIP_PROBE_TIMEOUT_SECONDS)
+            return
+        if probe.returncode == 0:
+            return
+    logger.debug("venv pip probe failed; bootstrapping pip via ensurepip")
+    ensurepip_cmd = [python_exe, "-m", "ensurepip", "--upgrade", "--default-pip"]
+    result = bounded_probe_run(
+        ensurepip_cmd, timeout=_VENV_ENSUREPIP_TIMEOUT_SECONDS, cwd=project_root,
+        raise_on_spawn_failure=True)
+    if result is None:
+        raise subprocess.TimeoutExpired(ensurepip_cmd, _VENV_ENSUREPIP_TIMEOUT_SECONDS)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, ensurepip_cmd, output=result.stdout, stderr=result.stderr)
 
 
 def _upgrade_pip_before_lazy_refresh(

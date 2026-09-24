@@ -29,6 +29,16 @@ class MockAPIError(Exception):
         self.response = SimpleNamespace(headers=headers or {})
 
 
+class MockBotocoreClientError(Exception):
+    """Minimal ClientError response shape used when the optional SDK is absent."""
+    def __init__(self, code, status):
+        self.response = {
+            "Error": {"Code": code, "Message": "Bedrock rejected the request"},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        }
+        super().__init__(f"An error occurred ({code}) when calling the Converse operation")
+
+
 class MockTransportError(Exception):
     """Simulates a transport-level error with a specific type name."""
     pass
@@ -83,6 +93,19 @@ class TestExtractStatusCode:
         outer = Exception("outer")
         outer.__cause__ = inner
         assert _extract_status_code(outer) == 401
+
+    def test_from_client_error_response_metadata_shape(self):
+        assert _extract_status_code(MockBotocoreClientError("ValidationException", 400)) == 400
+
+    @pytest.mark.parametrize(("code", "status"), [("ValidationException", 400), ("AccessDeniedException", 403)])
+    def test_from_botocore_client_error_response_metadata(self, code, status):
+        ClientError = pytest.importorskip("botocore.exceptions").ClientError
+        error = ClientError(
+            {"Error": {"Code": code, "Message": "Bedrock rejected the request"},
+             "ResponseMetadata": {"HTTPStatusCode": status}},
+            "Converse",
+        )
+        assert _extract_status_code(error) == status
 
 
 
@@ -170,6 +193,22 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.auth
         assert result.should_fallback is True
+
+    @pytest.mark.parametrize(
+        ("code", "status", "reason"),
+        [("ValidationException", 400, FailoverReason.format_error),
+         ("AccessDeniedException", 403, FailoverReason.auth)],
+    )
+    def test_botocore_client_error_is_terminal_and_not_reported_as_unavailable(self, code, status, reason):
+        error = MockBotocoreClientError(code, status)
+        result = classify_api_error(error, provider="bedrock", model="test-model")
+        assert result.status_code == status
+        assert result.reason is reason
+        assert result.retryable is False
+        from agent.turn_failure_copy import nonretryable_copy
+        assert "temporarily unavailable" not in nonretryable_copy(
+            result, provider="bedrock", model="test-model", summary=result.message
+        ).lower()
 
     def test_403_upstream_unavailable_code_is_transient_not_auth(self):
         """A gateway 403 stamped ``code=upstream_unavailable`` is a transient upstream

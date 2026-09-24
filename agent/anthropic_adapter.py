@@ -759,15 +759,6 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
         return True
     if "unexpected event order" in err_lower:
         return True
-    # Anthropic SDK accumulate_event() assumes message_start carried a usage
-    # object; some Anthropic-compatible providers (e.g. MiniMax api.minimaxi.com)
-    # emit usage: null on message_start and only populate it on message_delta,
-    # so get_final_message() raises AttributeError on output_tokens (#60683).
-    if isinstance(exc, AttributeError):
-        if "output_tokens" in err_lower:
-            return True
-        if "nonetype" in err_lower and "usage" in err_lower:
-            return True
     if "invokemodelwithresponsestream" not in err_lower:
         return False
     from agent.bedrock_adapter import is_streaming_access_denied_error
@@ -777,6 +768,7 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
 def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
     """``messages.stream()`` -> final Message, ticking the best-effort callbacks."""
     with stream_fn(**{k: v for k, v in api_kwargs.items() if k != "stream"}) as stream:
+        stream = normalize_stream_usage(stream)  # MiniMax usage:null (#60683), same as the main turn
         if callable(on_response):
             try:
                 on_response(getattr(stream, "response", None))

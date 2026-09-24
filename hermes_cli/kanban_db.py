@@ -2757,24 +2757,27 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
-    with write_txn(conn):
-        # Hard invariant even for human review approval: a parent may have
-        # reopened while this task waited.
-        if not _parents_satisfied(conn, task_id):
-            return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
-        trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        prior_status = trow["status"] if trow else None
-        # Refuse to close a LIVE worker's run without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True); see
-        # _claim_is_live for what "live" means.
-        if expected_run_id is None and not force and trow and _claim_is_live(trow):
-            raise LiveClaimError(task_id)
-        sql = """
+    staged_copies = _stage_completion_artifacts(conn, task_id, metadata) if isinstance(metadata, dict) else []
+    committed = False
+    try:
+        with write_txn(conn):
+            # Hard invariant even for human review approval: a parent may have
+            # reopened while this task waited.
+            if not _parents_satisfied(conn, task_id):
+                return False
+            if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+                return False
+            trow = conn.execute(
+                "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            prior_status = trow["status"] if trow else None
+            # Refuse to close a LIVE worker's run without proof of ownership
+            # (expected_run_id) or an explicit human override (force=True); see
+            # _claim_is_live for what "live" means.
+            if expected_run_id is None and not force and trow and _claim_is_live(trow):
+                raise LiveClaimError(task_id)
+            sql = """
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
@@ -2787,35 +2790,39 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
-        if conn.execute(sql, params).rowcount != 1:
-            return False
-        if isinstance(metadata, dict):
-            _stage_completion_artifacts(conn, task_id, metadata, now)
-        run_id = _end_run(
-            conn, task_id, outcome="completed", status="done", summary=handoff_summary,
-            metadata=metadata,
-        )
-        # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (summary or metadata or result or prior_status == "review"):
-            synth_summary, synth_metadata = handoff_summary, metadata
-            if prior_status == "review" and not synth_summary and not synth_metadata:
-                synth_summary = _REVIEW_APPROVED_NOTE
-                synth_metadata = {"source_status": "review", "approval": "manual"}
-            run_id = _synthesize_ended_run(
-                conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+            params: tuple = (result, now, task_id)
+            if expected_run_id is not None:
+                sql += " AND current_run_id = ?"
+                params = (*params, int(expected_run_id))
+            if conn.execute(sql, params).rowcount != 1:
+                return False
+            if isinstance(metadata, dict):
+                _record_staged_completion_artifacts(conn, task_id, metadata, now)
+            run_id = _end_run(
+                conn, task_id, outcome="completed", status="done", summary=handoff_summary,
+                metadata=metadata,
             )
-        event_summary = handoff_summary
-        if prior_status == "review" and not event_summary:
-            event_summary = _REVIEW_APPROVED_NOTE
-        _append_event(
-            conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
-            run_id=run_id,
-        )
+            # Never-claimed task: synthesize a run so the handoff fields survive.
+            if run_id is None and (summary or metadata or result or prior_status == "review"):
+                synth_summary, synth_metadata = handoff_summary, metadata
+                if prior_status == "review" and not synth_summary and not synth_metadata:
+                    synth_summary = _REVIEW_APPROVED_NOTE
+                    synth_metadata = {"source_status": "review", "approval": "manual"}
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+                )
+            event_summary = handoff_summary
+            if prior_status == "review" and not event_summary:
+                event_summary = _REVIEW_APPROVED_NOTE
+            _append_event(
+                conn, task_id, "completed",
+                _completed_event_payload(result, event_summary, verified_cards, metadata),
+                run_id=run_id,
+            )
+        committed = True
+    finally:
+        if staged_copies and not committed:
+            _discard_staged_copies(staged_copies, staged_copies[0].parent)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -2892,13 +2899,18 @@ def _gate_empty_completion(
 
 
 def _stage_completion_artifacts(
+    conn: sqlite3.Connection, task_id: str, metadata: dict,
+) -> list[Path]:
+    """Copy scratch artifacts before a write transaction can hold SQLite's lock."""
+    _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    return [Path(stored_path) for stored_path in metadata.get("_staged_artifacts", [])]
+
+
+def _record_staged_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
     uploaded_by: str = "kanban_complete",
 ) -> list[Path]:
-    """Copy scratch artifacts to the attachments dir and record each as an
-    attachment row; returns the copies so the caller can discard them if its
-    transaction rolls back."""
-    _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    """Record already-staged scratch artifacts while the transition commits."""
     staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
     for path in staged:
         _insert_completion_attachment(
@@ -3378,7 +3390,8 @@ def request_review(
     now = int(time.time())
     # Staged copies live outside the txn: a rollback after staging must not
     # leave orphans that make the retry stage ``name_1.ext`` beside them.
-    staged_copies: list[Path] = []
+    staged_copies = _stage_completion_artifacts(conn, task_id, metadata) if isinstance(metadata, dict) else []
+    committed = False
     try:
         with write_txn(conn):
             if not _parents_satisfied(conn, task_id):
@@ -3448,7 +3461,7 @@ def request_review(
                     False, "task is not in running/ready (or expected_run_id did not match the current run)",
                 )
             if isinstance(metadata, dict):
-                staged_copies = _stage_completion_artifacts(
+                _record_staged_completion_artifacts(
                     conn, task_id, metadata, now, uploaded_by="kanban_request_review",
                 )
             run_id = _end_or_synthesize_run(
@@ -3465,10 +3478,10 @@ def request_review(
             if staged:
                 payload["artifacts"] = staged
             _append_event(conn, task_id, "review_requested", payload, run_id=run_id)
-    except Exception:
-        if staged_copies:
+        committed = True
+    finally:
+        if staged_copies and not committed:
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
-        raise
     return _ret(True)
 
 

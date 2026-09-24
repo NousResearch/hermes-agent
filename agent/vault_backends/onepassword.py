@@ -13,8 +13,9 @@ import json
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from agent.secret_sources.base import run_cli
 from agent.secret_sources.onepassword import _OP_ENV_ALLOWLIST, _scrub, find_op
@@ -25,6 +26,12 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+_PROBE_TTL_S = 30.0
+
+# Ambient (desktop-app / system-auth) liveness probe cache: (home, backend) -> (unlocked, generation, ts).
+# Keyed like `_unlock`'s session table so a Lock (which bumps the generation) invalidates the cache
+# without this module reaching into `_unlock`'s private session store.
+_probe_cache: Dict[Tuple[str, str], Tuple[bool, int, float]] = {}
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -67,26 +74,59 @@ class OnePasswordLoginBackend(LoginBackend):
             env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
         return env
 
+    def _ambient_unlocked(self) -> bool:
+        """Cheap read probe for the desktop-app/system-auth (biometric) path: no service token, no
+        session token, but ``op`` is already authenticated ambiently. Cached briefly so callers
+        (``is_unlocked`` + ``list_items`` + ``_run``) spawn ``op`` at most once per TTL window."""
+        from hermes_constants import get_hermes_home
+        key = (str(get_hermes_home()), self.name)
+        generation = _unlock.begin_unlock(self.name)
+        cached = _probe_cache.get(key)
+        if cached is not None:
+            unlocked, gen, ts = cached
+            if gen == generation and time.monotonic() - ts < _PROBE_TTL_S:
+                return unlocked
+        try:
+            proc = run_cli([str(self._op()), "item", "list", "--categories", "Login", "--format", "json", "--cache"],
+                           env=self._env(None), timeout=_TIMEOUT, label="op",
+                           timeout_message="op timed out", stdin=subprocess.DEVNULL)
+            unlocked = proc.returncode == 0
+        except RuntimeError:
+            unlocked = False
+        _probe_cache[key] = (unlocked, generation, time.monotonic())
+        return unlocked
+
     def is_unlocked(self) -> bool:
-        return bool(self._service_token) or _unlock.is_unlocked(self.name)
+        return bool(self._service_token) or _unlock.is_unlocked(self.name) or self._ambient_unlocked()
 
     def unlock(self, master_password: str) -> None:
-        """Mint a session token from the master password (consumed on stdin, never argv)."""
+        """Mint a session token from the master password (consumed on stdin, never argv).
+
+        On the desktop-app / system-auth (biometric) integration, ``op signin --raw`` exits 0
+        with empty stdout — auth is already ambient. That is success, not failure: only raise
+        when the ambient probe also fails to confirm the account is actually usable."""
         generation = _unlock.begin_unlock(self.name)
         cmd = [str(self._op()), "signin", "--raw"]
         if account := str(self.cfg.get("account") or ""):
             cmd += ["--account", account]
         proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
         token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
+        if proc.returncode != 0:
+            raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
+        if not token:
+            if self._ambient_unlocked():
+                return
             raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
         if not _unlock.store_session_token(self.name, token, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
         token = None if self._service_token else _unlock.get_session_token(self.name)
+        ambient = False
         if not self._service_token and not token:
-            raise UnlockRequired(self)
+            ambient = self._ambient_unlocked()
+            if not ambient:
+                raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:

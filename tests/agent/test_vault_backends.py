@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 import os
 import stat
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from agent.vault_backends import unlock as unlock_mod
+from agent.vault_backends.base import UnlockRequired
 from agent.vault_backends.bitwarden import BitwardenLoginBackend
 
 # A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
@@ -231,3 +233,137 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+# --- desktop/biometric (ambient) auth: `op signin --raw` exits 0 with empty stdout because the
+# account is already authenticated through the 1Password desktop app / system-auth integration.
+# `item list` (the liveness probe) succeeds without any OP_SESSION_* or service-account token.
+_FAKE_OP_AMBIENT = r'''#!/usr/bin/env python3
+import json, os, sys
+log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a")
+argv = sys.argv[1:]
+log.write(json.dumps({"argv": argv, "OP_SESSION": {k: v for k, v in os.environ.items() if k.startswith("OP_SESSION")},
+                      "OP_SERVICE_ACCOUNT_TOKEN": os.environ.get("OP_SERVICE_ACCOUNT_TOKEN")}) + "\n")
+if argv[:2] == ["signin", "--raw"]:
+    sys.exit(0)  # ambient auth: success, no token printed
+if argv[:2] == ["item", "list"]:
+    if "--cache" in argv:
+        sys.exit(0)  # liveness probe: rc is all that matters
+    print(json.dumps([{"id": "abc", "title": "Example", "created_at": "2026-01-01T00:00:00Z",
+                       "additional_information": "jane@example.com",
+                       "urls": [{"href": "https://example.com/login"}]}])); sys.exit(0)
+if argv[:2] == ["item", "get"]:
+    print("plain sentence nobody would flag 7"); sys.exit(0)
+sys.exit(2)
+'''
+
+# Same auth mode but the account is genuinely locked: `item list` also fails.
+_FAKE_OP_LOCKED = r'''#!/usr/bin/env python3
+import sys
+argv = sys.argv[1:]
+if argv[:2] == ["signin", "--raw"]:
+    sys.exit(0)  # ambient signin reports success even though nothing is actually usable yet
+if argv[:2] == ["item", "list"]:
+    sys.stderr.write("[ERROR] 2026/01/01 00:00:00 you are not signed in\n"); sys.exit(1)
+sys.exit(2)
+'''
+
+
+@pytest.fixture
+def fake_op_ambient(tmp_path, monkeypatch):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP_AMBIENT, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    log = tmp_path / "op.log"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    unlock_mod.lock()
+    yield exe, log
+    unlock_mod.lock()
+
+
+@pytest.fixture
+def fake_op_locked(tmp_path, monkeypatch):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP_LOCKED, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    unlock_mod.lock()
+    yield exe
+    unlock_mod.lock()
+
+
+def test_onepassword_ambient_desktop_auth_unlocks_and_lists_without_a_session_token(fake_op_ambient):
+    """Biometric/desktop-app auth: signin --raw exits 0 with no token, but a read probe succeeds —
+    that must count as unlocked, not `no session token`."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, log = fake_op_ambient
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+
+    assert backend.is_unlocked() is True
+    backend.unlock("")  # must not raise
+    items = backend.list_items()
+    assert len(items) == 1
+    assert items[0].label == "Example" and items[0].origin == "https://example.com"
+    assert backend.resolve_password(items[0].id) == "plain sentence nobody would flag 7"
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert all(c["OP_SERVICE_ACCOUNT_TOKEN"] is None for c in calls)
+    assert all(not c["OP_SESSION"] for c in calls), "ambient auth must not need any OP_SESSION_* var"
+
+
+def test_onepassword_ambient_probe_is_cached_not_respawned_per_call(fake_op_ambient):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, log = fake_op_ambient
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+
+    assert backend.is_unlocked() is True
+    backend.list_items()
+    backend.list_items()
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    probe_calls = [c for c in calls if c["argv"][:2] == ["item", "list"] and "--cache" in c["argv"]]
+    assert len(probe_calls) == 1, "the ambient liveness probe must be cached, not re-spawned every call"
+
+
+def test_onepassword_ambient_auth_locked_raises_and_reports_locked(fake_op_locked):
+    """Ambient signin exits 0 too, but the account is not actually usable: the probe fails and the
+    genuine lock must still surface (no false 'unlocked')."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe = fake_op_locked
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+
+    assert backend.is_unlocked() is False
+    with pytest.raises(RuntimeError):
+        backend.unlock("")
+    with pytest.raises(UnlockRequired):
+        backend._run("item", "list", "--categories", "Login", "--format", "json")
+
+
+def test_onepassword_service_account_and_session_token_paths_still_work(monkeypatch, tmp_path):
+    """Regression: the two pre-existing auth modes are untouched by the ambient-probe addition."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    unlock_mod.lock()
+
+    # Service account: is_unlocked() is True from the token alone, no `op` invocation needed.
+    backend = OnePasswordLoginBackend({"enabled": True})
+    backend._service_token = "svc-token"
+    with patch("agent.vault_backends.onepassword.run_cli") as run_cli_mock:
+        assert backend.is_unlocked() is True
+        run_cli_mock.assert_not_called()
+
+    # Session token: unlock() stores a real token and is_unlocked() reflects it, independent of probing.
+    unlock_mod.lock()
+    backend2 = OnePasswordLoginBackend({"enabled": True})
+    with patch.object(backend2, "_op", return_value=Path("/usr/bin/op")), \
+         patch("agent.vault_backends.onepassword.run_with_stdin_secret") as signin_mock:
+        signin_mock.return_value = type("P", (), {"returncode": 0, "stdout": "SESSION-TOKEN-XYZ\n", "stderr": ""})()
+        backend2.unlock("correct horse")
+    assert backend2.is_unlocked() is True
+    unlock_mod.lock()

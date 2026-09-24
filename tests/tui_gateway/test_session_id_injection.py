@@ -44,6 +44,7 @@ def _install_session(
     agent_session_id,
     source="cli",
     profile_home=None,
+    auth_user_id=None,
 ):
     """Register a fake session in server._sessions for the duration of a test."""
     sess = {
@@ -51,6 +52,7 @@ def _install_session(
         "source": source,
         "agent": _FakeAgent(agent_session_id) if agent_session_id is not None else None,
         "cwd": "/home/user",
+        "auth_user_id": auth_user_id,
     }
     if profile_home is not None:
         sess["profile_home"] = str(profile_home)
@@ -106,3 +108,26 @@ def test_set_session_context_uses_launch_profile_without_override(monkeypatch):
     server._set_session_context("skey-default")
 
     assert get_session_env("HERMES_SESSION_PROFILE") == "default"
+
+
+def test_set_session_context_exports_dashboard_login_to_subprocesses(monkeypatch):
+    """Authenticated Desktop sessions export their login to tool subprocesses."""
+    _install_session(
+        monkeypatch, session_key="desktop-login", agent_session_id="session-login",
+        auth_user_id="basic:alice",
+    )
+
+    server._set_session_context("desktop-login")
+
+    assert get_session_env("HERMES_SESSION_USER_ID") == "basic:alice"
+
+
+def test_set_session_context_keeps_anonymous_sessions_identity_less(monkeypatch):
+    """Sessions without dashboard authentication must not gain a user identity."""
+    _install_session(
+        monkeypatch, session_key="desktop-anonymous", agent_session_id="session-anonymous",
+    )
+
+    server._set_session_context("desktop-anonymous")
+
+    assert get_session_env("HERMES_SESSION_USER_ID") == ""

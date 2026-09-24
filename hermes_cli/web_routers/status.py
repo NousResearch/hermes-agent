@@ -553,6 +553,37 @@ async def get_status(profile: Optional[str] = None):
 
 
 @router.get("/api/system/stats")
+
+
+def _native_machine_arch() -> str:
+    """Native (process-emulation-independent) machine architecture.
+
+    Python's `platform.machine()` returns the *emulated* view: under WoW64
+    (Windows 32-on-64), a 32-bit Python sees `x86` even on an AMD64 host, and
+    the `PROCESSOR_ARCHITECTURE` env var is similarly shadowed. For system-stats
+    display we want the host's actual architecture, so probe `PROCESSOR_ARCHITEW6432`
+    and `PROCESSOR_ARCHITECTURE` directly via the Windows API, falling back to
+    `platform.machine()` on non-Windows or when both env vars are absent.
+    """
+    if sys.platform != "win32":
+        return _platform.machine()
+    for env_var in ("PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE"):
+        v = os.environ.get(env_var)
+        if v:
+            if v in ("AMD64", "IA64", "ARM64"):
+                return v.lower()
+            return v
+    try:
+        import ctypes
+        wow64 = ctypes.c_ubyte()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if kernel32.IsWow64Process2(kernel32.GetCurrentProcess(), ctypes.byref(wow64), ctypes.c_ubyte(0)):
+            return "x86" if wow64.value == 5 else ("amd64" if wow64.value == 12 else _platform.machine())
+    except Exception:
+        pass
+    return _platform.machine()
+
+
 async def get_system_stats():
     """Host + process system stats for the System page (stdlib identity; psutil CPU/memory/
     disk/uptime when available). Non-sensitive: no env values, no paths beyond hermes home."""
@@ -562,7 +593,7 @@ async def get_system_stats():
         **_display_system_platform(
             system=_platform.system(), release=_platform.release(), version=_platform.version(),
             platform_label=_platform.platform()),
-        "arch": _platform.machine(), "hostname": _platform.node(),
+        "arch": _native_machine_arch(), "hostname": _platform.node(),
         "python_version": _platform.python_version(),
         "python_impl": _platform.python_implementation(),
         "hermes_version": __version__, "cpu_count": os.cpu_count()}

@@ -30,6 +30,7 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    is_guardrail_key,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -384,7 +385,8 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always":
+        # LOCAL PATCH: guardrail keys (approval self-disable) are session-max; `always` downgrades to session.
+        if choice == "always" and not is_guardrail_key(key):
             approve_permanent(key)
             with _lock:
                 snapshot = set(_permanent_set())
@@ -750,7 +752,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     counts toward the denial breaker even when an owner may override it. ESCALATE follows the
     normal, potentially persistent manual behavior.
     """
-    verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key, surface=spec.noun)
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
@@ -783,7 +785,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     from agent.redact import redact_sensitive_text
 
     smart_denied = False
-    if smart:
+    # LOCAL PATCH: guardrail findings (commands that disable the approval system itself) never
+    # go to the guardian; every judge rated them routine in the 2026-09-24 held-out eval.
+    guardrail = any(is_guardrail_key(k) for k in pattern_keys)
+    if smart and not guardrail:
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:

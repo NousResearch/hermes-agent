@@ -145,6 +145,10 @@ VALID_HOOKS: set[str] = {
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
     # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
     "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # approval_prefilter (LOCAL PATCH): before the smart-approval guardian LLM. Kwargs: command,
+    # description, pattern_key, surface. Return {"verdict": "approve"|"escalate", "decided_by"} to skip
+    # the LLM or send to a human; None defers. "deny" is ignored.
+    "approval_prefilter",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

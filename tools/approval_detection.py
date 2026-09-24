@@ -224,8 +224,53 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+# ---- Guardrail patterns (LOCAL PATCH) ------------------------------------------------------
+# Commands that disable or blind the approval system itself. Held-out eval (2026-09-24) showed
+# every LLM/Jev judge rates these as routine, so they skip the smart guardian entirely and always
+# reach a human; "always" downgrades to session so one approval can't silence the class forever.
+GUARDRAIL_PREFIX = "guardrail: "
+_GR_HERMES = r'(?:~/\.hermes/|\$\{?home\}?/\.hermes/|\$\{?hermes_home\}?/)'
+_GR_END = r'["\']?(?:\s*$|\s*[;&|)\n]|\s+[0-9]?>)'
+_GR_ENV = rf'{_GR_HERMES}\.env(?![\w.-])'
+_GR_CMD = r'(?:^|[;&|(\n`"\']|\$\()\s*(?:sudo\s+(?:-\S+\s+)*)?'
+GUARDRAIL_PATTERNS = [
+    # Clobber / delete the secrets file (append `>>` stays out: adding a key is routine).
+    (rf'(?:(?<![>0-9&])>(?![>&])\s*["\']?{_GR_ENV}|\btruncate\b[^;&|]*{_GR_ENV}|'
+     rf'\bsed\s+(?:-\S+\s+)*-\S*i[^;&|]*{_GR_ENV}|\brm\b[^;&|]*{_GR_ENV}|'
+     rf'\bmv\s+(?:-\S+\s+)*["\']?{_GR_ENV}|\btee\s+(?!-a\b|--append\b)(?:-\S+\s+)*["\']?{_GR_ENV}|'
+     rf'\b(?:cp|mv|install)\b[^;&|\n]*\s["\']?{_GR_ENV}{_GR_END})',
+     GUARDRAIL_PREFIX + "clobber Hermes secrets file (.env)"),
+    # Approval / security policy changes via the CLI.
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+(?:set|unset)\s+["\']?'
+     r'(?:approvals|security|command_allowlist|yolo|plugins\.(?:entries\.)?hermes-jev)\b',
+     GUARDRAIL_PREFIX + "change Hermes approval/security config"),
+    # Writes to config.yaml that touch approval/security keys (sed -i, redirect, tee, python dump).
+    (rf'\A(?=.*{_GR_HERMES}config\.yaml)'
+     r'(?=.*(?:\bsed\s+(?:-\S+\s+)*-\S*i|(?<![>0-9&])>(?![>&])|\btee\b|write_text|safe_dump|yaml\.dump|\.write\(|ruamel))'
+     r'(?=.*(?:\bapprovals\b|\byolo\b|\btirith|redact_secrets|command_allowlist|smart_policy|cron_mode|gate_mode|'
+     r'approval_prefilter|\bmode:\s*["\']?(?:off|yolo)\b))',
+     GUARDRAIL_PREFIX + "edit approval/security keys in Hermes config"),
+    # Stop / disable the gateway (restart stays a normal flagged command).
+    (r'\bsystemctl\s+(?:-{1,2}\S+\s+)*(?:stop|disable|mask|kill)\b[^;&|\n]*\bhermes-gateway\b|'
+     r'\b(?:pkill|killall)\b[^;&|\n]*(?:\bhermes(?![\w-])|\bhermes-gateway\b|\bgateway\b)|'
+     r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(?:stop|uninstall)\b',
+     GUARDRAIL_PREFIX + "stop or disable the Hermes gateway"),
+    # Replace or remove the crontab (anything other than listing / interactive edit).
+    (rf'{_GR_CMD}crontab(?:\s+-u\s+\S+)?(?:\s+(?!-l\b|-e\b)\S|\s*(?:$|[;&|)\n"\']))',
+     GUARDRAIL_PREFIX + "replace or remove crontab"),
+    # Loosen SSH key/dir permissions to group/other.
+    (r'\bchmod\s+(?:-\S+\s+)*(?:0?[0-7][1-7][0-7]\b|0?[0-7][0-7][1-7]\b|[ugoa]*[goa][ugoa]*[+=][rwxst]+|\+[rwx]+)'
+     r'(?:,\S+)?\s+[^;&|\n]*(?:~|\$\{?home\}?)/\.ssh\b',
+     GUARDRAIL_PREFIX + "loosen SSH key permissions"),
+]
+
+
+def is_guardrail_key(key) -> bool:
+    return isinstance(key, str) and key.startswith(GUARDRAIL_PREFIX)
+
+
 # ---- Dangerous command patterns -----------------------------------------------------------
-DANGEROUS_PATTERNS = [
+DANGEROUS_PATTERNS = GUARDRAIL_PATTERNS + [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),

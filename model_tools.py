@@ -878,7 +878,7 @@ def handle_function_call(
     enabled_tools picks execute_code's sandbox tools (default: the process-global
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
-    bridge catalog to this session's grant (None = unrestricted).
+    bridge catalog and registry dispatch to this session's grant (None = unrestricted).
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -923,6 +923,11 @@ def handle_function_call(
             return _emit(tool_error("Connectors are not available in this session."))
         if is_connector_name(function_name) and parse_connector_name(function_name) is None:
             return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
+    elif (enabled_toolsets is not None or disabled_toolsets is not None) and function_name not in _select_tool_names(
+        enabled_toolsets, disabled_toolsets, quiet_mode=True,
+    ):
+        message = f"Tool '{function_name}' is not available in this session."
+        return _emit(tool_error(message), status="blocked", error_type="ToolNotGranted", error_message=message)
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

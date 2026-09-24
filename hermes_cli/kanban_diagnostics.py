@@ -736,8 +736,25 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_respawn_guard(task, events, runs, now, cfg) -> list[Diagnostic]:
+    reason = _task_field(task, "guard_reason")
+    if not reason:
+        return []
+    count = int(_task_field(task, "guard_count", 0) or 0)
+    last_seen = int(_task_field(task, "guard_last_seen_at", 0) or 0)
+    task_id = _task_field(task, "id")
+    return [Diagnostic(
+        kind="respawn_guard", severity="warning",
+        title=f"Dispatch held: {reason} ({count} guarded ticks)",
+        detail=f"The dispatcher last held this task for {reason}; inspect the task and resolve the hold before retrying.",
+        actions=[_cli_hint("Inspect task and hold", f"hermes kanban show {task_id}")],
+        first_seen_at=last_seen, last_seen_at=last_seen, count=count,
+        data={"reason": reason, "guard_last_seen_at": last_seen},
+    )]
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
+    _rule_respawn_guard,
     _rule_hallucinated_cards,
     _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,

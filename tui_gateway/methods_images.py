@@ -8,6 +8,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 
 def _image_to_data_url(ref: str, cap: int):
@@ -52,6 +53,7 @@ def _image_to_data_url(ref: str, cap: int):
 
 
 @method("image.generate")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Params: ``prompt`` (required unless ``probe``), ``aspect_ratio``
     (landscape|square|portrait), ``probe`` (availability only), ``max_bytes`` (cap

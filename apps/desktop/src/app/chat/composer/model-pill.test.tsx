@@ -7,6 +7,7 @@ import type { ChatBarState } from '@/app/chat/composer/types'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
+import { formatModelPillLabel } from '@/lib/model-status-label'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
 import { COMPOSER_AREAS, type ComposerModelPillProvider } from './contrib'
@@ -199,6 +200,15 @@ describe('ModelPill label providers', () => {
     expect(screen.getByText('deepseek/deepseek-v4-flash · none')).toBeTruthy()
     unmount()
 
+    // Floating-composer (compact) mode renders only the chevron: providers are
+    // not consulted, so the provider text must not leak into the DOM.
+    const compactRender = render(
+      <ModelPill compact disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
+    )
+
+    expect(screen.queryByText(/· none/)).toBeNull()
+    compactRender.unmount()
+
     // Declining provider: the override text is gone, the core label is back.
     disposers.splice(0).forEach(dispose => dispose())
     register(() => null)
@@ -206,6 +216,7 @@ describe('ModelPill label providers', () => {
     render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
 
     expect(screen.queryByText(/· none/)).toBeNull()
+    expect(screen.getByText(formatModelPillLabel('deepseek/deepseek-v4-flash', { fastMode: false }))).toBeTruthy()
   })
 
   it('treats a throwing provider as declining and lets the next provider win', () => {

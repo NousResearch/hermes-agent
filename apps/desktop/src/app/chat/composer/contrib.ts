@@ -182,13 +182,18 @@ export interface ComposerModelPillProvider {
 /** The first provider-supplied pill label, or `null` for the core label. A
  *  throwing provider is treated as declining — a broken plugin can't blank the
  *  pill. */
-export function useComposerModelPillLabel(ctx: ComposerModelPillContext): null | string {
+export function useComposerModelPillLabel({ compact, model, reasoningEffort }: ComposerModelPillContext): null | string {
   const contributions = useContributions(COMPOSER_AREAS.modelPill)
 
+  // Memoised on the primitive fields (the caller builds a fresh ctx object
+  // every render) so providers run only when the registry or the pill's
+  // inputs actually change — a plugin's label() must not run per keystroke.
   return useMemo(() => {
-    if (ctx.compact) {
+    if (compact) {
       return null
     }
+
+    const ctx: ComposerModelPillContext = { compact, model, reasoningEffort }
 
     for (const contribution of contributions) {
       const provider = contribution.data as ComposerModelPillProvider | undefined
@@ -205,5 +210,5 @@ export function useComposerModelPillLabel(ctx: ComposerModelPillContext): null |
     }
 
     return null
-  }, [contributions, ctx.compact, ctx.model, ctx.reasoningEffort])
+  }, [contributions, compact, model, reasoningEffort])
 }

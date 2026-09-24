@@ -249,6 +249,29 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
         return result
 
+    def _fenced_read(self, body: str) -> "tuple[Optional[str], Optional[int], ExecuteResult]":
+        """Run BODY between two sentinel lines; return (payload segment, BODY's exit status, reply).
+
+        The transport merges the backend's own stdout with the command's, and every caller here
+        decodes the payload into file bytes, so the payload has to be delimited rather than taken
+        to be the whole reply: a remote shell announcing ``TERM`` is four base64 characters that
+        would otherwise join the payload and decode to ``b"LDL"`` at the head of it. Noise outside
+        the fence is dropped; noise inside fails base64/hex validation, because ``_new_sentinel``'s
+        underscores are outside both alphabets. The status rides in its own trailing segment so a
+        failed BODY is still told apart from an empty file. ``(None, None, reply)`` when no fenced
+        reply came back at all — the command never ran as written.
+        """
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        mark = f"echo {sentinel}"
+        result = self._exec(f"{mark}; {body}; __hb=$?; {mark}; echo $__hb")
+        segments = _split_segments(result.stdout or "", sentinel)
+        if len(segments) != 3:
+            return None, None, result
+        try:
+            return segments[1], int(_strip_terminal_fence_leaks(segments[2]).split()[0]), result
+        except (IndexError, ValueError):
+            return segments[1], None, result
+
     def _sample_file_bytes(self, path: str, length: int = 1000):
         """First ``length`` raw bytes, base64-wrapped so they survive the terminal
         transport (which decodes stdout with ``errors="replace"`` and manufactures
@@ -257,12 +280,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         callers then fall back to the text heuristic.
 
         Wrapping the sample in base64 lets the original bytes survive the transport, so binary detection can
-        happen at the byte layer where it is well-defined (#80308 and friends).
+        happen at the byte layer where it is well-defined (#80308 and friends). Fenced like the
+        byte-exact read below: this sample is the binary-admission gate in FRONT of that read, so
+        backend noise decoded into it decides whether a file is editable at all.
         """
-        result = self._exec(f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64")
-        if result.exit_code != 0:
+        payload, read_rc, _ = self._fenced_read(
+            f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64")
+        if payload is None or read_rc != 0:
             return None
-        return self._decode_base64_sample(result.stdout)
+        return self._decode_base64_sample(payload)
 
     def _read_exact_bytes(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
         """The file's bytes exactly, for the edit paths that write back every line they did not touch.
@@ -293,34 +319,31 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Fenced like the compound read probe, and for the same reason: a backend whose merged
         # stdout carries login-shell noise (a remote shell announcing TERM, a banner) would
         # otherwise have it whitespace-joined onto the payload and decoded INTO the file's bytes,
-        # which the edit paths then write back. Noise outside the fence is dropped; noise inside
-        # it fails base64 validation instead, because the sentinel is not in the base64 alphabet.
-        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
-        mark = f"echo {sentinel}"
-        result = self._exec(f"{mark}; base64 < {self._escape_shell_arg(path)}; __hb=$?; {mark}; echo $__hb")
-        segments = _split_segments(result.stdout or "", sentinel)
+        # which the edit paths then write back.
+        payload, read_rc, result = self._fenced_read(f"base64 < {self._escape_shell_arg(path)}")
         garbled = ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
-        if len(segments) != 3:
+        if payload is None:
             # No fenced reply: the command never ran as written (a wrapper ``cd`` failed, the backend
             # refused it). Hand the backend's own text back so the caller reports what it said.
             return None, result if result.exit_code != 0 else garbled
-        status = _strip_terminal_fence_leaks(segments[2]).split()
-        try:
-            read_rc = int(status[0])
-        except (IndexError, ValueError):
+        if read_rc is None:
             return None, garbled
         if read_rc == 127:  # no base64 on this backend (busybox, distroless): try the hex transport
             return self._read_exact_bytes_hex(path)
         if read_rc != 0:
             # stderr is merged into the fenced segment, so that segment holds base64's own diagnostic
             # ("No such file or directory", "Permission denied"): keep it for the caller's message.
-            return None, ExecuteResult(
-                stdout=_strip_terminal_fence_leaks(segments[1]).strip() or f"{path}: exit {read_rc}",
-                exit_code=read_rc)
-        data = self._decode_base64_sample(segments[1])
+            return None, self._failed_read(path, payload, read_rc)
+        data = self._decode_base64_sample(payload)
         if data is None:  # stray output in the payload: refuse rather than guess (never echo it back)
             return None, garbled
         return data, None
+
+    @staticmethod
+    def _failed_read(path: str, payload: str, read_rc: int) -> ExecuteResult:
+        """The backend's own diagnostic for a read that ran and failed, else a bare exit status."""
+        return ExecuteResult(stdout=_strip_terminal_fence_leaks(payload).strip() or f"{path}: exit {read_rc}",
+                             exit_code=read_rc)
 
     def _read_exact_bytes_hex(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
         """``od`` fallback for a backend without ``base64``, fenced the same way.
@@ -330,29 +353,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file" — that clobbers the file the Add was refusing to overwrite. ``od`` is POSIX and
         present in busybox; when it is missing too the caller gets a transport error, never a
         not-found."""
-        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
-        mark = f"echo {sentinel}"
-        result = self._exec(
-            f"{mark}; od -An -v -tx1 < {self._escape_shell_arg(path)}; __hb=$?; {mark}; echo $__hb")
-        segments = _split_segments(result.stdout or "", sentinel)
+        payload, read_rc, result = self._fenced_read(
+            f"od -An -v -tx1 < {self._escape_shell_arg(path)}")
         unavailable = ExecuteResult(
             stdout=f"{path}: this backend has neither base64 nor od, so a byte-exact read is unavailable",
             exit_code=1)
-        if len(segments) != 3:
+        if payload is None:
             return None, result if result.exit_code != 0 else unavailable
-        status = _strip_terminal_fence_leaks(segments[2]).split()
-        try:
-            read_rc = int(status[0])
-        except (IndexError, ValueError):
-            return None, unavailable
-        if read_rc == 127:
+        if read_rc is None or read_rc == 127:
             return None, unavailable
         if read_rc != 0:
-            return None, ExecuteResult(
-                stdout=_strip_terminal_fence_leaks(segments[1]).strip() or f"{path}: exit {read_rc}",
-                exit_code=read_rc)
+            return None, self._failed_read(path, payload, read_rc)
         try:
-            return bytes.fromhex("".join(_strip_terminal_fence_leaks(segments[1]).split())), None
+            return bytes.fromhex("".join(_strip_terminal_fence_leaks(payload).split())), None
         except ValueError:
             return None, ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read",
                                        exit_code=1)

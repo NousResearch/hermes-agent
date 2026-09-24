@@ -406,31 +406,51 @@ class TestBomHandling:
         lints = res.lint.values() if mode == "v4a" else [res.lint]
         assert [lint["status"] for lint in lints] == ["ok"], res.lint
 
-    def test_byte_exact_read_fences_backend_stdout_noise(self, tmp_path: Path, monkeypatch):
-        # The edit paths write this read straight back, so noise in the backend's merged stdout must
-        # never reach the decode. "TERM" is four base64 characters: unfenced it decodes to b"LDL" and
-        # lands at the head of the file. Remote backends announce things on connect, so the local
-        # native fast path is off here and the base64 transport is what runs.
+    @staticmethod
+    def _noisy_env():
+        """A real shell whose merged stdout carries a connect banner, as remote backends do."""
         from tools.environments.local import LocalEnvironment
-        from tools.file_operations import ShellFileOperations
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
 
-        class NoisyEnv(LocalEnvironment):
+        class Env(LocalEnvironment):
             def execute(self, command, *args, **kwargs):
                 result = super().execute(command, *args, **kwargs)
                 if isinstance(result, dict):
                     result = dict(result)
                     result["output"] = "TERM\n" + (result.get("output") or "")
                 return result
+        return Env
+
+    def test_byte_exact_read_fences_backend_stdout_noise(self, tmp_path: Path, monkeypatch):
+        # The edit paths write this read straight back, so noise in the backend's merged stdout must
+        # never reach the decode. "TERM" is four base64 characters: unfenced it decodes to b"LDL" and
+        # lands at the head of the file. Remote backends announce things on connect, so the local
+        # native fast path is off here and the base64 transport is what runs.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
 
         target = tmp_path / "conf.txt"
         original = b"HEADER\nVERSION=1\n"
         target.write_bytes(original)
-        ops = ShellFileOperations(NoisyEnv(cwd=str(tmp_path)), cwd=str(tmp_path))
+        ops = ShellFileOperations(self._noisy_env()(cwd=str(tmp_path)), cwd=str(tmp_path))
 
         assert ops._read_exact_bytes(str(target)) == (original, None)
         ops.patch_replace(str(target), "VERSION=1", "VERSION=2")
         assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+    def test_binary_admission_sample_fences_backend_stdout_noise(self, tmp_path: Path, monkeypatch):
+        # The same transport gap one step EARLIER: _sample_file_bytes is the binary-admission gate
+        # in front of the byte-exact read, so backend noise joined onto its base64 decides whether a
+        # file is editable at all and what a refusal reports about it. The sample must be the file's
+        # own leading bytes, not the backend's banner decoded into them.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+
+        target = tmp_path / "head.bin"
+        original = b"\x00\x01\x02binary payload\n"
+        target.write_bytes(original)
+        ops = ShellFileOperations(self._noisy_env()(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        assert ops._sample_file_bytes(str(target)) == original
 
     @staticmethod
     def _env_without(*missing: str):

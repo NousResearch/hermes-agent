@@ -667,12 +667,9 @@ class TestByteLayerBinaryDetection:
     # --- transport: _sample_file_bytes ------------------------------------
 
     def test_sample_decodes_base64_transport(self, mock_env):
-        import base64 as b64
         payload = ("汉字" * 400).encode("utf-8")[:1000]
-        mock_env.execute.return_value = {
-            "output": b64.b64encode(payload).decode() + "\n",
-            "returncode": 0,
-        }
+        mock_env.execute.side_effect = lambda command, **kwargs: {
+            "output": _fenced_base64_reply(command, payload), "returncode": 0}
         ops = ShellFileOperations(mock_env)
         assert ops._sample_file_bytes("/tmp/x.txt") == payload
 

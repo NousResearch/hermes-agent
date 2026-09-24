@@ -700,7 +700,8 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
         # Vercel Security Checkpoint in front of the Portal (#120602): the edge, not the token
         # endpoint, refused the request -- the refresh token is still good.
         (403, ValueError("not json"), {"x-vercel-mitigated": "deny"}, "upstream_blocked", False),
-        (429, ValueError("not json"), {"x-vercel-mitigated": "challenge"}, "upstream_blocked", False),
+        (429, ValueError("not json"), {"x-vercel-mitigated": "challenge", "Retry-After": "30"},
+         "upstream_blocked", False),
         # A 401 is the token endpoint speaking even behind the edge header: stays terminal.
         (401, ValueError("not json"), {"x-vercel-mitigated": "deny"}, "invalid_grant", True),
     ],
@@ -743,32 +744,8 @@ def test_refresh_token_exchange_error_classification(
     assert _is_terminal_nous_refresh_error(exc_info.value) is expected_terminal
     if expected_code in {"temporarily_unavailable", "upstream_blocked"}:
         assert exc_info.value.retryable is True
-
-
-def test_refresh_token_exchange_edge_block_carries_retry_after():
-    """A checkpointed 429 hands its ``Retry-After`` to the caller as the cooldown hint."""
-    from hermes_cli.auth import _refresh_access_token
-
-    class _FakeResponse:
-        status_code = 429
-        headers = {"x-vercel-mitigated": "challenge", "Retry-After": "30"}
-
-        def json(self):
-            raise ValueError("not json")
-
-    class _FakeClient:
-        def post(self, *args, **kwargs):
-            return _FakeResponse()
-
-    with pytest.raises(AuthError) as exc_info:
-        _refresh_access_token(
-            client=_FakeClient(), portal_base_url="https://portal.nousresearch.com",
-            client_id="hermes-cli", refresh_token="refresh-still-valid")
-
-    assert exc_info.value.code == "upstream_blocked"
-    assert exc_info.value.retry_after == 30.0
-    assert "edge firewall" in str(exc_info.value)
-    assert "x-vercel-mitigated=challenge" in str(exc_info.value)
+    if "Retry-After" in headers:
+        assert exc_info.value.retry_after == 30.0
 
 
 @pytest.mark.parametrize("status_code", [403, 429])

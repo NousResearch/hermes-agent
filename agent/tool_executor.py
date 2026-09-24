@@ -842,6 +842,19 @@ def _run_agent_tool_execution_middleware(
     from agent.terminal_approval_batch import bind_prepared_dispatch
     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
 
+    relay_request_block: dict[str, Any] = {}
+
+    def _relay_request_guard(_name: str, effective_args: dict[str, Any]) -> None:
+        block = _pruned_tool_arguments_block(function_name, effective_args)
+        if block is None:
+            return
+        relay_request_block["args"] = effective_args
+        relay_request_block["payload"] = block
+        # Relay request-intercept failures reject managed execution before execution
+        # intercepts. The side channel above preserves the structured Hermes refusal
+        # even if the native boundary wraps this exception.
+        raise RuntimeError(_PRUNED_TOOL_ARGUMENTS_ERROR)
+
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(
             function_name,
@@ -866,19 +879,27 @@ def _run_agent_tool_execution_middleware(
             **tool_hook_ids(agent, effective_task_id, tool_call_id),
         )
 
-    state.result, _relay_args = relay_tools.execute(
-        function_name,
-        function_args,
-        _hermes_pipeline,
-        session_id=str(getattr(agent, "session_id", "") or ""),
-        tool_call_id=tool_call_id or None,
-        metadata={
-            "task_id": effective_task_id or "",
-            "turn_id": getattr(agent, "_current_turn_id", "") or "",
-            "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
-            "tool_call_id": tool_call_id or "",
-        },
-    )
+    try:
+        state.result, _relay_args = relay_tools.execute(
+            function_name,
+            function_args,
+            _hermes_pipeline,
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            tool_call_id=tool_call_id or None,
+            metadata={
+                "task_id": effective_task_id or "",
+                "turn_id": getattr(agent, "_current_turn_id", "") or "",
+                "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                "tool_call_id": tool_call_id or "",
+            },
+            request_guard=_relay_request_guard,
+        )
+    except BaseException:
+        blocked_args = relay_request_block.get("args")
+        if isinstance(blocked_args, dict):
+            state.result = _block_pruned(blocked_args)
+            return state
+        raise
     return state
 
 

@@ -156,7 +156,7 @@ def test_nous_existing_fork_heals_only_proven_lineage(fleet):
 
     root = fleet["root"] / "auth.json"
     store = json.loads(root.read_text())
-    store["providers"]["nous"] = {"tokens": {"access_token": "at-root", "refresh_token": "rt-root"}}
+    store["providers"]["nous"] = {"tokens": {"access_token": "at-root", "refresh_token": "rt-root", "expires_at_ms": 1000}}
     store["credential_pool"]["nous"] = [
         {"id": "shared", "auth_type": "oauth", "access_token": "at-root",
          "refresh_token": "rt-root", "expires_at_ms": 1000},
@@ -164,7 +164,7 @@ def test_nous_existing_fork_heals_only_proven_lineage(fleet):
     root.write_text(json.dumps(store))
     kid = _profile(fleet, "old-fork")
     fork = json.loads(root.read_text())
-    fork["providers"]["nous"] = {"tokens": {"access_token": "at-new", "refresh_token": "rt-new"}}
+    fork["providers"]["nous"] = {"tokens": {"access_token": "at-new", "refresh_token": "rt-new", "expires_at_ms": 2000}}
     fork["credential_pool"]["nous"][0].update(
         access_token="at-new", refresh_token="rt-new", expires_at_ms=2000)
     (kid / "auth.json").write_text(json.dumps(fork))
@@ -196,10 +196,10 @@ def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
     summary = strip_cloned_single_use_oauth_grants(pdir)
     store = json.loads((pdir / "auth.json").read_text())
     assert sorted(summary["pool"]) == ["anthropic", "xai-oauth"]
-    assert summary["providers"] == ["openai-codex"]
+    assert summary["providers"] == ["openai-codex", "nous"]
     assert "xai-oauth" not in store["credential_pool"]
     assert [e["id"] for e in store["credential_pool"]["anthropic"]] == ["key"]
-    assert "openai-codex" not in store["providers"] and "nous" in store["providers"]
+    assert "openai-codex" not in store["providers"] and "nous" not in store["providers"]
 
 
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):

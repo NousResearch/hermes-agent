@@ -632,11 +632,29 @@ class GatewayInboundMixin:
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
+    @staticmethod
+    def _hm_steerable(event: "MessageEvent") -> bool:
+        """Input the running turn can absorb as a steer.
+
+        VC input arrives as MessageType.VOICE with the transcript in event.text (run_voice.py
+        builds the synthetic event); it carries no media payload of its own, so the transcript
+        is exactly what agent.steer() needs.
+
+        Args:
+            event: Inbound message (typed text, or the synthetic voice transcript).
+
+        Returns:
+            True when the running turn can absorb it as a steer.
+        """
+        if event.message_type == MessageType.TEXT:
+            return not event.media_urls and not event.media_types
+        return event.message_type == MessageType.VOICE and bool((event.text or "").strip())
+
     def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> None:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
-        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
+        if self._hm_steerable(event) and steer_text and hasattr(running_agent, "steer"):
             try:
                 steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
             except Exception as exc:

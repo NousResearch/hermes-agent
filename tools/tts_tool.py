@@ -418,12 +418,19 @@ def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
+    instructions: Optional[str] = None, provider: Optional[str] = None,
+    skip_rewrite: bool = False) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
     Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
     sequentially, then packed against the platform's upload limit: a failed combine keeps the
-    separate valid files and no over-limit artifact is ever returned."""
+    separate valid files and no over-limit artifact is ever returned.
+
+    Args:
+        skip_rewrite: Skip the LLM spoken-prose rewrite. Callers that already rewrote the
+            whole text before splitting (streaming TTS) must set this - a per-piece rewrite
+            sees only its fragment, so pieces come out with mismatched voices and phrasing.
+    """
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
@@ -433,6 +440,12 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
+    if not skip_rewrite:
+        try:  # optional LLM spoken-prose rewrite (tts.rewrite.enabled; fail-open, before chunking)
+            from tools.tts_rewrite import rewrite_text_for_speech
+            text = rewrite_text_for_speech(text)
+        except Exception as e:
+            logger.warning("TTS rewrite step skipped: %s", e)
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)

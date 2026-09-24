@@ -16,7 +16,7 @@ import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
@@ -161,14 +161,21 @@ class GatewayVoiceMixin:
             success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
-            adapter._voice_input_callback = None
+            # Only drop the callback when THIS guild has no live session - a concurrent
+            # successful join (double /voice join) must not have its callback nulled here.
+            if not getattr(adapter, "_voice_text_channels", {}).get(guild_id):
+                adapter._voice_input_callback = None
             if not any(tok in str(e).lower() for tok in ("pynacl", "nacl", "davey")):
                 return f"Failed to join voice channel: {e}"
             return ("Voice dependencies are missing (PyNaCl / davey). "
                     f"Install with: `{sys.executable} -m pip install PyNaCl`")
         if not success:
-            adapter._voice_input_callback = None
+            if not getattr(adapter, "_voice_text_channels", {}).get(guild_id):
+                adapter._voice_input_callback = None
             return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+        # Re-assert the callback: bind-before-join races with a concurrent failed join's
+        # null-out (STT kept transcribing with no submit path).
+        self._bind_voice_input_callback(adapter)
         adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
         if hasattr(adapter, "_voice_sources"):
             adapter._voice_sources[guild_id] = event.source.to_dict()
@@ -329,6 +336,12 @@ class GatewayVoiceMixin:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
         over a platform limit); legacy single-file results keep working."""
+        # Voice parity for typed/background-completion turns: when the chat is bound to a
+        # joined voice channel with streaming TTS enabled, stream the text into the VC
+        # (piece-by-piece) instead of paying a whole-file synthesis first and shipping it
+        # as a voice message. Fail-open: any miss keeps the legacy file path below.
+        if await self._stream_voice_reply(event, text):
+            return
         audio_path, actual_paths = None, []
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
@@ -360,6 +373,37 @@ class GatewayVoiceMixin:
             for p in ({audio_path, *actual_paths} - {None}):
                 with suppress(OSError):
                     os.unlink(p)
+
+    async def _stream_voice_reply(self, event: MessageEvent, text: str) -> bool:
+        """Stream ``text`` into the bound voice channel when streaming TTS is available there.
+
+        Typed/background-completion turns arrive as TEXT events, so the adapter's
+        voice-input auto-TTS gate never fires; without this they became whole-file voice
+        messages even mid-VC.
+
+        Args:
+            event: The completion event whose source selects the adapter.
+            text: Reply text to stream.
+
+        Returns:
+            True when the stream took ownership; False on any miss (unbound chat, streaming
+            disabled, no mixer, empty text) - fail-open to the legacy file path.
+        """
+        adapter: Any = self._delivery_adapter_for(event.source)
+        stream_fn = getattr(adapter, "play_reply_streaming_in_voice", None)
+        if not callable(stream_fn):
+            return False
+        try:
+            vtc = getattr(adapter, "_voice_text_channels", None)
+            is_in_vc_probe = getattr(adapter, "is_in_voice_channel", None)
+            if not (isinstance(vtc, dict) and vtc and callable(is_in_vc_probe)):
+                return False
+            for gid, text_ch_id in vtc.items():
+                if str(text_ch_id) == str(event.source.chat_id) and is_in_vc_probe(gid):
+                    return bool(await stream_fn(gid, text or ""))
+        except Exception as e:
+            logger.warning("Voice-reply streaming failed (%s); falling back to file audio", e)
+        return False
 
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""

@@ -187,16 +187,37 @@ def smooth_whitespace_for_tts(text: str) -> str:
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL | re.IGNORECASE)
 _THINK_BLOCK_OPEN_RE = re.compile(r"<think[\s>].*\Z", flags=re.DOTALL | re.IGNORECASE)
 
+# Gateway ``reasoning_style`` renderings prepended ABOVE the final answer when
+# ``show_reasoning`` is on: "code" -> a thought-balloon-emoji "Reasoning:" header
+# plus a fenced block; "subtext" (Discord default) -> a "-# " header plus "-# "
+# prefixed lines; "blockquote" -> "> **Reasoning:**" plus "> " prefixed lines.
+# The regexes below intentionally contain the literal emoji - they must match
+# Discord's rendered output byte for byte. Users want to SEE reasoning in the
+# text reply, not HEAR it (same rationale as the ```` blocks above).
+_REASONING_SUBTEXT_RE = re.compile(
+    r"^-#\s*💭\s*Reasoning.*(?:\n-#.*)*(?:\n_\.\.\. \(\d+ more lines\)_)?",
+    flags=re.MULTILINE,
+)
+_REASONING_BLOCKQUOTE_RE = re.compile(
+    r"^>\s*💭\s*\*\*Reasoning:\*\*.*(?:\n>.*)*",
+    flags=re.MULTILINE,
+)
+_REASONING_CODEFENCE_RE = re.compile(
+    r"💭\s*\*\*Reasoning:\*\*\s*```[\s\S]*?```",
+)
+
 # run_agent.py's turn-end file-mutation verifier footer (a ``⚠️ File-mutation verifier:``
 # header line plus indented ``•`` bullets) is a UI affordance, not speech.
 _VERIFIER_FOOTER_RE = re.compile(r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[ \t]+•.*)*", flags=re.MULTILINE)
 
 
 def strip_nonspoken_blocks(text: str) -> str:
-    """Remove ``<think>`` reasoning blocks and the file-mutation verifier footer."""
+    """Remove `` reasoning blocks, gateway reasoning renderings, and the
+    file-mutation verifier footer."""
     if not text:
         return ""
-    for pattern in (_THINK_BLOCK_RE, _THINK_BLOCK_OPEN_RE, _VERIFIER_FOOTER_RE):
+    for pattern in (_THINK_BLOCK_RE, _THINK_BLOCK_OPEN_RE, _VERIFIER_FOOTER_RE,
+                    _REASONING_SUBTEXT_RE, _REASONING_BLOCKQUOTE_RE, _REASONING_CODEFENCE_RE):
         text = pattern.sub(" ", text)
     return text
 

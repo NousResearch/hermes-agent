@@ -414,6 +414,29 @@ class GatewayNotificationsMixin:
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
         DECLINE returns True: that destination is not approved and must not be re-sent."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        # Voice parity with the normal reply path: when the chat is bound to a joined
+        # voice channel and streaming TTS is enabled, speak the final response in the
+        # VC. Steered turns land in this queued lane and used to bypass
+        # ``_synthesize_auto_tts`` entirely - the reply was text-only, never spoken.
+        if not text_already_delivered and deliver_media and source.platform == Platform.DISCORD:
+            try:
+                _vtc = getattr(adapter, "_voice_text_channels", None)
+                _stream_enabled = getattr(adapter, "_stream_tts_enabled", None)
+                _stream_fn = getattr(adapter, "play_reply_streaming_in_voice", None)
+                if (
+                    isinstance(_vtc, dict) and _vtc and _stream_fn
+                    and callable(_stream_enabled) and _stream_enabled()
+                ):
+                    for _gid, _tc in _vtc.items():
+                        if str(_tc) == str(source.chat_id) and adapter.is_in_voice_channel(_gid):
+                            if await _stream_fn(_gid, response):
+                                logger.info(
+                                    "Queued-lane final streamed into voice channel (guild=%d)",
+                                    _gid,
+                                )
+                            break
+            except Exception as _v_err:
+                logger.warning("Queued-lane voice streaming failed (%s); text-only delivery", _v_err)
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:

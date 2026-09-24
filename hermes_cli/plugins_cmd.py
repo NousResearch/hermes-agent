@@ -964,6 +964,15 @@ def cmd_install(
         console.print(format_scan_report(scan_result))
         return _is_tty() and _ask_yes("  Install anyway? Only continue if you trust the source. [y/N]: ")
 
+    def _is_memory_provider_install() -> bool:
+        """The install switched the live memory provider, not a plugins.enabled row.
+
+        A memory provider activates through ``memory.provider`` alone (the loader never consults
+        ``plugins.enabled``), so the post-install enable question and hint must say that.
+        """
+        from plugins.memory import _is_memory_provider_dir
+        return (entry is not None and entry.category == "memory") or _is_memory_provider_dir(target)
+
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
@@ -983,21 +992,34 @@ def cmd_install(
     _install_python_dependencies(target, console, skip=no_deps)
     _display_after_install(target, identifier)
 
+    is_memory_provider = _is_memory_provider_install()
     if enable is None:
-        enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
+        enable = _is_tty() and _ask_yes(
+            f"  Enable '{installed_name}' now? [y/N]: " if not is_memory_provider
+            else f"  Use '{installed_name}' as the memory provider now? [y/N]: ")
     if enable:
-        _set_plugin_enabled(installed_name, enable=True)
-        console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
+        if is_memory_provider:
+            _save_memory_provider(installed_name)
+            console.print(f"[green]✓[/green] [bold]{installed_name}[/bold] set as memory.provider.")
+        else:
+            _set_plugin_enabled(installed_name, enable=True)
+            console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
     else:
-        console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+        if is_memory_provider:
+            console.print(
+                f"[dim]Plugin installed but not active. "
+                f"Run `hermes memory setup` (or set memory.provider: {installed_name}) "
+                f"to make it the memory provider.[/dim]")
+        else:
+            console.print(
+                f"[dim]Plugin installed but not enabled. "
+                f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
 
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _run_capability_consent(console, installed_name, declared_caps, context="install")
-    if enable:
+    if enable and not is_memory_provider:
         # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[dim]{activation_hint(activate_plugin_now(installed_name, in_process=False))}[/dim]")

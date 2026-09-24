@@ -203,6 +203,66 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
 
 
+def test_memory_category_install_activates_via_memory_provider_not_plugins_enable(world, tmp_path, monkeypatch):
+    """A category:memory install activates through memory.provider alone — the loader never consults
+    plugins.enabled — so "Enable now?" must select the provider, and a decline must point at
+    `hermes memory setup`, never at the dead-end `plugins enable` hint."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+
+    repo = world["repo"]
+    (repo / "__init__.py").write_text("def register_memory_provider(ctx):\n    pass\n")
+    world["state"]["pin"] = _commit(repo, "memory provider contract")
+
+    def _memory_entries():
+        return [pc_cat.PluginCatalogEntry(name="cat-plugin", repo=repo.as_uri(), sha=world["state"]["pin"],
+                                          description="d", maintainer="t", category="memory")]
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: _memory_entries())
+    printed: list[str] = []
+
+    def _capture(*args, **_kwargs):
+        printed.extend(str(a) for a in args)
+
+    monkeypatch.setattr(pc, "_console",
+                        lambda: type("C", (), {"print": staticmethod(_capture)})())
+
+    pc.cmd_install("cat-plugin", enable=True)
+    assert pc._get_current_memory_provider() == "cat-plugin"
+    assert pc._get_enabled_set() == set()
+
+    pc.cmd_install("cat-plugin", enable=False, force=True)
+    assert any("hermes memory setup" in line and "cat-plugin" in line for line in printed)
+    assert not any("plugins enable cat-plugin" in line for line in printed)
+
+
+def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_path, monkeypatch):
+    """A URL (non-catalog) install whose tree satisfies the memory-provider contract gets the same
+    provider activation path — the catalog category is a shortcut, not the only trigger."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+
+    repo = tmp_path / "mem-repo"
+    repo.mkdir()
+    (repo / "plugin.yaml").write_text("name: mem-plugin\nversion: 1.0.0\ndescription: d\n")
+    (repo / "__init__.py").write_text("from plugins.memory import MemoryProvider\n")
+    sp.run(["git", "init", "-q"], cwd=repo, check=True, env=_GIT_ENV)
+    _commit(repo, "v1")
+
+    printed: list[str] = []
+
+    def _capture(*args, **_kwargs):
+        printed.extend(str(a) for a in args)
+
+    monkeypatch.setattr(pc, "_console",
+                        lambda: type("C", (), {"print": staticmethod(_capture)})())
+
+    pc.cmd_install(repo.as_uri(), enable=True)
+    assert pc._get_current_memory_provider() == "mem-plugin"
+    assert pc._get_enabled_set() == set()
+    assert any("memory.provider" in line for line in printed)
+
+
 def test_annotated_tag_pin_keeps_reviewed_trust_and_reads_as_at_pin(world, monkeypatch):
     """A pin recorded as `git rev-parse <tag>` names the TAG object; HEAD can only ever be the commit it
     points at. Trust (scan skips the caution prompt) and the at-pin check must both use the peeled commit,

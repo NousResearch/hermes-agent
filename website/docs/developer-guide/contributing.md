@@ -104,6 +104,34 @@ uv pip install -e ".[all,dev]"
 npm install
 ```
 
+### Configure contribution remotes
+
+Both setup paths above start from the canonical repository. Contributors with
+write access may keep that repository as `origin`. External contributors should
+create a fork, use the fork as `origin`, and keep the canonical repository as
+`upstream`:
+
+1. Create a fork with GitHub's **Fork** button or
+   `gh repo fork NousResearch/hermes-agent --clone=false`.
+2. From the checkout created by either setup path, configure the remotes:
+
+```bash
+git remote rename origin upstream
+git remote add origin https://github.com/YOUR_USERNAME/hermes-agent.git
+git remote -v
+```
+
+If `origin` already points to your fork, keep it and add only the missing
+`upstream` remote:
+
+```bash
+git remote add upstream https://github.com/NousResearch/hermes-agent.git
+```
+
+If GitHub returns `403` while `gh` is authenticated with a fine-grained
+personal access token, create the fork in the web UI or reauthenticate `gh`
+with OAuth using `gh auth login --web -p https`.
+
 ### Configure for Development
 
 ```bash
@@ -209,6 +237,45 @@ Hermes has terminal access. Security matters.
 - Test on all platforms if your change touches file paths or processes
 
 ## Pull Request Process
+
+### Fork, branch, and open a PR
+
+External contributors should first complete
+[Configure contribution remotes](#configure-contribution-remotes). Start each
+change from the latest upstream `main`:
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git checkout -b fix/my-description
+```
+
+Contributors with write access who kept the canonical repository as `origin`
+can replace `upstream` with `origin` in these commands.
+
+Make the change, commit it using the format described below, then push the
+branch to your fork and open the pull request against the canonical repository:
+
+```bash
+git add <changed-files>
+git commit -m "fix(scope): description"
+git push -u origin HEAD
+gh pr create --repo NousResearch/hermes-agent
+```
+
+Complete the pull request template with the reason for the change, related
+issue, concrete changes, and verification steps. CI runs automatically after
+the pull request is opened. Address review feedback with additional commits.
+
+To keep a fork current before starting the next change:
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+```
 
 ### Branch Naming
 

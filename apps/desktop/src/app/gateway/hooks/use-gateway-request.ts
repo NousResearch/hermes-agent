@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
-import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
+import { $gateway, activeGateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -47,7 +47,7 @@ export function useGatewayRequest() {
   )
 
   const ensureGatewayOpen = useCallback(async () => {
-    const existing = gatewayRef.current
+    const existing = gatewayRef.current ?? activeGateway()
 
     if (!existing) {
       return null
@@ -125,7 +125,7 @@ export function useGatewayRequest() {
 
   const requestGateway = useCallback(
     async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal) => {
-      const gateway = gatewayRef.current
+      const gateway = gatewayRef.current ?? activeGateway()
 
       if (!gateway) {
         throw new Error('Hermes gateway unavailable')

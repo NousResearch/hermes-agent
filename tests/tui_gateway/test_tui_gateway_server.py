@@ -19788,6 +19788,27 @@ class TestResolveRuntimeWithFallback:
         assert resolution.selected_model is None
         assert resolution.used_fallback is False
 
+    def test_halt_without_usable_chain_preserves_primary_error(self, monkeypatch, caplog):
+        from hermes_cli.auth import AuthError
+
+        primary = AuthError("primary unavailable")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: (_ for _ in ()).throw(primary),
+        )
+        monkeypatch.setattr(server, "_load_fallback_model", lambda: [])
+        monkeypatch.setattr(
+            "hermes_cli.fallback_config.fallback_halt_active",
+            lambda: (True, "fallback halt refusal"),
+        )
+
+        with caplog.at_level("WARNING", logger="tui_gateway.server"):
+            with pytest.raises(AuthError) as raised:
+                server._resolve_runtime_with_fallback({"requested": "openai-codex"})
+
+        assert raised.value is primary
+        assert "fallback halt refusal" not in caplog.text
+
     def test_auth_error_tries_fallback_chain(self, monkeypatch):
         """On AuthError from primary, walk fallback_providers chain."""
         from hermes_cli.auth import AuthError

@@ -113,8 +113,10 @@ def fallback_halt_active() -> tuple[bool, str]:
 
 
 
-def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
-    """Normalize fallback entries, warning for every malformed value that is dropped.
+def _parse_fallback_entries(
+    raw: Any, *, warn_empty: bool,
+) -> list[tuple[int, dict[str, Any]]]:
+    """Normalize fallback entries while retaining their source indices for diagnostics.
 
     Accepted roots are a list of entries or one dict. A bare string root is malformed (and warns)
     but is still parsed as one ``provider:model`` shorthand for compatibility. ``None`` and an
@@ -135,12 +137,12 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, str):
             return []
         candidates = [raw]
-    entries: list[dict[str, Any]] = []
+    entries: list[tuple[int, dict[str, Any]]] = []
     for index, entry in enumerate(candidates):
         if isinstance(entry, str):
             parsed = _parse_string_entry(entry)
             if parsed is not None:
-                entries.append(parsed)
+                entries.append((index, parsed))
             else:
                 logger.warning(
                     "Fallback entry[%d] is a malformed string — expected 'provider:model'; "
@@ -164,12 +166,17 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
         base_url = _normalized_base_url(entry.get("base_url"))
         if base_url:
             normalized["base_url"] = base_url
-        entries.append(normalized)
-    if candidates and not entries:
+        entries.append((index, normalized))
+    if warn_empty and candidates and not entries:
         logger.warning(
             "fallback_providers/fallback_model is configured (%d raw entries) but no entry "
             "parsed — the effective fallback chain is EMPTY.", len(candidates))
     return entries
+
+
+def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    """Normalize one source and warn when that source alone has no usable entries."""
+    return [entry for _index, entry in _parse_fallback_entries(raw, warn_empty=True)]
 
 
 def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
@@ -191,12 +198,26 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     config = config or {}
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    configured_source = False
     for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+        raw = config.get(key)
+        configured_source = configured_source or (
+            raw is not None and not (isinstance(raw, list) and not raw)
+        )
+        for index, entry in _parse_fallback_entries(raw, warn_empty=False):
             identity = _entry_identity(entry)
-            if identity not in seen:
-                seen.add(identity)
-                chain.append(entry)
+            if identity in seen:
+                logger.warning(
+                    "%s entry[%d] is a duplicate of an earlier route — entry dropped.",
+                    key, index,
+                )
+                continue
+            seen.add(identity)
+            chain.append(entry)
+    if configured_source and not chain:
+        logger.warning(
+            "Fallback configuration has no usable entries — the combined effective fallback chain is EMPTY."
+        )
     return chain
 
 

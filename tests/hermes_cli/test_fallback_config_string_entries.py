@@ -55,3 +55,38 @@ def test_every_dropped_shape_warns_without_logging_values(caplog):
     assert "Malformed fallback root (str)" in caplog.text
     assert "effective fallback chain is EMPTY" in caplog.text
     assert not any(secret in caplog.text for secret in secrets)
+
+
+def test_combined_chain_warns_for_duplicates_without_leaking_values(caplog):
+    secrets = ("FAKE_DUP_KEY_734b", "FAKE_DUP_HEADER_a981")
+    duplicate = {
+        "provider": "openrouter",
+        "model": "qwen/qwen3.6-plus",
+        "api_key": secrets[0],
+        "extra_headers": {"Authorization": secrets[1]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+        chain = get_fallback_chain({"fallback_providers": [duplicate, dict(duplicate)]})
+
+    assert chain == [duplicate]
+    assert "fallback_providers entry[1] is a duplicate" in caplog.text
+    assert "entry dropped" in caplog.text
+    assert not any(secret in caplog.text for secret in secrets)
+
+
+def test_valid_legacy_entry_prevents_false_empty_chain_warning(caplog):
+    secret = "FAKE_MALFORMED_PRIMARY_SECRET_25ad"
+    config = {
+        "fallback_providers": [{"provider": "openrouter", "api_key": secret}],
+        "fallback_model": {"provider": "nous", "model": "backup-model"},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+        assert get_fallback_chain(config) == [
+            {"provider": "nous", "model": "backup-model"}
+        ]
+
+    assert "entry[0] (dict) missing 'model'" in caplog.text
+    assert "effective fallback chain is EMPTY" not in caplog.text
+    assert secret not in caplog.text

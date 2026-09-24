@@ -38,6 +38,61 @@ def test_halt_blocks_auxiliary_main_fallback_chain(tmp_path):
     resolve_entry.assert_not_called()
 
 
+def test_halt_blocks_every_auto_route_selection_fallback(monkeypatch):
+    """An unavailable provider:auto route must not reach task, main, or discovery providers."""
+    from agent import auxiliary_client as ac
+
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.fallback_halt_active",
+        lambda: (True, "fallback halted"),
+    )
+    with (
+        patch.object(ac, "_try_main_provider_route", return_value=None),
+        patch.object(ac, "_try_configured_fallback_chain") as task_chain,
+        patch.object(ac, "_try_main_fallback_chain") as main_chain,
+        patch.object(ac, "_try_discovery_chain") as discovery_chain,
+    ):
+        assert ac._resolve_auto_route(task="compression") == (None, None, "")
+
+    task_chain.assert_not_called()
+    main_chain.assert_not_called()
+    discovery_chain.assert_not_called()
+
+
+def test_halt_blocks_every_auto_runtime_fallback_but_not_explicit_task_chain(monkeypatch):
+    """Recovery must block auto task/main/payment switching without changing explicit routing."""
+    from agent import auxiliary_client as ac
+
+    class PaymentError(Exception):
+        status_code = 402
+
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.fallback_halt_active",
+        lambda: (True, "fallback halted"),
+    )
+    route = ac._LadderRoute(
+        MagicMock(), "compression", "", False, "https://primary.invalid/v1", "auto",
+        "primary-model", None, None, None, "primary-model", None, None, 30.0,
+    )
+    with (
+        patch.object(ac, "_try_configured_fallback_chain") as task_chain,
+        patch.object(ac, "_try_main_fallback_chain") as main_chain,
+        patch.object(ac, "_try_payment_fallback") as payment_fallback,
+    ):
+        assert list(ac._ladder_provider_fallback(PaymentError("payment required"), route)) == []
+
+    task_chain.assert_not_called()
+    main_chain.assert_not_called()
+    payment_fallback.assert_not_called()
+
+    explicit_route = route._replace(resolved_provider="anthropic")
+    explicit_fallback = MagicMock()
+    explicit_fallback.return_value = (None, None, "")
+    monkeypatch.setattr(ac, "_try_configured_fallback_chain", explicit_fallback)
+    assert list(ac._ladder_provider_fallback(PaymentError("payment required"), explicit_route)) == []
+    explicit_fallback.assert_called_once()
+
+
 class TestNormalizeVisionProvider:
     """_normalize_vision_provider should resolve 'main' to actual main provider."""
 

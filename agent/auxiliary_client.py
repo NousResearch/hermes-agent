@@ -4639,6 +4639,12 @@ def _resolve_auto_route(
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
     if routed is not None:
         return routed
+    from hermes_cli.fallback_config import fallback_halt_active
+
+    halt_active, halt_message = fallback_halt_active()
+    if halt_active:
+        logger.warning("Auxiliary %s: %s", task or "call", halt_message)
+        return None, None, ""
     if task:
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
             task, main_provider or "auto", reason="main provider unavailable")
@@ -7664,6 +7670,13 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     )
     if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
+    if is_auto:
+        from hermes_cli.fallback_config import fallback_halt_active
+
+        halt_active, halt_message = fallback_halt_active()
+        if halt_active:
+            logger.warning("Auxiliary %s%s: %s", task or "call", tag, halt_message)
+            return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
         # it instead of paying another doomed RTT.

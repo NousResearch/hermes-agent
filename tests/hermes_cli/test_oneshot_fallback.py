@@ -65,6 +65,24 @@ class TestResolveRuntimeWithFallback:
         assert entry["provider"] == "openai"
         assert any(r.levelname == "WARNING" and "anthropic" in r.getMessage() for r in caplog.records)
 
+    def test_halt_without_usable_chain_preserves_primary_error(self, monkeypatch, caplog):
+        primary = AuthError("primary unavailable")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: (_ for _ in ()).throw(primary),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.fallback_config.fallback_halt_active",
+            lambda: (True, "fallback halt refusal"),
+        )
+
+        with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
+            with pytest.raises(AuthError) as raised:
+                resolve_runtime_with_fallback({}, requested="openai-codex")
+
+        assert raised.value is primary
+        assert "fallback halt refusal" not in caplog.text
+
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):
     """End-to-end: ``_run_agent`` builds AIAgent against the fallback entry's provider/model (#81209)."""

@@ -756,6 +756,10 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "Use sending only for an explicit request to contact an external person/channel/platform. "
+        "A reply in the current conversation is delivered automatically as assistant text; "
+        "never call this tool or list/check sending permissions for 'only reply', 'repeat verbatim', "
+        "or URL-preview tests. Preserve the requested text without media or explanations.\n\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"

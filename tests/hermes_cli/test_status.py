@@ -225,3 +225,29 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+def test_show_status_ignores_legacy_non_numeric_gateway_last_activity(monkeypatch, capsys, tmp_path):
+    """A malformed legacy state.db timestamp must not crash ``hermes status``."""
+    from hermes_cli import status as status_mod
+    import hermes_state
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _FakeDB:
+        def __init__(self, **_kwargs):
+            pass
+
+        def list_gateway_sessions(self, active_only=True):
+            return [{"id": "legacy", "last_active": "last_activity_at"}]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(hermes_state, "SessionDB", _FakeDB)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Active:       1 session(s)" in output
+    assert "Last activity:" not in output

@@ -160,7 +160,23 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
                f"{_DHH}/memories/ not found")
     for fname in [n for on, n in ((_memory_enabled, "MEMORY.md"), (_user_profile_enabled, "USER.md")) if on and existed]:
         if (memories_dir / fname).exists():
-            check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
+            # Existence alone is not health: MemoryStore swaps load-time strict-scan hits for a
+            # [BLOCKED:] placeholder, so a fully blocked file still reads "exists (N chars)" green (#121753).
+            from tools.memory_tool_store import MemoryStore
+            from tools.threat_patterns import scan_for_threats
+
+            entries = MemoryStore._read_file(memories_dir / fname)
+            blocked = [findings for entry in entries
+                       if entry and not entry.startswith("[BLOCKED:")
+                       and (findings := scan_for_threats(entry, scope="strict"))]
+            if blocked:
+                patterns = sorted({p for findings in blocked for p in findings})
+                check_warn(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars) "
+                           f"but {len(blocked)} of {len(entries)} entries are threat-blocked at load time",
+                           f"Entries matching the strict scan ({', '.join(patterns)}) are replaced by [BLOCKED:] "
+                           "placeholders and never reach the system prompt; use memory(action=remove) to delete them")
+            else:
+                check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
         else:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 

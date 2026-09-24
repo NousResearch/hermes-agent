@@ -1,14 +1,15 @@
 /**
  * The production coordinator wiring (createNativeTokenCoordinatorDeps) on its
- * own: the refresh strategy is decided by the portal-discovery registry only,
- * a §5 rate limit is transient, and a saved cloud connection the registry
- * lost earns one throttled rediscovery.
+ * own: routing is decided by the portal-discovery registry only, every
+ * exchange audience comes from a freshly confirmed binding, a §5 rate limit
+ * or an unreachable discovery is transient, and a saved cloud connection the
+ * registry lost is confirmed through discovery before any exchange.
  */
 
 import { expect, test } from 'vitest'
 
 import { httpStatusError } from './api-transport'
-import { cloudExchangeRateLimitedError } from './cloud-auth-errors'
+import { cloudDiscoveryUnavailableError, cloudExchangeRateLimitedError } from './cloud-auth-errors'
 import { normalizeRemoteBaseUrl } from './connection-config'
 import { createNativeAccessTokenCoordinator } from './native-access-token'
 import { type NativeTokenSet, tokenNeedsRefresh } from './native-oauth'
@@ -47,7 +48,9 @@ function wiring(overrides: Partial<DesktopNativeTokenDeps> & { registry?: Record
 
       throw httpStatusError(401, 'rejected')
     },
-    cloudAgentIdFor: url => registry.get(url) ?? null,
+    isCloudAgentUrl: url => registry.has(url),
+    // Stand-in for a fresh portal confirmation of the registry row.
+    confirmedCloudAgentId: async url => registry.get(url) ?? null,
     exchangeForAgent: async agentId => {
       calls.exchanged.push(agentId)
 
@@ -149,7 +152,7 @@ test("N3: a saved cloud connection with no registry entry rediscovers once and e
 
   const w = wiring({
     isSavedCloudConnection: url => url === AGENT_URL,
-    rediscoverCloudAgentId: async url => {
+    confirmedCloudAgentId: async url => {
       rediscovered.push(url)
 
       return 'agt_portal'
@@ -164,26 +167,82 @@ test("N3: a saved cloud connection with no registry entry rediscovers once and e
 test('N3: no rediscovery for an unsaved URL, without a live portal session, or when the portal does not list it', async () => {
   let rediscoveries = 0
 
-  const rediscoverCloudAgentId = async () => {
+  const confirmedCloudAgentId = async () => {
     rediscoveries++
 
     return null
   }
 
-  const unsaved = wiring({ isSavedCloudConnection: () => false, rediscoverCloudAgentId })
+  const unsaved = wiring({ isSavedCloudConnection: () => false, confirmedCloudAgentId })
   await expect(unsaved.coordinator.ensure(AGENT_URL)).resolves.toBeNull()
 
   const signedOut = wiring({
     isSavedCloudConnection: () => true,
-    rediscoverCloudAgentId,
+    confirmedCloudAgentId,
     hasLivePortalSession: () => false
   })
 
   await expect(signedOut.coordinator.ensure(AGENT_URL)).resolves.toBeNull()
   expect(rediscoveries).toBe(0)
 
-  const unlisted = wiring({ isSavedCloudConnection: () => true, rediscoverCloudAgentId })
+  const unlisted = wiring({ isSavedCloudConnection: () => true, confirmedCloudAgentId })
   await expect(unlisted.coordinator.ensure(AGENT_URL)).resolves.toBeNull()
   expect(rediscoveries).toBe(1)
   expect(unlisted.calls.exchanged).toEqual([])
+})
+
+// --- P1: the audience is confirmed per exchange; unconfirmed = fail closed ---
+
+test('P1: every re-exchange asks for a confirmed audience; the registry row itself is only routing', async () => {
+  const confirmed: string[] = []
+
+  const w = wiring({
+    registry: { [AGENT_URL]: 'agt_stale' },
+    confirmedCloudAgentId: async url => {
+      confirmed.push(url)
+
+      return 'agt_confirmed'
+    }
+  })
+
+  w.store.set(AGENT_URL, agentSet({ expiresAt: 1 }))
+  await expect(w.coordinator.ensure(AGENT_URL)).resolves.toBe('EXCHANGED-agt_confirmed')
+  w.store.clear()
+  await expect(w.coordinator.ensure(AGENT_URL)).resolves.toBe('EXCHANGED-agt_confirmed')
+  expect(confirmed).toEqual([AGENT_URL, AGENT_URL])
+  expect(w.calls.exchanged).toEqual(['agt_confirmed', 'agt_confirmed'])
+})
+
+test('P1: discovery unreachable → no exchange; a still-valid bearer keeps being served, an expired one fails transiently and is kept', async () => {
+  const unreachable = async () => {
+    throw cloudDiscoveryUnavailableError(new Error('portal down'))
+  }
+
+  const valid = wiring({ registry: { [AGENT_URL]: 'agt_1' }, confirmedCloudAgentId: unreachable })
+  valid.store.set(AGENT_URL, agentSet({ expiresAt: 1_020 }))
+  await expect(valid.coordinator.ensure(AGENT_URL)).resolves.toBe('AGENT-AT-1')
+  // ...but not as the answer to a 401 on that very token.
+  await expect(
+    valid.coordinator.ensure(AGENT_URL, { forceRefresh: true, rejectedAccessToken: 'AGENT-AT-1' })
+  ).rejects.toMatchObject({ cloudDiscoveryUnavailable: true })
+
+  const expired = wiring({ registry: { [AGENT_URL]: 'agt_1' }, confirmedCloudAgentId: unreachable })
+  expired.store.set(AGENT_URL, agentSet({ expiresAt: 999 }))
+  await expect(expired.coordinator.ensure(AGENT_URL)).rejects.toMatchObject({ cloudDiscoveryUnavailable: true })
+  expect(expired.store.has(AGENT_URL)).toBe(true)
+
+  const empty = wiring({ registry: { [AGENT_URL]: 'agt_1' }, confirmedCloudAgentId: unreachable })
+  await expect(empty.coordinator.ensure(AGENT_URL)).rejects.toMatchObject({ cloudDiscoveryUnavailable: true })
+
+  expect([...valid.calls.exchanged, ...expired.calls.exchanged, ...empty.calls.exchanged]).toEqual([])
+  expect([...valid.calls.cleared, ...expired.calls.cleared]).toEqual([])
+})
+
+test('P1: a throttled confirmation (null while still routed as cloud) is transient: no exchange, nothing cleared', async () => {
+  const w = wiring({ registry: { [AGENT_URL]: 'agt_1' }, confirmedCloudAgentId: async () => null })
+
+  w.store.set(AGENT_URL, agentSet({ expiresAt: 999 }))
+  await expect(w.coordinator.ensure(AGENT_URL)).rejects.toMatchObject({ cloudDiscoveryUnavailable: true })
+  expect(w.calls.exchanged).toEqual([])
+  expect(w.store.has(AGENT_URL)).toBe(true)
 })

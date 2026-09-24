@@ -6,15 +6,19 @@
  * that connection's native bearer, so every existing bearer transport (REST,
  * `POST /api/auth/ws-ticket`, downloads, media) is reused unchanged.
  *
- * Trust model: the cloud agent REGISTRY (dashboard URL → agent id) is the
- * only authority for "this URL is a Hermes Cloud agent" and for the exchange
- * audience. It is written solely from portal `/api/agents` discovery results.
+ * Trust model: portal `/api/agents` discovery is the only authority for
+ * "this URL is a Hermes Cloud agent" and for the exchange audience. Each
+ * discovery is reconciled into the persisted REGISTRY as an authoritative
+ * snapshot (dashboard URL → { agentId, confirmedAt }). A registry row is a
+ * routing hint only; an exchange needs a binding confirmed within
+ * CLOUD_BINDING_MAX_AGE_MS, or a live discovery run now (confirmedAgentIdFor).
  * Neither a renderer-supplied agent id nor any field of a stored token set
  * (which a remote gateway can write) decides whether — or for which agent —
  * the desktop exchanges the user's portal session. The coordinator's refresh
  * strategy consults the same registry (native-token-coordinator-deps.ts).
  */
 
+import { cloudDiscoveryUnavailableError, isCloudLoginRequired } from './cloud-auth-errors'
 import type { NativeTokenSet } from './native-oauth'
 import { CLOUD_AGENT_TOKEN_PROVIDER } from './portal-oauth'
 
@@ -42,30 +46,65 @@ export interface CloudAgentRegistryIo {
   writeText: (text: string) => void
 }
 
+/** One portal-sourced binding: the agent id and when discovery last confirmed it (epoch ms; 0 = never). */
+export interface CloudAgentBinding {
+  agentId: string
+  confirmedAt: number
+}
+
+interface CloudAgentRegistryState {
+  orgId: null | string
+  agents: Record<string, CloudAgentBinding>
+}
+
+const CLOUD_AGENT_REGISTRY_VERSION = 2
+
 /**
- * dashboardUrl → AgentInstance id, persisted. Not a secret (the id is the
- * public audience). Written only from portal discovery; it lets reconnect
- * after a restart (or a sign-out/sign-in) re-exchange without a round trip.
+ * dashboardUrl → { agentId, confirmedAt }, persisted. Not a secret (the id is
+ * the public audience). Written only from portal discovery snapshots.
+ *
+ * A row is a ROUTING hint ("this URL is a Hermes Cloud agent, so it renews by
+ * re-exchange"); it never authorizes an exchange on its own. The exchange
+ * audience must come from a binding confirmed by a recent portal discovery
+ * (see createCloudAgentAuth().confirmedAgentIdFor).
  *
  * The file also records the org (`org_id` of the desktop token, non-secret)
  * the entries were discovered under, so a sign-in to another org — even
  * after a sign-out left no previous token to compare — drops them. On disk:
- * `{ "orgId": string | null, "agents": { url: id } }`; a bare `{ url: id }`
- * map (earlier builds) reads as org unknown.
+ * `{ "version": 2, "orgId": string | null, "agents": { url: { agentId, confirmedAt } } }`.
+ * Earlier builds wrote `{ orgId, agents: { url: id } }` or a bare `{ url: id }`
+ * map (org unknown); both read as UNCONFIRMED rows (confirmedAt 0).
  */
 export function createCloudAgentRegistry(io: CloudAgentRegistryIo, normalizeBaseUrl: (url: string) => string) {
-  let cache: null | { orgId: null | string; agents: Record<string, string> } = null
+  let cache: CloudAgentRegistryState | null = null
 
-  const onlyStringEntries = (value: unknown): Record<string, string> =>
-    value && typeof value === 'object' && !Array.isArray(value)
-      ? Object.fromEntries(
-          Object.entries(value as Record<string, unknown>).filter(
-            (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0
-          )
-        )
-      : {}
+  const readBindings = (value: unknown): Record<string, CloudAgentBinding> => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {}
+    }
 
-  const read = () => {
+    const rows: Record<string, CloudAgentBinding> = {}
+
+    for (const [url, row] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof row === 'string' && row) {
+        // Pre-versioned formats: never confirmed.
+        rows[url] = { agentId: row, confirmedAt: 0 }
+      } else if (row && typeof row === 'object') {
+        const { agentId, confirmedAt } = row as { agentId?: unknown; confirmedAt?: unknown }
+
+        if (typeof agentId === 'string' && agentId) {
+          rows[url] = {
+            agentId,
+            confirmedAt: typeof confirmedAt === 'number' && Number.isFinite(confirmedAt) ? confirmedAt : 0
+          }
+        }
+      }
+    }
+
+    return rows
+  }
+
+  const read = (): CloudAgentRegistryState => {
     if (cache) {
       return cache
     }
@@ -75,12 +114,22 @@ export function createCloudAgentRegistry(io: CloudAgentRegistryIo, normalizeBase
       const shaped = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as any) : null
 
       if (shaped && 'agents' in shaped) {
+        const versioned = shaped.version === CLOUD_AGENT_REGISTRY_VERSION
+        const agents = readBindings(shaped.agents)
+
         cache = {
           orgId: typeof shaped.orgId === 'string' && shaped.orgId ? shaped.orgId : null,
-          agents: onlyStringEntries(shaped.agents)
+          agents: versioned
+            ? agents
+            : Object.fromEntries(Object.entries(agents).map(([url, row]) => [url, { ...row, confirmedAt: 0 }]))
         }
       } else {
-        cache = { orgId: null, agents: onlyStringEntries(shaped) }
+        cache = {
+          orgId: null,
+          agents: Object.fromEntries(
+            Object.entries(readBindings(shaped)).map(([url, row]) => [url, { ...row, confirmedAt: 0 }])
+          )
+        }
       }
     } catch {
       cache = { orgId: null, agents: {} }
@@ -89,11 +138,11 @@ export function createCloudAgentRegistry(io: CloudAgentRegistryIo, normalizeBase
     return cache
   }
 
-  const write = (next: { orgId: null | string; agents: Record<string, string> }) => {
+  const write = (next: CloudAgentRegistryState) => {
     cache = next
 
     try {
-      io.writeText(JSON.stringify(next))
+      io.writeText(JSON.stringify({ version: CLOUD_AGENT_REGISTRY_VERSION, ...next }))
     } catch {
       // Best-effort: the in-memory map still serves this run.
     }
@@ -107,22 +156,34 @@ export function createCloudAgentRegistry(io: CloudAgentRegistryIo, normalizeBase
     }
   }
 
-  return {
-    agentIdFor(url: string): null | string {
-      const key = keyFor(url)
+  const bindingFor = (url: string): CloudAgentBinding | null => {
+    const key = keyFor(url)
+    const row = key ? read().agents[key] : undefined
 
-      return key ? (read().agents[key] ?? null) : null
+    return row ? { ...row } : null
+  }
+
+  return {
+    /** Routing hint only: the last agent id discovery recorded for this URL. */
+    agentIdFor(url: string): null | string {
+      return bindingFor(url)?.agentId ?? null
     },
-    /** Throws on a URL normalizeBaseUrl rejects; callers skip such rows. */
-    remember(url: string, agentId: string): void {
-      const key = normalizeBaseUrl(url)
+    bindingFor,
+    /**
+     * Replace every row with an authoritative discovery snapshot (keys are
+     * already normalized by the caller). Returns the URLs that were dropped
+     * or re-bound to another agent.
+     */
+    replaceAll(agents: Record<string, CloudAgentBinding>): string[] {
       const current = read()
 
-      if (!key || !agentId || current.agents[key] === agentId) {
-        return
-      }
+      const changed = Object.keys(current.agents).filter(
+        url => !(url in agents) || agents[url]!.agentId !== current.agents[url]!.agentId
+      )
 
-      write({ ...current, agents: { ...current.agents, [key]: agentId } })
+      write({ ...current, agents: { ...agents } })
+
+      return changed
     },
     forget(url: string): void {
       const key = keyFor(url)
@@ -168,15 +229,26 @@ export interface CloudAgentAuthDeps {
   listStoredTokenUrls: () => string[]
   loadStoredTokens: (baseUrl: string) => NativeTokenSet | null
   clearPortalSession: () => void
-  /** Live portal discovery, for a URL the registry does not (yet) know. */
+  /** Live portal discovery: the only source of a confirmed binding. */
   discoverAgents?: () => Promise<Array<{ id: string; dashboardUrl: null | string }>>
-  /** Diagnostics; never passed a token. */
+  /** Diagnostics; never passed a token or an agent id. */
   log?: (line: string) => void
-  /** Clock for the rediscovery throttle (ms). */
+  /** Wall clock (epoch ms): binding confirmation stamps and the discovery throttle. */
   nowMs?: () => number
 }
 
-/** Background rediscovery (bootstrap of a saved connection) runs at most this often. */
+/**
+ * A binding confirmed by portal discovery within this window may authorize
+ * an exchange without another round trip; anything older (or never
+ * confirmed, e.g. migrated from an earlier build) needs a live discovery.
+ */
+export const CLOUD_BINDING_MAX_AGE_MS = 5 * 60_000
+
+/**
+ * Discoveries run by confirmedAgentIdFor happen at most this often (explicit
+ * sign-ins excepted). Every row a discovery returns is stamped then, so a
+ * throttled caller either has a fresh binding or none — never a stale one.
+ */
 export const CLOUD_REDISCOVERY_MIN_INTERVAL_MS = 60_000
 
 export const CLOUD_AGENT_NOT_FOUND_MESSAGE =
@@ -185,16 +257,39 @@ export const CLOUD_AGENT_NOT_FOUND_MESSAGE =
 export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
   const log = deps.log ?? (() => undefined)
   const nowMs = deps.nowMs ?? (() => Date.now())
-  let rediscovery: null | Promise<void> = null
-  let lastRediscoveryAt = Number.NEGATIVE_INFINITY
+  let discovery: null | Promise<void> = null
+  let lastDiscoveryAt = Number.NEGATIVE_INFINITY
+
+  const keyFor = (url: string): null | string => {
+    try {
+      return deps.normalizeBaseUrl(url) || null
+    } catch {
+      return null
+    }
+  }
+
+  const hasStoredTokens = (url: string): boolean => {
+    try {
+      return deps.loadStoredTokens(url) !== null
+    } catch {
+      // Unreadable: clear it rather than guess.
+      return true
+    }
+  }
 
   /**
-   * Record portal discovery rows; a malformed row is skipped on its own.
-   * `orgAtStart` is the registry org when the discovery was STARTED: if a
-   * sign-in to another org landed meanwhile, the rows belong to the old org
-   * and are dropped rather than filed under the new one.
+   * Reconcile a portal discovery result as an authoritative SNAPSHOT: the
+   * registry becomes exactly these rows (anything the portal no longer lists
+   * is removed, and its agent bearer cleared), each stamped confirmed now.
+   *
+   *   - `orgAtStart` is the registry org when the discovery was STARTED: if a
+   *     sign-in to another org landed meanwhile, the rows belong to the old
+   *     org and the whole result is dropped;
+   *   - a malformed / non-https row is skipped on its own;
+   *   - two or more rows that normalize to the same URL fail closed: that URL
+   *     is left out entirely, so no exchange can pick either agent for it.
    */
-  function rememberDiscovered(
+  function reconcileDiscovered(
     agents: Array<{ id: string; dashboardUrl: null | string }>,
     orgAtStart: null | string = deps.registry.orgId()
   ): void {
@@ -204,89 +299,132 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
       return
     }
 
-    for (const agent of agents) {
-      if (!agent?.id || !agent.dashboardUrl) {
+    const confirmedAt = nowMs()
+    const byUrl = new Map<string, string[]>()
+
+    for (const agent of Array.isArray(agents) ? agents : []) {
+      if (!agent?.id || typeof agent.id !== 'string' || !agent.dashboardUrl) {
         continue
       }
 
       if (!cloudDashboardUrlAllowed(agent.dashboardUrl)) {
-        log(`[cloud] skipped agent ${agent.id}: dashboard URL is not https`)
+        log('[cloud] skipped a discovered agent: dashboard URL is not https')
 
         continue
       }
 
-      try {
-        deps.registry.remember(agent.dashboardUrl, agent.id)
-      } catch {
-        log(`[cloud] skipped agent ${agent.id}: dashboard URL is not valid`)
+      const key = keyFor(agent.dashboardUrl)
+
+      if (!key) {
+        log('[cloud] skipped a discovered agent: dashboard URL is not valid')
+
+        continue
+      }
+
+      byUrl.set(key, [...(byUrl.get(key) ?? []), agent.id])
+    }
+
+    const snapshot: Record<string, CloudAgentBinding> = {}
+
+    for (const [url, ids] of byUrl) {
+      if (ids.length > 1) {
+        log(`[cloud] ${ids.length} discovered agents share one dashboard URL; refusing to bind it`)
+
+        continue
+      }
+
+      snapshot[url] = { agentId: ids[0]!, confirmedAt }
+    }
+
+    // Dropped or re-bound URLs: a bearer minted for the old binding must not
+    // keep flowing to a URL the portal no longer vouches for. The clear is
+    // epoch-fenced, so a refresh already in flight for such a URL cannot
+    // store a bearer for the old binding after it (it fails "auth changed";
+    // the retry exchanges from the fresh binding). URLs with nothing stored
+    // are left alone so their in-flight bootstrap is not disturbed.
+    for (const url of deps.registry.replaceAll(snapshot)) {
+      if (hasStoredTokens(url)) {
+        deps.clearAgentTokens(url)
       }
     }
   }
 
   /**
-   * The agent id for a dashboard URL, from the registry only. A renderer
-   * hint is accepted only when it matches; a missing or disagreeing entry
-   * earns one live discovery, after which the portal's answer wins.
+   * One live portal discovery, shared by concurrent callers. Unless
+   * `explicit`, at most one per CLOUD_REDISCOVERY_MIN_INTERVAL_MS (a
+   * throttled call resolves false without a round trip). Rejects with a
+   * transient cloudDiscoveryUnavailable error when the portal call fails.
    */
-  async function resolveAgentId(baseUrl: string, hint: null | string): Promise<string> {
-    const known = deps.registry.agentIdFor(baseUrl)
-
-    if (known && (!hint || hint === known)) {
-      return known
+  async function runDiscovery(explicit: boolean): Promise<boolean> {
+    if (!deps.discoverAgents) {
+      return false
     }
 
-    if (deps.discoverAgents) {
+    if (!discovery) {
+      if (!explicit && nowMs() - lastDiscoveryAt < CLOUD_REDISCOVERY_MIN_INTERVAL_MS) {
+        return false
+      }
+
+      lastDiscoveryAt = nowMs()
+      const discoverAgents = deps.discoverAgents
       const orgAtStart = deps.registry.orgId()
 
-      rememberDiscovered(await deps.discoverAgents(), orgAtStart)
-      const discovered = deps.registry.agentIdFor(baseUrl)
-
-      if (discovered) {
-        return discovered
-      }
-    }
-
-    throw new Error(CLOUD_AGENT_NOT_FOUND_MESSAGE)
-  }
-
-  /**
-   * Background fallback for a saved cloud connection the registry does not
-   * know (e.g. after org A→B→A cleared it): ONE live portal discovery,
-   * shared by concurrent callers and throttled across calls, then the
-   * registry — i.e. the portal's answer — decides. A discovery failure is
-   * logged and reads as "unknown" (null), never thrown.
-   */
-  async function rediscoverAgentId(dashboardUrl: string): Promise<null | string> {
-    const known = deps.registry.agentIdFor(dashboardUrl)
-
-    if (known || !deps.discoverAgents || !cloudDashboardUrlAllowed(dashboardUrl)) {
-      return known
-    }
-
-    if (!rediscovery) {
-      if (nowMs() - lastRediscoveryAt < CLOUD_REDISCOVERY_MIN_INTERVAL_MS) {
-        return null
-      }
-
-      lastRediscoveryAt = nowMs()
-      const discoverAgents = deps.discoverAgents
-
-      rediscovery = (async () => {
-        const orgAtStart = deps.registry.orgId()
-
+      discovery = (async () => {
         try {
-          rememberDiscovered(await discoverAgents(), orgAtStart)
+          reconcileDiscovered(await discoverAgents(), orgAtStart)
         } catch (error) {
-          log(`[cloud] background agent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
+          log(`[cloud] agent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
+
+          throw cloudDiscoveryUnavailableError(error)
         } finally {
-          rediscovery = null
+          discovery = null
         }
       })()
     }
 
-    await rediscovery
+    await discovery
 
-    return deps.registry.agentIdFor(dashboardUrl)
+    return true
+  }
+
+  function freshAgentIdFor(url: string): null | string {
+    const binding = deps.registry.bindingFor(url)
+
+    if (!binding || binding.confirmedAt <= 0) {
+      return null
+    }
+
+    const age = nowMs() - binding.confirmedAt
+
+    return age >= 0 && age < CLOUD_BINDING_MAX_AGE_MS ? binding.agentId : null
+  }
+
+  /**
+   * The ONLY source of an exchange audience. Returns the agent id for this
+   * dashboard URL when portal discovery confirmed it within
+   * CLOUD_BINDING_MAX_AGE_MS; otherwise runs one live discovery (shared,
+   * throttled), reconciles it, and returns the fresh binding — or null when
+   * the portal does not list the URL (or lists it ambiguously), or when the
+   * throttle blocks and nothing fresh is on record. Fails closed: a
+   * discovery failure rejects with a transient cloudDiscoveryUnavailable
+   * error and nothing is exchanged.
+   */
+  async function confirmedAgentIdFor(dashboardUrl: string, options: { explicit?: boolean } = {}) {
+    if (!cloudDashboardUrlAllowed(dashboardUrl)) {
+      return null
+    }
+
+    const fresh = freshAgentIdFor(dashboardUrl)
+
+    if (fresh) {
+      return fresh
+    }
+
+    if (!(await runDiscovery(Boolean(options.explicit)))) {
+      return null
+    }
+
+    return freshAgentIdFor(dashboardUrl)
   }
 
   /**
@@ -309,7 +447,9 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
   /**
    * Silent per-agent sign-in: exchange the desktop token for this agent's
    * bearer and store it as the connection's native token set. Refuses any
-   * URL that is not an https dashboard portal discovery returned.
+   * URL that is not an https dashboard a recent portal discovery confirmed.
+   * A renderer agent-id hint is never an audience: a hint that disagrees with
+   * the confirmed binding forces one live discovery, whose answer wins.
    */
   async function signIn(dashboardUrl: string, agentIdHint?: null | string) {
     if (!cloudDashboardUrlAllowed(dashboardUrl)) {
@@ -317,7 +457,26 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     }
 
     const baseUrl = deps.normalizeBaseUrl(dashboardUrl)
-    const agentId = await resolveAgentId(baseUrl, agentIdHint || null)
+    let agentId: null | string
+
+    try {
+      agentId = freshAgentIdFor(baseUrl)
+
+      if (!agentId || (agentIdHint && agentIdHint !== agentId)) {
+        await runDiscovery(true)
+        agentId = freshAgentIdFor(baseUrl)
+      }
+    } catch (error) {
+      // An explicit sign-in with no portal session should prompt a sign-in.
+      const cause = (error as { cause?: unknown })?.cause
+
+      throw isCloudLoginRequired(cause) ? cause : error
+    }
+
+    if (!agentId) {
+      throw new Error(CLOUD_AGENT_NOT_FOUND_MESSAGE)
+    }
+
     const tokens = await deps.exchangeForAgent(agentId)
 
     deps.storeAgentTokens(baseUrl, tokens)
@@ -372,5 +531,5 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     deps.registry.clear()
   }
 
-  return { rememberDiscovered, rediscoverAgentId, adoptSessionOrg, signIn, logout, forgetAgents }
+  return { reconcileDiscovered, confirmedAgentIdFor, adoptSessionOrg, signIn, logout, forgetAgents }
 }

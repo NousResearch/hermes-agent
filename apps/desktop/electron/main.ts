@@ -8305,7 +8305,8 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
 // The refresh strategy is per connection and decided ONLY by the Hermes Cloud
 // agent registry (written from portal discovery), never by token-set fields a
 // remote gateway can write: a registry-known dashboard renews by re-exchanging
-// the portal session (and lazily exchanges when nothing is stored yet); every
+// the portal session (and lazily exchanges when nothing is stored yet), with
+// the audience always taken from a freshly portal-confirmed binding; every
 // other gateway rotates through its own /auth/native/refresh. See
 // native-token-coordinator-deps.ts. The Hermes Cloud helpers are resolved at
 // call time; they are defined below, long before any request needs a token.
@@ -8324,11 +8325,11 @@ const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator(
           { timeoutMs: 10_000 }
         )
       ),
-    cloudAgentIdFor: baseUrl => cloudAgentRegistry.agentIdFor(baseUrl),
+    isCloudAgentUrl: baseUrl => cloudAgentRegistry.agentIdFor(baseUrl) !== null,
+    confirmedCloudAgentId: baseUrl => cloudAgentAuth.confirmedAgentIdFor(baseUrl),
     exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
     hasLivePortalSession: () => portalSession.hasLivePortalSession(),
-    isSavedCloudConnection: baseUrl => isSavedCloudConnectionUrl(baseUrl),
-    rediscoverCloudAgentId: baseUrl => cloudAgentAuth.rediscoverAgentId(baseUrl)
+    isSavedCloudConnection: baseUrl => isSavedCloudConnectionUrl(baseUrl)
   })
 )
 
@@ -8726,8 +8727,9 @@ function _cloudAgentRegistryPath() {
   return path.join(app.getPath('userData'), 'hermes-cloud-agents.json')
 }
 
-// dashboardUrl → AgentInstance id, so a cloud connection can re-exchange
-// after a restart (or a sign-out/sign-in) without a discovery round trip.
+// dashboardUrl → { AgentInstance id, confirmedAt }: routes a saved cloud
+// connection to re-exchange; the exchange audience itself always comes from a
+// binding portal discovery confirmed within the last few minutes.
 const cloudAgentRegistry = createCloudAgentRegistry(
   {
     readText: () => fs.readFileSync(_cloudAgentRegistryPath(), 'utf8'),
@@ -8763,13 +8765,13 @@ const cloudAgentAuth = createCloudAgentAuth({
 // Discover the hosted (Hermes Cloud) agents the signed-in user can see, in
 // the org the desktop token is pinned to (switching team = signing in again
 // and choosing it in the browser). Throws a needsCloudLogin-tagged error when
-// there is no usable portal session. Only this portal result feeds the agent
-// registry that decides which URLs may receive exchanged agent bearers.
+// there is no usable portal session. Only portal results feed the agent
+// registry, each as an authoritative snapshot (unlisted URLs are dropped).
 async function discoverCloudAgents() {
   const orgAtStart = cloudAgentRegistry.orgId()
   const result = await discoverCloudAgentsRaw()
 
-  cloudAgentAuth.rememberDiscovered(result.agents, orgAtStart)
+  cloudAgentAuth.reconcileDiscovered(result.agents, orgAtStart)
 
   return result
 }

@@ -28,6 +28,14 @@ export const CLOUD_AGENT_ACCESS_LOST_MESSAGE =
 export const CLOUD_EXCHANGE_RATE_LIMITED_MESSAGE = (retryAfterSeconds: number) =>
   `Hermes Cloud is rate-limiting agent sign-ins. Try again in ${Math.max(1, Math.ceil(retryAfterSeconds))} seconds.`
 
+/**
+ * Portal discovery could not confirm which agent a dashboard URL belongs to
+ * (network / portal failure). Transient: never a sign-out or access-lost
+ * verdict, and nothing is exchanged from an unconfirmed binding meanwhile.
+ */
+export const CLOUD_DISCOVERY_UNAVAILABLE_MESSAGE =
+  'Could not reach Hermes Cloud to confirm this agent. Try again in a moment.'
+
 export type CloudLoginRequiredError = Error & { needsCloudLogin: true; cause?: unknown }
 export type CloudAgentAccessLostError = Error & { cloudAgentAccessLost: true; cause?: unknown }
 
@@ -113,5 +121,26 @@ export function isCloudLoginRequiredErrorLike(error: unknown): boolean {
 export function isCloudAgentAccessLost(error: unknown): boolean {
   return Boolean(
     error && typeof error === 'object' && (error as { cloudAgentAccessLost?: unknown }).cloudAgentAccessLost === true
+  )
+}
+
+export type CloudDiscoveryUnavailableError = Error & { cloudDiscoveryUnavailable: true; cause?: unknown }
+
+export function cloudDiscoveryUnavailableError(cause?: unknown): CloudDiscoveryUnavailableError {
+  const error = new Error(CLOUD_DISCOVERY_UNAVAILABLE_MESSAGE) as CloudDiscoveryUnavailableError
+  error.cloudDiscoveryUnavailable = true
+
+  if (cause !== undefined) {
+    error.cause = cause
+  }
+
+  return error
+}
+
+export function isCloudDiscoveryUnavailable(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    (error as { cloudDiscoveryUnavailable?: unknown }).cloudDiscoveryUnavailable === true
   )
 }

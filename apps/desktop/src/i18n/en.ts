@@ -470,6 +470,9 @@ export const en: Translations = {
     backendOutOfDateTitle: 'Backend out of date',
     backendOutOfDateMessage:
       'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
+    backendCodeSkewTitle: 'Backend restart required',
+    backendCodeSkewMessage: 'This backend is running pre-update code. Restart it to load the current version.',
+    restartBackend: 'Restart backend',
     installMethodUnsupportedTitle: 'Unsupported install method',
     updateHermes: 'Update Hermes',
     updateReadyTitle: 'Update ready',

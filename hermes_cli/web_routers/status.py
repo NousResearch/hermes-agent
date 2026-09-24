@@ -517,6 +517,14 @@ async def get_status(profile: Optional[str] = None):
             "restart_drain_timeout": restart_drain_timeout, "active_sessions": active_sessions,
             **auth, "nous_session_valid": _nous_session_validity()}
 
+        # The desktop polls this public status surface.  Keep the detector
+        # read-only: an external ``hermes update`` must not restart a
+        # Desktop-owned backend out from under Electron's supervisor.
+        from gateway.code_skew import code_skew_status
+        code_skew = code_skew_status()
+        if code_skew is not None:
+            status["code_skew"] = code_skew
+
         # Stable per-install identity (first call may touch disk). Omitted (not null) when
         # unpersistable so older-client behavior and the no-identity fallback stay identical.
         install_id = await run_in_threadpool(get_install_id)

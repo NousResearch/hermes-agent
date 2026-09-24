@@ -4,6 +4,7 @@ import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
+import { reportBackendCodeSkew } from '@/store/updates'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -107,6 +108,7 @@ export function useStatusSnapshot(
 
         if (statusResult.status === 'fulfilled') {
           const next = statusResult.value
+          reportBackendCodeSkew(next.code_skew)
           // Preserve reference identity on a no-op: the 60s tick re-reads a
           // usually-unchanged snapshot, and a fresh object for the same content
           // re-renders every consumer for nothing.

@@ -21,6 +21,7 @@ import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connec
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { requestBackendRestart } from '@/store/recovery-requests'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
@@ -107,6 +108,9 @@ function isUpdateToastSnoozed(): boolean {
 //     `<kind>.request` notifications would never render a card.
 export const REQUIRED_BACKEND_CONTRACT = 8
 const SKEW_TOAST_ID = 'backend-contract-skew'
+const CODE_SKEW_TOAST_ID = 'backend-code-skew'
+const CODE_SKEW_TOAST_SNOOZE_KEY = 'hermes:backend-code-skew-toast-snooze-until'
+const CODE_SKEW_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
 // right after they closed it. Mirror the update toast: persist a cooldown when
@@ -121,6 +125,16 @@ function snoozeSkewToast(): void {
 
 function isSkewToastSnoozed(): boolean {
   const until = Number(storedString(SKEW_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
+
+function snoozeCodeSkewToast(): void {
+  persistString(CODE_SKEW_TOAST_SNOOZE_KEY, String(Date.now() + CODE_SKEW_TOAST_COOLDOWN_MS))
+}
+
+function isCodeSkewToastSnoozed(): boolean {
+  const until = Number(storedString(CODE_SKEW_TOAST_SNOOZE_KEY) || 0)
 
   return Number.isFinite(until) && Date.now() < until
 }
@@ -180,6 +194,56 @@ export function reportBackendContract(contract: number | undefined): void {
     message: translateNow('notifications.backendOutOfDateMessage'),
     onDismiss: () => snoozeSkewToast(),
     title: translateNow('notifications.backendOutOfDateTitle')
+  })
+}
+
+/**
+ * Surface a backend-confirmed checkout drift before a guarded endpoint needs
+ * to fail. The action intentionally goes through the existing recovery
+ * request, whose owner preserves the local-vs-remote restart policy.
+ */
+export function reportBackendCodeSkew(codeSkew: unknown): void {
+  const skew = codeSkew as { boot_rev?: unknown; disk_rev?: unknown } | null
+  if (
+    !skew ||
+    typeof skew.boot_rev !== 'string' ||
+    !skew.boot_rev ||
+    typeof skew.disk_rev !== 'string' ||
+    !skew.disk_rev ||
+    skew.boot_rev === skew.disk_rev
+  ) {
+    dismissNotification(CODE_SKEW_TOAST_ID)
+    persistString(CODE_SKEW_TOAST_SNOOZE_KEY, null)
+
+    return
+  }
+
+  // Only Electron owns a local backend process. A remote checkout can report
+  // the same diagnostic, but reconnecting its socket cannot load new code.
+  if ($connection.get()?.mode === 'remote') {
+    dismissNotification(CODE_SKEW_TOAST_ID)
+
+    return
+  }
+
+  if (isCodeSkewToastSnoozed()) {
+    return
+  }
+
+  notify({
+    action: {
+      label: translateNow('notifications.restartBackend'),
+      onClick: () => {
+        snoozeCodeSkewToast()
+        requestBackendRestart()
+      }
+    },
+    durationMs: 0,
+    id: CODE_SKEW_TOAST_ID,
+    kind: 'warning',
+    message: translateNow('notifications.backendCodeSkewMessage'),
+    onDismiss: snoozeCodeSkewToast,
+    title: translateNow('notifications.backendCodeSkewTitle')
   })
 }
 

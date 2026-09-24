@@ -1326,6 +1326,8 @@ export interface StatusResponse {
   active_sessions: number
   config_path: string
   config_version: number
+  /** Present only when the running backend booted from a different revision. */
+  code_skew?: { boot_rev: string; disk_rev: string }
   env_path: string
   gateway_exit_reason: string | null
   gateway_health_url: string | null

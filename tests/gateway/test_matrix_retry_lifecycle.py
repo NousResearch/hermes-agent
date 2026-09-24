@@ -58,6 +58,26 @@ async def test_429_retries_only_exact_replay_safe_put_and_honors_delay(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_429_retry_freezes_mutable_body_before_first_attempt(monkeypatch):
+    body = bytearray(b'{"body":"original"}')
+    calls = []
+    def request(method, url, **kwargs):
+        calls.append((str(url), kwargs["data"]))
+        return Response(429) if len(calls) == 1 else Response(200)
+    async def sleep(_delay):
+        body[:] = b'{"body":"modified"}'
+    monkeypatch.setattr(matrix.asyncio, "sleep", sleep)
+    api = matrix._create_matrix_http_api(
+        base_url="https://example.invalid", token="",
+        client_session=SimpleNamespace(request=request), default_retry_count=0)
+    url = SimpleNamespace(raw_path="/_matrix/client/v3/rooms/!r/send/m.room.message/txn")
+    result, _response = await api._send(Method.PUT, url, body, None, {})
+    assert result == {"event_id": "$ok"}
+    assert calls == [(str(url), b'{"body":"original"}')] * 2
+    assert all(type(payload) is bytes for _path, payload in calls)
+
+
+@pytest.mark.asyncio
 async def test_429_retry_is_bounded_and_ambiguous_timeout_has_no_encrypted_fallback(monkeypatch):
     calls = []
     def request(*args, **kwargs):
@@ -160,7 +180,7 @@ async def test_connect_disconnect_serialized_and_cancelled_connect_settles(monke
 async def test_partial_session_closed_once_on_constructor_failure(monkeypatch):
     adapter = object.__new__(matrix.MatrixAdapter)
     adapter._lifecycle_lock = asyncio.Lock()
-    adapter._client = adapter._crypto_db = adapter._sync_task = None
+    adapter._client = adapter._crypto_db = adapter._sync_task = adapter._opening_session = None
     adapter._invite_join_tasks = {}
     adapter._reaction_redaction_tasks = set()
     adapter._homeserver = "https://example.invalid"
@@ -381,3 +401,45 @@ async def test_disconnect_reports_both_failures_and_retains_both_owners():
     assert [str(exc) for exc in raised.value.exceptions] == ["stop failed", "close failed"]
     assert calls == ["stop", "close"]
     assert adapter._crypto_db is db and adapter._client is client
+
+
+@pytest.mark.asyncio
+async def test_reconnect_settles_or_retains_orphaned_crypto_before_new_session(monkeypatch):
+    adapter = object.__new__(matrix.MatrixAdapter)
+    adapter._lifecycle_lock = asyncio.Lock()
+    adapter._sync_task = adapter._opening_session = None
+    adapter._invite_join_tasks = {}
+    adapter._reaction_redaction_tasks = set()
+    adapter._homeserver = "https://example.invalid"
+    adapter._proxy_url = None
+    adapter._resolve_store_dir = lambda: SimpleNamespace(mkdir=lambda **kwargs: None)
+    events = []
+    class CryptoDB:
+        async def stop(self):
+            events.append("stop")
+            if events.count("stop") <= 3:
+                raise RuntimeError("stop still failed")
+    db = CryptoDB()
+    adapter._crypto_db = db
+    class Session:
+        async def close(self):
+            events.append("close")
+    adapter._client = SimpleNamespace(api=SimpleNamespace(session=Session()))
+    def create_session(_proxy):
+        events.append("new session")
+        raise RuntimeError("session sentinel")
+    monkeypatch.setattr(matrix, "_create_matrix_session", create_session)
+    with pytest.raises(RuntimeError, match="stop still failed"):
+        await adapter.disconnect()
+    assert events == ["stop", "close"]
+    assert adapter._crypto_db is db and adapter._client is None
+    # The next connect and its defensive cleanup both fail to stop: neither may allocate.
+    with pytest.raises(RuntimeError, match="stop still failed"):
+        await adapter.connect(is_reconnect=True)
+    assert events == ["stop", "close", "stop", "stop"]
+    assert adapter._crypto_db is db and adapter._client is None
+    # Once stop can settle, the next connect may allocate, never before release.
+    with pytest.raises(RuntimeError, match="session sentinel"):
+        await adapter.connect(is_reconnect=True)
+    assert events == ["stop", "close", "stop", "stop", "stop", "new session"]
+    assert adapter._crypto_db is None

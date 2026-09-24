@@ -493,6 +493,11 @@ def _create_matrix_http_api(**kwargs):
             if not self._replay_safe(method, url, content):
                 return await super()._send(method, url, content, query_params, headers)
 
+            # The caller may still own a bytearray. Pin the body before the first
+            # attempt so a 429 cannot reuse the transaction ID with changed bytes.
+            if isinstance(content, bytearray):
+                content = bytes(content)
+
             async def once():
                 async with self.session.request(
                     str(method), url, data=content, params=query_params, headers=headers
@@ -1442,7 +1447,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _connect_impl(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
-        if self._client is not None:
+        # A failed crypto stop can leave an owned DB after its session closed.
+        # Do not create another session (or overwrite _crypto_db) until every
+        # previous owner has settled; a second stop failure fails closed.
+        if self._client is not None or self._opening_session is not None or self._crypto_db is not None:
             await self._disconnect_impl()
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore

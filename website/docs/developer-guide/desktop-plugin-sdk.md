@@ -870,6 +870,38 @@ For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) an
 
 ## Settings, enable state, and storage
 
+### Optional settings inside the Plugins row
+
+Register `PLUGIN_SETTINGS_AREA` with `data: { render }` to place plugin-owned
+content beneath its existing **Capabilities → Plugins** package description.
+Only contributions from that exact loaded Desktop plugin are rendered; disabling
+or unloading it removes the contribution without changing the enable controls.
+
+The renderer receives `{ scope: { connectionId, profile } }` for the selected
+Capabilities backend, not the focused conversation. Pass that scope to `ctx.rest`.
+The host freezes the scope and remounts the contribution when it changes; the
+consumer must still ignore late asynchronous results and bind confirmations to
+what was reviewed. A remount cannot undo a write already sent. The host withholds
+the section when no concrete connection/profile selection is available rather
+than guessing a local backend. A named profile may also use the REST transport's
+already-present registry connection tag. Untagged legacy aliases and unnamed
+primary scopes are not converted to guessed registry pins.
+
+```javascript
+import { PLUGIN_SETTINGS_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'settings',
+  area: PLUGIN_SETTINGS_AREA,
+  data: { render: ({ scope }) => jsx(Settings, { ctx, scope }) }
+})
+```
+
+Use the existing UI primitives and keep expensive reads behind an explicit open
+or action, e.g. a collapsed storage or maintenance section.
+This is a contribution surface, not a generic configuration editor or permission
+to install, update or delete data without the corresponding review.
+
 Every plugin — enabled or not — inventories in **Capabilities → Plugins**, where the
 user toggles it live (no app restart), reveals its folder, or rescans. The user's
 choice is remembered:

@@ -685,6 +685,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     build. Row states ``missing``/``null``/``empty``/``present`` are logged and DB
     failures log at WARNING so silent prefix-cache misses show in ``agent.log``."""
     stored_prompt = None
+    if conversation_history:
+        # Supplied history is continuation even when a library caller requested
+        # a newly generated ID. This is lifecycle metadata, never prompt text.
+        captured = getattr(agent, "_plugin_session_identity", None)
+        if isinstance(captured, dict):
+            captured["session_origin"] = "resume"
     stored_state = "missing"
     session_row = None
     if conversation_history and agent._session_db:
@@ -789,8 +795,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     if not getattr(agent, "_persist_disabled", False):
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            from hermes_cli.session_hook_context import agent_session_identity
             _invoke_hook(
-                "on_session_start", session_id=agent.session_id, model=agent.model,
+                "on_session_start", **agent_session_identity(agent), model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
         except Exception as exc:

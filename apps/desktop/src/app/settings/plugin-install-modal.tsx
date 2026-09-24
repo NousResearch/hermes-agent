@@ -75,6 +75,7 @@ export function PluginInstallModal() {
   const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  const [installedPlugin, setInstalledPlugin] = useState<string | null>(null)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
@@ -88,6 +89,7 @@ export function PluginInstallModal() {
     setPinRef('')
     setInstalling(false)
     setInstallError(null)
+    setInstalledPlugin(null)
   }, [])
 
   const applyLegacyHint = useCallback((payload: PluginInstallRequest, detected: ProbeResult) => {
@@ -261,6 +263,12 @@ export function PluginInstallModal() {
             notify({ kind: 'warning', message: warning })
           }
         } else {
+          if (result.installed) {
+            agentInstalled = true
+            setInstalledPlugin(result.pluginName ?? request.repo)
+            errors.push(t.settings.plugins.agent.setupInstalled)
+          }
+
           errors.push(result.error || m.agentFailed)
         }
       }
@@ -312,7 +320,7 @@ export function PluginInstallModal() {
 
         closePluginInstallRequest()
         // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
+        navigate('/capabilities?tab=plugins')
 
         return
       }
@@ -563,6 +571,18 @@ export function PluginInstallModal() {
         )}
 
         <DialogFooter>
+          {installedPlugin && (
+            <Button
+              disabled={busy}
+              onClick={() => {
+                handleClose()
+                navigate(`/capabilities?tab=plugins&plugin=${encodeURIComponent(installedPlugin)}`)
+              }}
+              variant="secondary"
+            >
+              {t.settings.plugins.agent.reviewSetup}
+            </Button>
+          )}
           <Button disabled={busy} onClick={handleClose} variant="outline">
             {t.common.cancel}
           </Button>
@@ -572,7 +592,7 @@ export function PluginInstallModal() {
             </Button>
           ) : (
             <Button
-              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid}
+              disabled={busy || installedPlugin !== null || phase !== 'ready' || !probe?.ok || pinRefInvalid}
               onClick={() => void handleInstall()}
             >
               {installing ? m.installing : m.install}

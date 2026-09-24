@@ -549,6 +549,7 @@ def _lock_in_submit_turn(
             if err is not None:
                 return err, {}
         session["running"] = True
+        session["_running_prompt_generation"] = int(session.get("_queued_prompt_generation", 0))
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:

@@ -1121,12 +1121,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 logger.debug("Could not resolve environment temp dir: %s", exc)
         return tempfile.gettempdir()
 
-    def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> List[str]:
+    def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str, execution_context=None) -> List[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
         sourced, user tools on PATH), wrapped in a transient systemd scope when we are
         the supervised gateway (own cgroup: an OOM kills only the worker, not the
         gateway and its messaging control plane)."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
+        if execution_context is not None and execution_context.context.command_prefix:
+            # The explicit owner wrapper supplies lifetime containment. Do not
+            # move its descendants into an unrelated systemd scope afterwards.
+            return execution_context.wrap_argv(argv)
         # This applies to both pipe mode and the PTY path above. See #70716.
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         if in_supervised_gateway and _systemd_run_user_scope_available():
@@ -1141,12 +1145,17 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return argv
 
     @staticmethod
-    def _spawn_env(env_vars: dict) -> dict:
+    def _spawn_env(env_vars: dict, execution_context=None) -> dict:
         """Sanitized child env; PYTHONUNBUFFERED so tqdm/datasets-style buffering
         doesn't hide progress from process(action="poll")."""
-        env = _sanitize_subprocess_env(os.environ, env_vars)
-        env["PYTHONUNBUFFERED"] = "1"
-        return env
+        if execution_context is None:
+            env = _sanitize_subprocess_env(os.environ, env_vars)
+        else:
+            env = _sanitize_subprocess_env(execution_context.apply_env(dict(os.environ, **(env_vars or {}))))
+        if execution_context is None or "PYTHONUNBUFFERED" not in execution_context.context.env_set:
+            env["PYTHONUNBUFFERED"] = "1"
+        from tools.environments.local import _finalize_execution_env
+        return _finalize_execution_env(env, execution_context)
 
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
         """Register before the reader can publish completion, even for an exited child."""
@@ -1164,7 +1173,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             self._running[session.id] = session
         self._write_checkpoint()
 
-    def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
+    def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict, execution_context=None) -> ProcessSession:
         """PTY spawn for interactive CLI tools (Codex, Claude Code, REPLs).
         Raises ImportError when no PTY backend is installed and re-raises any spawn
         failure; ``spawn_local`` falls back to pipe mode in both cases."""
@@ -1172,15 +1181,24 @@ class ProcessRegistry(ProcessCheckpointMixin):
             from winpty import PtyProcess as _PtyProcessCls
         else:
             from ptyprocess import PtyProcess as _PtyProcessCls
-        pty_argv = self._scope_argv(session, safe_command, session.id, "PTY")
-        pty_env = self._spawn_env(env_vars)
+        pty_argv = self._scope_argv(session, safe_command, session.id, "PTY",
+                                    **({"execution_context": execution_context} if execution_context else {}))
+        pty_env = self._spawn_env(env_vars, execution_context)
         if session.systemd_unit:
             pty_env = systemd_user_bus_env(pty_env)
         # A PTY is a real TTY, so pager-happy tools (git log/diff, man) WILL page and
         # hang waiting for `q` — default them to cat, honoring any pager the user set.
         pty_env.setdefault("GIT_PAGER", "cat")
         pty_env.setdefault("PAGER", "cat")
-        pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
+        if execution_context is not None:
+            from tools.environments.local import _finalize_execution_env
+            pty_env = _finalize_execution_env(pty_env, execution_context)
+        launcher_cwd = (_resolve_safe_cwd(os.getcwd())
+                        if execution_context is not None and execution_context.context.command_prefix else session.cwd)
+        if execution_context is not None:
+            from tools.terminal_targets import check_terminal_operation
+            check_terminal_operation(execution_context)
+        pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=launcher_cwd, env=pty_env, dimensions=(30, 120))
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session._pty = pty_proc
@@ -1189,7 +1207,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "", execution_context=None) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
@@ -1200,11 +1218,24 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        if execution_context is not None:
+            # Login shells may reintroduce host display variables from rc files.
+            # Reassert only the routing keys, using the already-sanitized env.
+            from tools.environments.local import _prepend_execution_routing
+            safe_env = self._spawn_env(env_vars, execution_context)
+            if execution_context.context.command_prefix and cwd:
+                # cwd is on the routed side. Never validate it against the host
+                # or let a failed cd run the command in the guest's HOME.
+                safe_command = f"cd -- {shlex.quote(cwd)} && {{ :\n{safe_command}\n}}"
+            safe_command = _prepend_execution_routing(safe_command, safe_env, execution_context)
+        routed = execution_context is not None and execution_context.context.command_prefix
+        launcher_cwd = _resolve_safe_cwd(os.getcwd() if routed else (cwd or os.getcwd()))
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd if routed else launcher_cwd)
         pty_scope_attempted = False
         if use_pty:
             try:
-                return self._spawn_local_pty(session, safe_command, env_vars)
+                return self._spawn_local_pty(session, safe_command, env_vars,
+                                             **({"execution_context": execution_context} if execution_context else {}))
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
@@ -1220,17 +1251,24 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # Pipe path (non-PTY or PTY fallback).
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
-        spawn_env = self._spawn_env(env_vars)
+        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local",
+                                      **({"execution_context": execution_context} if execution_context else {}))
+        spawn_env = self._spawn_env(env_vars, execution_context)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
+        if execution_context is not None:
+            from tools.environments.local import _finalize_execution_env
+            spawn_env = _finalize_execution_env(spawn_env, execution_context)
         # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
         # give the worker a new session, so from an interactive TUI the worker would
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
+        if execution_context is not None:
+            from tools.terminal_targets import check_terminal_operation
+            check_terminal_operation(execution_context)
         proc = subprocess.Popen(
-            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
+            spawn_argv, text=True, cwd=launcher_cwd, env=spawn_env, encoding="utf-8",
             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True, **_popen_kwargs)
         session.process = proc

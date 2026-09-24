@@ -430,9 +430,10 @@ class CLISessionMixin:
         Non-blocking; errors swallowed. Safe from shutdown, /new, /reset."""
         with contextlib.suppress(Exception):
             from hermes_cli.lifecycle import finalize_session, invoke_hook
+            from hermes_cli.session_hook_context import agent_session_identity
 
             context = {
-                "session_id": self.agent.session_id if self.agent else None,
+                **agent_session_identity(self.agent),
                 "platform": getattr(self, "platform", None) or "cli",
                 "reason": "new_session" if event_type == "on_session_reset" else "session_boundary"}
             if event_type == "on_session_finalize":
@@ -522,6 +523,12 @@ class CLISessionMixin:
 
         self.session_start = datetime.now()
         self.session_id = new_session_id(self.session_start)
+        from hermes_cli.session_hook_context import capture_session_identity
+        previous_identity = getattr(self, "_plugin_session_identity", None)
+        self._plugin_session_identity = capture_session_identity(
+            session_id=self.session_id, stored_session_id=self.session_id,
+            source="cli", surface="cli", session_origin="fresh",
+            hermes_home=previous_identity.get("hermes_home") if isinstance(previous_identity, dict) else None)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
@@ -545,6 +552,7 @@ class CLISessionMixin:
             self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
+            self.agent._plugin_session_identity = dict(self._plugin_session_identity)
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):

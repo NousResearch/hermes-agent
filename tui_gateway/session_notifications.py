@@ -140,9 +140,10 @@ _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
 
 
-def _notif_release_turn(session: dict) -> None:
+def _notif_release_turn(session: dict, *, queued_prompt_generation: int | None = None) -> None:
+    from .prompt_turn import _release_prompt_claim_locked
     with session["history_lock"]:
-        session["running"] = False
+        _release_prompt_claim_locked(session, queued_prompt_generation)
 
 
 def _notif_claim_turn(session: dict) -> bool:
@@ -150,6 +151,7 @@ def _notif_claim_turn(session: dict) -> bool:
     with _session_turn_admission(session) as admitted:
         if not admitted or session.get("running"):
             return False
+        session["_running_prompt_generation"] = int(session.get("_queued_prompt_generation", 0))
         session["running"] = True
         return True
 
@@ -676,6 +678,75 @@ def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> None
     session["_bot_poll_warn_suppressed"] = 0
 
 
+def _poll_plugin_idle_once(sid: str, session: dict) -> bool:
+    """Offer plugins a synchronous, owner-pinned idle turn admission capability.
+
+    No queue or delivery state lives here; a plugin owns any durable receipt it
+    continues from. A callback must not retain submit beyond this hook.
+    """
+    from concurrent.futures import CancelledError
+    from hermes_cli.plugins import invoke_hook
+    from hermes_cli.session_hook_context import hook_profile_scope
+    started = False
+    open_boundary = True
+    caller_thread = threading.get_ident()
+    pinned_transport = session.get("transport")
+
+    def identity_now():
+        return {**_session_hook_identity(session), "source": _session_source(session),
+                "hermes_home": _session_home(session)}
+
+    identity = identity_now()
+
+    def eligible():
+        lease = session.get("active_session_lease")
+        return (not any(session.get(k) for k in (
+            "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
+            "_auto_continue_scheduled")) and session.get("agent") is not None
+            and not (lease is not None and getattr(lease, "released", False)))
+
+    with session["history_lock"]:
+        if not eligible():
+            return False
+
+    def submit(message, *, terminal_callback):
+        nonlocal started
+        with _session_turn_admission(session) as admitted:
+            if (not admitted or not open_boundary or started or not eligible()
+                    or threading.get_ident() != caller_thread
+                    or session.get("transport") is not pinned_transport
+                    or identity_now() != identity):
+                return False
+            queued_generation = int(session.get("_queued_prompt_generation", 0))
+            session["running"] = True
+            session["_running_prompt_generation"] = queued_generation
+        try:
+            started = _run_prompt_submit(None, sid, session, message, image_paths=[],
+                                         queued_prompt_generation=queued_generation,
+                                         terminal_callback=terminal_callback)
+        except Exception:
+            _notif_release_turn(session, queued_prompt_generation=queued_generation)
+            raise
+        if not started:
+            _notif_release_turn(session, queued_prompt_generation=queued_generation)
+            with session["history_lock"]:
+                cancelled = int(session.get("_queued_prompt_generation", 0)) != queued_generation
+            if cancelled:
+                # An explicit Stop is terminal, not a transient busy deferral.
+                raise CancelledError("Plugin continuation cancelled before native admission")
+        return started
+
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return False
+    try:
+        with hook_profile_scope(_session_home(session)):
+            invoke_hook("on_session_idle", **identity, submit=submit)
+    finally:
+        open_boundary = False
+    return started
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     with _session_profile_runtime_scope(session):
         _notification_poller_scoped_loop(stop_event, sid, session)
@@ -702,6 +773,10 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:  # bot DM → live-owner delivery latency ≤ 5 s
             last_bot_poll = now
             _poll_bot_live_delivery_guarded(sid, session, now)
+        try:
+            _poll_plugin_idle_once(sid, session)
+        except Exception:
+            logger.warning("Plugin idle delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

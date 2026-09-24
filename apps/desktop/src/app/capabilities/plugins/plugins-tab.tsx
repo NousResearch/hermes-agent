@@ -9,12 +9,14 @@ import {
   useState
 } from 'react'
 
+import { $apiRequestConnection } from '@/api/client'
 import { setEnvVar } from '@/api/config'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
+import { type PluginSettingsScope, PluginSettingsSlot } from '@/contrib/plugin-settings'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
 import type { ProfileScope } from '@/hermes'
@@ -36,7 +38,6 @@ import {
   loadAgentPlugins,
   removeAgentPlugin,
   saveAgentPluginSettings,
-  toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
@@ -44,12 +45,14 @@ import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 
 import { PanelEmpty } from '../../overlays/panel'
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 
+import { AgentPluginToggle } from './agent-plugin-toggle'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginSettingsForm } from './plugin-settings-form'
 
@@ -236,22 +239,24 @@ function Dash() {
 function PackageRow({
   pkg,
   scope,
+  settingsScope,
   profile,
   scopeLabel,
   busy,
+  actionsBusy,
   request,
-  onAgentToggle,
   onAgentUpdate,
   onAgentRemove,
   onDesktopRemove
 }: {
   pkg: PluginPackage
   scope: null | string
+  settingsScope: PluginSettingsScope | null
   profile: ProfileScope
   scopeLabel: string
   busy: boolean
+  actionsBusy: boolean
   request: GatewayRequest
-  onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
   onAgentRemove: (row: AgentPluginRow) => void
   onDesktopRemove: (record: PluginRecord) => void
@@ -326,6 +331,9 @@ function PackageRow({
                   {server.sentence}
                 </div>
               ) : null
+            )}
+            {settingsScope && desktop?.status === 'loaded' && (
+              <PluginSettingsSlot pluginId={desktop.id} scope={settingsScope} />
             )}
           </div>
           {/* Fixed slot so the switch column stays straight whether or not
@@ -421,7 +429,7 @@ function PackageRow({
               {agent.update_available && (
                 <Button
                   className="h-5 px-1.5 text-[0.65rem]"
-                  disabled={busy}
+                  disabled={actionsBusy}
                   onClick={() => onAgentUpdate(agent)}
                   size="xs"
                   variant="outline"
@@ -431,11 +439,11 @@ function PackageRow({
               )}
               {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
               {agentToggleable ? (
-                <Switch
-                  aria-label={`${p.halfAgent}: ${pkg.name}`}
-                  checked={agentOn}
-                  disabled={busy}
-                  onCheckedChange={on => onAgentToggle(agent, on)}
+                <AgentPluginToggle
+                  busy={actionsBusy}
+                  label={`${p.halfAgent}: ${pkg.name}`}
+                  profile={scope}
+                  row={agent}
                 />
               ) : (
                 <Tip label={p.legacyBackend}>
@@ -519,8 +527,21 @@ export const PluginsTab = memo(function PluginsTab({
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
+  const activeProfile = useStore($activeGatewayProfile)
 
   const scope = profileParam(profile)
+
+  // Subscribe to the transport's actual tag; never infer a local pin from a
+  // selector label or roster, or rely on another atom's notification timing.
+  const taggedConnection = useStore($apiRequestConnection)
+
+  const settingsScope =
+    profile && typeof profile === 'object' && profile.connectionId?.trim() && profile.profile?.trim()
+      ? { connectionId: profile.connectionId, profile: profile.profile }
+      : typeof profile === 'string' && profile.trim() && taggedConnection?.trim()
+        ? { connectionId: taggedConnection, profile }
+        : null
+
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
@@ -695,8 +716,9 @@ export const PluginsTab = memo(function PluginsTab({
             </div>
             {packages.map(pkg => (
               <PackageRow
+                actionsBusy={busyKey !== null}
                 busy={pkg.agent ? agentBusy(pkg.agent) : false}
-                key={pkg.key}
+                key={`${scope ?? activeProfile}:${pkg.key}`}
                 onAgentRemove={row => {
                   void confirm({
                     confirmLabel: p.uninstall,
@@ -714,13 +736,6 @@ export const PluginsTab = memo(function PluginsTab({
                       void rescanAll(requestGateway, scope)
                     }
                   })
-                }}
-                onAgentToggle={(row, enable) => {
-                  if (!row.key) {
-                    return
-                  }
-
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
                 }}
                 onAgentUpdate={row => {
                   const finish = (outcome: AgentPluginUpdateOutcome) => {
@@ -777,6 +792,7 @@ export const PluginsTab = memo(function PluginsTab({
                 request={requestGateway}
                 scope={scope}
                 scopeLabel={label}
+                settingsScope={settingsScope}
               />
             ))}
           </div>

@@ -1,4 +1,5 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
+import { atom } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
@@ -105,10 +106,10 @@ export function getApiRequestProfile(): null | string {
 // source of truth those paths maintain for $connection. That makes the plugin
 // socket follow registry-agent activations too, not just profile switches.
 // Same no-store-import contract as _apiProfile (avoids a cycle).
-let _apiConnectionId: null | string = null
+export const $apiRequestConnection = atom<null | string>(null)
 
 export function setApiRequestConnection(connectionId: null | string): void {
-  _apiConnectionId = connectionId || null
+  $apiRequestConnection.set(connectionId || null)
 }
 
 // Registry connection scope for a REST request. A registered remote gateway
@@ -118,7 +119,9 @@ export function setApiRequestConnection(connectionId: null | string): void {
 // resolves to no tag, keeping single-source users byte-identical; explicit
 // 'local' must remain tagged when the legacy primary points elsewhere.
 export function connectionScoped(): { connectionId?: string } {
-  return _apiConnectionId ? { connectionId: _apiConnectionId } : {}
+  const connectionId = $apiRequestConnection.get()
+
+  return connectionId ? { connectionId } : {}
 }
 
 // Whether the window's primary connection is the local pool. Pushed from
@@ -137,7 +140,7 @@ export function setApiRequestLocalMode(local: boolean): void {
  *  never send this as a request pin (an explicit `'local'` bypasses Electron's
  *  legacy per-profile remote overrides). */
 export function ambientOwnerConnectionId(): string | undefined {
-  return _apiConnectionId ?? (_apiLocalMode ? 'local' : undefined)
+  return $apiRequestConnection.get() ?? (_apiLocalMode ? 'local' : undefined)
 }
 
 /** Send a REST request to the renderer's active registry source. Request-level
@@ -215,5 +218,5 @@ export function profileScopeKey(scope?: ProfileScope): string {
 /** Registry connection id that connection-scoped WS calls should target
  *  (null → the local pool). Read-only twin of setApiRequestConnection. */
 export function getApiRequestConnection(): null | string {
-  return _apiConnectionId
+  return $apiRequestConnection.get()
 }

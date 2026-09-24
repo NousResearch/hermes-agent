@@ -20,7 +20,7 @@ from hermes_cli.web_server_dashboard import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+    FontSetBody, ThemeSetBody, _AgentPluginEnableBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -171,7 +171,8 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
     if result.get("consent_required"):
         return result
     if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or fallback_error)
+        raise HTTPException(status_code=409 if result.get("status") else 400,
+                            detail=result if result.get("status") else result.get("error") or fallback_error)
     if rescan:
         _get_dashboard_plugins(force_rescan=True)
     _invalidate_plugins_hub_cache()
@@ -228,10 +229,11 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
     identifier = body.identifier.strip()
     if not identifier and not catalog_name:
         raise HTTPException(status_code=400, detail="Provide an identifier or a catalog_name.")
+    consent = {"setup_consent": body.setup_consent} if body.setup_consent is not None else {}
     result = await _plugin_mutation(lambda: _plugin_action(
         dashboard_install_plugin(
             identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None,
-            ref=body.ref),
+            ref=body.ref, **consent),
         "Install failed.", rescan=True))
     # Strip internal paths from the response
     result.pop("after_install_path", None)
@@ -253,10 +255,12 @@ async def _named_plugin_action(request: Request, name: str, action: Callable[[st
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
-async def post_agent_plugin_enable(request: Request, name: str):
+async def post_agent_plugin_enable(request: Request, name: str, body: _AgentPluginEnableBody | None = None):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
-                                      "Enable failed.", rescan=False)
+    consent = {"setup_consent": body.setup_consent} if body and body.setup_consent is not None else {}
+    return await _named_plugin_action(
+        request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True, **consent),
+        "Enable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/disable")

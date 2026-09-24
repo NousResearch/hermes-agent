@@ -11,7 +11,43 @@ HTTP_URL = f"http://{HOST}:{PORT}"
 VERSION_URL = f"{HTTP_URL}/json/version"
 
 
+class TestCdpVersionUrl:
+    def test_appends_json_version_and_keeps_query(self):
+        from tools.browser_tool_cdp import _cdp_version_url
+
+        assert (
+            _cdp_version_url("http://172.30.2.2:8790/slot/research-1/cdp?tok=abc")
+            == "http://172.30.2.2:8790/slot/research-1/cdp/json/version?tok=abc"
+        )
+
+    def test_does_not_duplicate_json_version_when_query_present(self):
+        from tools.browser_tool_cdp import _cdp_version_url
+
+        raw = "http://172.30.2.2:8790/slot/research-1/cdp/json/version?tok=abc"
+        assert _cdp_version_url(raw) == raw
+
+    def test_bare_root_and_trailing_slash(self):
+        from tools.browser_tool_cdp import _cdp_version_url
+
+        assert _cdp_version_url(HTTP_URL) == VERSION_URL
+        assert _cdp_version_url(HTTP_URL + "/") == VERSION_URL
+        assert _cdp_version_url(VERSION_URL) == VERSION_URL
+
+
 class TestResolveCdpOverride:
+    def test_keeps_query_when_discovering_json_version(self):
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        raw = "http://cdp.example/slot/x?tok=not-a-real-token"
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
+
+        with patch("requests.get", return_value=response) as mock_get:
+            assert _resolve_cdp_override(raw) == WS_URL
+
+        mock_get.assert_called_once_with("http://cdp.example/slot/x/json/version?tok=not-a-real-token", timeout=10)
+
     def test_keeps_full_devtools_websocket_url(self):
         from tools.browser_tool_cdp import _resolve_cdp_override
 

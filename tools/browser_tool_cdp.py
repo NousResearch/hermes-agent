@@ -5,9 +5,23 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 import contextlib
 import os
 from typing import Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
+
+
+def _cdp_version_url(discovery_url: str) -> str:
+    """Append ``/json/version`` to the URL *path*, keeping any query (e.g. ``?tok=``).
+
+    A plain ``endswith("/json/version")`` on the whole URL misses a trailing query string and
+    appends the path after it (``...?tok=x/json/version``), which breaks token-gated CDP proxies.
+    """
+    parts = urlsplit(discovery_url)
+    path = parts.path or "/"
+    if not path.endswith("/json/version"):
+        path = path.rstrip("/") + "/json/version"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
 def _resolve_cdp_override(cdp_url: str) -> str:
@@ -29,7 +43,7 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         if not (raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]):
             return raw
         discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
-    version_url = discovery_url if discovery_url.lower().endswith("/json/version") else discovery_url.rstrip("/") + "/json/version"
+    version_url = _cdp_version_url(discovery_url)
 
     san = _bt._sanitize_url_for_logs
     try:

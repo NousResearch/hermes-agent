@@ -303,6 +303,7 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
                 ["git", "config", scope, "-z", "--get-all", "safe.directory"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+                creationflags=windows_hide_flags(),
             )
         except (OSError, subprocess.SubprocessError):
             continue

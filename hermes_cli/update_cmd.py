@@ -131,8 +131,9 @@ def _updates_config() -> dict:
 def _no_prompt_git_kwargs() -> dict:
     """``subprocess.run`` kwargs for network git: a 401 (GitHub outage) would block forever on
     ``Username for ...``; disable only the *prompt* (credential helpers still run) so it fails fast."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never"}
-    return {"stdin": subprocess.DEVNULL, "env": env}
+    return {"stdin": subprocess.DEVNULL, "env": env, "creationflags": windows_hide_flags()}
 
 
 # CLI-startup files (+ web_server.py, launched by a fresh Windows Desktop install) that must
@@ -189,10 +190,14 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
     terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        extra: dict = {"creationflags": windows_hide_flags()}
+        if network:
+            extra.update(_no_prompt_git_kwargs())
+            extra["timeout"] = NETWORK_GIT_TIMEOUT_SECONDS
         return subprocess.run(
             git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", check=check,
-            **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
+            text=True, encoding="utf-8", errors="replace", check=check, **extra)
     except subprocess.TimeoutExpired as exc:
         # subprocess.run already killed the child; the checkout stays consistent because
         # fetch writes to tmp_pack_* and only renames on success. Report as a failed run

@@ -436,3 +436,163 @@ def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
     # Idempotent + never raises on repeat calls.
     _subprocess_compat.suppress_platform_ver_console()
     assert platform._syscmd_ver() == ("", "", "")
+
+
+# ── Desktop startup console flash (console-less pythonw backend) ──────────
+#
+# The desktop backend runs under pythonw.exe (no console). Every helper it
+# spawns (git.exe, tasklist.exe, powershell.exe) without CREATE_NO_WINDOW
+# gets a brand-new VISIBLE console (Windows Terminal on Win11) — one flash
+# per spawn at startup. These sites thread windows_hide_flags() into
+# creationflags; stdio contracts must stay intact.
+
+def test_gitlock_git_spawns_hide_console_window(monkeypatch, tmp_path):
+    """gitlock read-only git probes never flash: merge-base, rev-parse gate,
+    cat-file batch pair and the rev-list startup probe."""
+    from hermes_cli import gitlock
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        cmd_str = " ".join(cmd)
+        if "rev-list" in cmd_str:
+            return _Completed(stdout="", returncode=1)
+        if "merge-base" in cmd_str:
+            return _Completed(stdout="", returncode=0)
+        if "cat-file" in cmd_str and "--batch-check" in cmd_str:
+            return _Completed(stdout="", returncode=0)
+        if "cat-file" in cmd_str:
+            return _Completed(stdout="", returncode=1)
+        return _Completed(stdout="deadbeef\n", returncode=0)
+
+    monkeypatch.setattr(gitlock, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(gitlock.subprocess, "run", fake_run)
+
+    assert gitlock.is_ancestor_of_head(tmp_path, "abc123") is True
+    assert gitlock._git_stdout_lines(tmp_path, ["rev-parse", "--git-path", "shallow"]) == ["deadbeef"]
+    assert gitlock._batch_missing_parents(tmp_path, []) == set()
+    gitlock.repair_broken_shallow_boundaries(tmp_path)
+
+    assert captured, "expected git spawns"
+    for cmd, kwargs in captured:
+        assert kwargs.get("creationflags") == _CREATE_NO_WINDOW, cmd
+
+
+@pytest.mark.windows_only
+def test_gitlock_tasklist_probe_hides_console_window(monkeypatch):
+    """The stale-lock tasklist guard flashes on its own under pythonw."""
+    from hermes_cli import gitlock
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _Completed(stdout="\"git.exe\",\"1234\",\"Console\",\"1\",\"10,000 K\"\n", returncode=0)
+
+    monkeypatch.setattr(gitlock, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(gitlock.subprocess, "run", fake_run)
+
+    assert gitlock._git_proc_running() is True
+    spawns = _spawns(captured, "tasklist")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+@pytest.mark.windows_only
+def test_gateway_scheduled_task_state_hides_powershell_window(monkeypatch):
+    """Task Scheduler COM probe spawns powershell.exe during backend startup."""
+    from hermes_cli import gateway
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _Completed(stdout="Ready\n", returncode=0)
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE")
+
+    assert gateway._windows_scheduled_task_state("hermes-gateway") == "Ready"
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd[0].lower().endswith("powershell.exe"), cmd
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_update_git_run_hides_console_window(monkeypatch, tmp_path):
+    """The central update git runner (26 call sites) hides its window."""
+    from hermes_cli import update_cmd
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _Completed(stdout="ok\n", returncode=0)
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(PROJECT_ROOT=tmp_path))
+    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+
+    update_cmd._git_run(["git"], ["rev-parse", "HEAD"], tmp_path)
+    update_cmd._git_run(["git"], ["fetch", "origin", "main"], tmp_path, network=True)
+    assert len(captured) == 2, captured
+    for cmd, kwargs in captured:
+        assert kwargs.get("creationflags") == _CREATE_NO_WINDOW, cmd
+
+
+def test_no_prompt_git_kwargs_hide_console_window(monkeypatch):
+    """Network git kwargs (fetch/pull behind them) carry the hide flags too,
+    so the upstream-sync fetch/pull spawns never flash."""
+    from hermes_cli import update_cmd
+
+    _patch_hide_flags(monkeypatch)
+    kwargs = update_cmd._no_prompt_git_kwargs()
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_update_git_plumbing_spawns_hide_console_window(monkeypatch, tmp_path):
+    """rev-parse label, trampoline probe and EOL-normalization git spawns."""
+    from hermes_cli import update_cmd_git
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _Completed(stdout="main\nabc123\n", returncode=0)
+
+    monkeypatch.setattr(update_cmd_git, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(update_cmd_git.subprocess, "run", fake_run)
+
+    assert update_cmd_git._probe_fork_bomb(["git"]) is False
+    label = update_cmd_git._branch_head_label(["git"], cwd=tmp_path)
+    assert label is not None and "abc" in label
+
+    assert captured, "expected git spawns"
+    for cmd, kwargs in captured:
+        assert kwargs.get("creationflags") == _CREATE_NO_WINDOW, cmd
+
+
+@pytest.mark.real_safe_directory
+def test_safe_directory_git_config_probes_hide_console_window(monkeypatch):
+    """safe.directory replay (two git config children per internal git call,
+    including the startup banner probe) never flashes."""
+    from hermes_cli import _subprocess_compat
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _Completed(stdout="", returncode=1)
+
+    _subprocess_compat._safe_directory_cache.clear()
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "run", fake_run)
+
+    assert _subprocess_compat._user_safe_directories({}) == []
+    spawns = _spawns(captured, "git", "config")
+    assert len(spawns) == 2, captured
+    for cmd, kwargs in spawns:
+        assert kwargs.get("creationflags") == _CREATE_NO_WINDOW, cmd

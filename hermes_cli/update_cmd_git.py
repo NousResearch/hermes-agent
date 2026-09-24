@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
@@ -88,7 +90,8 @@ def _branch_head_label(git_cmd=None, cwd=None) -> str | None:
         root = cwd if cwd is not None else _m().PROJECT_ROOT
 
         def _rev_parse(*args):
-            return subprocess.run(cmd + ["rev-parse", *args], cwd=root, **_GIT_TEXT_KW)
+            return subprocess.run(cmd + ["rev-parse", *args], cwd=root,
+                                  creationflags=windows_hide_flags(), **_GIT_TEXT_KW)
 
         branch, sha = _rev_parse("--abbrev-ref", "HEAD"), _rev_parse("--short", "HEAD")
         branch_name, sha_text = branch.stdout.strip(), sha.stdout.strip()
@@ -372,7 +375,8 @@ def _print_fetch_failure(stderr: str) -> None:
 def _probe_fork_bomb(argv: list) -> Optional[bool]:
     """Run ``<argv> --version``; True/False = guard message seen/absent, None = probe itself failed."""
     try:
-        result = subprocess.run(argv + ["--version"], timeout=15, **_GIT_TEXT_KW)
+        result = subprocess.run(argv + ["--version"], timeout=15,
+                                creationflags=windows_hide_flags(), **_GIT_TEXT_KW)
     except Exception:
         return None
     return "fork bomb" in ((result.stdout or "") + (result.stderr or "")).lower()
@@ -511,6 +515,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 
     def _probe_run(*args, **kw):
+        kw.setdefault("creationflags", windows_hide_flags())
         return subprocess.run(probe + list(args), cwd=repo_root, **_GIT_TEXT_KW, **kw)
 
     def _eol_only():
@@ -541,4 +546,5 @@ def _normalize_managed_eol(git_cmd, repo_root):
             if _eol_only():  # still dirty: pinning would only surface churn we failed to clear
                 return
             print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")
-        subprocess.run(git_cmd + ["config", "core.autocrlf", "false"], cwd=repo_root, capture_output=True, check=False)
+        subprocess.run(git_cmd + ["config", "core.autocrlf", "false"], cwd=repo_root, capture_output=True, check=False,
+                       creationflags=windows_hide_flags())

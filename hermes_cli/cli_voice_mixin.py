@@ -11,7 +11,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 import threading
 import time
 
@@ -328,9 +327,11 @@ class CLIVoiceMixin:
                 return
             self._voice_last_tts_text = tts_text
             # MP3 for CLI playback (afplay doesn't handle OGG well); the TTS tool may
-            # auto-convert MP3->OGG but the original MP3 remains.
-            out_dir = os.path.join(tempfile.gettempdir(), "hermes_voice")
-            os.makedirs(out_dir, exist_ok=True)
+            # auto-convert MP3->OGG but the original MP3 remains. The base dir must pass
+            # the write-safe guard (Docker HERMES_WRITE_SAFE_ROOT=/opt/data) — same as gateway.
+            from gateway.platforms.base import tts_scratch_dir
+
+            out_dir = tts_scratch_dir()
             mp3_path = os.path.join(out_dir, f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3")
 
             raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)

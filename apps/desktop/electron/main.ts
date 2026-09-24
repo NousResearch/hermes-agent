@@ -100,6 +100,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { readClipboardFilePaths } from './clipboard-files'
 import { discoverWithTeamFallback } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
@@ -17635,6 +17636,13 @@ ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
 // portaled overlay has focus, and there's no way to route a read through the
 // canvas. The main process has no such gate.
 ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
+
+// Native file-list clipboard read (CF_HDROP on Windows / NSPasteboard on macOS
+// / text/uri-list on Linux). The DOM paste event's File objects are clones —
+// webUtils.getPathForFile returns '' for them — so the renderer asks main to
+// recover the original paths synchronously enough to attach by reference
+// (#118181).
+ipcMain.handle('hermes:readClipboardFilePaths', () => readClipboardFilePaths())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 

@@ -251,6 +251,7 @@ function nativeReasoningParts(value: unknown, expected: string, timestamp?: numb
   if (!Array.isArray(value) || !expected) {
     return []
   }
+
   const result: ChatMessagePart[] = []
   const groups: string[] = []
   const seen = new Set<string>()
@@ -275,6 +276,7 @@ function nativeReasoningParts(value: unknown, expected: string, timestamp?: numb
       if (!part || part.type !== 'summary_text' || typeof part.text !== 'string' || !part.text) {
         return []
       }
+
       texts.push(part.text)
       result.push(reasoningPart(part.text, timestamp, `${item.id}:summary:${index}`))
     }

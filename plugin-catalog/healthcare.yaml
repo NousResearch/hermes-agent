@@ -1,0 +1,24 @@
+name: healthcare
+repo: https://github.com/harrylabsj/hermes-plugin-healthcare
+sha: 09f3af2b2b862efececbcfa784c4442fcc2978df
+description: 'Local-first personal health records: encrypted on-device Vault (AES-GCM) for
+  vitals, medications, activities, emotions, sleep, encounters, diagnosis mentions,
+  medication plans and reminders, served through a Keychain-paired local daemon with 24
+  scoped MCP tools. Zero-config first run: the plugin bootstraps Vault + daemon + agent
+  pairing automatically under PLUGIN_DATA. Engine pinned to an immutable PyPI release
+  (healthcare-mcp==0.2.1) over uvx stdio; Portable Agent Plugins v1 package (mcp.json +
+  skills/), macOS only, Python 3.11+. Zero network by default; the optional LLM report-import
+  endpoint stays off unless the user configures it. Approval-gated deletes, tamper-evident
+  audit chain.'
+maintainer: harrylabsj
+tier: community
+category: tools
+docs_url: https://github.com/harrylabsj/healthcare-mcp
+version: "0.2.1"
+platforms:
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

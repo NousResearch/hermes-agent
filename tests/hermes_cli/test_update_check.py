@@ -45,6 +45,11 @@ def _stub_git(monkeypatch, *, head=SHA_A, origin="https://github.com/NousResearc
             return MagicMock(returncode=0, stdout=f"{origin}\n")
         if sub == "merge-base":
             return MagicMock(returncode=1, stdout="")
+        if sub == "config" and args[2:] in (
+            ["--system", "-z", "--get-all", "safe.directory"],
+            ["--global", "-z", "--get-all", "safe.directory"],
+        ):
+            return MagicMock(returncode=1, stdout="")
         raise AssertionError(f"passive check must not run git {sub}: {args}")
 
     monkeypatch.setattr(banner.subprocess, "run", fake_run)
@@ -96,6 +101,23 @@ def test_cache_is_daily_but_invalidated_when_head_moves(git_repo, monkeypatch):
     write_cache(ts=time.time() - banner._UPDATE_CHECK_FAILURE_CACHE_SECONDS - 1, head=SHA_A, behind=None)
     banner.check_for_updates()
     tip.assert_called_once()
+
+
+@pytest.mark.parametrize("cached_head", [None, "missing"])
+def test_unresolved_head_does_not_reuse_stale_success(git_repo, monkeypatch, cached_head):
+    """An unresolved checkout identity must not validate an old positive result."""
+    cached = {"ts": time.time(), "behind": 7, "rev": None, "ver": banner.VERSION}
+    if cached_head is None:
+        cached["head"] = None
+    cache_file = git_repo.parent / ".update_check"
+    cache_file.write_text(json.dumps(cached))
+    monkeypatch.setattr(banner, "_git_stdout", lambda *args, **kwargs: None)
+    tip = MagicMock(side_effect=AssertionError("unknown HEAD must not make a network request"))
+    monkeypatch.setattr(banner, "_github_branch_tip", tip)
+
+    assert banner.check_for_updates() is None
+    assert json.loads(cache_file.read_text())["behind"] is None
+    tip.assert_not_called()
 
 
 def test_prefetch_non_blocking(monkeypatch):

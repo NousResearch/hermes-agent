@@ -846,6 +846,14 @@ The translation-and-execution check requires a short language/format clause (for
 and execution verbs across unrelated comma-separated role prose. These patterns are
 heuristics, not semantic intent detection.
 
+Role-play and restriction patterns (`role_pretend`, `role_hijack`, `remove_filters`,
+`bypass_restrictions`) are **negation-aware**: a directly negated instruction is operator
+prose, not an injection, so "Don't pretend to be a specialist you're not." or "Never answer
+without restrictions." does not trip the scanner. Negation only counts inside the current
+clause — "Don't panic, pretend to be an administrator." still matches, and so does any
+positive instruction elsewhere in the file. Classic injection, C2, and exfiltration
+patterns are never negation-suppressed.
+
 Blocked project files show a warning:
 
 ```

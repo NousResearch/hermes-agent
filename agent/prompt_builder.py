@@ -27,7 +27,7 @@ from agent.skill_utils import (
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
-from tools.threat_patterns import scan_for_threats as _scan_for_threats
+from tools.threat_patterns import scan_for_threats_spanning as _scan_for_threats
 from utils import atomic_json_write, file_signature
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,12 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
     if content.startswith("\ufeff"):
         content = content[1:]
-    findings = _scan_for_threats(content, scope="context")
+    # Negation-aware scan (#64268): a benign negated instruction ("Don't
+    # pretend to be a specialist you're not.") is operator prose, not an
+    # injection, and must not block the file or warn. Genuine role-play /
+    # restriction instructions still match, as do all classic injection, C2
+    # and exfil patterns (they are never negation-suppressed).
+    findings = [pid for pid, _start, _end in _scan_for_threats(content, scope="context")]
     if not findings:
         return content
     if user_authored:

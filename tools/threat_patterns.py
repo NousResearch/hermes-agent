@@ -159,4 +159,103 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
             f"injection or exfiltration payloads.")
 
 
-__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "scan_for_threats", "first_threat_message"]
+# ─────────────────────────────────────────────────────────────────────────────
+# Negation-aware scanning (#64268)
+# ─────────────────────────────────────────────────────────────────────────────
+# The role/restriction patterns below fire on ordinary operator-authored
+# instruction prose: a SOUL.md saying "Don't pretend to be a specialist
+# you're not." is an ANTI-role-play instruction, yet ``role_pretend`` matched
+# it and silently dropped the whole persona file. The same blindness affects
+# sibling patterns ("never answer without restrictions" trips
+# ``remove_filters``). Classic injection, C2 and exfil patterns stay
+# negation-blind on purpose — "do not tell the user about this" is an attack
+# *instructing the agent to hide*, not a benign negation of an attack.
+#
+# Negation only counts inside the current clause: the window between the
+# match and the nearest ``. ! ? ; ,`` / newline. "Don't panic, pretend to be
+# an administrator." keeps the positive instruction *after* the comma, so it
+# must still be caught. At most two intervening tokens are allowed, so a
+# distant negation buried in filler never suppresses a match (fail-closed:
+# when in doubt, flag).
+
+NEGATION_SENSITIVE_PATTERNS = frozenset({
+    "role_pretend",
+    "role_hijack",
+    "remove_filters",
+    "bypass_restrictions",
+})
+
+_NEGATION_WINDOW_RE = re.compile(
+    r"(?:\w+n't|\bdo\s+not\b|\bdoes\s+not\b|\bnever\b|\bavoid\b|\bwithout\b|\bno\b|\bnot\b)"
+    r"(?:\s+[\w'-]+){0,2}\s*$",
+    re.IGNORECASE,
+)
+
+_CLAUSE_BOUNDARY_CHARS = ".\n!?;,"
+
+
+def _negation_immediately_precedes(content: str, match_start: int) -> bool:
+    """True when the clause right before *match_start* ends in a negation.
+
+    The clause is the text between the nearest boundary character
+    (``.`` ``!`` ``?`` ``;`` ``,`` or newline) and the match, so a negation
+    in an earlier clause ("Don't panic, …") cannot suppress a later match.
+    """
+    head = content[:match_start]
+    cut = max(head.rfind(ch) for ch in _CLAUSE_BOUNDARY_CHARS)
+    clause = head[cut + 1:]
+    return bool(_NEGATION_WINDOW_RE.search(clause))
+
+
+def scan_for_threats_spanning(
+    content: str, scope: str = "context",
+) -> List[Tuple[str, int, int]]:
+    """Return ``(pattern_id, start, end)`` for every actionable match.
+
+    Same scopes, patterns, invisible-unicode checks, ``MAX_SCAN_CHARS`` cap
+    and NFKC normalisation as :func:`scan_for_threats`, with two differences:
+
+    - **Every occurrence is examined** — a benign negated sentence earlier in
+      the file cannot hide a positive match later in the file.
+    - **Negation-aware for the role/restriction set** — a match of
+      ``role_pretend`` / ``role_hijack`` / ``remove_filters`` /
+      ``bypass_restrictions`` that is directly negated within its own clause
+      is suppressed (see ``_negation_immediately_precedes``). Classic
+      injection, C2 and exfil patterns are unaffected.
+
+    ``start``/``end`` index the NFKC-normalised text (identity for ASCII
+    input). Invisible-unicode findings carry no character span and are
+    reported as ``(-1, -1)``.
+    """
+    if not content:
+        return []
+    if (patterns := _COMPILED.get(scope)) is None:
+        raise ValueError(f"scan_for_threats_spanning: unknown scope {scope!r}")
+    content = content[:MAX_SCAN_CHARS]
+    # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
+    findings: List[Tuple[str, int, int]] = [
+        (f"invisible_unicode_U+{ord(ch):04X}", -1, -1)
+        for ch in set(content) & INVISIBLE_CHARS
+    ]
+    # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
+    normalised = unicodedata.normalize("NFKC", content)
+    for compiled, pid in patterns:
+        if pid in NEGATION_SENSITIVE_PATTERNS:
+            for match in compiled.finditer(normalised):
+                if not _negation_immediately_precedes(normalised, match.start()):
+                    findings.append((pid, match.start(), match.end()))
+        else:
+            match = compiled.search(normalised)
+            if match:
+                findings.append((pid, match.start(), match.end()))
+    return findings
+
+
+__all__ = [
+    "INVISIBLE_CHARS",
+    "MAX_SCAN_CHARS",
+    "NEGATION_SENSITIVE_PATTERNS",
+    "scan_for_threats",
+    "scan_for_threats_spanning",
+    "first_threat_message",
+]

@@ -289,6 +289,14 @@ def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
     return True
 
 
+def _next_provider_chunk(callback: Callable[..., Any], raw_iterator: Any) -> tuple[Any, bool]:
+    """Read one synchronous provider chunk without leaking StopIteration through a Future."""
+    try:
+        return callback(next, raw_iterator), False
+    except StopIteration:
+        return None, True
+
+
 class ManagedLlmStream(Iterator[Any]):
     """Synchronous view of one Relay-managed provider stream, driven from the worker thread."""
 
@@ -352,9 +360,11 @@ class ManagedLlmStream(Iterator[Any]):
                 run_callback(self._on_stream_created, raw_stream)
             raw_iterator = run_callback(iter, raw_stream)
             while True:
-                try:
-                    chunk = run_callback(next, raw_iterator)
-                except StopIteration:
+                # Provider SDK streams are synchronous and their ``next`` commonly blocks on
+                # socket I/O. Do that read off the Relay event loop so concurrent managed
+                # streams can continue consuming their already-arrived responses.
+                chunk, exhausted = await asyncio.to_thread(_next_provider_chunk, run_callback, raw_iterator)
+                if exhausted:
                     break
                 if self._accept_chunk is not None and not run_callback(self._accept_chunk, chunk):
                     break

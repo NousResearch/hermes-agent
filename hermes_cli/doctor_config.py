@@ -4,7 +4,6 @@ Split out of ``hermes_cli/doctor.py``."""
 from __future__ import annotations
 
 import os
-import shutil
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,
@@ -246,6 +245,12 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
     accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
+    # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
+    model_base_url = str(model_section.get("base_url") or "").strip()
+    if policy_id == "openai-api" and model_base_url:
+        from utils import base_url_host_matches
+        accepts_vendor_slug = accepts_vendor_slug or not base_url_host_matches(model_base_url, "api.openai.com")
     if default_model and "/" in default_model and policy_id and not accepts_vendor_slug:
         check_warn(f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
                    "(vendor-prefixed slugs belong to aggregators like openrouter)")
@@ -261,6 +266,33 @@ def _validate_model_config(config_path, issues: list) -> None:
                                 f"API key in {_DHH}/.env, or switch providers with 'hermes config set model.provider <name>'", issues)
 
 
+def _validate_auxiliary_config(config_path, issues: list) -> None:
+    """Resolve every routed ``auxiliary.<task>`` block through the real entry point the tasks use and report
+    the ones that fail — an unresolvable block otherwise silently runs the task on the main model (#116055)."""
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from utils import base_url_hostname
+    aux = read_user_config_raw(config_path).get("auxiliary")
+    routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
+              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
+    ok = []
+    for task, block in sorted(routed.items()):
+        provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))
+        try:
+            runtime = resolve_runtime_provider(requested=provider, target_model=model, explicit_api_key=api_key, explicit_base_url=base_url)
+        except Exception as exc:  # noqa: BLE001 — every resolver error is a finding here
+            _fail_and_issue(f"auxiliary.{task}.provider '{provider}' does not resolve", f"({str(exc).splitlines()[0]})",
+                            f"auxiliary.{task}.provider '{provider}' cannot be resolved ({str(exc).splitlines()[0]}); the task "
+                            f"silently runs on the main model. Fix the provider name/credentials in auxiliary.{task}.", issues)
+            continue
+        if not runtime.get("api_key") and not runtime.get("command"):
+            check_warn(f"auxiliary.{task}.provider '{provider}' resolved without credentials", f"({runtime.get('provider')} @ {runtime.get('base_url')})")
+            continue
+        ok.append(f"{task}→{runtime.get('provider')}@{base_url_hostname(str(runtime.get('base_url') or '')) or '?'}")
+    if ok:
+        check_ok("auxiliary task routing resolves: " + ", ".join(ok))
+
+
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
@@ -270,17 +302,14 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
         check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)
+        with warn_on_error("Could not validate auxiliary task routing"):
+            _validate_auxiliary_config(config_path, f.issues)
     elif (PROJECT_ROOT / 'cli-config.yaml').exists():
         check_ok("cli-config.yaml exists (in project directory)")
     elif should_fix:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        example_config = PROJECT_ROOT / 'cli-config.yaml.example'
-        if example_config.exists():
-            shutil.copy2(str(example_config), str(config_path))
-        else:
-            from hermes_cli.config import DEFAULT_CONFIG, save_config
-            save_config(DEFAULT_CONFIG)
-        check_ok(f"Created {_DHH}/config.yaml from {'cli-config.yaml.example' if example_config.exists() else 'defaults'}")
+        from hermes_cli.config import seed_config_file
+        from_template = seed_config_file(config_path, PROJECT_ROOT / 'cli-config.yaml.example')
+        check_ok(f"Created {_DHH}/config.yaml from {'cli-config.yaml.example' if from_template else 'defaults'}")
         f.fixed += 1
     else:
         check_warn("config.yaml not found", "(using defaults)")
@@ -387,8 +416,40 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
         f.issues.append(ci.message)
 
 
+def _endpoint_url(entry: dict) -> str:
+    """Comparable endpoint URL of a legacy list entry (``base_url``/``url``) or a ``providers:`` entry (``api``)."""
+    url = entry.get("api") or entry.get("base_url") or entry.get("url") or ""
+    return str(url).strip().rstrip("/").lower()
+
+
+def _drift_legacy_custom_providers(f: Finding, should_fix: bool, config_path) -> None:
+    """Legacy ``custom_providers`` list entries with no ``providers:`` twin (raw-file diagnostic).
+
+    The v11→v12 migration (config_migrations._migrate_to_12) moves the list into ``providers:`` ONCE, at
+    the version bump; an entry hand-written afterwards lives on in the retired list store (dual-read by the
+    picker and the Custom Endpoints page) instead of the ``providers:`` map every other surface edits.
+    """
+    from hermes_cli.config import read_user_config_raw
+    raw_config = read_user_config_raw(config_path)
+    legacy = raw_config.get("custom_providers")
+    if not isinstance(legacy, list):
+        return
+    providers = raw_config.get("providers")
+    twins = {_endpoint_url(e) for e in (providers.values() if isinstance(providers, dict) else ()) if isinstance(e, dict)}
+    for entry in legacy:
+        if not isinstance(entry, dict) or not _endpoint_url(entry) or _endpoint_url(entry) in twins:
+            continue
+        label = str(entry.get("name") or "").strip() or _endpoint_url(entry)
+        check_warn(f"Legacy custom_providers entry '{label}' has no providers: twin",
+                   "(still read from the retired list store; every other surface edits providers:)")
+        f.manual_issues.append(
+            f"Move custom_providers entry '{label}' into config.yaml providers: as `providers.<key>.api: "
+            f"{_endpoint_url(entry)}` and delete it from the list — the v12 list migration ran once and does not re-fire")
+
+
 _CONFIG_DRIFT_STEPS = (
     _drift_config_version, _drift_stale_root_keys, _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
+    _drift_legacy_custom_providers,
 )
 
 

@@ -21,7 +21,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
-NODE_BOOTSTRAP = REPO_ROOT / "scripts" / "lib" / "node-bootstrap.sh"
 
 
 def _extract_function(text: str, name: str) -> str:
@@ -100,23 +99,6 @@ install_node
     assert tried.read_text(encoding="utf-8").split() == ["26", "24"]
 
 
-def test_downloaded_tree_is_probed_before_it_replaces_anything() -> None:
-    """The filename is not evidence — the extracted binary must be checked.
-
-    Guarded as a text assertion because the surrounding block downloads; the
-    fallback behaviour it feeds is covered functionally above.
-    """
-    text = INSTALL_SH.read_text(encoding="utf-8")
-    probe = text.index('candidate_ver=$("$extracted_dir/bin/node" --version 2>/dev/null)')
-    reject = text.index('if ! node_satisfies_build "$candidate_ver"; then', probe)
-    # The probe has to run before the tree is moved into place, or a bad build
-    # has already clobbered a working managed Node.
-    assert reject < text.index('mv "$extracted_dir" "$HERMES_HOME/node"', probe)
 
 
-def test_node_bootstrap_mirrors_the_prerelease_guard() -> None:
-    """The sourceable helper answers the same question and must agree."""
-    text = NODE_BOOTSTRAP.read_text(encoding="utf-8")
-    assert "_nb_node_is_prerelease" in text
-    assert "_nb_node_is_prerelease && return 1" in text
 

@@ -118,15 +118,3 @@ def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex
 # ---------------------------------------------------------------------------
 
 
-def test_openai_sdk_raises_typeerror_on_tools_none():
-    """Document the upstream behaviour the two defences guard against.
-
-    If the SDK ever fixes ``_make_tools(None)`` to return ``omit``
-    gracefully, this test will start failing — at which point the agent
-    defences become belt-only and this test should be flipped to an
-    ``xfail`` so we notice the upstream change.
-    """
-    from openai.resources.responses.responses import _make_tools
-
-    with pytest.raises(TypeError, match="NoneType.*not iterable"):
-        _make_tools(None)

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import (
-    get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
+    get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
 from agent.model_metadata import CHARS_PER_TOKEN
@@ -24,7 +24,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
+    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
@@ -78,20 +78,34 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
     raise value  # type: ignore[misc]
 
 
-def _scan_context_content(content: str, filename: str) -> str:
+def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
     """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
+
+    *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
+    SOUL.md sits in the same trust class as config.yaml — file-tool writes to it go through the
+    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and project checkouts never
+    supply it — so a user who *documents* "ignore previous instructions" in their security guidance
+    must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
+    (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
+    a SOUL.md owned by a profile distribution (``hermes profile install <git-url>`` copies it in unscanned;
+    ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
     """
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
     if content.startswith("\ufeff"):
         content = content[1:]
     findings = _scan_for_threats(content, scope="context")
-    if findings:
-        logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
-        return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
-    return content
+    if not findings:
+        return content
+    if user_authored:
+        logger.warning("Context file %s matched injection pattern(s) %s; loaded anyway because it is the "
+                       "user's own file in HERMES_HOME — review it if you did not write that text",
+                       filename, ", ".join(findings))
+        return content
+    logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
+    return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
 
 def _find_git_root(start: Path) -> Optional[Path]:
@@ -108,13 +122,27 @@ def _exists_or_denied(path: Path) -> bool:
         return False
 
 
+def _is_file_or_denied(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir_or_denied(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
     """Nearest ``.hermes.md`` / ``HERMES.md`` from *cwd* up to the git root, else None."""
     stop_at = _find_git_root(cwd)
     current = cwd.resolve()
     # No git root: cwd only — walking parents could pick up a file planted in /tmp, /home, etc.
     for directory in [current, *current.parents] if stop_at else [current]:
-        found = next((directory / n for n in (".hermes.md", "HERMES.md") if (directory / n).is_file()), None)
+        found = next((directory / n for n in (".hermes.md", "HERMES.md") if _is_file_or_denied(directory / n)), None)
         if found or directory == stop_at:
             return found
     return None
@@ -695,10 +723,13 @@ PLATFORM_HINTS = {
         "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
     ),
     "bluebubbles": (
-        "You are chatting via iMessage (BlueBubbles). iMessage does not render markdown formatting — use "
-        "plain text. Keep responses concise as they appear as text messages. You can send media files "
-        "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .heic) appear "
-        "as photos and other files arrive as attachments."
+        # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
+        "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
+        "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
+        "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
+        "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
+        "can be copied. Write links as bare URLs (iMessage auto-links them). "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
     ),
     "mattermost": (
         "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
@@ -849,9 +880,11 @@ _WINDOWS_BASH_SHELL_HINT = (
     "MSYS-style paths like `/c/Users/<user>/...` work alongside native `C:\\Users\\<user>\\...` paths. PowerShell "
     "builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their POSIX equivalents (`ls`, "
     "`$FOO`, `grep`). Path arguments for NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
+    # no-tmp: ok — illustrates the MSYS path that FAILS for native Windows tools
     "path conversion is disabled here, so `git -C /c/Users/x` or `node /tmp/a.js` fails with 'cannot change to'/'not "
     "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
-    "native tools, and prefer `$LOCALAPPDATA/Temp` over `/tmp` for scratch files a native tool must read. When "
+    # no-tmp: ok — tells the model what NOT to use
+    "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
     "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
     "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
@@ -874,10 +907,11 @@ def _tenv_read(name: str, default: str = "") -> str:
 _BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
 # (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
+# OS/kernel only: the sandbox's user, $HOME and cwd are user-identifying and nothing consumes
+# them — the model can `whoami && pwd` when a task actually needs them.
 _BACKEND_PROBE_CMD = (
-    "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
-    "\"$(uname -r 2>/dev/null || echo unknown)\" "
-    "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
+    "printf 'os=%s\\nkernel=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
+    "\"$(uname -r 2>/dev/null || echo unknown)\""
 )
 
 
@@ -920,11 +954,8 @@ def _format_backend_probe(output: str) -> str:
     """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
     known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
-    fields = (
-        ("OS", " ".join(x for x in (known("os"), known("kernel")) if x)),
-        ("User", known("user")), ("Home", parsed.get("home")), ("Working directory", parsed.get("cwd")),
-    )
-    return "\n".join(f"  {label}: {value}" for label, value in fields if value)
+    os_line = " ".join(x for x in (known("os"), known("kernel")) if x)
+    return f"  OS: {os_line}" if os_line else ""
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
@@ -967,6 +998,13 @@ def _local_host_hints() -> list[str]:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
     except OSError:
         pass
+    # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
+    # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
+    try:
+        host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
+                          "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
+    except OSError:
+        pass
     if not (sys.platform == "win32" and not is_wsl()):
         return ["\n".join(host_lines)]
     host_lines.append(
@@ -985,7 +1023,9 @@ def _remote_backend_hint(backend: str) -> str:
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
-            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}"
+            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}\n"
+            f"  The sandbox's current user, $HOME, and working directory are not listed here; if you need them, "
+            f"probe directly with a terminal call like `whoami && pwd`."
         )
     description = (
         _BACKEND_FALLBACK_DESCRIPTIONS.get(backend)
@@ -994,7 +1034,7 @@ def _remote_backend_hint(backend: str) -> str:
     )
     return lead + (
         f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
-        f"prompt-build time, so the sandbox's current user, $HOME, and working directory are unknown from here. "
+        f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
     )
 
@@ -1079,7 +1119,7 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1140,6 +1180,12 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     return None
 
 
+def _requires_apps_list(frontmatter: dict) -> list[str]:
+    raw = frontmatter.get("requires_apps")
+    items = raw if isinstance(raw, list) else [raw] if raw else []
+    return [str(a).strip() for a in items if str(a).strip()]
+
+
 def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
     """Serialisable metadata dict for one skill."""
     parts = skill_file.relative_to(skills_dir).parts
@@ -1155,6 +1201,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "requires_apps": _requires_apps_list(frontmatter),
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1171,8 +1218,8 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     try:
         frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
-        if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
-            return False, frontmatter, ""
+        if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
+            return False, frontmatter, extract_skill_description(frontmatter)
         return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
@@ -1326,6 +1373,13 @@ def _render_skills_index(
             if name not in seen:
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+    from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
+    if is_single_query_session():
+        return (
+            ONESHOT_SKILLS_LOAD_GUIDANCE
+            + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
+            + hidden_note
+        )
     return (
         "## Skills\n"
         "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
@@ -1349,6 +1403,11 @@ def _render_skills_index(
     )
 
 
+def _oneshot_prompt_variant() -> bool:
+    from agent.oneshot_footprint import is_single_query_session
+    return is_single_query_session()
+
+
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
@@ -1363,10 +1422,15 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _oneshot_prompt_variant(),
+    )
+    snapshot = _load_skills_snapshot(skills_dir)
+    app_gated = snapshot is not None and any(
+        entry.get("requires_apps") for entry in snapshot.get("skills", []) if isinstance(entry, dict)
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None:
+        if cached is not None and not app_gated:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
@@ -1378,9 +1442,10 @@ def _build_skills_system_prompt_inner(
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
-    snapshot = _load_skills_snapshot(skills_dir)
     if snapshot is not None:
-        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or []))
+        # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
+        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
+                       and skill_matches_apps({"requires_apps": entry.get("requires_apps") or []}))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
         category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}
     else:
@@ -1489,8 +1554,20 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None
-        return _truncate_content(_scan_context_content(content, "SOUL.md"), "SOUL.md", context_length=context_length,
-                                 read_path=str(soul_path))
+        # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
+        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
+        # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
+        # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
+        from hermes_cli.profile_distribution import read_manifest
+        try:
+            manifest = read_manifest(soul_path.parent)
+            user_authored = manifest is None or (bool(manifest.distribution_owned)
+                                                 and "SOUL.md" not in manifest.distribution_owned)
+        except Exception as e:  # unparseable manifest is still a distribution: fail closed
+            logger.debug("Could not read distribution manifest next to %s: %s", soul_path, e)
+            user_authored = False
+        return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored), "SOUL.md",
+                                 context_length=context_length, read_path=str(soul_path))
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
@@ -1568,7 +1645,7 @@ def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
     candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.is_dir():
+    if _is_dir_or_denied(cursor_rules_dir):
         candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
     return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
 

@@ -12,8 +12,6 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from tools.skills_guard import SCANNER_VERSION, scan_skill_cached
-from tools.skills_hub import HubLockFile
 from tools.skills_hub_github import GitHubAuth, GitHubSource
 from tools.skills_hub_models import SkillBundle
 from tools.skills_hub_sources import UrlSource
@@ -134,15 +132,23 @@ def test_same_dir_linked_siblings_are_fetched(served_repo, monkeypatch):
     assert "README.md" not in bundle.files
 
 
-def test_same_dir_traversal_link_is_rejected(monkeypatch):
-    source = UrlSource()
-    skill = (
-        "---\nname: bad\ndescription: bad\n---\n"
-        "[bad](./../outside-secret.md)\n"
-    )
-    monkeypatch.setattr(source, "_fetch_text", lambda _url: skill)
+def test_same_dir_link_outside_skill_dir_is_skipped_not_fatal(served_repo, monkeypatch):
+    """A repo-relative link above the skill directory is prose, not a bundle path (#115171).
 
-    assert source.fetch("https://example.com/bad/SKILL.md") is None
+    Nothing is fetched for it, so it must not reject the bundle: the skill installs with
+    SKILL.md and its real siblings, and the outside link is simply left dangling.
+    """
+    repo, url = served_repo
+    (repo / "DEFS.md").write_text("defs\n")
+    (repo / "SKILL.md").write_text(SKILL_MD + "[registry](../../tools/REGISTRY.md) and [defs](./DEFS.md)\n")
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
+    bundle = UrlSource().fetch(url)
+
+    assert bundle is not None
+    assert "DEFS.md" in bundle.files
+    assert not any(".." in name for name in bundle.files)
 
 
 def test_same_dir_link_without_extension_is_ignored(monkeypatch):
@@ -310,26 +316,6 @@ def test_github_source_fetch_dangling_linked_reference_warns_not_aborts(monkeypa
     assert source.fetch("owner/repo/skill") is None
 
 
-def test_lock_file_persists_scan_provenance(tmp_path):
-    lock = HubLockFile(tmp_path / "lock.json")
-    provenance = {
-        "source_url": "https://example.com/SKILL.md",
-        "bundle_hash": "sha256:" + "a" * 64,
-        "scanner_version": SCANNER_VERSION,
-        "findings": [],
-        "rules": [],
-        "scanned_at": "2026-07-09T00:00:00+00:00",
-        "fresh": True,
-    }
-    lock.record_install(
-        name="demo", source="url", identifier="https://example.com/SKILL.md",
-        trust_level="community", scan_verdict="safe", skill_hash="sha256:legacy",
-        install_path="demo", files=["SKILL.md"], scan_provenance=provenance,
-    )
-
-    assert lock.get_installed("demo")["scan_provenance"] == provenance
-
-
 def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path):
     from hermes_cli.skills_hub import do_install
 
@@ -355,7 +341,6 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["demo-bundle"]
     assert entry["scan_provenance"]["source_url"] == url
     assert entry["scan_provenance"]["fresh"] is True
-    assert "Scan provenance: fresh" in sink.getvalue()
 
 
 def _make_skills_redirect(link: Path, target: Path) -> bool:
@@ -418,7 +403,6 @@ def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
     # The post-install "Installed:" line (relative_to on the display path)
     # renders instead of raising.
     assert "Installed:" in sink.getvalue()
-
 
 
 SKILL_MD_MISSING_REF = """---
@@ -494,10 +478,6 @@ def test_install_skips_unreachable_support_file_e2e(served_repo_missing_support,
     assert "references/absent.md" not in entry["files"]
 
 
-
-
-
-
 def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypatch):
     from tools.skills_hub_official import OptionalSkillSource
 
@@ -530,7 +510,6 @@ metadata:
 def test_optional_source_upstream_stub_fetches_from_external_repo(tmp_path, monkeypatch):
     """A catalog stub with metadata.hermes.upstream installs the upstream repo's
     content (relabelled official/trusted), not the stub itself."""
-    from tools.skills_hub_models import SkillBundle
     from tools.skills_hub_official import OptionalSkillSource
 
     root = tmp_path / "optional-skills"

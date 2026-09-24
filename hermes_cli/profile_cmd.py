@@ -215,20 +215,25 @@ def _profile_create(args):
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
+            from hermes_cli.profile_memory_config import cloned_memory_provider
+            memory_provider = cloned_memory_provider(profile_dir)
+            if memory_provider:
+                print(f"Cloned memory provider config ({memory_provider}) too.")
         if sync_imports:
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
         # Auto-clone Honcho config for the new profile (only with clone operations)
         try:
-            from plugins.memory.honcho.cli import ConfigWriteRefused, clone_honcho_for_profile
+            from plugins.memory import import_provider_module
+            honcho_cli = import_provider_module("honcho", "cli")
         except Exception:
-            clone_honcho_for_profile = None  # Honcho plugin not installed
-        if clone_honcho_for_profile is not None:
+            honcho_cli = None  # Honcho plugin not installed
+        if honcho_cli is not None:
             try:
-                if clone_honcho_for_profile(name):
+                if honcho_cli.clone_honcho_for_profile(name):
                     print(f"Honcho config cloned (peer: {name})")
-            except ConfigWriteRefused as e:
+            except honcho_cli.ConfigWriteRefused as e:
                 print(f"Honcho config not cloned: {e}")
             except Exception:
                 pass  # Honcho not configured
@@ -286,7 +291,7 @@ def _profile_delete(args):
     from hermes_cli.profiles import delete_profile
     try:
         delete_profile(args.profile_name, yes=getattr(args, "yes", False))
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
         _die(f"Error: {e}")
 
 
@@ -451,6 +456,21 @@ def _profile_migrate_identity(args):
     print(f"✓ Session/routing identity migrated: {args.old_name} → {args.new_name}")
 
 
+def _profile_purge_identity(args):
+    """Retry the identity purge of a delete that already completed. Exits non-zero when a live
+    gateway would not purge (it still owns the routing index in memory), or when a database rejected
+    the delete (lock, partial failure)."""
+    from hermes_cli.profile_identity import purge_profile_identity
+    try:
+        purged = purge_profile_identity(args.profile_name)
+    except ValueError as e:
+        _die(f"Error: {e}")
+    if not purged:
+        _die(f"Error: session identity was not purged. Restart or stop the gateway, then run:\n"
+             f"    hermes profile purge-identity {args.profile_name}", err=True)
+    print(f"✓ Session/routing identity purged: {args.profile_name}")
+
+
 def _profile_export(args):
     from hermes_cli.profiles import export_profile, get_profile_export_path
     name = args.profile_name
@@ -590,6 +610,7 @@ PROFILE_ACTIONS = {
     'show': _profile_show,
     'alias': _profile_alias,
     'rename': _profile_rename,
+    'purge-identity': _profile_purge_identity,
     'migrate-identity': _profile_migrate_identity,
     'export': _profile_export,
     'import': _profile_import,

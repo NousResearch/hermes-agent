@@ -22,6 +22,7 @@
 //! the no-window creation flag — both already cfg-gated. Keep new logic
 //! OS-agnostic so the mac/linux port stays "fill in the paths".
 
+use std::collections::VecDeque;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -499,9 +500,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             emit_stage(&app, "update", StageState::Succeeded, Some(update_ms), None);
         }
         Some(code) if code == UPDATE_EXIT_CONCURRENT => {
-            let msg = "Hermes is still running. Close all Hermes windows and try \
-                       the update again."
-                .to_string();
+            let msg = concurrent_update_message(&update.stdout_tail);
             emit_stage(
                 &app,
                 "update",
@@ -931,6 +930,27 @@ fn rebuild_needs_retry(exit_code: Option<i32>) -> bool {
     exit_code != Some(0)
 }
 
+/// Lines of child stdout kept for the exit-2 diagnosis. Every refusal block
+/// is a handful of lines printed right before `sys.exit(2)`.
+const STDOUT_TAIL_LINES: usize = 40;
+
+/// User-facing message for an exit-2 refusal from `hermes update`.
+///
+/// Exit 2 has several causes (another update holds the marker, a live
+/// hermes.exe or venv holder, a self-mapped `.pyd` after the code swap), and
+/// the child always prints the specific one as a block starting with `✗`
+/// just before exiting. Show that block — it names the real holder/PID — and
+/// fall back to the generic "still running" text only when none was captured
+/// (#78135).
+fn concurrent_update_message(stdout_tail: &[String]) -> String {
+    match stdout_tail.iter().rposition(|l| l.trim_start().starts_with('✗')) {
+        Some(start) => stdout_tail[start..].join("\n").trim().to_string(),
+        None => "Hermes is still running. Close all Hermes windows and try \
+                 the update again."
+            .to_string(),
+    }
+}
+
 /// Spawn `hermes <args>` from `cwd`, stream stdout/stderr as Log events on the
 /// bootstrap channel, and return the exit code. Mirrors powershell::run_script
 /// but for an arbitrary command (no install.ps1 -File wrapping).
@@ -942,6 +962,8 @@ async fn run_streamed(
     envs: &[(String, OsString)],
     stage: Option<&str>,
 ) -> Result<CmdResult> {
+    let mut stdout_tail: VecDeque<String> = VecDeque::with_capacity(STDOUT_TAIL_LINES);
+
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
@@ -970,7 +992,13 @@ async fn run_streamed(
     let stage_owned = stage.map(|s| s.to_string());
     let outcome = pump_child(
         &mut child,
-        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l),
+        |l| {
+            emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l);
+            if stdout_tail.len() == STDOUT_TAIL_LINES {
+                stdout_tail.pop_front();
+            }
+            stdout_tail.push_back(l.to_string());
+        },
         |l| emit_log(app, stage_owned.as_deref(), LogStream::Stderr, l),
         &mut None,
         DRAIN_GRACE,
@@ -991,11 +1019,14 @@ async fn run_streamed(
 
     Ok(CmdResult {
         exit_code: outcome.exit_code,
+        stdout_tail: stdout_tail.into(),
     })
 }
 
 struct CmdResult {
     exit_code: Option<i32>,
+    /// Last [`STDOUT_TAIL_LINES`] stdout lines; see [`concurrent_update_message`].
+    stdout_tail: Vec<String>,
 }
 
 /// Path to the venv hermes shim under an install root, regardless of existence.
@@ -1308,6 +1339,9 @@ fn option_env_string(key: &str) -> Option<String> {
 }
 
 fn emit(app: &AppHandle, event: BootstrapEvent) {
+    // Same UI boundary as bootstrap.rs's emit_event: the update flow's log
+    // lines also reach the plain-text Live output pane (#112675).
+    let event = event.sanitized_for_ui();
     if let Err(e) = app.emit(BootstrapEvent::CHANNEL, &event) {
         tracing::warn!(?e, "failed to emit update event");
     }
@@ -1428,6 +1462,34 @@ mod tests {
             Path::new(r"C:\Users\tester\.hermes\hermes-agent\apps\desktop\Hermes.exe"),
             Path::new(r"C:\Users\tester\.hermes\hermes-agent\venv\Scripts\hermes.exe"),
         ));
+    }
+
+    fn lines(text: &str) -> Vec<String> {
+        text.lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn concurrent_update_message_shows_the_childs_refusal_block() {
+        // Exit 2 after the code swap: fetch/pull noise precedes the refusal,
+        // and only the refusal (which names the real holder) is the message.
+        let tail = lines(
+            "→ Fetching updates...\n\
+             ✓ Updated to 6b2c23ae42\n\
+             ✗ Another Hermes update is already running (started 3m 42s ago, process 65285).\n\
+             \n  Wait for it to finish, then run `hermes update` again.\n",
+        );
+        assert_eq!(
+            concurrent_update_message(&tail),
+            "✗ Another Hermes update is already running (started 3m 42s ago, process 65285).\n\
+             \n  Wait for it to finish, then run `hermes update` again."
+        );
+    }
+
+    #[test]
+    fn concurrent_update_message_falls_back_without_a_refusal_block() {
+        let generic = "Hermes is still running. Close all Hermes windows and try the update again.";
+        assert_eq!(concurrent_update_message(&[]), generic);
+        assert_eq!(concurrent_update_message(&lines("→ Fetching updates...\n")), generic);
     }
 
     #[test]

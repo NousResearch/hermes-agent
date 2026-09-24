@@ -12,7 +12,6 @@ small and focused on this one endpoint pair.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import stat
 import sys
@@ -50,6 +49,8 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
 
     d = profiles_mod.get_profile_dir("demo")
     d.mkdir(parents=True, exist_ok=True)
+    # Identity marker (SOUL.md is one too, but these tests own SOUL.md; config.yaml is neutral).
+    (d / "config.yaml").write_text("{}\n")
     return d
 
 
@@ -136,65 +137,7 @@ class TestSoulWriteDurability:
         assert mode == 0o644, f"first save created SOUL.md as {oct(mode)}"
 
 
-class TestSoulIoIsOffTheEventLoop:
-    """Neither half of the persona editor may run its I/O on the ASGI loop.
-
-    The durability the tests above buy comes from ``atomic_write_text``, which
-    fsyncs before replacing — so the save blocks for as long as the filesystem
-    takes to commit. These handlers sit in the same router as the profile
-    delete and describe-auto paths; the rest of that sweep is covered by
-    ``tests/hermes_cli/test_web_profiles_off_loop.py``.
-    """
-
-    @staticmethod
-    def _probe(seen, tag):
-        """Record whether the caller's thread is running an event loop."""
-        try:
-            asyncio.get_running_loop()
-            seen.append((tag, True))
-        except RuntimeError:
-            seen.append((tag, False))
-
-    def test_get_soul_reads_off_loop(self, client, profile_dir: Path, monkeypatch):
-        (profile_dir / "SOUL.md").write_text(SOUL, encoding="utf-8")
-        seen: list[tuple[str, bool]] = []
-        real_read_text = Path.read_text
-
-        def probing_read_text(self, *args, **kwargs):
-            if self.name == "SOUL.md":
-                TestSoulIoIsOffTheEventLoop._probe(seen, "read")
-            return real_read_text(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "read_text", probing_read_text)
-
-        r = client.get("/api/profiles/demo/soul")
-
-        assert r.status_code == 200, r.text
-        assert r.json()["content"] == SOUL
-        assert ("read", False) in seen, (
-            f"SOUL.md must be read off the event loop; proof: {seen}"
-        )
-
-    def test_put_soul_writes_off_loop(self, client, profile_dir: Path, monkeypatch):
-        seen: list[tuple[str, bool]] = []
-        import utils
-
-        real_write = utils.atomic_write_text
-
-        def probing_write(*args, **kwargs):
-            TestSoulIoIsOffTheEventLoop._probe(seen, "write")
-            return real_write(*args, **kwargs)
-
-        monkeypatch.setattr(utils, "atomic_write_text", probing_write)
-
-        r = client.put("/api/profiles/demo/soul", json={"content": SOUL})
-
-        assert r.status_code == 200, r.text
-        assert (profile_dir / "SOUL.md").read_text(encoding="utf-8") == SOUL
-        assert ("write", False) in seen, (
-            f"SOUL.md must be written off the event loop; proof: {seen}"
-        )
-
+class TestSoulReadReportsPresence:
     def test_missing_soul_is_still_reported_absent(self, client, profile_dir: Path):
         """The offloaded reader must keep distinguishing "no file" from
         "empty file" — the whole point of the durability tests above."""

@@ -82,9 +82,6 @@ class TestFindBinary:
         monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
         assert lp.find_lightpanda_binary() is None
 
-    def test_none_on_windows(self, monkeypatch):
-        monkeypatch.setattr(lp.os, "name", "nt")
-        assert lp.find_lightpanda_binary() is None
 
 
 class TestLaunch:

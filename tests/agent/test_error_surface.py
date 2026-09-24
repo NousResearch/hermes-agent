@@ -258,3 +258,32 @@ def test_free_tier_kinds_say_whether_a_later_send_can_succeed(kind, retryable):
 def test_a_free_tier_block_without_a_kind_is_ignored():
     surface = build_error_surface_from_result(_failed_result("auth_permanent", free_tier={}), provider="nous")
     assert surface["code"] == "auth_permanent" and surface["layer"] == LAYER_AUTH
+
+
+def test_rate_limit_reset_rides_the_surface():
+    """#98852: a 429 whose Retry-After (or ``resets_at`` body field) names when the limit lifts
+    surfaces that moment as ``resets_at`` (epoch seconds) so the card can say "Limit resets at
+    HH:mm" next to Retry; a 429 without any reset signal carries no ``resets_at``."""
+    import time
+
+    import httpx
+    import openai
+
+    def _rate_limit(headers: dict, body: dict):
+        request = httpx.Request("POST", "http://fake/v1/chat/completions")
+        response = httpx.Response(429, headers=headers, request=request)
+        return openai.RateLimitError("HTTP 429: The usage limit has been reached", response=response, body=body)
+
+    before = time.time()
+    exc = _rate_limit({"Retry-After": "3600"},
+                      {"error": {"message": "The usage limit has been reached", "type": "usage_limit_reached"}})
+    surface = build_error_surface_from_exception(exc, provider="openai", model="gpt-5")
+    assert surface["code"] == "rate_limit" and surface["retryable"] is True
+    assert before + 3500 <= surface["resets_at"] <= time.time() + 3600
+
+    result = {"error": "HTTP 429: The usage limit has been reached", "failure_reason": "rate_limit",
+              "failure_retryable": True, "failure_resets_at": 1_800_000_000}
+    assert build_error_surface_from_result(result, provider="openai")["resets_at"] == 1_800_000_000.0
+
+    bare = _rate_limit({}, {"error": {"message": "Rate limit exceeded"}})
+    assert "resets_at" not in build_error_surface_from_exception(bare, provider="openai", model="gpt-5")

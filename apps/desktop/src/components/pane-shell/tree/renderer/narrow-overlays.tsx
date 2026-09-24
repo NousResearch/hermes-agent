@@ -7,7 +7,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
@@ -18,9 +18,11 @@ import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape
 import { cn } from '@/lib/utils'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
+import { NO_PANE_GROUP } from '../../pane-visibility'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
+import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { paneChrome } from './track-model'
 
 export function NarrowOverlays() {
@@ -28,8 +30,21 @@ export function NarrowOverlays() {
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
   const panes = useContributions('panes')
+  const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+
+  const onMouseLeave = useCallback<MouseEventHandler<HTMLDivElement>>(event => {
+    // The overlay's chrome and its stable guest are DOM siblings, but one
+    // hover boundary. Crossing between them must not dismiss an unpinned pane.
+    const next = event.relatedTarget
+
+    if (next instanceof Element && next.closest('[data-narrow-overlay], [data-pane-overlay]')) {
+      return
+    }
+
+    setReveal(current => (current?.pinned ? current : null))
+  }, [])
 
   // Own an Escape layer only while something is revealed, so Escape closes the
   // overlay only when it's the top layer (never under a dialog / edit mode).
@@ -158,7 +173,8 @@ export function NarrowOverlays() {
           // panes beneath it — a see-through overlay reads as text bleeding
           // through text. Contract: `[data-glass-opaque]` in styles.css.
           data-glass-opaque=""
-          onMouseLeave={() => setReveal(current => (current?.pinned ? current : null))}
+          data-narrow-overlay=""
+          onMouseLeave={onMouseLeave}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
           style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
@@ -185,9 +201,22 @@ export function NarrowOverlays() {
               ))}
             </PaneTabStrip>
           )}
-          <ContribBoundary id={revealed.id}>
-            {revealed.render && <ContribRender render={revealed.render} />}
-          </ContribBoundary>
+          {stableHosts && paneChrome(revealed).lifecycleKeepAlive ? (
+            <div className="relative min-h-0 min-w-0 flex-1">
+              <KeepAlivePaneSlot
+                groupId={(tree && findGroupOfPane(tree, revealed.id)?.id) || NO_PANE_GROUP}
+                headerVisible={zonePanes.length > 1}
+                onMouseLeave={onMouseLeave}
+                overlay
+                paneId={revealed.id}
+                visible
+              />
+            </div>
+          ) : (
+            <ContribBoundary id={revealed.id}>
+              {revealed.render && <ContribRender render={revealed.render} />}
+            </ContribBoundary>
+          )}
         </div>
       )}
     </>

@@ -382,6 +382,51 @@ def test_reply_roundtrip_and_id_validation(home):
     assert "error" in err
 
 
+def test_reply_rewrites_a_target_scope_error_that_came_back_from_a_connection(home):
+    """End-to-end through the RPC. The sender's gateway is the last place that knows BOTH the failure
+    text and which target produced it, so the honest copy has to land here — in the reply file the
+    waiter reads — not in the target install that only ever saw its own envelope."""
+    env_id = "f" * 32
+    base = bot_relay.relay_root(home)
+    (base / bot_relay.CLAIMED_DIR).mkdir(parents=True, exist_ok=True)
+    (base / bot_relay.CLAIMED_DIR / f"{env_id}.json").write_text(json.dumps({
+        "id": env_id, "message": "hi", "created_at": 1, "target_connection": "nebular-cooee",
+        "target_profile": "default", "target_handle": "hermes",
+    }), encoding="utf-8")
+    scope = ("Hermes could not read this profile's API key (an internal profile-scoping bug on the "
+             "multiplexed gateway, not your configuration). Run `hermes gateway restart`; if it keeps "
+             "happening, report it with `hermes debug share`.")
+
+    _result(srv._methods["bot_relay.reply"](1, {"id": env_id, "error": scope}))
+    data = json.loads((base / bot_relay.REPLIES_DIR / f"{env_id}.json").read_text(encoding="utf-8"))
+    assert "nebular-cooee" in data["error"] and "cannot fix it" in data["error"]
+    assert data["reason"] == "target_scope_unresolved"
+
+    # No envelope on disk (already swept): the text is passed through untouched.
+    orphan = "e" * 32
+    _result(srv._methods["bot_relay.reply"](2, {"id": orphan, "error": scope}))
+    kept = json.loads((base / bot_relay.REPLIES_DIR / f"{orphan}.json").read_text(encoding="utf-8"))
+    assert kept["error"] == scope
+
+
+def test_deliver_refuses_honestly_when_the_env_build_cannot_resolve_the_profile(home, monkeypatch):
+    """A patched TARGET must answer truly. The generic copy would tell a sender on ANOTHER machine to
+    restart a gateway that has nothing to do with the refusal — the refusal is this install's."""
+    from agent.secret_scope import UnscopedSecretError
+
+    def _boom(*_args, **_kwargs):
+        raise UnscopedSecretError(
+            "", "served_profile_child_env(inherit_credentials=True) called with no target home and no "
+                "profile secret scope bound while multiplexing is on")
+
+    monkeypatch.setattr(bot_relay, "delivery_env", _boom)
+    err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"})["error"]
+    assert err["code"] == 5094
+    assert err["data"]["reason"] == "target_scope_unresolved"
+    assert "THIS install" in err["message"] and "'ops'" in err["message"]
+    assert "SENDER's gateway cannot fix it" in err["message"]
+
+
 def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_path):
     """A failed payload write must not leak the relay DM tempfile."""
     import glob

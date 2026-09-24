@@ -303,6 +303,14 @@ def test_normalize_profile_cap_overrides_warns_and_keeps_valid_entries(caplog):
                 "zero": 0,
                 "bad": "many",
                 "": 2,
+                # Three shapes that must be dropped individually and never
+                # fatally: `True` is an `int` subclass, so int() would read a
+                # YAML `true` as a cap of 1; `inf` is what PyYAML makes of
+                # `1e400`, and int(inf) raises OverflowError out of the tick;
+                # and 2.5 would be truncated to 2 without a word.
+                "flag": True,
+                "inf": float("inf"),
+                "frac": 2.5,
             }
         )
 
@@ -310,6 +318,9 @@ def test_normalize_profile_cap_overrides_warns_and_keeps_valid_entries(caplog):
     messages = [record.getMessage() for record in caplog.records]
     assert any("'zero'" in m and "below 1" in m for m in messages)
     assert any("'bad'" in m and "invalid" in m for m in messages)
+    assert any("'flag'" in m and "a boolean" in m for m in messages)
+    assert any("'inf'" in m and "whole number" in m for m in messages)
+    assert any("'frac'" in m and "whole number" in m for m in messages)
     assert any("profile name" in m for m in messages)
 
 

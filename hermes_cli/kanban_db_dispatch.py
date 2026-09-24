@@ -1922,7 +1922,11 @@ def normalize_profile_cap_overrides(raw: Any) -> dict[str, int]:
     The gateway, the CLI and direct dispatcher callers share this parser so
     every dispatch surface applies identical precedence and validation.
     Invalid entries are ignored individually: one typo must not disable the
-    valid limits for other profiles.
+    valid limits for other profiles. A ``bool`` (YAML ``true``) is an
+    ``int`` subclass and a non-integral ``float`` truncates silently, so
+    both are rejected rather than read as a cap; a non-finite float
+    (``1e400`` parses as ``inf``) raises ``OverflowError`` out of
+    ``int()`` and is rejected too.
     """
     if raw is None:
         return {}
@@ -1944,9 +1948,25 @@ def normalize_profile_cap_overrides(raw: Any) -> dict[str, int]:
             )
             continue
         profile = raw_profile.strip()
+        if isinstance(raw_limit, bool):
+            _kb._log.warning(
+                "kanban dispatcher: concurrency override for profile %r is "
+                "a boolean: %r; ignoring",
+                profile,
+                raw_limit,
+            )
+            continue
+        if isinstance(raw_limit, float) and not raw_limit.is_integer():
+            _kb._log.warning(
+                "kanban dispatcher: concurrency override for profile %r is "
+                "not a whole number: %r; ignoring",
+                profile,
+                raw_limit,
+            )
+            continue
         try:
             limit = int(raw_limit)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _kb._log.warning(
                 "kanban dispatcher: invalid concurrency override for profile "
                 "%r: %r; ignoring",

@@ -8,6 +8,8 @@ import type { SessionMessage } from '@/types/hermes'
 
 import { stubThreadEnvironment, ThreadRuntime } from '../test-utils'
 
+import { responseMessageKey } from './response-group'
+
 import { Thread } from '.'
 
 beforeEach(stubThreadEnvironment)
@@ -109,4 +111,38 @@ it('ends the response at a real user prompt or unrelated system event', () => {
 
   expect(container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(2)
   expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(3)
+})
+
+it('keys response message rows by durable message id when a session replacement reuses their indices', async () => {
+  const firstSession = toChatMessages([
+    { role: 'user', content: 'First prompt', timestamp: 1 },
+    { role: 'assistant', content: 'First assistant part', timestamp: 2 },
+    { role: 'assistant', content: 'First follow-up part', timestamp: 3 }
+  ]).map(toRuntimeMessage)
+
+  const secondSession = toChatMessages([
+    { role: 'user', content: 'Second prompt', timestamp: 4 },
+    { role: 'assistant', content: 'Second assistant part', timestamp: 5 },
+    { role: 'assistant', content: 'Second follow-up part', timestamp: 6 }
+  ]).map(toRuntimeMessage)
+
+  const { container, rerender } = render(
+    <ThreadRuntime messages={firstSession}>
+      <Thread sessionKey="first-session" />
+    </ThreadRuntime>
+  )
+
+  rerender(
+    <ThreadRuntime messages={secondSession}>
+      <Thread sessionKey="second-session" />
+    </ThreadRuntime>
+  )
+
+  await waitFor(() => expect(container.textContent).toContain('Second follow-up part'))
+  expect(container.textContent).not.toContain('First assistant part')
+  expect(responseMessageKey(secondSession[1]!.id)).toBe(secondSession[1]!.id)
+  expect(responseMessageKey(secondSession[2]!.id)).toBe(secondSession[2]!.id)
+  expect(
+    [...container.querySelectorAll('[data-role="assistant"]')].map(e => e.getAttribute('data-message-id'))
+  ).toEqual([secondSession[1]!.id, secondSession[2]!.id])
 })

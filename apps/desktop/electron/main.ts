@@ -214,6 +214,7 @@ import {
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
+import { registerSdkVersionsIpc } from './sdk-versions'
 import {
   filenameFromContentDisposition,
   fsPumpDeps,
@@ -18292,6 +18293,16 @@ function showAboutPanelFresh() {
     app.showAboutPanel()
   })
 }
+
+// Settings -> Providers "SDK and Runtime Versions" panel (#120879): installed
+// agent SDK versions read from each package's package.json at request time,
+// plus the Node/Electron runtimes. Pure read - nothing is mutated or cached.
+registerSdkVersionsIpc({
+  appPath: app.getAppPath(),
+  hermesHome: HERMES_HOME,
+  env: process.env,
+  platform: process.platform
+})
 
 ipcMain.handle('hermes:version', async () => {
   const skew = await detectRendererSkew()

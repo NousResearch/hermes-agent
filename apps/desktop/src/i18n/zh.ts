@@ -2046,6 +2046,14 @@ export const zh = defineLocale({
         default: { title: '账单请求失败', message: '账单请求失败。' }
       }
     },
+    sdkVersions: {
+      title: 'SDK 与运行时版本',
+      sdksLabel: '智能体 SDK',
+      runtimeLabel: '运行时',
+      copyAll: '全部复制',
+      notInstalled: '未安装',
+      loading: '正在加载版本...'
+    },
     providers: {
       connectAccount: '连接账号',
       haveApiKey: '改用 API 密钥？',

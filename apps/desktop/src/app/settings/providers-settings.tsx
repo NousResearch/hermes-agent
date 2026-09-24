@@ -36,6 +36,7 @@ import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
+import { SdkVersionsSection } from './sdk-versions-section'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
 // exists in the Electron desktop shell, not the web dashboard.
@@ -516,6 +517,7 @@ export function ProvidersSettings({
         ) : (
           <NoProviderKeys />
         )}
+        <SdkVersionsSection />
       </SettingsContent>
     )
   }
@@ -543,6 +545,7 @@ export function ProvidersSettings({
         profile={scopeProfile}
         providers={oauthProviders}
       />
+      <SdkVersionsSection />
     </SettingsContent>
   )
 }

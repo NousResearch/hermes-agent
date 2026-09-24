@@ -2160,6 +2160,14 @@ export const en: Translations = {
         }
       }
     },
+    sdkVersions: {
+      title: 'SDK and Runtime Versions',
+      sdksLabel: 'Agent SDKs',
+      runtimeLabel: 'Runtime',
+      copyAll: 'Copy all',
+      notInstalled: 'Not installed',
+      loading: 'Loading versions...'
+    },
     providers: {
       connectAccount: 'Connect an account',
       haveApiKey: 'Have an API key instead?',

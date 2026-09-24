@@ -2547,6 +2547,14 @@ export const de = defineLocale({
         }
       }
     },
+    sdkVersions: {
+      title: 'SDK- und Laufzeitversionen',
+      sdksLabel: 'Agent-SDKs',
+      runtimeLabel: 'Laufzeit',
+      copyAll: 'Alle kopieren',
+      notInstalled: 'Nicht installiert',
+      loading: 'Versionen werden geladen...'
+    },
     providers: {
       connectAccount: 'Ein Konto verbinden',
       haveApiKey: 'Haben Sie stattdessen einen API-Key?',

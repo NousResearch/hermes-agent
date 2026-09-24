@@ -1689,6 +1689,14 @@ export const zhHant = defineLocale({
         default: { title: '帳單請求失敗', message: '帳單請求失敗。' }
       }
     },
+    sdkVersions: {
+      title: 'SDK 與執行階段版本',
+      sdksLabel: '代理 SDK',
+      runtimeLabel: '執行階段',
+      copyAll: '全部複製',
+      notInstalled: '未安裝',
+      loading: '正在載入版本...'
+    },
     providers: {
       connectAccount: '連結帳號',
       haveApiKey: '改用 API 金鑰？',

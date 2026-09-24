@@ -592,6 +592,10 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      /** Agent SDK + runtime versions for the Providers settings panel
+       *  (#120879). Optional: an older preload (a mid-upgrade managed install)
+       *  simply doesn't answer; the panel then hides itself. */
+      getSdkVersions?: () => Promise<DesktopSdkVersions>
       /** Host facts for the guided first run. Optional: an older preload (a
        *  mid-upgrade managed install) simply doesn't answer. */
       getMachineProfile?: () => Promise<DesktopMachineProfile>
@@ -664,6 +668,18 @@ export interface HermesTerminalSession {
 export interface HermesTerminalExit {
   code: number | null
   signal: string | null
+}
+
+export interface DesktopSdkVersionEntry {
+  name: string
+  /** Installed version from the package's package.json; null when absent. */
+  version: null | string
+}
+
+export interface DesktopSdkVersions {
+  electron: string
+  node: string
+  sdks: DesktopSdkVersionEntry[]
 }
 
 export interface DesktopVersionInfo {

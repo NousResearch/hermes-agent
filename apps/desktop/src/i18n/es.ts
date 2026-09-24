@@ -2536,6 +2536,14 @@ export const es = defineLocale({
         }
       }
     },
+    sdkVersions: {
+      title: 'Versiones de SDK y de runtime',
+      sdksLabel: 'SDK de agentes',
+      runtimeLabel: 'Runtime',
+      copyAll: 'Copiar todo',
+      notInstalled: 'No instalado',
+      loading: 'Cargando versiones...'
+    },
     providers: {
       connectAccount: 'Conectar una cuenta',
       haveApiKey: '¿Tienes una clave API?',

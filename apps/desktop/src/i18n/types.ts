@@ -1807,6 +1807,14 @@ export interface Translations {
         default: { title: string; message: string }
       }
     }
+    sdkVersions: {
+      copyAll: string
+      loading: string
+      notInstalled: string
+      runtimeLabel: string
+      sdksLabel: string
+      title: string
+    }
     providers: {
       connectAccount: string
       haveApiKey: string

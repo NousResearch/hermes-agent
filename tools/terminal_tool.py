@@ -951,10 +951,13 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
             if raw_path.startswith("/")
             else posixpath.normpath(posixpath.join(cwd or "/", raw_path))
         )
+        resolver = getattr(env, "fetch_device_realpath", None)
+        if not callable(resolver):
+            continue
         try:
-            resolved = env.fetch_realpath(candidate)
+            resolved = resolver(candidate)
         except Exception:
-            logger.debug("guard path resolution failed for %r", candidate, exc_info=True)
+            logger.debug("guard device resolution failed for %r", candidate, exc_info=True)
             continue
         if not isinstance(resolved, str) or not resolved.strip():
             continue

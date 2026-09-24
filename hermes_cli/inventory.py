@@ -142,11 +142,25 @@ def build_models_payload(
         rows = _reorder_canonical(rows)
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, cached_only=pricing_cache_only)
+    # Both metadata decorators consult ``model_overrides``.  Snapshot the
+    # read-only config once for this payload rather than letting each model
+    # lookup reopen config.yaml through models_dev._cfg_get().
+    metadata_config = None
+    if capabilities or featured:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            metadata_config = load_config_readonly()
+        except Exception:
+            metadata_config = None
     if capabilities:
-        _apply_capabilities(rows)
+        _apply_capabilities(rows, metadata_config=metadata_config)
     if featured:
-        _apply_featured(rows)
+        _apply_featured(rows, metadata_config=metadata_config)
     _apply_custom_aliases(rows)
+    from hermes_cli.models_validate import drop_unofferable_model_ids
+
+    drop_unofferable_model_ids(rows)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
@@ -300,7 +314,7 @@ def _reasoning_catalog_reader(slug: str):
     return read
 
 
-def _apply_capabilities(rows: list[dict]) -> None:
+def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None) -> None:
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
@@ -321,7 +335,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
             reasoning = True
             if get_model_capabilities is not None and slug:
                 try:
-                    meta = get_model_capabilities(slug, model)
+                    meta = get_model_capabilities(slug, model, config=metadata_config)
                     if meta is not None and meta.supports_reasoning is not None:
                         reasoning = meta.supports_reasoning
                 except Exception:
@@ -351,7 +365,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
 _FEATURED_PER_LAB = 5
 
 
-def _apply_featured(rows: list[dict]) -> None:
+def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) -> None:
     """Attach a ``featured_models`` shortlist to each aggregator row: newest ``_FEATURED_PER_LAB`` per
     vendor by models.dev ``release_date`` (ranked within the row, never vs. today, so it is stable);
     ties keep curated order. Non-aggregators get an empty list and keep top-N behaviour."""
@@ -372,7 +386,8 @@ def _apply_featured(rows: list[dict]) -> None:
                 break
             date = ""
             if get_model_info is not None:
-                info = get_model_info(slug, model) or get_model_info("openrouter", model)
+                info = (get_model_info(slug, model, config=metadata_config)
+                        or get_model_info("openrouter", model, config=metadata_config))
                 date = getattr(info, "release_date", "") if info else ""
             by_lab.setdefault(lab, []).append((pos, date, model))
 

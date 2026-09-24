@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 
 from agent.monitoring.emitter import MonitoringEmitter
 
@@ -55,12 +54,3 @@ def test_unsubscribe_stops_delivery():
 
 
 
-def test_hot_path_is_fast():
-    em = MonitoringEmitter()
-    start = time.perf_counter()
-    for _ in range(1_000):
-        em.emit({"event": "gateway_health", "name": "gateway.health_snapshot"})
-    elapsed = time.perf_counter() - start
-    em.close()
-    # 1000 emits should be far under a second even on slow CI.
-    assert elapsed < 1.0

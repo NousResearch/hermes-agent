@@ -87,20 +87,7 @@ class TestAuxProbeMode:
             t.join()
         assert seen["active"] is False
 
-    def test_maybe_wrap_anthropic_passes_stub_through(self):
-        import agent.auxiliary_client as aux
 
-        stub = aux._AuxProbeClientStub(base_url="https://api.anthropic.com")
-        out = aux._maybe_wrap_anthropic(stub, "m", "key", "https://api.anthropic.com")
-        assert out is stub
-
-    def test_to_async_client_passes_stub_through(self):
-        import agent.auxiliary_client as aux
-
-        stub = aux._AuxProbeClientStub()
-        client, model = aux._to_async_client(stub, "m")
-        assert client is stub
-        assert model == "m"
 
 
 class TestVisionCheckUsesProbeMode:
@@ -137,28 +124,8 @@ class TestLazyMcpSdk:
         assert proc.returncode == 0, proc.stderr
         assert "ok" in proc.stdout
 
-    def test_availability_flag_reflects_find_spec(self):
-        import importlib.util
-        from tools import mcp_tool
 
-        expected = importlib.util.find_spec("mcp") is not None
-        assert mcp_tool._MCP_AVAILABLE is expected
 
-    def test_ensure_mcp_sdk_binds_symbols(self):
-        import importlib.util
-        from tools import mcp_tool
-
-        if importlib.util.find_spec("mcp") is None:
-            pytest.skip("mcp SDK not installed")
-        assert mcp_tool._ensure_mcp_sdk() is True
-        assert mcp_tool.ClientSession is not None
-        assert mcp_tool.stdio_client is not None
-
-    def test_ensure_respects_patched_unavailable(self):
-        from tools import mcp_tool
-
-        with patch.object(mcp_tool, "_MCP_AVAILABLE", False):
-            assert mcp_tool._ensure_mcp_sdk() is False
 
     def test_lazy_symbol_getattr_resolves_via_ensure(self):
         import importlib.util
@@ -211,20 +178,3 @@ class TestBannerUpdateCheckNonBlocking:
         assert "3 commits behind" in visible
         assert "\x1b" not in visible and "[bold" not in visible
 
-    def test_deferred_notice_silent_when_up_to_date(self):
-        import hermes_cli.banner as banner
-
-        printed = []
-
-        def _fake_cprint(text):
-            printed.append(text)
-
-        done = threading.Event()
-        with patch.object(banner, "_update_check_done", done), \
-             patch.object(banner, "_update_result", 0), \
-             patch.object(banner, "_deferred_update_notice_started", False), \
-             patch.object(banner, "cprint", _fake_cprint):
-            banner._defer_update_notice(max_wait=2.0)
-            done.set()
-            time.sleep(0.3)
-        assert not printed

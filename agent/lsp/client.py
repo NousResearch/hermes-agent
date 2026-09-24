@@ -28,6 +28,10 @@ from agent.lsp.protocol import (
 
 logger = logging.getLogger("agent.lsp.client")
 
+# asyncio's 64 KiB StreamReader default makes readline() raise on one long LSP
+# stderr line (#31417); 16 MiB covers realistic output while staying bounded.
+_STREAM_LIMIT = 16 * 1024 * 1024
+
 # Timeouts (seconds).
 INITIALIZE_TIMEOUT = 45.0
 DIAGNOSTICS_DOCUMENT_WAIT = 5.0
@@ -253,7 +257,7 @@ class LSPClient:
             # windows_hide_flags() suppresses the console window a .cmd shim would flash from a
             # console-less host (CREATE_NO_WINDOW; 0 on POSIX).
             self._proc = await asyncio.create_subprocess_exec(
-                cmd[0], *cmd[1:],
+                cmd[0], *cmd[1:], limit=_STREAM_LIMIT,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=delegated_child_subprocess_env({**os.environ, **(self._env or {})}), cwd=self._cwd,
                 start_new_session=True, creationflags=windows_hide_flags(),
@@ -267,8 +271,23 @@ class LSPClient:
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
             return
+        stderr = self._proc.stderr
         try:
-            while line := await self._proc.stderr.readline():
+            while True:
+                try:
+                    line = await stderr.readline()
+                except ValueError:
+                    # StreamReader.readline() translates LimitOverrunError to
+                    # ValueError after discarding the oversized buffer. Continue
+                    # draining so a pathological stderr line cannot leave the
+                    # pipe unread and block the server.
+                    logger.warning(
+                        "[%s] stderr: line exceeded stream limit, discarding",
+                        self.server_id,
+                    )
+                    continue
+                if not line:
+                    break
                 if text := line.decode("utf-8", errors="replace").rstrip():
                     logger.debug("[%s] stderr: %s", self.server_id, text[:1000])
                     self._stderr_tail.append(text[:1000])

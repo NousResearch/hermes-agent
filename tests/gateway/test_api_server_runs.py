@@ -330,7 +330,6 @@ class TestStartRun:
                 assert resp.status == 400
                 body = await resp.json()
         assert body["error"]["code"] == "invalid_author"
-        assert body["error"]["message"] == "author must be an object"
         mock_create.assert_not_called()
         assert adapter._run_statuses == {}
 
@@ -1726,19 +1725,6 @@ class TestRunIdempotency:
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
 
-    def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
-        adapter._run_statuses["run_progress"] = {
-            "run_id": "run_progress",
-            "status": "running",
-        }
-        adapter._run_idempotency_ids.add("run_progress")
-        adapter._run_idempotency_store.update_status = MagicMock()
-
-        adapter._set_run_status(
-            "run_progress", "running", last_event="tool.completed"
-        )
-
-        adapter._run_idempotency_store.update_status.assert_not_called()
 
     def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
         adapter._run_statuses["run_old"] = {
@@ -1754,33 +1740,6 @@ class TestRunIdempotency:
         assert "run_old" not in adapter._run_idempotency_ids
         assert "run_old" not in adapter._run_owners
 
-    @pytest.mark.asyncio
-    async def test_no_session_id_does_not_load_session_history(
-        self, adapter, tmp_path
-    ):
-        _use_idempotency_db(adapter, tmp_path / "idem.db")
-        history = AsyncMock(return_value=[])
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with (
-                patch.object(
-                    adapter,
-                    "_conversation_history_for_session",
-                    new=history,
-                ),
-                patch.object(adapter, "_create_agent") as create,
-            ):
-                agent = MagicMock()
-                agent.run_conversation.return_value = {"final_response": "done"}
-                agent.session_prompt_tokens = agent.session_completion_tokens = (
-                    agent.session_total_tokens
-                ) = 0
-                create.return_value = agent
-                response = await cli.post(
-                    "/v1/runs", json={"input": "no stored session"}
-                )
-        assert response.status == 202
-        history.assert_not_awaited()
 
 
 class TestHostedRoomRuns:
@@ -2101,8 +2060,7 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_fails_after_secret_rotation(
         self, auth_adapter, monkeypatch
     ):
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_room_peer import issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
         monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)

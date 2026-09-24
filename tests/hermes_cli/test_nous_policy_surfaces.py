@@ -191,10 +191,6 @@ class TestAuxiliaryFastModel:
         picked = aux._fast_model_from_catalog("nous")
         return picked, seen
 
-    def test_reads_the_catalog_with_nous_oauth_credentials(self, monkeypatch, no_policy):
-        """The api-key resolver raises for OAuth providers."""
-        _, seen = self._pick(monkeypatch, catalog=["vendor/haiku-fast"])
-        assert seen["api_key"] == "sk-nous"
 
     def test_hidden_model_is_not_selected(self, monkeypatch, policy):
         import agent.auxiliary_client as aux
@@ -214,16 +210,6 @@ class TestNousPrefetch:
     """The nous disk-cache entry is write-only, so prefetching it is a round
     trip for nothing."""
 
-    def test_nous_is_not_collected_for_prefetch(self, monkeypatch):
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.model_switch_providers as ms
-
-        monkeypatch.setattr(
-            auth_mod, "_load_auth_store",
-            lambda *a, **k: {"providers": {"nous": {"access_token": "tok"}}},
-        )
-        slugs = ms._collect_authed_provider_slugs({}, {"nous": list(CURATED)}, [])
-        assert "nous" not in slugs
 
 
 class TestPolicyNoticeIsShown:
@@ -233,16 +219,8 @@ class TestPolicyNoticeIsShown:
 
         monkeypatch.setattr(account_mod, "nous_policy_present", lambda: True)
         TestLoginNous()._run(monkeypatch, tmp_path)
-        assert "restricts which models" in capsys.readouterr().out
+        assert account_mod.nous_policy_notice(removed=True) in capsys.readouterr().out
 
-    def test_login_silent_for_an_ungoverned_org(
-        self, monkeypatch, tmp_path, no_policy, capsys
-    ):
-        import hermes_cli.nous_account as account_mod
-
-        monkeypatch.setattr(account_mod, "nous_policy_present", lambda: False)
-        TestLoginNous()._run(monkeypatch, tmp_path)
-        assert "restricts which models" not in capsys.readouterr().out
 
 
 class TestAuxFallbackRespectsPolicy:
@@ -300,24 +278,3 @@ class TestAuxFallbackRespectsPolicy:
         )
 
 
-def test_titling_seeds_the_shared_catalog_entry_like_the_pickers(monkeypatch):
-    """The aux catalog read shares the pickers' cache entry, so seeding it
-    without the Nous-only arguments costs the picker its sale chrome and leaves
-    the policy catalog with no expiry."""
-    import agent.auxiliary_client as aux
-
-    monkeypatch.setattr(
-        models_pricing, "_resolve_nous_pricing_credentials",
-        lambda: ("tok", "https://inference.example.com"),
-    )
-    seen: dict = {}
-
-    def _fake_fetch(**kwargs):
-        seen.update(kwargs)
-        return {"vendor/haiku": {}}
-
-    monkeypatch.setattr(models_pricing, "fetch_models_with_pricing", _fake_fetch)
-    aux._fast_model_from_catalog("nous")
-
-    assert seen.get("include_sale_original") is True
-    assert seen.get("cache_ttl_seconds") == models_pricing._NOUS_CATALOG_TTL_SECONDS

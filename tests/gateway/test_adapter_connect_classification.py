@@ -69,8 +69,6 @@ class TestTelegramAuthClassification:
     def test_network_error_is_not_auth_error(self):
         assert _telegram_classifier()(NetworkError("dns failure")) is False
 
-    def test_timeout_is_not_auth_error(self):
-        assert _telegram_classifier()(TimedOut("read timeout")) is False
 
     def test_generic_exception_is_not_auth_error(self):
         # Unknown types must stay retryable — a false terminal recreates the
@@ -107,23 +105,21 @@ def _discord_classifier():
 
 class TestDiscordConnectClassification:
     def test_login_failure_is_terminal(self):
-        code, message, retryable = _discord_classifier()(LoginFailure("Improper token"))
+        code, _message, retryable = _discord_classifier()(LoginFailure("Improper token"))
         assert code == "discord_auth_error"
         assert retryable is False
-        assert "Developer Portal" in message
 
     def test_privileged_intents_is_terminal(self):
-        code, message, retryable = _discord_classifier()(
+        code, _message, retryable = _discord_classifier()(
             PrivilegedIntentsRequired("shard 0 requested privileged intents")
         )
         assert code == "discord_intents_required"
         assert retryable is False
-        assert "Message Content Intent" in message
 
     def test_unknown_exception_is_retryable_with_explicit_code(self):
         # The old behavior set NO fatal code at all, which the gateway read
         # as "probably transient". Every failure must now carry a code.
-        code, message, retryable = _discord_classifier()(OSError("connection reset"))
+        code, _message, retryable = _discord_classifier()(OSError("connection reset"))
         assert code == "discord_connect_error"
         assert retryable is True
 

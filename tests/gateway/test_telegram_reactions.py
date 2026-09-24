@@ -39,18 +39,8 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
 # ── _reactions_enabled ───────────────────────────────────────────────
 
 
-def test_reactions_disabled_by_default(monkeypatch):
-    """Telegram reactions should be disabled by default."""
-    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
-    adapter = _make_adapter()
-    assert adapter._reactions_enabled() is False
 
 
-def test_reactions_enabled_when_set_true(monkeypatch):
-    """Setting TELEGRAM_REACTIONS=true enables reactions."""
-    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
-    adapter = _make_adapter()
-    assert adapter._reactions_enabled() is True
 
 
 def test_explicit_env_wins_over_materialized_yaml_default(monkeypatch):

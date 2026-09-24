@@ -674,6 +674,7 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
+    @pytest.mark.linux_only
     def test_beep_calls_sounddevice_play(self, mock_sd):
         np = pytest.importorskip("numpy")
 
@@ -692,6 +693,31 @@ class TestPlayBeep:
         audio_arg = mock_sd.play.call_args[0][0]
         assert audio_arg.dtype == np.int16
         assert len(audio_arg) > 0
+
+    @pytest.mark.macos_only
+    def test_beep_uses_temp_wav_without_sounddevice(self, monkeypatch, tmp_path):
+        pytest.importorskip("numpy")
+        from tools import voice_mode as vm
+
+        monkeypatch.setattr(vm.tempfile, "tempdir", str(tmp_path))
+        captured = []
+
+        def capture_playback(path):
+            with wave.open(path, "rb") as wav:
+                assert wav.getframerate() == vm.SAMPLE_RATE
+                assert wav.getsampwidth() == 2
+                assert wav.getnchannels() == 1
+                assert wav.getnframes() > 0
+            captured.append(Path(path))
+            return True
+
+        with patch.object(vm, "_import_audio") as import_audio, \
+             patch.object(vm, "play_audio_file", side_effect=capture_playback):
+            vm.play_beep(frequency=880, duration=0.1, count=1)
+
+        import_audio.assert_not_called()
+        assert len(captured) == 1
+        assert not captured[0].exists()
 
 # ============================================================================
 # Silence detection
@@ -1402,6 +1428,7 @@ class TestWSL2PowerShellFallback:
             return next(it)
         return _side_effect
 
+    @pytest.mark.linux_only
     def test_powershell_pipeline_preserves_real_exit_status(self, sample_wav):
         """Regression (review of #63768): the shell pipeline must preserve
         the (ffmpeg && powershell) exit status past the unconditional
@@ -1451,6 +1478,7 @@ class TestWSL2PowerShellFallback:
             "Shell pipeline must preserve the real exit status past cleanup: " + sh_script
         )
 
+    @pytest.mark.linux_only
     def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
         """Two concurrent calls must use different temp WAV filenames."""
         from unittest.mock import patch, MagicMock

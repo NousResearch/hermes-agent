@@ -697,7 +697,7 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
         (403, ValueError("not json"), "invalid_grant", True),
     ],
 )
-def test_refresh_token_exchange_without_grant_error_code_is_not_terminal(
+def test_refresh_token_exchange_error_classification(
     status_code, body, expected_code, expected_terminal
 ):
     """A Portal 5xx is transient even when its body is not OAuth JSON (#120976), and a

@@ -618,10 +618,12 @@ def _refresh_access_token(
         error_payload = response.json()
     except Exception:
         error_payload = {}
+    if not isinstance(error_payload, dict):
+        error_payload = {}
     # Only an explicit OAuth grant-dead code is terminal: a 429/404 gateway body without an
     # ``error`` key says nothing about the refresh token, so it must not wipe credentials.
-    # A 401/403 from the token endpoint is the exception: it always means the refresh token
-    # itself was rejected (same rule as the Codex sibling), so keep the base grant-dead default.
+    # A 401/403 without an ``error`` code still means the token endpoint rejected the refresh
+    # token, so it is reported as ``invalid_grant`` (terminal) rather than left unclassified.
     raw_code = error_payload.get("error")
     if raw_code is None and response.status_code in {401, 403}:
         raw_code = "invalid_grant"

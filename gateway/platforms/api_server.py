@@ -70,7 +70,7 @@ _STATIC_FEATURE_FLAGS = {
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
-    "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
+    "admin_config_rw": False, "jobs_admin": False, "memory_write_api": True,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
@@ -91,6 +91,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
     ("session_delete", ("DELETE", "/api/sessions/{session_id}")),
     ("session_messages", ("GET", "/api/sessions/{session_id}/messages")),
+    ("session_messages_append", ("POST", "/api/sessions/{session_id}/messages")),
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
@@ -1608,6 +1609,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("POST", "/api/sessions/{session_id}/messages", self._handle_append_session_messages),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -3099,6 +3101,69 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "limit": limit, "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),
                 "returned": len(messages)}})
+
+    @_require_auth
+    async def _handle_append_session_messages(self, request: "web.Request") -> "web.Response":
+        """Persist externally conducted user/assistant turns without running an agent turn."""
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        messages = body.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return _error_response("messages must be a non-empty array", 400, code="invalid_messages")
+        if len(messages) > 100:
+            return _error_response("messages must contain at most 100 items", 400, code="invalid_messages")
+        normalized, client_ids = [], set()
+        for message in messages:
+            if not isinstance(message, dict):
+                return _error_response("each message must be an object", 400, code="invalid_messages")
+            client_id, role, content = message.get("client_id"), message.get("role"), message.get("content")
+            if not isinstance(client_id, str) or not client_id.strip() or len(client_id) > 256:
+                return _error_response("each message needs a client_id up to 256 characters", 400, code="invalid_messages")
+            if client_id in client_ids:
+                return _error_response("client_id values must be unique per request", 400, code="invalid_messages")
+            if role not in {"user", "assistant"} or not isinstance(content, str):
+                return _error_response("messages require user or assistant role and string content", 400, code="invalid_messages")
+            client_ids.add(client_id)
+            normalized.append({"client_id": client_id, "role": role, "content": content})
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return self._session_db_unavailable()
+        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        lease_holder = f"api-external:{uuid.uuid4().hex}"
+        acquired = await asyncio.to_thread(
+            db.acquire_session_turn_lease, resolved_id, lease_holder, wait_seconds=5.0)
+        if not acquired:
+            return _error_response("Session is busy; try again", 409, code="session_busy")
+        try:
+            try:
+                rows = await asyncio.to_thread(
+                    db.append_external_messages, resolved_id, normalized, turn_lease_holder=lease_holder)
+            except ValueError as exc:
+                return _error_response(str(exc), 400, code="invalid_messages")
+            # A background review is the post-turn side effect, not a foreground model run.  Only
+            # newly written user rows can advance the cadence; an idempotent retry cannot retrigger it.
+            new_users = sum(1 for row, message in zip(rows, normalized) if row["inserted"] and message["role"] == "user")
+            if new_users:
+                try:
+                    history = await asyncio.to_thread(db.get_messages_as_conversation, resolved_id)
+                    agent = await asyncio.to_thread(self._create_agent, session_id=resolved_id)
+                    interval = getattr(agent, "_memory_nudge_interval", 0)
+                    user_turns = sum(1 for message in history if message.get("role") == "user")
+                    if (interval > 0 and "memory" in getattr(agent, "valid_tool_names", ())
+                            and getattr(agent, "_memory_store", None)
+                            and user_turns % interval < new_users):
+                        agent._spawn_background_review(messages_snapshot=history, review_memory=True)
+                except Exception:
+                    logger.warning("External-turn memory review setup failed for %s", resolved_id, exc_info=True)
+        finally:
+            await asyncio.to_thread(db.release_session_turn_lease, resolved_id, lease_holder)
+        return web.json_response({"object": "hermes.session.messages", "session_id": resolved_id,
+                                  "data": [{"client_id": row["client_id"], "id": row["id"]} for row in rows]})
 
     @_require_auth
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":

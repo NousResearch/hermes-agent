@@ -83,6 +83,7 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_post("/api/sessions/{session_id}/messages", adapter._handle_append_session_messages)
     app.router.add_post(
         "/v1/room-members/invitations",
         adapter._handle_room_member_invitation,
@@ -105,6 +106,95 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs/{run_id}/steer", adapter._handle_steer_run)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
+
+
+class _ExternalMessageDB:
+    def __init__(self):
+        self.rows = []
+
+    def get_session(self, session_id):
+        return {"id": session_id}
+
+    def resolve_resume_session_id(self, session_id):
+        return f"live-{session_id}"
+
+    def append_external_messages(self, session_id, messages, **kwargs):
+        result = []
+        for message in messages:
+            prior = next((row for row in self.rows if row["client_id"] == message["client_id"]), None)
+            if prior is None:
+                if self.rows and self.rows[-1]["role"] == message["role"]:
+                    raise ValueError("external messages must preserve user/assistant alternation")
+                prior = {"client_id": message["client_id"], "id": len(self.rows) + 1,
+                         "role": message["role"], "content": message["content"]}
+                self.rows.append(prior)
+                inserted = True
+            else:
+                inserted = False
+            result.append({"client_id": prior["client_id"], "id": prior["id"], "inserted": inserted})
+        return result
+
+    def get_messages_as_conversation(self, session_id):
+        return list(self.rows)
+
+    def acquire_session_turn_lease(self, session_id, holder, **kwargs):
+        return True
+
+    def release_session_turn_lease(self, session_id, holder):
+        pass
+
+
+class TestExternalSessionMessages:
+    @pytest.mark.asyncio
+    async def test_append_is_idempotent_and_never_starts_a_foreground_run(self, adapter):
+        db = _ExternalMessageDB()
+        adapter._session_db = db
+        agent = MagicMock(_memory_nudge_interval=10)
+        app = _create_runs_app(adapter)
+        payload = {"messages": [
+            {"client_id": "voice-user-1", "role": "user", "content": "hello"},
+            {"client_id": "voice-assistant-1", "role": "assistant", "content": "hi"},
+        ]}
+        async with TestClient(TestServer(app)) as client:
+            with patch.object(adapter, "_create_agent", return_value=agent):
+                first = await client.post("/api/sessions/original/messages", json=payload)
+                second = await client.post("/api/sessions/original/messages", json=payload)
+                first_data = await first.json()
+                second_data = await second.json()
+        assert first.status == second.status == 200
+        assert first_data["session_id"] == "live-original"
+        assert second_data["data"] == [
+            {"client_id": "voice-user-1", "id": 1},
+            {"client_id": "voice-assistant-1", "id": 2},
+        ]
+        assert len(db.rows) == 2
+        agent.run_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_append_rejects_duplicate_client_ids_before_writing(self, adapter):
+        db = _ExternalMessageDB()
+        adapter._session_db = db
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/sessions/s/messages", json={"messages": [
+                {"client_id": "same", "role": "user", "content": "one"},
+                {"client_id": "same", "role": "assistant", "content": "two"},
+            ]})
+        assert response.status == 400
+        assert db.rows == []
+
+    @pytest.mark.asyncio
+    async def test_append_preserves_role_alternation(self, adapter):
+        db = _ExternalMessageDB()
+        adapter._session_db = db
+        db.rows.append({"client_id": "prior", "id": 1, "role": "user", "content": "already here"})
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/sessions/s/messages", json={"messages": [
+                {"client_id": "another-user", "role": "user", "content": "not adjacent"},
+            ]})
+        assert response.status == 400
+        assert len(db.rows) == 1
 
 
 def _make_slow_agent(**kwargs):

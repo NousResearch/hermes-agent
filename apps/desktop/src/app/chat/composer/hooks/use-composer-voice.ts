@@ -437,7 +437,19 @@ export function useComposerVoice({
     endConversation,
     handleToggleAutoSpeak,
     startConversation,
-    voiceActivityState,
+    // While the chained conversation is listening, the mic belongs to its
+    // recorder (not the dictation recorder behind `voiceActivityState`), so
+    // surface that recorder's live status + partial transcript to the activity
+    // bar. The voice-live engine owns its own audio and exposes no partial.
+    voiceActivityState:
+      voiceConversationActive && !liveEngineActive && chainedConversation.status === 'listening'
+        ? {
+            status: 'recording' as const,
+            elapsedSeconds: 0,
+            level: chainedConversation.level,
+            partialTranscript: chainedConversation.partialTranscript
+          }
+        : voiceActivityState,
     voiceConversationActive,
     voiceStatus
   }

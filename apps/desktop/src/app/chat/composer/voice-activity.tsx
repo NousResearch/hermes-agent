@@ -165,6 +165,13 @@ function PlaybackWaveform({ audioElement }: { audioElement: HTMLAudioElement | n
 
 export function VoiceActivity({ state }: { state: VoiceActivityState }) {
   const { t } = useI18n()
+  const transcriptRef = useRef<HTMLSpanElement>(null)
+
+  useEffect(() => {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
+    }
+  }, [state.partialTranscript])
 
   if (state.status === 'idle') {
     return null
@@ -177,7 +184,7 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
     <div
       aria-live="polite"
       className={cn(
-        'flex h-8 items-center gap-2 rounded-xl border border-border/55 bg-muted/55 px-2.5 text-xs text-muted-foreground',
+        'flex min-h-8 items-center gap-2 rounded-xl border border-border/55 bg-muted/55 px-2.5 py-1.5 text-xs text-muted-foreground',
         'shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] backdrop-blur-sm'
       )}
       role="status"
@@ -192,7 +199,12 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
       </div>
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate font-medium text-foreground/85">{title}</span>
+        <span
+          className="max-h-24 min-w-0 overflow-y-auto whitespace-pre-wrap break-words font-medium text-foreground/85"
+          ref={transcriptRef}
+        >
+          {state.partialTranscript || title}
+        </span>
         <span aria-hidden="true" className="font-mono text-[0.6875rem] text-muted-foreground/85">
           {formatElapsed(state.elapsedSeconds)}
         </span>

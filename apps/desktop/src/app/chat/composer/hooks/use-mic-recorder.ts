@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { openTranscriptionStream, type TranscriptionStream } from '@/lib/transcription-stream'
+
 type BrowserAudioContext = typeof AudioContext
 
 export interface MicRecorderOptions {
@@ -12,6 +14,9 @@ export interface MicRecorderOptions {
 }
 
 export interface MicRecording {
+  /** Streaming transcript (when the gateway supports it); absent on the
+   *  file-based fallback, where the caller transcribes `audio` itself. */
+  transcript?: Promise<string>
   audio: Blob
   durationMs: number
   heardSpeech: boolean
@@ -71,7 +76,12 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   handle: MicRecorderHandle
   level: number
   recording: boolean
+  partialTranscript: string
 } {
+  const [partialTranscript, setPartialTranscript] = useState('')
+  const transcriptionRef = useRef<TranscriptionStream | null>(null)
+  const generationRef = useRef(0)
+  const startingRef = useRef(false)
   const [level, setLevel] = useState(0)
   const [recording, setRecording] = useState(false)
 
@@ -87,6 +97,10 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
 
   const cleanup = () => {
+    generationRef.current += 1
+    transcriptionRef.current?.cancel()
+    transcriptionRef.current = null
+
     if (animationRef.current) {
       window.cancelAnimationFrame(animationRef.current)
       animationRef.current = null
@@ -175,95 +189,135 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   }
 
   const start: MicRecorderHandle['start'] = async (options = {}) => {
-    if (recorderRef.current) {
+    if (recorderRef.current || startingRef.current) {
       return
     }
 
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      throw new Error(copy.microphoneUnsupported)
-    }
-
-    const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
-
-    if (permitted === false) {
-      throw new Error(copy.microphoneAccessDenied)
-    }
-
-    let stream: MediaStream
+    startingRef.current = true
+    const generation = ++generationRef.current
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      })
-    } catch (error) {
-      throw micError(error, copy)
-    }
-
-    const mimeType =
-      ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/wav'].find(
-        type => MediaRecorder.isTypeSupported(type)
-      ) ?? ''
-
-    let recorder: MediaRecorder
-
-    try {
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-    } catch (error) {
-      stream.getTracks().forEach(track => track.stop())
-      throw micError(error, copy)
-    }
-
-    chunksRef.current = []
-    streamRef.current = stream
-    recorderRef.current = recorder
-    heardSpeechRef.current = false
-    silenceTriggeredRef.current = false
-    silenceStartedAtRef.current = null
-    startedAtRef.current = Date.now()
-
-    recorder.ondataavailable = event => {
-      if (event.data.size > 0) {
-        chunksRef.current.push(event.data)
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        throw new Error(copy.microphoneUnsupported)
       }
-    }
 
-    recorder.onstop = () => {
-      const chunks = chunksRef.current
-      const recordingType = recorder.mimeType || mimeType || 'audio/webm'
-      const durationMs = Date.now() - startedAtRef.current
-      const heardSpeech = heardSpeechRef.current
+      const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
+
+      if (permitted === false) {
+        throw new Error(copy.microphoneAccessDenied)
+      }
+
+      let stream: MediaStream
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true }
+        })
+      } catch (error) {
+        throw micError(error, copy)
+      }
+
+      setPartialTranscript('')
+
+      try {
+        const transcription = await openTranscriptionStream(text => {
+          if (generation === generationRef.current) {
+            setPartialTranscript(text)
+          }
+        })
+
+        if (generation !== generationRef.current) {
+          transcription?.cancel()
+          stream.getTracks().forEach(track => track.stop())
+
+          return
+        }
+
+        transcriptionRef.current = transcription
+
+        if (transcription) {
+          await transcription.attach(stream)
+        }
+      } catch (error) {
+        stream.getTracks().forEach(track => track.stop())
+        cleanup()
+        throw error
+      }
+
+      const mimeType =
+        ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/wav'].find(
+          type => MediaRecorder.isTypeSupported(type)
+        ) ?? ''
+
+      let recorder: MediaRecorder
+
+      try {
+        recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      } catch (error) {
+        stream.getTracks().forEach(track => track.stop())
+        cleanup()
+        throw micError(error, copy)
+      }
 
       chunksRef.current = []
-      cleanup()
+      streamRef.current = stream
+      recorderRef.current = recorder
+      heardSpeechRef.current = false
+      silenceTriggeredRef.current = false
+      silenceStartedAtRef.current = null
+      startedAtRef.current = Date.now()
 
-      const resolver = stopResolverRef.current
-      stopResolverRef.current = null
-
-      if (!chunks.length) {
-        resolver?.(null)
-
-        return
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data)
+        }
       }
 
-      resolver?.({
-        audio: new Blob(chunks, { type: recordingType }),
-        durationMs,
-        heardSpeech
-      })
-    }
+      recorder.onstop = () => {
+        const chunks = chunksRef.current
+        const recordingType = recorder.mimeType || mimeType || 'audio/webm'
+        const durationMs = Date.now() - startedAtRef.current
+        const heardSpeech = heardSpeechRef.current
 
-    recorder.onerror = event => {
-      const error = micError((event as Event & { error?: unknown }).error, copy)
-      const resolver = stopResolverRef.current
-      stopResolverRef.current = null
-      cleanup()
-      options.onError?.(error)
-      resolver?.(null)
-    }
+        const transcription = transcriptionRef.current
+        transcriptionRef.current = null
+        const transcript = transcription?.finish()
+        void transcript?.catch(() => undefined)
+        chunksRef.current = []
+        cleanup()
 
-    recorder.start()
-    setRecording(true)
-    startMeter(stream, options)
+        const resolver = stopResolverRef.current
+        stopResolverRef.current = null
+
+        if (!chunks.length) {
+          resolver?.(null)
+
+          return
+        }
+
+        resolver?.({
+          transcript,
+          audio: new Blob(chunks, { type: recordingType }),
+          durationMs,
+          heardSpeech
+        })
+      }
+
+      recorder.onerror = event => {
+        const error = micError((event as Event & { error?: unknown }).error, copy)
+        const resolver = stopResolverRef.current
+        stopResolverRef.current = null
+        cleanup()
+        options.onError?.(error)
+        resolver?.(null)
+      }
+
+      recorder.start()
+      setRecording(true)
+      startMeter(stream, options)
+    } finally {
+      startingRef.current = false
+    }
   }
 
   const stop: MicRecorderHandle['stop'] = () =>
@@ -299,5 +353,5 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
   const handle: MicRecorderHandle = { start, stop, cancel }
 
-  return { handle, level, recording }
+  return { handle, level, partialTranscript, recording }
 }

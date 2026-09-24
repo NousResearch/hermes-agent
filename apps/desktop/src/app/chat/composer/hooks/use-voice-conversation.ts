@@ -63,7 +63,7 @@ export function useVoiceConversation({
 }: VoiceConversationOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
-  const { handle, level } = useMicRecorder(voiceCopy)
+  const { handle, level, partialTranscript } = useMicRecorder(voiceCopy)
   // The scope's session owner (a Bot's own connection + profile) picks the TTS
   // voice; a ref keeps the long-lived turn closures below reading the current
   // value.
@@ -178,7 +178,10 @@ export function useVoiceConversation({
         }
 
         try {
-          const transcript = (await onTranscribeAudio(result.audio)).trim()
+          // A streaming transcript (when the gateway supports it) wins over the
+          // one-shot file upload; otherwise the captured audio is transcribed
+          // exactly as before.
+          const transcript = (await (result.transcript ?? onTranscribeAudio(result.audio))).trim()
 
           if (!transcript) {
             if (enabledRef.current) {
@@ -857,5 +860,5 @@ export function useVoiceConversation({
     wasEnabledRef.current = enabled
   }, [enabled, end, start])
 
-  return { end, level, muted, start, status, stopTurn, toggleMute }
+  return { end, level, partialTranscript, muted, start, status, stopTurn, toggleMute }
 }

@@ -22,7 +22,7 @@ export function useVoiceRecorder({
 }: VoiceRecorderOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
-  const { handle, level, recording } = useMicRecorder(voiceCopy)
+  const { handle, level, partialTranscript, recording } = useMicRecorder(voiceCopy)
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle')
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const startedAtRef = useRef(0)
@@ -62,7 +62,10 @@ export function useVoiceRecorder({
     setVoiceStatus('transcribing')
 
     try {
-      const transcript = (await onTranscribeAudio(result.audio)).trim()
+      // A streaming transcript (when the gateway supports it) wins over the
+      // one-shot file upload; otherwise the recorder's audio is transcribed
+      // exactly as before.
+      const transcript = (await (result.transcript ?? onTranscribeAudio(result.audio))).trim()
 
       if (!transcript) {
         notify({ kind: 'warning', title: voiceCopy.noSpeechDetected, message: voiceCopy.tryRecordingAgain })
@@ -109,6 +112,7 @@ export function useVoiceRecorder({
   const voiceActivityState: VoiceActivityState = {
     elapsedSeconds,
     level,
+    partialTranscript,
     status: voiceStatus
   }
 

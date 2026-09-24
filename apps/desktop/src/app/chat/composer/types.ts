@@ -67,6 +67,9 @@ export interface ChatBarProps {
 export type VoiceStatus = 'idle' | 'recording' | 'transcribing'
 
 export interface VoiceActivityState {
+  /** Live partial transcription while recording (streaming STT); absent when
+   *  only the one-shot file path is available. */
+  partialTranscript?: string
   elapsedSeconds: number
   level: number
   status: VoiceStatus

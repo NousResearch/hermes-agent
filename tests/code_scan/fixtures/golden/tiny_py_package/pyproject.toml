@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "tiny-pkg"
+version = "0.1.0"
+description = "A tiny Python package fixture for golden UA tests."
+
+[project.scripts]
+tiny-cli = "tiny_pkg.cli:main"

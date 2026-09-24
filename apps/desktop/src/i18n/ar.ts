@@ -540,6 +540,8 @@ export const ar = defineLocale({
       empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
       kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
       installModal: {
+        installUncertain:
+          'توقف Hermes عن انتظار نتيجة التثبيت، لكن قد يستمر تثبيت المكوّن الإضافي. أغلق هذه النافذة وأعد فحص قائمة المكوّنات الإضافية قبل محاولة التثبيت مرة أخرى.',
         toolsConnected: n => `تم توصيل ${n} من الأدوات`,
         skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
         nextChat: 'أدوات أخرى متاحة في دردشتك التالية',

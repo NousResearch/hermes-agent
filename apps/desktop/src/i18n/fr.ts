@@ -910,6 +910,8 @@ export const frOverrides = {
         agentSuccess: name => `Plugin de l'agent ${name} installé`,
         desktopSuccess: name => `Plugin Desktop ${name} installé`,
         agentFailed: "Échec de l'installation du plugin de l'agent",
+        installUncertain:
+          "Hermes n'attend plus le résultat de l'installation, mais le plugin est peut-être encore en cours d'installation. Fermez cette fenêtre et actualisez la liste des plugins avant de relancer l'installation.",
         desktopFailed: "Échec de l'installation du plugin Desktop",
         missingEnv: (name, vars) =>
           `${name} est installé, mais a besoin d'une clé pour fonctionner : ${vars}. Ajoutez-la maintenant, sinon les outils du plugin échoueront.`

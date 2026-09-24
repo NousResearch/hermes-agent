@@ -35,7 +35,7 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
-from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
+from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name, _to_epoch
 
 log = logging.getLogger(__name__)
 
@@ -173,6 +173,12 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None) -> dict[str, Any]:
     d = asdict(task)
+    # Timestamp columns are INTEGER by schema, but migrated/legacy boards can
+    # carry ISO-8601 text (pre-epoch writers). Coerce like ``task_age`` does so
+    # arithmetic consumers (the done-column sort) never see a str — otherwise
+    # GET /board 500s with "Internal Server Error".
+    for _col in ("created_at", "started_at", "completed_at"):
+        d[_col] = _to_epoch(d.get(_col))
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
         d["age"] = kanban_db.task_age(task)

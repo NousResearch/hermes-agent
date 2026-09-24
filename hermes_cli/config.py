@@ -2034,7 +2034,9 @@ def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_conten
     comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
     path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
     bookkeeping, gateway/TUI RPCs, auth resets — goes through here; a PyYAML dump of a config
-    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
+    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554). The operator
+    settings lock (``hermes_cli.settings_lock``) is enforced in ``atomic_roundtrip_yaml_save``, so
+    every writer that lands here is covered."""
     from utils import atomic_roundtrip_yaml_save
 
     _refuse_failed_read(config_path, data)
@@ -2458,6 +2460,8 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
+        # The operator settings lock is enforced inside atomic_config_write — the seam every
+        # whole-document config.yaml write passes through — not here.
         atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
@@ -3855,6 +3859,110 @@ def _cmd_config_check(args):
     print()
 
 
+def _lock_status_lines() -> list[str]:
+    from hermes_cli.settings_lock import describe
+
+    st = describe()
+    if st["unusable"]:
+        return [f"Settings lock: ENABLED but unusable — {st['reason']}.",
+                "Every config write is refused until you fix settings_lock in the root config.yaml."]
+    if not st["enabled"]:
+        return ["Settings lock: off.", "Lock some: hermes config lock approvals.mode yolo"]
+    lines = ["Settings lock: ON" + ("  (password required to unlock)" if st["password_required"]
+                                    else "  (no password set)"),
+             "Locked paths:"]
+    lines += [f"  {key}" for key in st["keys"]]
+    if st["unlocked"]:
+        import time
+
+        remaining = max(0, int((st["unlocked_until"] or 0) - time.time()))
+        lines.append(f"Currently UNLOCKED for another {remaining // 60}m {remaining % 60}s "
+                     "(hermes config relock closes it now).")
+    else:
+        lines.append("Currently locked. hermes config unlock opens a time-boxed window.")
+    return lines
+
+
+def _cmd_config_lock(args):
+    """Show the lock, or lock the named config paths."""
+    from hermes_cli.settings_lock import (LOCK_SECTION, describe, hash_password, is_unlocked,
+                                          lock_spec, lock_state)
+
+    keys = [str(k).strip() for k in (getattr(args, "keys", None) or []) if str(k).strip()]
+    if getattr(args, "clear", False):
+        state = lock_state()
+        if state.status != "off" and not is_unlocked(spec=state.spec):
+            print("Settings are locked. Run `hermes config unlock` first.", file=sys.stderr)
+            sys.exit(1)
+        cfg = read_raw_config() or {}
+        cfg.pop(LOCK_SECTION, None)
+        save_config(cfg, merge_existing=False)
+        print("Settings lock removed.")
+        return
+    if not keys:
+        print("\n".join(_lock_status_lines()))
+        return
+
+    spec = dict(lock_spec())
+    spec["enabled"] = True
+    spec["keys"] = keys
+    if getattr(args, "no_password", False):
+        spec.pop("password", None)
+    else:
+        import getpass
+
+        first = getpass.getpass("Unlock password: ")
+        if not first.strip():
+            print("Empty password — use --no-password for a lock without one.", file=sys.stderr)
+            sys.exit(1)
+        if first != getpass.getpass("Confirm password: "):
+            print("Passwords did not match.", file=sys.stderr)
+            sys.exit(1)
+        spec["password"] = hash_password(first)
+
+    cfg = read_raw_config() or {}
+    cfg[LOCK_SECTION] = spec
+    save_config(cfg, merge_existing=False)
+    print("\n".join(_lock_status_lines()))
+
+
+def _cmd_config_unlock(args):
+    """Verify the password (when set) and open a time-boxed unlock window."""
+    import time
+
+    from hermes_cli.settings_lock import (begin_unlock, has_password, lock_state, verify_password)
+
+    state = lock_state()
+    if state.status == "off":
+        print("Settings are not locked.")
+        return
+    if state.status == "unusable":
+        # Nothing to unlock against: the window would carry no provable authority, and the
+        # password that should gate it may be the malformed part.
+        print(f"Settings lock is unusable — {state.reason}.\n"
+              "Fix settings_lock in the root config.yaml; a window cannot be opened against it.",
+              file=sys.stderr)
+        sys.exit(1)
+    spec = state.spec
+    if has_password(spec):
+        import getpass
+
+        if not verify_password(getpass.getpass("Unlock password: "), spec.get("password")):
+            print("Incorrect password.", file=sys.stderr)
+            sys.exit(1)
+    minutes = max(0.1, float(getattr(args, "minutes", 15.0) or 15.0))
+    expires = begin_unlock(seconds=minutes * 60, spec=spec)
+    print(f"Settings unlocked until {time.strftime('%H:%M:%S', time.localtime(expires))} "
+          f"({minutes:g} min). `hermes config relock` closes it sooner.")
+
+
+def _cmd_config_relock(_args):
+    from hermes_cli.settings_lock import end_unlock
+
+    end_unlock()
+    print("Unlock window closed.")
+
+
 _CONFIG_SUBCOMMANDS = {
     None: lambda args: show_config(),
     "show": lambda args: show_config(),
@@ -3865,13 +3973,19 @@ _CONFIG_SUBCOMMANDS = {
     "path": lambda args: print(get_config_path()),
     "env-path": lambda args: print(get_env_path()),
     "migrate": _cmd_config_migrate,
-    "check": _cmd_config_check}
+    "check": _cmd_config_check,
+    "lock": _cmd_config_lock,
+    "unlock": _cmd_config_unlock,
+    "relock": _cmd_config_relock}
 
 _CONFIG_USAGE = """Available commands:
   hermes config           Show current configuration
   hermes config edit      Open config in editor
   hermes config get <key>          Print a resolved config value
   hermes config set <key> <value>   Set a config value
+  hermes config lock [<key>...]     Lock settings (no args: show status)
+  hermes config unlock [--minutes N]  Open a time-boxed unlock window
+  hermes config relock              Close the unlock window now
   hermes config unset <key>        Remove a config value
   hermes config check     Check for missing/outdated config
   hermes config migrate   Update config with new options

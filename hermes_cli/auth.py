@@ -2269,11 +2269,6 @@ def _update_config_for_provider(
     finishes and send an OpenRouter-style ``vendor/model`` name to a direct API. *clear_default*
     removes ``model.default`` in that same write, for a caller that has no model to offer and must
     not leave the previous provider's model paired with the new host."""
-    with _auth_store_lock():  # so auto-resolution picks this provider
-        auth_store = _load_auth_store()
-        auth_store["active_provider"] = provider_id
-        _save_auth_store(auth_store)
-
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
@@ -2303,7 +2298,14 @@ def _update_config_for_provider(
     elif clear_default:
         model_cfg.pop("default", None)
     config["model"] = model_cfg
+    # config.yaml first: it is the write the operator settings lock may refuse, and a refusal must
+    # not leave auth.json already pointing at a provider the config does not select.
     atomic_config_write(config_path, config)
+
+    with _auth_store_lock():  # so auto-resolution picks this provider
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = provider_id
+        _save_auth_store(auth_store)
     return config_path
 
 
@@ -2333,12 +2335,16 @@ def _logout_default_provider_from_config() -> Optional[str]:
     return provider if flow and flow.logout_from_config else None
 
 
-def _reset_config_provider() -> Path:
-    """Reset config.yaml provider back to auto after logout."""
+def _reset_config_provider(*, dry_run: bool = False) -> Path:
+    """Reset config.yaml provider back to auto after logout.
+
+    ``dry_run=True`` writes nothing and only asks the operator settings lock whether the reset
+    would be refused — ``logout_command`` asks before it clears auth state, so a refusal cannot
+    leave a logged-out provider still selected in config.yaml."""
     config_path = get_config_path()
     if not config_path.exists():
         return config_path
-    require_readable_config_before_write(config_path)
+    before = require_readable_config_before_write(config_path)
     config = read_raw_config()
     if not config:
         return config_path
@@ -2347,6 +2353,11 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
+    if dry_run:
+        from hermes_cli.settings_lock import check_config_write
+
+        check_config_write(config_path, before, config)
+        return config_path
     atomic_config_write(config_path, config)
     return config_path
 
@@ -2390,6 +2401,8 @@ def logout_command(args) -> None:
             return
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
+    if should_reset_config:
+        _reset_config_provider(dry_run=True)  # settings lock: refuse before auth state is cleared
     if not (clear_provider_auth(target) or should_reset_config):
         print(f"No auth state found for {provider_name}.")
         return

@@ -400,5 +400,58 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"ok": False, "error": str(e)})
 
 
+# ── operator settings lock
+#
+# The lock itself is enforced at the config.yaml write primitives (see hermes_cli.settings_lock),
+# so these doors only read status and open/close the unlock window. Nothing here can change a
+# locked setting; that still goes through a normal ``config.set`` once a window is open.
+
+
+@method("config.lock.status")
+def _(rid, params: dict) -> dict:
+    """Is the lock on, what is locked, is a window open — what the desktop's lock pill reads."""
+    del params
+    from hermes_cli.settings_lock import describe
+
+    return _ok(rid, describe())
+
+
+@method("config.unlock")
+def _(rid, params: dict) -> dict:
+    """Verify the operator password (when one is set) and open a time-boxed unlock window.
+
+    The password arrives over the local gateway socket and is never logged or persisted — only
+    compared against the stored scrypt hash.
+    """
+    from hermes_cli.settings_lock import begin_unlock, has_password, lock_state, verify_password
+
+    state = lock_state()
+    if state.status == "off":
+        return _err(rid, 4004, "settings are not locked")
+    if state.status == "unusable":
+        # No window against a spec we cannot normalise: it would carry no provable authority, and
+        # the password meant to gate it may be the malformed part.
+        return _err(rid, 4005, f"settings lock is unusable — {state.reason}")
+    spec = state.spec
+    if has_password(spec) and not verify_password(str(params.get("password") or ""), spec.get("password")):
+        return _err(rid, 4003, "incorrect password")
+    minutes = params.get("minutes")
+    try:
+        seconds = max(6.0, float(minutes) * 60) if minutes is not None else 900.0
+    except (TypeError, ValueError):
+        seconds = 900.0
+    return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds, spec=spec)})
+
+
+@method("config.relock")
+def _(rid, params: dict) -> dict:
+    """Close an open unlock window immediately."""
+    del params
+    from hermes_cli.settings_lock import end_unlock
+
+    end_unlock()
+    return _ok(rid, {"ok": True})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

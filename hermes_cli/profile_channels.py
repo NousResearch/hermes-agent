@@ -343,6 +343,7 @@ def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = N
         node.pop(path[-1], None)
     if isinstance(raw.get("gateway"), dict) and not raw["gateway"]:
         raw.pop("gateway")
+    # The gated primitive: a clone's config.yaml is a profile write, governed by the root lock.
     atomic_config_write(config_path, raw)
     return [".".join(path) for path in paths]
 

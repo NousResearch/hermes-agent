@@ -328,6 +328,31 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     return sanitized
 
 
+_injected_user_continuation_marker = "_injected_user_continuation"
+
+
+def _ensure_has_user_message(messages: list) -> list:
+    """Inject a synthetic continuation user turn when a tool-only payload would otherwise ship
+    to a provider that rejects empty-message lists (Ollama/Qwen, strict OpenAI-compat). Every
+    native /v1/chat/completions endpoint expects at least one ``role:"user"`` row, and Hermes's
+    continue-after-tool-call / retry-of-failed-stream paths can drop the last user row under a
+    few known conditions (#120828). Pass-through is identity when a user row is already present.
+
+    The synthetic row is marked with ``_injected_user_continuation_marker`` so downstream
+    consumers (cache key, replay) can tell it apart from a real user turn if they need to.
+    """
+    if not isinstance(messages, list) or not messages:
+        return messages
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return messages
+    last = messages[-1] if isinstance(messages[-1], dict) else {}
+    injected = dict(last)
+    injected["role"] = "user"
+    injected[_injected_user_continuation_marker] = True
+    return messages + [injected]
+
+
 def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
     """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
@@ -472,6 +497,7 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
+        messages = _ensure_has_user_message(messages)
         sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)

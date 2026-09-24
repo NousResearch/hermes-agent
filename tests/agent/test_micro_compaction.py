@@ -863,7 +863,6 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
         db.close()
 
 
-
 def _held_session(tmp_path, mode: str):
     """A real SessionDB session plus the compressor and the history it holds (as a resume restores it:
     row ids and persisted markers included) for a prune or a micro-compaction pass."""
@@ -910,13 +909,17 @@ def test_a_turn_another_surface_appended_after_load_is_kept_exactly_once(tmp_pat
     assert sum(foreign in content for content in live) == 1
 
 
-@pytest.mark.parametrize("mode,race", [("prune", "before"), ("micro", "before"), ("micro", "during_summary")])
+@pytest.mark.parametrize("mode,race", [
+    ("prune", "before"), ("micro", "before"), ("micro", "during_summary"),
+    ("prune", "watermark_read_fails"), ("micro", "watermark_read_fails"),
+])
 def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_path, mode, race):
     """Prune and micro-compaction hold no compression lease. Once another compaction has committed (before the
     pass, or while micro-compaction waits on its summary call), the held history is a stale generation:
     publishing it archives the winner's rows and clones them back beside a second summary, and returning the
     spliced list lets the finalizer's persist flush append the stale summary row as live. The pass must be a
-    true no-op: the input list, the pre-pass rolling summary, and a store holding only the winner."""
+    true no-op: the input list, the pre-pass rolling summary, and a store holding only the winner. A failed
+    watermark read must take the same no-op path, never a None watermark (which archives every active row)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     db, cc, held = _held_session(tmp_path, mode)
@@ -925,7 +928,13 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
         {"role": "assistant", "content": "[winner summary] the earlier turns"},
         {"role": "user", "content": "[from Telegram] carry on"},
     ]
-    if race == "before":
+    if race == "watermark_read_fails":
+        winner = [{"role": m["role"], "content": m["content"]} for m in held]  # nothing may be archived
+
+        def _watermark_read_fails(_session_id):
+            raise RuntimeError("database is locked")
+        db.get_active_message_watermark = _watermark_read_fails
+    elif race == "before":
         db.archive_and_compact("s", winner)
     else:
         def _summary_while_another_surface_compacts(_text):

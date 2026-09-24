@@ -244,3 +244,5 @@ def test_patch_session_model_config_merge_and_delete(tmp_path: Path) -> None:
     # Missing rows and empty patches are no-ops, never errors.
     db.patch_session_model_config("NO_SUCH_SESSION", {"x": 1})
     db.patch_session_model_config(session_id, {})
+
+

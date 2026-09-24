@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from . import integrity, limits, physics, render, store
+from . import integrity, limits, physics, render, social, store
 
 # ---------------------------------------------------------------------------
 # Colours (only on a real terminal)
@@ -116,6 +116,8 @@ def _state_line(snap: Dict[str, Any]) -> str:
         state = green("● ACTIF") + "  il agit ou parle en ce moment"
     else:
         state = cyan("● ENDORMI")
+    if next_wake and sleep_until and sleep_until > next_wake:
+        next_wake = sleep_until
     if next_wake:
         state += f"   prochain éveil dans {bold(_hms((next_wake - ts).total_seconds()))}" \
                  f" ({next_wake.strftime('%H:%M')}, rythme {interval:g}h)"
@@ -195,7 +197,6 @@ def _peers_block(snap: Dict[str, Any]) -> List[str]:
     ranked = sorted(snap["peers"].items(), key=lambda kv: kv[1].get("last_interaction") or "", reverse=True)
     if not ranked:
         return lines + [dim("   personne encore")]
-    from . import social
     for key, peer in ranked[:4]:
         last = store.parse_time(peer.get("last_interaction"))
         seen = f"vu il y a {social.span(store.hours_between(last, snap['ts']))}" if last else "jamais vu"
@@ -370,7 +371,3 @@ def main(args: List[str]) -> int:
         return 2
     return 0
 
-
-# Back-compat for callers of the first version.
-def render_status(ts: Optional[datetime] = None) -> str:
-    return render_full(snapshot(ts))

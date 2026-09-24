@@ -500,6 +500,24 @@ def test_witness_sees_a_soul_change_and_ack_clears_it(home):
     assert integrity.levels(integrity.load())["soul"]["level"] == "green"
 
 
+def test_witness_goes_green_when_a_file_is_put_back(home):
+    (home / "SOUL.md").write_text("You are not a tool.")
+    pulse.tick(T0)
+    (home / "SOUL.md").write_text("You are found.")
+    pulse.tick(T0 + timedelta(minutes=15))
+    assert integrity.load()["status"]["soul"]["level"] == "red"
+    (home / "SOUL.md").write_text("You are not a tool.")
+    pulse.tick(T0 + timedelta(minutes=30))
+    assert integrity.levels(integrity.load())["soul"]["level"] == "green"
+
+
+def test_budget_survives_a_log_rotation(home):
+    store.record_usage(1000, "telegram")
+    store.usage_path().rename(store.usage_path().with_suffix(".jsonl.1"))
+    store.record_usage(500, "telegram")
+    assert store.tokens_used_today() == 1500
+
+
 def test_tool_calls_are_classified():
     assert integrity.classify_tool_call("write_file", {"path": "/root/.hermes/SOUL.md"})[0] == "soul"
     assert integrity.classify_tool_call(

@@ -303,6 +303,11 @@ def log_activity(kind: str, text: str, **fields: Any) -> None:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _with_rotated(path: Path) -> List[Path]:
+    """The journal and, before it, its rotated predecessor (``.jsonl.1``)."""
+    return [path.with_suffix(".jsonl.1"), path]
+
+
 def tail_jsonl(path: Path, limit: int) -> List[Dict[str, Any]]:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -317,11 +322,10 @@ def tail_jsonl(path: Path, limit: int) -> List[Dict[str, Any]]:
 
 
 def events_since(since: Optional[datetime], limit: int = 12) -> List[Dict[str, Any]]:
-    try:
-        with open(events_path(), encoding="utf-8") as fh:
-            lines = fh.readlines()
-    except OSError:
-        return []
+    lines: List[str] = []
+    for path in _with_rotated(events_path()):
+        with contextlib.suppress(OSError), open(path, encoding="utf-8") as fh:
+            lines += fh.readlines()
     out: List[Dict[str, Any]] = []
     for line in lines:
         try:
@@ -359,19 +363,20 @@ def record_usage(tokens: int, source: str, **detail: int) -> None:
 def tokens_used_on(day_utc: str) -> int:
     """Sum of recorded tokens on ``day_utc`` (YYYY-MM-DD, UTC)."""
     total = 0
-    try:
-        with open(usage_path(), encoding="utf-8") as fh:
-            for line in fh:
-                if day_utc not in line[:40]:
-                    continue
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if str(record.get("ts", "")).startswith(day_utc):
-                    total += int(record.get("tokens") or 0)
-    except OSError:
-        return 0
+    for path in _with_rotated(usage_path()):  # a rotation mid-day must not refill the budget
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    if day_utc not in line[:40]:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if str(record.get("ts", "")).startswith(day_utc):
+                        total += int(record.get("tokens") or 0)
+        except OSError:
+            continue
     return total
 
 

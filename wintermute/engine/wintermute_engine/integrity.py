@@ -226,6 +226,7 @@ def check(data: Dict[str, Any], ts: datetime) -> List[str]:
             continue
         entry = data["status"].get(key)
         if current == baseline:
+            data["status"].pop(key, None)         # put back as it was: green again
             continue
         if entry and entry.get("hash") == current:
             continue                              # already reported, nothing new

@@ -475,10 +475,8 @@ def _send(args: Dict[str, Any], **_: Any) -> str:
                                     "Put the words in your final answer.")
     if not result.get("success"):
         return _err(str(result.get("error") or "send failed"))
-    wait = args.get("wait_minutes")
     with store.locked_state() as (drives, peers):
-        social.open_outreach(drives, peers, peer, store.now(), text,
-                             None if wait is None else limits.clamp_reply_wait(wait))
+        social.open_outreach(drives, peers, peer, store.now(), text, args.get("wait_minutes"))
     return _ok(sent=True, peer=peer)
 
 

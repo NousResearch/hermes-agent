@@ -154,16 +154,6 @@ def pulse_social(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime) ->
     physics.refresh_oxytocin_global(drives, peers)
 
 
-def has_due_outreach(peers: Dict[str, Any], ts: datetime) -> bool:
-    for peer in peers.values():
-        outreach = peer.get("outreach")
-        if isinstance(outreach, dict) and outreach.get("status") == "open":
-            deadline = store.parse_time(outreach.get("deadline"))
-            if deadline is not None and ts >= deadline:
-                return True
-    return False
-
-
 def span(hours: float) -> str:
     minutes = int(round(hours * 60))
     if minutes < 60:

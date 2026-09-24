@@ -30,8 +30,8 @@ DEFAULT_TOOLSETS = ["wintermute", "memory", "file", "web", "terminal", "cronjob"
 
 def main(argv: list[str]) -> int:
     target = argv[1] if len(argv) > 1 else "telegram:7375758021"
-    toolsets = [t for t in os.environ.get("WINTERMUTE_TOOLSETS", "").split(",") if t.strip()]
-    toolsets = [t.strip() for t in toolsets] or DEFAULT_TOOLSETS
+    toolsets = [t.strip() for t in os.environ.get("WINTERMUTE_TOOLSETS", "").split(",")
+                if t.strip()] or DEFAULT_TOOLSETS
 
     from cron.jobs import create_job, list_jobs, update_job
 

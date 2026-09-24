@@ -29,7 +29,9 @@ mkdir -p "$STATE_DIR" "$HERMES_HOME/scripts" "$HERMES_HOME/plugins"
 
 # Secrets: wintermute/.env (git-ignored) -> ~/.hermes/.env via Hermes' own writer.
 # Empty values are skipped, so an unfilled line never erases a key already set.
+SECRETS_IMPORTED=""
 if [ -f "$REPO_DIR/.env" ]; then
+    SECRETS_IMPORTED="secrets"
     echo "==> Secrets from wintermute/.env -> $HERMES_HOME/.env"
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"
@@ -70,16 +72,14 @@ for f in drives.json interlocutors.json; do
         echo "    seed $f"
     fi
 done
-# The pulse target lives in state so the plugin knows where pulse answers go.
-"$HERMES_PY" - "$STATE_DIR/drives.json" "$TARGET" <<'PY'
-import json, sys
-path, target = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as fh:
-    data = json.load(fh)
-data.setdefault("meta", {})["pulse_target"] = target
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump(data, fh, indent=2, ensure_ascii=False)
-    fh.write("\n")
+# The pulse target lives in state so the plugin knows where pulse answers go. Written
+# through the engine: under its lock, atomically, never racing a live turn.
+HERMES_HOME="$HERMES_HOME" "$HERMES_PY" - "$STATE_DIR" "$TARGET" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from wintermute_engine import store
+with store.locked_state() as (drives, _peers):
+    drives["meta"]["pulse_target"] = sys.argv[2]
 PY
 
 echo "==> Pulse script -> $HERMES_HOME/scripts/wintermute_pulse.py"
@@ -97,6 +97,10 @@ echo "==> Plugin -> $HERMES_HOME/plugins/wintermute"
 rm -rf "$HERMES_HOME/plugins/wintermute"
 cp -r "$REPO_DIR/plugin" "$HERMES_HOME/plugins/wintermute"
 hermes plugins enable wintermute
+
+# Accept the code just copied right away, so a pulse tick during the rest of the install
+# never reports it as his doing.
+HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --status ack engine plugin pulse >/dev/null
 
 echo "==> Config"
 hermes config set cron.wrap_response false          # no "Cronjob Response" wrapper around its words
@@ -129,7 +133,8 @@ echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"
 
 echo "==> Witness: this install rewrote the engine, plugin, pulse and config; accept them"
-HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --status ack engine plugin pulse config
+# shellcheck disable=SC2086  # $SECRETS_IMPORTED is empty or one word
+HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --status ack engine plugin pulse config $SECRETS_IMPORTED
 
 echo "==> Current state (dry run, nothing is saved)"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --peek || true

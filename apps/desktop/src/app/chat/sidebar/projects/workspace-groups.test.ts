@@ -9,6 +9,7 @@ import {
   excludeProjectSessions,
   kanbanWorktreeDir,
   liveSessionProjectId,
+  mergeProjectOverlaySessions,
   mergeRepoWorktreeGroups,
   NO_PROJECT_ID,
   overlayLiveLanes,
@@ -38,6 +39,50 @@ describe('baseName', () => {
     expect(baseName('/www/hermes-agent/')).toBe('hermes-agent')
     expect(baseName('C:\\repos\\app')).toBe('app')
     expect(baseName('')).toBeUndefined()
+  })
+})
+
+describe('mergeProjectOverlaySessions', () => {
+  it('adds scheduled sessions to their project overlay without duplicating regular sessions', () => {
+    const regular = makeCwdSession('/repos/app', { id: 'regular' })
+    const scheduled = makeCwdSession('/repos/app', { id: 'scheduled' })
+
+    const project = {
+      id: 'app',
+      label: 'app',
+      path: '/repos/app',
+      previewSessions: [],
+      repos: [{ id: '/repos/app', label: 'app', path: '/repos/app', groups: [], sessionCount: 0 }],
+      sessionCount: 0
+    }
+
+    const merged = mergeProjectOverlaySessions([regular], [scheduled, regular])
+
+    expect(merged.map(session => session.id)).toEqual(['regular', 'scheduled'])
+    expect(overlayLiveLanes(project, merged).repos[0]?.groups[0]?.sessions.map(session => session.id)).toEqual([
+      'scheduled',
+      'regular'
+    ])
+  })
+
+  it('keeps a project-less scheduled session available for the Home overlay', () => {
+    const scheduled = makeCwdSession(null, { id: 'scheduled-home' })
+
+    const merged = mergeProjectOverlaySessions([], [scheduled])
+
+    const home = {
+      id: NO_PROJECT_ID,
+      isNoProject: true,
+      label: 'Home',
+      path: null,
+      previewSessions: [],
+      repos: [],
+      sessionCount: 0
+    }
+
+    expect(overlayLiveLanes(home, merged).repos[0]?.groups[0]?.sessions.map(session => session.id)).toEqual([
+      'scheduled-home'
+    ])
   })
 })
 

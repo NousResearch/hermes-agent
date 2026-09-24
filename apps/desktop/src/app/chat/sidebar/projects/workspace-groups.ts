@@ -140,6 +140,29 @@ export const branchLaneId = (repoRoot: string, branch?: string): string =>
 /** A session's recency stamp (last activity, falling back to creation). */
 export const sessionRecency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
+/**
+ * The grouped Projects view is overlaid from more than one session feed. Keep
+ * the normal recent-session row authoritative when a backend response happens
+ * to expose it in both feeds, while retaining scheduled sessions that only the
+ * cron feed returns.
+ */
+export function mergeProjectOverlaySessions(
+  agentSessions: SessionInfo[],
+  scheduledSessions: SessionInfo[]
+): SessionInfo[] {
+  const seen = new Set<string>()
+
+  return [...agentSessions, ...scheduledSessions].filter(session => {
+    if (seen.has(session.id)) {
+      return false
+    }
+
+    seen.add(session.id)
+
+    return true
+  })
+}
+
 /** Default-branch names that pin to the top and read as the repo's trunk. */
 const TRUNK_BRANCHES = new Set(['main', 'master', 'trunk', 'develop'])
 

@@ -939,6 +939,10 @@ def recover_with_credential_pool(
                 "credential rotation, deferring to fallback chain"
             )
         return False, has_retried_429
+    if effective_reason in (FailoverReason.overloaded, FailoverReason.server_error):
+        # An aggregator may route different keys to different upstreams. Try a healthy
+        # key on this provider before the caller switches to a fallback provider.
+        return (True, False) if _rotate_and_swap(503, "server error") else (False, has_retried_429)
     if effective_reason == FailoverReason.billing:
         # A separate pool instance may have resolved runtime credentials, leaving no ``current_id``;
         # match the key that failed, not a different account.

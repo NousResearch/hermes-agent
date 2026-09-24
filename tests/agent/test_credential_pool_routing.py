@@ -15,6 +15,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # 1. CLI _resolve_turn_agent_config includes credential_pool
@@ -424,6 +426,45 @@ class TestFailureAttribution:
 
     def _statuses(self, pool):
         return {e.id: e.last_status for e in pool.entries()}
+
+    @pytest.mark.parametrize("status,reason", [
+        (500, "server_error"), (502, "server_error"),
+        (503, "overloaded"), (529, "overloaded"),
+    ])
+    def test_server_error_rotates_within_pool_before_fallback(
+        self, tmp_path, monkeypatch, status, reason
+    ):
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from agent.error_classifier import FailoverReason
+
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
+        )
+        agent = self._agent(pool, failing_key="key-a")
+
+        recovered, retried = recover_with_credential_pool(
+            agent, status_code=status, has_retried_429=True,
+            classified_reason=FailoverReason(reason),
+        )
+
+        assert (recovered, retried) == (True, False)
+        assert agent._swap_credential.call_args.args[0].id == "cred-1"
+        failed = {e.id: e for e in pool.entries()}["cred-0"]
+        assert (failed.last_status, failed.last_error_code, failed.failure_reason) == (
+            "exhausted", status, reason,
+        )
+        assert self._statuses(pool)["cred-1"] != "exhausted"
+
+        # A second server failure has no healthy same-provider key left.
+        agent.api_key = "key-b"
+        agent._swap_credential.reset_mock()
+        recovered, retried = recover_with_credential_pool(
+            agent, status_code=status, has_retried_429=False,
+            classified_reason=FailoverReason(reason),
+        )
+        assert (recovered, retried) == (False, False)
+        agent._swap_credential.assert_not_called()
 
 
 

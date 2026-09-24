@@ -177,7 +177,7 @@ _NESTED_CHILDREN_NOTE = (
 
 def _build_child_system_prompt(
     goal: str, context: Optional[str] = None, *, workspace_path: Optional[str] = None, role: str = "leaf",
-    max_spawn_depth: int = 2, child_depth: int = 1,
+    max_spawn_depth: int = 2, child_depth: int = 1, context_length: Optional[int] = None,
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
@@ -203,7 +203,9 @@ def _build_child_system_prompt(
         with _quiet("subagent: workspace context-files load failed", exc_info=True):
             # See #64590.
             from agent.prompt_builder import build_context_files_prompt
-            _ctx_files = build_context_files_prompt(cwd=str(workspace_path), skip_soul=True)
+            _ctx_files = build_context_files_prompt(
+                cwd=str(workspace_path), skip_soul=True, context_length=context_length
+            )
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
     parts.append(_COMPLETION_INSTRUCTIONS)
@@ -218,9 +220,16 @@ def _build_child_system_prompt(
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
-    absolute directory is ever injected (never a fake container path)."""
+    absolute directory is ever injected (never a fake container path).
+
+    The parent's session workspace (``agent.session_cwd``, kept current by every
+    turn's ``_register_session_cwd``) outranks the process-wide TERMINAL_CWD:
+    after a launch from $HOME the env var points at the home dir — a valid
+    directory with no AGENTS.md — which used to leave the child with no project
+    context at all."""
     from agent.runtime_cwd import scope_terminal_cwd
     candidates = [
+        getattr(parent_agent, "session_cwd", None),
         scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
         getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
     ]
@@ -230,6 +239,26 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
             if os.path.isabs(text) and os.path.isdir(text):
                 return text
     return None
+
+def _resolve_child_context_length(parent_agent, *, model: Optional[str]) -> Optional[int]:
+    """Best-effort context window for the child's context-file cap. The child's own
+    runtime resolves later (AIAgent build), so resolve here from the pinned model
+    when given, else reuse the parent's window (children inherit the parent's model
+    by default). Never raises; None falls back to the prompt-builder default."""
+    try:
+        effective_model = model or getattr(parent_agent, "model", None)
+        if not effective_model:
+            return None
+        from agent.model_metadata import get_model_context_length
+        return get_model_context_length(
+            effective_model,
+            base_url=getattr(parent_agent, "base_url", "") or "",
+            api_key=getattr(parent_agent, "api_key", "") or "",
+            provider=str(getattr(parent_agent, "provider", None) or ""),
+        )
+    except Exception:
+        return None
+
 
 _BATCH_ORDINALS: Dict[str, Dict[str, int]] = {}
 _BATCH_ORDINALS_LOCK = threading.Lock()

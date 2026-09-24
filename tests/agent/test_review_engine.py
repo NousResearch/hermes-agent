@@ -401,6 +401,52 @@ def test_child_system_prompt_embeds_workspace_context(tmp_path):
     assert "sibling call sites" in prompt
 
 
+def test_child_system_prompt_prefers_session_workspace_over_terminal_env(tmp_path, monkeypatch):
+    """The parent's session workspace (agent.session_cwd, kept current by every turn's
+    _register_session_cwd) must win over the process-wide TERMINAL_CWD, which after a
+    launch from $HOME points at the home dir — a valid directory with no AGENTS.md —
+    and used to leave the child with no project context at all."""
+    from types import SimpleNamespace
+    from tools.delegate_tool import _build_child_system_prompt
+    import tools.delegate_tool_progress as dtp
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "AGENTS.md").write_text("# Project Rules\nSESSION-CWD-WINS\n")
+
+    parent = SimpleNamespace(session_cwd=str(proj))
+
+    def fake_scope_terminal_cwd():
+        return str(tmp_path)  # a different valid dir (stands in for $HOME)
+
+    monkeypatch.setattr(dtp, "scope_terminal_cwd", fake_scope_terminal_cwd, raising=False)
+    # The import inside _resolve_workspace_hint re-binds from agent.runtime_cwd; patch there too.
+    import agent.runtime_cwd as rc
+    monkeypatch.setattr(rc, "scope_terminal_cwd", fake_scope_terminal_cwd, raising=False)
+
+    prompt = _build_child_system_prompt("goal", None, workspace_path=dtp._resolve_workspace_hint(parent))
+    assert "SESSION-CWD-WINS" in prompt, "child prompt used TERMINAL_CWD instead of the session workspace"
+
+
+def test_child_system_prompt_respects_model_context_window(tmp_path, monkeypatch):
+    """A large AGENTS.md must not be truncated in a child prompt when the child
+    model has a large context window (delegate_task children resolve their own
+    runtime; the prompt builder must scale the context-file cap accordingly)."""
+    from tools.delegate_tool import _build_child_system_prompt
+
+    workspace = tmp_path / "proj"
+    workspace.mkdir()
+    filler = "x" * 30_000  # over the 20K floor, under a 200K-window dynamic cap (48K)
+    (workspace / "AGENTS.md").write_text("HEAD-MARKER\n" + filler + "\nTAIL-MARKER\n")
+
+    prompt = _build_child_system_prompt(
+        "do the thing", None, workspace_path=str(workspace), context_length=200_000
+    )
+    low = prompt.lower()
+    assert "truncated agents.md" not in low, "child prompt truncated a 30K AGENTS.md despite a 200K window"
+    assert "HEAD-MARKER" in prompt and "TAIL-MARKER" in prompt, "file content dropped"
+
+
 
 
 

@@ -37,8 +37,8 @@ from tools.delegate_tool_config import (  # noqa: F401
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
-    _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
-    _safe_progress, format_batch_tag, format_subagent_failure_line,
+    _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_child_context_length,
+    _resolve_workspace_hint, _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
 from tools.delegate_tool_registry import (  # noqa: F401
     _CONTROL_ACTIONS, _active_subagents, _active_subagents_lock, _capture_gateway_steer_authority,
@@ -200,9 +200,13 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    # Context-file cap for the child prompt must scale with the CHILD's window, not
+    # fall to the 20K floor: resolve the requested child model when pinned, else the
+    # parent's model (children inherit it by default). Best-effort; None = default cap.
+    child_context_length = _resolve_child_context_length(parent_agent, model=model)
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        max_spawn_depth=max_spawn, child_depth=child_depth, context_length=child_context_length,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):

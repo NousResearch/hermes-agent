@@ -287,6 +287,19 @@ class TestMemoryConsolidationGracefulDegrade:
 
 
 class TestMemoryStorePersistence:
+    @pytest.mark.parametrize("filename, target", [("MEMORY.md", "memory"), ("USER.md", "user")])
+    def test_saved_files_have_one_final_newline(self, store, tmp_path, filename, target):
+        path = tmp_path / filename
+        assert store.add(target, "first")["success"] is True
+        assert store.add(target, "second")["success"] is True
+        assert path.read_bytes() == "first\n§\nsecond\n".encode()
+
+        path.write_bytes(b"legacy")
+        assert store.replace(target, "legacy", "updated")["success"] is True
+        assert path.read_bytes() == b"updated\n"
+        assert store.remove(target, "updated")["success"] is True
+        assert path.read_bytes() == b""
+
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
 

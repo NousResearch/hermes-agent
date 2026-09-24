@@ -419,7 +419,8 @@ class MemoryStore:
         """Atomic temp-file + rename: readers never see a truncated file. Also used by
         agent/learning_mutations.py."""
         try:
-            atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_")
+            content = ENTRY_DELIMITER.join(entries)
+            atomic_write_text(path, content + ("\n" if content else ""), tmp_prefix=".mem_")
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 

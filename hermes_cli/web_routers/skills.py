@@ -414,10 +414,16 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
 async def create_skill(body: SkillCreate):
     """Create a skill via the agent's ``skill_manage`` write path, minus the
     write-approval gate — an authenticated dashboard write IS the user."""
-    from tools.skill_manager_tool import _create_skill
+    from tools.skill_manager_tool import _create_skill, operator_authority
 
-    result = await scoped_to_thread(
-        body.profile, lambda: _create_skill(body.name, body.content, body.category or None))
+    def _create():
+        # An authenticated dashboard write IS the operator, so it may author
+        # operator-locked regions. Without this the agent-facing lock guard would refuse
+        # the very flow that is supposed to set and lift locks.
+        with operator_authority():
+            return _create_skill(body.name, body.content, body.category or None)
+
+    result = await scoped_to_thread(body.profile, _create)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
     _clear_skills_prompt_cache()
@@ -427,9 +433,14 @@ async def create_skill(body: SkillCreate):
 @router.put("/api/skills/content")
 async def update_skill_content(body: SkillContentUpdate):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
-    from tools.skill_manager_tool import _edit_skill
+    from tools.skill_manager_tool import _edit_skill, operator_authority
 
-    result = await scoped_to_thread(body.profile, lambda: _edit_skill(body.name, body.content))
+    def _edit():
+        # The dashboard editor is how an operator lifts or re-authors a lock.
+        with operator_authority():
+            return _edit_skill(body.name, body.content)
+
+    result = await scoped_to_thread(body.profile, _edit)
     if not result.get("success"):
         err = result.get("error", "Failed to update skill.")
         status = 404 if "not found" in str(err).lower() else 400

@@ -106,6 +106,29 @@ class TestSendDraft:
         assert client.chat_appendStream.await_args.kwargs["markdown_text"] == " world"
 
     @pytest.mark.asyncio
+    async def test_cursor_before_synthetic_code_closer_is_stripped(self):
+        """The consumer closes an open code span AFTER appending its cursor, so a
+        mid-stream frame ends in "▉`". Streamed verbatim, the next frame is no longer
+        an append (the closer moved) -> prefix mismatch, the stream is sealed with a
+        stray cursor and the reply is re-posted."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "removed `.env.bak ▉`", metadata=META)
+        assert client.chat_startStream.await_args.kwargs["markdown_text"] == "removed `.env.bak"
+        result = await adapter.send_draft("D1", 7, "removed `.env.bak-2026` and", metadata=META)
+        assert result.success
+        assert client.chat_appendStream.await_args.kwargs["markdown_text"] == "-2026` and"
+        client.chat_stopStream.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cursor_before_synthetic_fence_closer_is_stripped(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "```\nls ▉\n```", metadata=META)
+        assert client.chat_startStream.await_args.kwargs["markdown_text"] == "```\nls"
+        result = await adapter.send_draft("D1", 7, "```\nls -la\n```", metadata=META)
+        assert result.success
+        assert client.chat_appendStream.await_args.kwargs["markdown_text"] == " -la\n```"
+
+    @pytest.mark.asyncio
     async def test_identical_frame_is_noop(self):
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Hello", metadata=META)
@@ -182,6 +205,48 @@ class TestSendFinalization:
         assert result.success
         kwargs = client.chat_stopStream.await_args.kwargs
         assert "markdown_text" not in kwargs
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leading_newline_first_frame_still_seals(self):
+        """The consumer's first frame for a segment can start with newlines
+        (e.g. ``"\n\n**11"``) while the turn-final text handed to send() is
+        stripped. Finalization must still recognise the stream as its own —
+        otherwise send() falls through to chat.postMessage (a duplicate
+        message) and chat.stopStream never runs (the thread status hangs).
+        """
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "\n\n**11", metadata=META)
+        await adapter.send_draft("D1", 7, "\n\n**11,332 sellers** on Vionic", metadata=META)
+        result = await adapter.send(
+            "D1", "**11,332 sellers** on Vionic — live as of now.", metadata=META
+        )
+        assert result.success
+        assert result.message_id == "123.456"
+        kwargs = client.chat_stopStream.await_args.kwargs
+        assert kwargs["markdown_text"] == " — live as of now."
+        client.chat_postMessage.assert_not_awaited()
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_leading_newline_equal_content_seals_without_delta(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "\n\nHello world", metadata=META)
+        result = await adapter.send("D1", "Hello world", metadata=META)
+        assert result.success
+        kwargs = client.chat_stopStream.await_args.kwargs
+        assert "markdown_text" not in kwargs
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_trailing_whitespace_frame_still_seals(self):
+        """A streamed frame ending in whitespace ("abc\n") against a stripped final
+        ("abc") must still finalize the stream instead of re-posting."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "abc\n", metadata=META)
+        result = await adapter.send("D1", "abc — more", metadata=META)
+        assert result.success
+        assert client.chat_stopStream.await_args.kwargs["markdown_text"] == " — more"
         client.chat_postMessage.assert_not_awaited()
 
     @pytest.mark.asyncio

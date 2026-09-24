@@ -4,7 +4,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
-import { _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } from '@/store/session'
+import { _resetSessionOwnerHintsForTests, setMessagingSessions, setSessionOwnerHint, setSessions } from '@/store/session'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   $sessionTiles,
@@ -95,7 +95,11 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
     $sessionTiles.set([])
     clearAllSessionStates()
     setSessions([])
+    setMessagingSessions([])
     $profiles.set([])
+    setPrimaryGateway(null)
+    setPrimaryGatewayConnection(null)
+    $connectionsRegistry.set(null)
     _resetSessionOwnerHintsForTests({ storage: true })
   })
 
@@ -129,6 +133,38 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
       requestForOwnedSession('rt-orphan', ambient as never, 'approval.respond', { session_id: 'rt-orphan' })
     ).resolves.toEqual({ ok: true })
     expect(ambient).toHaveBeenCalledWith('approval.respond', { session_id: 'rt-orphan' })
+  })
+
+  it('routes approval.respond for a restarted messaging row that omits legacy profile metadata (#108102)', async () => {
+    // Telegram-resumed sessions can be present in the messaging slice after a
+    // Desktop restart before any tile, owner hint, or fresh approval.request
+    // event has recorded an exact runtime owner. Older primary backends omit
+    // `profile` on those rows; the row itself still proves this is the default
+    // profile on the backend that served the list, not an unknown orphan.
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    setMessagingSessions([makeSessionInfo({ id: 'telegram-stored', source: 'telegram' })])
+
+    const primaryRequest = vi.fn(async (method: string, params: unknown) => ({ method, params, via: 'primary' }))
+    setPrimaryGateway({ onEvent: () => () => undefined, request: primaryRequest, state: 'open' } as never, 'default')
+
+    const ambient = vi.fn(async () => ({ via: 'ambient' }))
+
+    await expect(
+      requestForOwnedSession('telegram-stored', ambient as never, 'approval.respond', {
+        choice: 'once',
+        session_id: 'telegram-stored'
+      })
+    ).resolves.toEqual({
+      method: 'approval.respond',
+      params: { choice: 'once', session_id: 'telegram-stored' },
+      via: 'primary'
+    })
+
+    expect(primaryRequest).toHaveBeenCalledWith('approval.respond', {
+      choice: 'once',
+      session_id: 'telegram-stored'
+    })
+    expect(ambient).not.toHaveBeenCalled()
   })
 
   it('routes a connection-tagged orphan runtime through the owner its inbound event recorded (#97511)', () => {

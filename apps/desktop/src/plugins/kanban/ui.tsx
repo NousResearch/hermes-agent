@@ -172,6 +172,15 @@ export const tenantLabel = (tenant: string): string => tenant || '—'
  *  test can reach it. */
 export const tenantTabList = (names: readonly string[]): string[] => ['', ...new Set(names)]
 
+/** Roster profiles with no card in the current view, sorted — the greyed,
+ *  unclickable tail of the tab row. Visible so the full seat roster reads at a
+ *  glance; unclickable so no tab ever points at an empty board. */
+export const emptyRosterTabs = (cardNames: readonly string[], roster: readonly string[]): string[] => {
+  const carried = new Set(cardNames)
+
+  return [...new Set(roster)].filter(name => !carried.has(name)).sort()
+}
+
 /**
  * Profile-tab scope for the board filter — '' means every card. A tab named
  * after a profile covers both places a card can carry that name: its tenant

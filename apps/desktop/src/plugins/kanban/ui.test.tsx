@@ -4,6 +4,7 @@ import type { KanbanTask } from './types'
 import {
   childrenIndicator,
   dependencyState,
+  emptyRosterTabs,
   fmtSecs,
   matchesProfileTab,
   runtimeCapBadge,
@@ -172,5 +173,16 @@ describe('tenant colour coding', () => {
     // up under the gongbu tab even when their tenant is empty.
     expect(matchesProfileTab(task({ assignee: 'gongbu', tenant: null }), 'gongbu')).toBe(true)
     expect(matchesProfileTab(task({ assignee: 'menxia', tenant: null }), 'gongbu')).toBe(false)
+  })
+
+  it('lists card-less roster profiles as a sorted tail after the carried names', () => {
+    // Carried names render normally and never reappear in the tail; the tail
+    // is deduped and sorted for a stable row.
+    expect(emptyRosterTabs(['gongbu', 'court'], ['gongbu', 'hubu', 'guanbu', 'court', 'guanbu'])).toEqual([
+      'guanbu',
+      'hubu'
+    ])
+    expect(emptyRosterTabs([], ['zhongshu', 'bingbu'])).toEqual(['bingbu', 'zhongshu'])
+    expect(emptyRosterTabs(['bingbu'], ['bingbu'])).toEqual([])
   })
 })

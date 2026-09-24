@@ -104,6 +104,7 @@ import {
   DEP_TONES,
   dependencyState,
   type DepSegment,
+  emptyRosterTabs,
   errText,
   FIELD_LABEL,
   fmtSecs,
@@ -1516,6 +1517,9 @@ export function KanbanBoardPage() {
     refetchInterval: 60_000
   })
 
+  // Roster for the greyed tail of the profile tabs (see emptyRosterTabs).
+  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
+
   const [openId, setOpenId] = useState<null | string>(null)
   const [addStatus, setAddStatus] = useState<null | string>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1674,6 +1678,13 @@ export function KanbanBoardPage() {
 
     return tenantTabList(names.sort())
   }, [board])
+
+  // Greyed tail: roster profiles with no card in this view, kept visible but
+  // unclickable so the full seat roster reads without empty-board tabs.
+  const emptyTabs = useMemo(
+    () => emptyRosterTabs(tabs.slice(1), (roster?.profiles ?? []).map(profile => profile.name)),
+    [tabs, roster]
+  )
 
   // Client-side filters, mirroring the dashboard (search over title/body/id).
   const filtered = useMemo(() => {
@@ -1928,7 +1939,7 @@ export function KanbanBoardPage() {
 
       {/* Tenant (profile) switch: fixed above the lanes so the colour a card
           wears always sits next to the board it belongs to. */}
-      {board && tabs.length > 1 && (
+      {board && (tabs.length > 1 || emptyTabs.length > 0) && (
         <nav
           aria-label={k.tenantTabs}
           className="flex shrink-0 items-center gap-1 overflow-x-auto border-(--ui-stroke-tertiary) border-b px-4 pb-1.5"
@@ -1955,6 +1966,15 @@ export function KanbanBoardPage() {
               </button>
             )
           })}
+          {emptyTabs.map(name => (
+            <span
+              className="inline-flex shrink-0 items-center gap-1.5 px-2 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)"
+              key={name}
+            >
+              <span aria-hidden className="size-2 rounded-full opacity-50" style={{ backgroundColor: tenantColor(name) }} />
+              {tenantLabel(name)}
+            </span>
+          ))}
         </nav>
       )}
 

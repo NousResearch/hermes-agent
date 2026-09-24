@@ -364,6 +364,12 @@ class TestExtractImageRefs:
         assert paths == [str(img)]
         assert urls == []
 
+    def test_path_pattern_accepts_windows_drive_paths(self):
+        from agent.image_routing import _LOCAL_IMAGE_PATH_RE
+
+        text = r"see C:\Users\me\shot.png and D:/pics/cat.jpg, not https://x.io/a.png"
+        assert _LOCAL_IMAGE_PATH_RE.findall(text) == [r"C:\Users\me\shot.png", "D:/pics/cat.jpg"]
+
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
         # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
         monkeypatch.setenv("HOME", str(tmp_path))

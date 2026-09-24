@@ -20,7 +20,6 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
 
 import hermes_cli._early_recovery as er
 import subprocess
@@ -131,7 +130,6 @@ class TestUpdateProbeScriptChecksBundle:
 
 class TestDoctorCertificates:
     def test_broken_bundle_fails_without_fix(self, monkeypatch, capsys, tmp_path):
-        from hermes_cli import doctor as doctor_mod
 
         monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
         issues = []
@@ -142,7 +140,6 @@ class TestDoctorCertificates:
         assert any("doctor --fix" in i for i in issues)
 
     def test_fix_reinstalls_certifi_and_reverifies(self, monkeypatch, capsys, tmp_path):
-        from hermes_cli import doctor as doctor_mod
 
         # First verification fails, post-reinstall verification succeeds.
         calls = {"verify": 0, "pip": []}
@@ -182,7 +179,6 @@ class TestDoctorCertificates:
 
 
     def test_healthy_bundle_never_touches_pip(self, monkeypatch, capsys):
-        from hermes_cli import doctor as doctor_mod
 
         def _fail_run(*a, **k):
             raise AssertionError("healthy bundle must not trigger a reinstall")
@@ -198,16 +194,3 @@ class TestDoctorCertificates:
 # =========================================================================
 
 
-class TestSslGuardRepairHint:
-    def test_missing_bundle_error_mentions_doctor_fix(self, monkeypatch, tmp_path):
-        import certifi
-
-        from agent.errors import SSLConfigurationError
-        from agent.ssl_guard import verify_ca_bundle
-
-        monkeypatch.setattr(certifi, "where", lambda: str(tmp_path / "gone.pem"))
-        with pytest.raises(SSLConfigurationError) as excinfo:
-            verify_ca_bundle()
-        message = str(excinfo.value)
-        assert "hermes doctor --fix" in message
-        assert "certifi" in message

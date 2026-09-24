@@ -61,7 +61,13 @@ PROBE_TIMEOUT_S = 2.0
 
 ROLE_GATEWAY = "gateway"
 ROLE_SERVE = "serve"
-_ROLES = (ROLE_GATEWAY, ROLE_SERVE)
+#: A Desktop-owned pool child (loopback, random port, per-profile lifecycle). It is NOT a host
+#: owner — the attach/refuse ladder reads ``ROLE_SERVE`` only, so a supervised public dashboard
+#: never stands down behind it (#119824) — but ``hermes plugins install`` from a terminal still
+#: has to reach the backend hosting the open chats (#119644), and this record + 0600 token is
+#: how it dials one on a Desktop-only box.
+ROLE_DESKTOP_SERVE = "desktop-serve"
+_ROLES = (ROLE_GATEWAY, ROLE_SERVE, ROLE_DESKTOP_SERVE)
 
 # Open lock handles, keyed by (role, resolved lock path): the OS releases the flock when this
 # process dies, which is what makes a crashed owner's host lock re-acquirable without a reaper.

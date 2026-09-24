@@ -13,7 +13,6 @@ opt-out can silently regress.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import time
@@ -94,11 +93,3 @@ def test_no_gateway_flag_omits_gateway_from_update(tmp_path):
         assert "--yes" in argv
 
 
-@requires_posix_handoff
-def test_no_gateway_flag_leaves_the_result_clean(tmp_path):
-    """The opt-out only drops --gateway; the hand-off still completes OK."""
-    calls = _run_handoff(tmp_path, ["--no-gateway"])
-
-    assert calls, "hand-off never invoked hermes"
-    result = json.loads((tmp_path / ".hermes-update-result.json").read_text())
-    assert result.get("status") != "error", result

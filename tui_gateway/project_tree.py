@@ -190,11 +190,13 @@ def _place(
 
 
 def _place_session(session: dict, resolve: Optional[Resolve]) -> Optional[dict]:
-    """``_place`` for a session row; ``None`` when it has no cwd."""
-    cwd = _field(session, "cwd")
-    if not cwd:
+    """``_place`` for a session row, anchored on its cwd or else its persisted repo root;
+    ``None`` only when it has neither (the renderer's ``isDetachedSession``)."""
+    root = _field(session, "git_repo_root")
+    anchor = _field(session, "cwd") or root
+    if not anchor:
         return None
-    return _place(cwd, _field(session, "git_branch"), resolve, _field(session, "git_repo_root"))
+    return _place(anchor, _field(session, "git_branch"), resolve, root)
 
 
 def _session_repo_root(session: dict, resolve: Optional[Resolve]) -> str:
@@ -321,10 +323,11 @@ class _FolderIndex:
 def _project_for_session(
         session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
     cwd = _field(session, "cwd")
-    if not cwd:
-        return None
     repo_root = _session_repo_root(session, resolve)
-    candidates = [cwd, repo_root] if repo_root and repo_root != cwd else [cwd]
+    # A root-only row (empty cwd) still belongs to the project owning its root.
+    candidates = [t for t in dict.fromkeys((cwd, repo_root)) if t]
+    if not candidates:
+        return None
     # Longest folder match wins; ties keep the cwd match (max() keeps the first maximum).
     return max((index.match(t) for t in candidates), key=lambda hit: hit[1])[0]
 

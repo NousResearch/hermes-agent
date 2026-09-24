@@ -392,9 +392,12 @@ def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int =
             if length and file_done[0] != length:
                 raise RuntimeError(f"Download ended at {file_done[0]:,} bytes but the server "
                                    f"said {length:,} — connection dropped? Removed; try again")
-        shutil.move(str(tmp), str(dest))
+        job["detail"] = "Finishing"
+        binaries.replace_when_released(tmp, dest)
     except Exception:
-        tmp.unlink(missing_ok=True)
+        # Best effort: a leftover that cannot be removed must not hide the error that left it.
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
 
 

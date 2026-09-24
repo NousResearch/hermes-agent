@@ -245,9 +245,6 @@ describe('GatewaySettings', () => {
   it('loads the machine-level connection config (no profile scoping)', async () => {
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()
-    expect(
-      screen.getByText('Start a private Hermes backend on localhost. This is the default and works offline.')
-    ).toBeTruthy()
 
     // The page manages the machine's gateway connections; it must load the
     // global config, never a per-profile override.

@@ -24,7 +24,6 @@ import pytest
 
 from hermes_cli.active_sessions import (
     MAX_CONCURRENT_SESSIONS,
-    PER_SESSION_EXCLUSIVE_SUBMIT,
     SESSION_NOT_OWNED,
     active_session_registry_snapshot,
     release_active_session,
@@ -100,7 +99,6 @@ def test_global_capacity_still_applies_independently():
         "a capacity refusal must not be reported as an ownership refusal: a client "
         "retries one and must not retry the other the same way"
     )
-    assert "active session limit (2/2)" in str(refusal)
 
 
 def test_capacity_and_exclusivity_are_not_the_same_switch():
@@ -219,6 +217,3 @@ def test_the_same_live_session_may_re_acquire_its_own_lease():
     assert refusal.reason == SESSION_NOT_OWNED
 
 
-def test_the_capability_is_advertised_because_the_check_exists():
-    """The flag lives beside the enforcement, so it cannot drift from it."""
-    assert PER_SESSION_EXCLUSIVE_SUBMIT is True

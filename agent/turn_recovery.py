@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
+from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -236,7 +237,8 @@ def recover_before_classification(
     api_kwargs: Any, active_system_prompt: Any,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
-    sanitization, provider image-content rejection (record the (provider, model);
+    sanitization, Anthropic fast mode with no capacity (drop ``speed`` for that model),
+    provider image-content rejection (record the (provider, model);
     build_api_request strips images from that model's requests only), and the Bedrock
     AnthropicBedrock SDK streaming fallback. Returns ``(retry_now, active_system_prompt)``;
     the prompt may be ASCII-sanitized in place."""
@@ -246,6 +248,14 @@ def recover_before_classification(
         )
         if _recovered:
             return True, active_system_prompt
+
+    # Anthropic fast mode with no capacity: a 429 whose fast-mode limit header is 0 can never
+    # succeed at fast speed, and it says nothing about the key's standard-speed limits. Stop
+    # sending ``speed`` to this model and retry now, before credential rotation benches the key.
+    if fast_mode_unprovisioned(api_error, api_kwargs) and mark_fast_mode_unavailable(agent):
+        _vlines(agent, f"⚠️  Fast mode isn't available for {agent.model} on this Anthropic organization — using standard speed for this session, retrying...")
+        logger.warning("%sFast mode: %s has a fast-mode limit of 0; standard speed for this session", agent.log_prefix, agent.model)
+        return True, active_system_prompt
 
     # Some providers 4xx on image_url content: record the (provider, model) and retry;
     # build_api_request strips images from that model's requests only. English phrase

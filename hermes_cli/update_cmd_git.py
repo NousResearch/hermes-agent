@@ -41,7 +41,11 @@ def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
 def _prune_orphan_rescue_refs(
     git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP, max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS
 ) -> None:
-    """Expire old orphan rescue refs (``refs/hermes-update-backups/orphan-<branch>-<ts>-<sha>``).
+    """Expire old rescue refs (``refs/hermes-update-backups/<kind>-<branch>-<ts>-<sha>``).
+
+    ``<kind>`` is ``orphan`` (no common ancestor) or ``diverged`` (local commits on the target
+    branch). Both are written before the same ``reset --hard`` and both pin objects, so both
+    expire on the same terms; each kind keeps its own ``keep`` newest.
 
     Each ref pins a possibly multi-GB snapshot against ``git gc``, so a repeatedly corrupted install would
     grow ``.git`` unbounded. Keep the ``keep`` newest AND drop any older than ``max_age_days`` by the
@@ -54,18 +58,22 @@ def _prune_orphan_rescue_refs(
     """
     from hermes_cli.update_cmd import _git_run
     with suppress(OSError):
-        prefix = f"refs/hermes-update-backups/orphan-{branch}-"
-        list_result = _git_run(git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
-        if list_result.returncode != 0:
-            return
-        refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
-        stale = set(refs[:-keep] if keep > 0 else refs)
-        if max_age_days > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-            for ref in refs:
-                with suppress(ValueError):
-                    if datetime.strptime(ref[len(prefix):][:15], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc) < cutoff:
-                        stale.add(ref)
+        stale: set[str] = set()
+        for kind in ("orphan", "diverged"):
+            prefix = f"refs/hermes-update-backups/{kind}-{branch}-"
+            list_result = _git_run(
+                git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
+            if list_result.returncode != 0:
+                continue
+            refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
+            stale |= set(refs[:-keep] if keep > 0 else refs)
+            if max_age_days > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+                for ref in refs:
+                    with suppress(ValueError):
+                        stamp = datetime.strptime(ref[len(prefix):][:15], "%Y%m%d-%H%M%S")
+                        if stamp.replace(tzinfo=timezone.utc) < cutoff:
+                            stale.add(ref)
         for ref in sorted(stale):
             _git_run(git_cmd, ["update-ref", "-d", ref], cwd)
 
@@ -337,6 +345,14 @@ _FETCH_FAILURE_RULES = (
      " `git remote -v` points at a public repo."),
     (lambda s: "Authentication failed" in s,
      "✗ Authentication failed — check your git credentials or SSH key."),
+    # SSH auth failures never say "Authentication failed" — OpenSSH prints its own
+    # "Permission denied (publickey)"/"Host key verification failed" and git wraps
+    # it as "Could not read from remote repository", which otherwise fell through
+    # to the generic message below and left an SSH-remote user with no idea their
+    # key (or lack of one) was the cause (#82169).
+    (lambda s: "Permission denied (publickey)" in s or "Host key verification failed" in s,
+     "✗ SSH authentication failed — check your SSH key is added to GitHub, or switch"
+     " `origin` to HTTPS: `git remote set-url origin https://github.com/NousResearch/hermes-agent.git`."),
 )
 
 

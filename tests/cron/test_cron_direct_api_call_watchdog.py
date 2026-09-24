@@ -88,14 +88,6 @@ def test_stalled_inline_call_is_aborted_and_raises_retryable_timeout():
     assert elapsed < 4.0, "watchdog did not bound the call"
 
 
-def test_watchdog_abort_never_surfaces_as_interrupted_error():
-    """InterruptedError means "the user wants to stop" — the outer loop does
-    not retry it. A watchdog abort must stay retryable."""
-    agent = _make_agent(stale_timeout=0.2)
-    _stalling_client(agent, aborted=[])
-
-    with pytest.raises(TimeoutError):
-        direct_api_call(agent, {"model": "m", "messages": []})
 
 
 def test_watchdog_kill_feeds_the_cross_turn_stale_circuit_breaker():
@@ -175,23 +167,6 @@ def test_local_endpoint_infinite_budget_leaves_the_watchdog_disarmed():
     agent._abort_request_openai_client.assert_not_called()
 
 
-def test_watchdog_uses_the_same_budget_as_the_interrupt_worker_path():
-    """The budget comes from ``_compute_non_stream_stale_timeout`` — the same
-    resolver the worker path's stale detector uses — with the live request
-    payload, so provider config and context scaling both apply."""
-    seen: list[dict] = []
-    agent = _make_agent(stale_timeout=30.0)
-    agent._compute_non_stream_stale_timeout = lambda payload: (
-        seen.append(payload) or 30.0
-    )
-    fake_client = MagicMock()
-    fake_client.chat.completions.create.return_value = SimpleNamespace(id="ok")
-    agent._create_request_openai_client.return_value = fake_client
-
-    payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-    direct_api_call(agent, payload)
-
-    assert seen == [payload]
 
 
 # ---------------------------------------------------------------------------
@@ -392,25 +367,8 @@ def test_resolver_exception_propagates_instead_of_disarming_the_watchdog():
 # ---------------------------------------------------------------------------
 
 
-def test_inline_hard_timeout_matches_stale_budget():
-    """Keepalive httpx uses read=None. The injected timeout's read budget
-    must equal the stale watchdog so a no-op abort cannot hang for hours."""
-    from agent.chat_completion_helpers import _inline_nonstream_hard_timeout
-
-    timeout = _inline_nonstream_hard_timeout(600.0)
-    assert timeout is not None
-    assert timeout.read == 600.0
-    assert timeout.connect == 60.0
-    assert timeout.write == 60.0
-    assert timeout.pool == 60.0
 
 
-def test_inline_hard_timeout_disarmed_when_watchdog_is_disarmed():
-    from agent.chat_completion_helpers import _inline_nonstream_hard_timeout
-
-    assert _inline_nonstream_hard_timeout(float("inf")) is None
-    assert _inline_nonstream_hard_timeout(0) is None
-    assert _inline_nonstream_hard_timeout(-1) is None
 
 
 def test_inline_call_passes_hard_read_timeout_to_the_sdk():

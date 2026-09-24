@@ -29,8 +29,8 @@ import {
   queryClient,
   relativeTime,
   RowButton,
-  Switch,
   Tip,
+  ToggleRow,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -496,13 +496,12 @@ function GroupChatSettingsDialog({
             value={name}
           />
         </form>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span>
-            <span className="block">{b.group.holdDetection}</span>
-            <span className="block text-xs text-(--ui-text-tertiary)">{b.group.holdDetectionHint}</span>
-          </span>
-          <Switch checked={holdDetection} onCheckedChange={setHoldDetection} />
-        </label>
+        <ToggleRow
+          checked={holdDetection}
+          description={b.group.holdDetectionHint}
+          label={b.group.holdDetection}
+          onChange={setHoldDetection}
+        />
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {
@@ -918,7 +917,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   {groupActivityLabel(event, group)}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
-                {event.kind === 'working' ? (
+                {room.running && event.kind === 'working' ? (
                   <Tip label={b.group.stopHint}>
                     <Button
                       className="shrink-0 text-(--ui-accent)"
@@ -1088,6 +1087,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     const seed = (current: string) =>
       current.includes(`@${tag}`) ? current : `@${tag} ${current}`.replace(/\s+$/, ' ')
+
     const thread = groupThreadOf(entry)
 
     if (replyThread === thread) {

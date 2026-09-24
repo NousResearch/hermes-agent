@@ -855,6 +855,32 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _elapsed_seconds(later: datetime, earlier: datetime) -> float:
+    """Return elapsed seconds between aware instants, independent of wall time."""
+    return (later.astimezone(timezone.utc) - earlier.astimezone(timezone.utc)).total_seconds()
+
+
+def _instant_after(left: datetime, right: datetime) -> bool:
+    """Whether *left* is a later absolute instant than *right*."""
+    return left.astimezone(timezone.utc) > right.astimezone(timezone.utc)
+
+
+def _instant_at_or_before(left: datetime, right: datetime) -> bool:
+    """Whether *left* is at or before *right* as an absolute instant."""
+    return left.astimezone(timezone.utc) <= right.astimezone(timezone.utc)
+
+
+def _instant_before(left: datetime, right: datetime) -> bool:
+    """Whether *left* is an earlier absolute instant than *right*."""
+    return left.astimezone(timezone.utc) < right.astimezone(timezone.utc)
+
+
+def _seconds_after(dt: datetime, seconds: float) -> datetime:
+    """*dt* plus real *seconds*, in *dt*'s zone. Aware ``+ timedelta`` is wall-clock arithmetic
+    that drops ``fold``, so inside a fall-back hour it lands an hour off."""
+    return (dt.astimezone(timezone.utc) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
+
+
 def _parse_aware(value: Any) -> Optional[datetime]:
     """``_ensure_aware(datetime.fromisoformat(value))``, or None when *value* is not a parseable ISO
     string."""
@@ -888,7 +914,7 @@ def _recoverable_oneshot_run_at(
         return None
     run_at = schedule.get("run_at")
     run_at_dt = _parse_aware(run_at) if run_at else None
-    if run_at_dt is not None and run_at_dt >= now - timedelta(seconds=ONESHOT_GRACE_SECONDS):
+    if run_at_dt is not None and _elapsed_seconds(now, run_at_dt) <= ONESHOT_GRACE_SECONDS:
         return run_at
     return None
 
@@ -958,7 +984,7 @@ def _job_is_stale_error_recurring(
     last_run_dt = _parse_aware(last_run) if last_run else None
     if last_run_dt is None:
         return False
-    age_seconds = (now - last_run_dt).total_seconds()
+    age_seconds = _elapsed_seconds(now, last_run_dt)
     if age_seconds < 0:
         return False
     grace = _compute_grace_seconds(schedule)
@@ -2068,7 +2094,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     if (
         job["schedule"].get("kind") in {"cron", "interval"}
         and stored_dt is not None
-        and stored_dt <= _hermes_now()
+        and _instant_at_or_before(stored_dt, _hermes_now())
     ):
         next_run_at = stored_next
         logger.info(
@@ -2142,7 +2168,7 @@ def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
     if not isinstance(claim, dict) or not claim.get("at"):
         return False
     claimed_at = _parse_aware(claim["at"])
-    if claimed_at is None or not (0 <= (now - claimed_at).total_seconds() < ttl_seconds):
+    if claimed_at is None or not (0 <= _elapsed_seconds(now, claimed_at) < ttl_seconds):
         return False
     return not _claim_owner_is_dead(claim)
 
@@ -2900,7 +2926,7 @@ def _repair_timezone_shifted_cron(d: _DueJob) -> bool:
     offset change meeting the same conditions SKIPS the pending occurrence; accepted as rare."""
     now = d.scan.now
     if not (
-        d.next_run_dt <= now
+        _instant_at_or_before(d.next_run_dt, now)
         and _timezone_offset_mismatch(d.raw_next_run_dt, now)
         and _stored_wall_clock_is_future(d.raw_next_run_dt, now)
     ):
@@ -2928,7 +2954,7 @@ def _rearm_stale_error_recurring(d: _DueJob) -> datetime:
     now = d.scan.now
     if not (
         d.kind in ("cron", "interval")
-        and d.next_run_dt > now
+        and _instant_after(d.next_run_dt, now)
         and _job_is_stale_error_recurring(d.job, d.schedule, now)
     ):
         return d.next_run_dt
@@ -2938,7 +2964,10 @@ def _rearm_stale_error_recurring(d: _DueJob) -> datetime:
     else:
         recovered_next = d.recompute_next()
         recovered_next_dt = _parse_aware(recovered_next) if recovered_next else None
-    if not (recovered_next and recovered_next_dt is not None and recovered_next_dt < d.next_run_dt):
+    if not (
+        recovered_next and recovered_next_dt is not None
+        and _instant_before(recovered_next_dt, d.next_run_dt)
+    ):
         return d.next_run_dt
     jid = d.job.get("id")
     logger.warning(
@@ -2991,13 +3020,13 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     protects the crash window before mark_job_run and covers the external fire_due path, which never
     calls advance_next_run. mark_job_run re-anchors on completion, so the value is provisional.
     """
-    if (d.scan.now - d.next_run_dt).total_seconds() <= grace:
+    if _elapsed_seconds(d.scan.now, d.next_run_dt) <= grace:
         return False
     new_next = d.recompute_next()
     if not new_next:
         return False
     d.scan.persist(d.job["id"], next_run_at=new_next)
-    if (_ensure_aware(datetime.fromisoformat(new_next)) > d.scan.now
+    if (_instant_after(_ensure_aware(datetime.fromisoformat(new_next)), d.scan.now)
             and not _cron_config_number("catch_up_missed", True, lambda value: value is not False)):
         logger.info(
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
@@ -3019,7 +3048,7 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     and recovery never revives them; only the due scan used to dispatch them hours late). With no
     claim stamped, retire it with a diagnostic (never silently delete). A claim may mean a run is
     still in flight elsewhere — skip but keep the record so its mark_job_run can land."""
-    if (d.scan.now - d.next_run_dt).total_seconds() <= ONESHOT_GRACE_SECONDS:
+    if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
     if not (d.job.get("run_claim") or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
@@ -3128,7 +3157,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     if kind == "cron" and not manual_run and _repair_timezone_shifted_cron(d):
         return False
     d.next_run_dt = _rearm_stale_error_recurring(d)
-    if d.next_run_dt > now:
+    if _instant_after(d.next_run_dt, now):
         return False
 
     # Only the dispatch snapshot carries this field; never infer it from a later stamp.
@@ -3154,7 +3183,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # late catch-up. Recurring only — expired one-shots were retired above; manual triggers aren't
     # late.
     if not manual_run and recurring:
-        lateness = max(0.0, (now - d.next_run_dt).total_seconds())
+        lateness = max(0.0, _elapsed_seconds(now, d.next_run_dt))
         # See #99879.
         dispatch_stamp = {
             "scheduled_at": next_run,

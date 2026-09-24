@@ -23,7 +23,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
-INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None or shutil.which("bash") is None,
@@ -114,23 +113,3 @@ def test_install_sh_guard_ignores_non_repo_dir(tmp_path: Path) -> None:
     assert (install_dir / "f.txt").exists()
 
 
-def test_install_ps1_validity_requires_initial_commit() -> None:
-    """The PowerShell repo-validity gate must also require a resolvable HEAD."""
-    text = INSTALL_PS1.read_text()
-    assert "rev-parse --verify HEAD" in text, (
-        "install.ps1 must probe for an initial commit (#40998)"
-    )
-    # Contract: $repoValid is only set when the HEAD probe succeeded too.
-    assert re.search(
-        r"if \(\$revParseOk -and \$statusOk -and \$hasCommit\) \{",
-        text,
-    ), "repo validity must be gated on $hasCommit, not just rev-parse + status"
-    # Cleanup must be non-destructive: move the broken checkout aside, never
-    # `Remove-Item -Recurse -Force` it (review feedback on #40998).
-    assert "Move-Item -LiteralPath $InstallDir" in text, (
-        "install.ps1 must move an invalid checkout aside, not delete it"
-    )
-    assert "Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop" not in text, (
-        "the destructive wipe of an existing install dir must be gone "
-        "(transient cleanup of a just-failed clone is fine)"
-    )

@@ -659,3 +659,19 @@ def test_equivalent_windows_spellings_derive_one_lane_key():
     b = pt._place_by_heuristic("C:\\work\\notes\\")
     assert a is not None and b is not None
     assert pt._lane_key(a["lane_key"]) == pt._lane_key(b["lane_key"])
+
+
+def test_cwdless_session_with_repo_root_stays_in_its_explicit_project():
+    """A row with an empty cwd but a persisted git_repo_root belongs to the project owning
+    that root, not Home (#77591). Home keeps only rows with neither anchor, matching the
+    renderer's ``isDetachedSession``."""
+    project = _project("p_app", "App", ["/www/app"])
+    owned = _session(None, repo_root="/www/app", branch="main")
+    detached = _session(None)
+
+    tree = pt.build_tree([project], [owned, detached], [], resolve=lambda _cwd: None, hydrate=True)
+
+    explicit = next(p for p in tree["projects"] if p["id"] == "p_app")
+    assert owned["id"] in explicit["sessionIds"]
+    assert owned["id"] in [s["id"] for s in _sessions_of(explicit)]
+    assert _home_session_ids(tree) == [detached["id"]]

@@ -262,6 +262,9 @@ function noninteractiveGitEnv(): NodeJS.ProcessEnv {
   }
 }
 
+// Matches the backend's default `plugins.clone_timeout_seconds`.
+const GIT_TIMEOUT_MS = 300_000
+
 function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(gitBin, args, {
@@ -275,8 +278,8 @@ function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: n
 
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
-      reject(new Error('Git clone timed out after 60 seconds.'))
-    }, 60_000)
+      reject(new Error(`Git ${args[0]} timed out after ${GIT_TIMEOUT_MS / 1000} seconds.`))
+    }, GIT_TIMEOUT_MS)
 
     child.stderr?.on('data', chunk => {
       stderr += String(chunk)
@@ -294,15 +297,37 @@ function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: n
   })
 }
 
-async function cloneToTemp(gitBin: string, gitUrl: string): Promise<string> {
+async function runGitOrThrow(gitBin: string, args: string[], cwd?: string): Promise<void> {
+  const { code, stderr } = await runGit(gitBin, args, cwd)
+
+  if (code !== 0) {
+    throw new Error(`Git ${args[0]} failed:\n${stderr.trim()}`)
+  }
+}
+
+/** Sparse-check-out only `subdir` via the classic pattern file, which older Git clients understand. */
+function sparseCheckoutPattern(subdir: string): string {
+  return `/${subdir.replace(/^\/+|\/+$/g, '').replace(/([\\*?[])/g, '\\$1')}/\n`
+}
+
+// A subdirectory install is a blobless clone with a sparse checkout of that folder: a plugin inside
+// a monorepo (Hindsight: 170 MB at depth 1, 2 MB for its plugin folder) otherwise downloads every
+// file in the repository and times out on slow connections.
+async function cloneToTemp(gitBin: string, gitUrl: string, subdir: string | null): Promise<string> {
   const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'hermes-plugin-'))
 
   try {
-    const { code, stderr } = await runGit(gitBin, ['clone', '--depth', '1', gitUrl, tmpRoot])
+    if (!subdir) {
+      await runGitOrThrow(gitBin, ['clone', '--depth', '1', gitUrl, tmpRoot])
 
-    if (code !== 0) {
-      throw new Error(`Git clone failed:\n${stderr.trim()}`)
+      return tmpRoot
     }
+
+    await runGitOrThrow(gitBin, ['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', gitUrl, tmpRoot])
+    await runGitOrThrow(gitBin, ['config', 'core.sparseCheckout', 'true'], tmpRoot)
+    await fsp.mkdir(path.join(tmpRoot, '.git', 'info'), { recursive: true })
+    await fsp.writeFile(path.join(tmpRoot, '.git', 'info', 'sparse-checkout'), sparseCheckoutPattern(subdir), 'utf8')
+    await runGitOrThrow(gitBin, ['checkout', 'HEAD'], tmpRoot)
 
     return tmpRoot
   } catch (err) {
@@ -340,7 +365,7 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   try {
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
     const { warnings, insecure } = insecureSchemeWarnings(gitUrl)
-    const cloneRoot = await cloneToTemp(gitBin, gitUrl)
+    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
@@ -390,7 +415,7 @@ export async function installDesktopPluginFromGit(
 ): Promise<DesktopPluginInstallResult> {
   try {
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
-    const cloneRoot = await cloneToTemp(gitBin, gitUrl)
+    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)

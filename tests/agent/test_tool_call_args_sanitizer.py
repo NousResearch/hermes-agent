@@ -86,25 +86,6 @@ def test_marker_appended_to_existing_tool_message():
 
 
 
-def _disabled_test_marker_message_inserted_when_missing():
-    marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
-    messages = [
-        _assistant_message(_tool_call(arguments='{"path": "/tmp/foo')),
-        {"role": "user", "content": "next turn"},
-    ]
-
-    repaired = AIAgent._sanitize_tool_call_arguments(messages)
-
-    assert repaired == 1
-    assert messages[1] == {
-        "role": "tool",
-        "name": "read_file",
-        "tool_call_id": "call_1",
-        "content": marker,
-    }
-    assert messages[2] == {"role": "user", "content": "next turn"}
-
-
 def test_multiple_corrupted_tool_calls_in_one_message():
     marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     messages = [

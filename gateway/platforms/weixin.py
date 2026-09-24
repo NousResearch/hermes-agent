@@ -823,11 +823,15 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     consecutive_failures = await backoff()
                     continue
                 consecutive_failures = 0
-                if response.get("get_updates_buf"):
-                    sync_buf = str(response["get_updates_buf"])
-                    _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
+                # Dispatch before persisting: the off-loop write is an await, and a disconnect that
+                # cancels it must not leave the advanced cursor on disk with this batch undelivered.
                 for message in response.get("msgs") or []:
                     asyncio.create_task(self._process_message_safe(message))
+                # atomic_json_write fsyncs + renames: persist off the loop, and only when the cursor
+                # moved (an empty long-poll echoes the same buffer back every cycle).
+                if response.get("get_updates_buf") and str(response["get_updates_buf"]) != sync_buf:
+                    sync_buf = str(response["get_updates_buf"])
+                    await asyncio.to_thread(_save_sync_buf, self._hermes_home, self._account_id, sync_buf)
             except asyncio.CancelledError:
                 break
             except Exception as exc:

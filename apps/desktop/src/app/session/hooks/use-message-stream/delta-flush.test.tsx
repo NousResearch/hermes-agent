@@ -87,11 +87,13 @@ describe('useMessageStream delta flush scheduling', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
+
     const reasoning =
       states
         .get(SID)
         ?.messages.at(-1)
         ?.parts.filter(part => part.type === 'reasoning') ?? []
+
     expect(reasoning.map(part => part.text)).toEqual(['Inspecting', 'Comparing'])
     expect(reasoning.map(part => part.sourceId)).toEqual(['reasoning-1', 'reasoning-2'])
   })

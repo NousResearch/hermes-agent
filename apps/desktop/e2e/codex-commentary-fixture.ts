@@ -12,10 +12,15 @@ const run = promisify(execFile)
 
 export function commentaryAppEnv(sandbox: Sandbox): Record<string, string> {
   const suffix = process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']
+
   const python =
     process.env.HERMES_DESKTOP_PYTHON ??
     ['.venv', 'venv'].map(dir => path.join(REPO_ROOT, dir, ...suffix)).find(candidate => fs.existsSync(candidate))
-  if (!python) throw new Error('Create the repository venv or provide HERMES_DESKTOP_PYTHON for this E2E')
+
+  if (!python) {
+    throw new Error('Create the repository venv or provide HERMES_DESKTOP_PYTHON for this E2E')
+  }
+
   return buildAppEnv(sandbox, { HERMES_DESKTOP_PYTHON: python, PYTHONPATH: REPO_ROOT })
 }
 

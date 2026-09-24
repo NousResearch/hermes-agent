@@ -53,18 +53,42 @@ from gateway.platforms._shared import extra_or_secret as _extra_or_secret  # noq
 from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
 
 
+def _platform_gate_env_present(name: str) -> tuple[bool, str]:
+    """Read a scoped platform gate while preserving absent versus empty."""
+    if not name:
+        return False, ""
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+    scope = current_secret_scope()
+    multiplex = is_multiplex_active()
+    if scope is not None:
+        if name in scope:
+            value = scope.get(name)
+            return True, "" if value is None else str(value).strip()
+        if multiplex:
+            return False, ""
+    elif multiplex:
+        return False, ""
+    if name not in os.environ:
+        return False, ""
+    return True, str(os.environ[name]).strip()
+
+
+
 def _env_truthy(name: str) -> bool:
     return _auth_env(name).lower() in _TRUTHY
 
 
-def _registry_entry(platform):
+def _registry_entry(platform, *, scope=None):
     """Platform-registry entry for a (plugin) platform, or None."""
     if platform is None:
         return None
     with contextlib.suppress(Exception):
         from gateway.platform_registry import platform_registry
 
-        return platform_registry.get(platform.value)
+        if scope is None:
+            return platform_registry.get(platform.value)
+        return platform_registry.get(platform.value, scope=scope)
     return None
 
 
@@ -633,22 +657,76 @@ class GatewayAuthorizationMixin:
             return True
 
         adapter_profile = self._adapter_profile_for_source(source)
+        owner = self._transport_owner(source)
+        adapter = owner[0] if owner else self._authorization_adapter(source.platform, adapter_profile)
+        home = getattr(adapter, "authorization_home", None)
+        from pathlib import Path
+        home = Path(home).resolve() if isinstance(home, (str, Path)) else None
+        entry = _registry_entry(source.platform, scope=str(home) if home is not None else None)
+        resolver = getattr(entry, "authorization_config_fn", None)
+        normalizer = getattr(entry, "authorization_user_normalizer", None)
+        policy = {}
+        user_id = source.user_id
+        try:
+            if resolver is not None:
+                from collections.abc import Mapping
+                import inspect
+                kwargs = {"home": home} if home is not None and "home" in inspect.signature(resolver).parameters else {}
+                resolved = resolver(adapter_profile, **kwargs)
+                if resolved is not None:
+                    if not isinstance(resolved, Mapping) or set(resolved) - {"allowed_users", "allow_all_users"}:
+                        return False
+                    policy = dict(resolved)
+                if "allowed_users" in policy and (
+                    not isinstance(policy["allowed_users"], list)
+                    or any(not isinstance(item, str) for item in policy["allowed_users"])
+                ):
+                    return False
+                if "allow_all_users" in policy and type(policy["allow_all_users"]) is not bool:
+                    return False
+            if normalizer is not None:
+                user_id = normalizer(user_id)
+                if not isinstance(user_id, str) or not user_id:
+                    return False
+        except Exception:
+            return False
+        platform_allow_env = _ALLOWED_USERS_ENV.get(source.platform, "")
+        platform_allow_all_var = _ALLOW_ALL_ENV.get(source.platform, "")
+        if source.platform not in _ALLOWED_USERS_ENV:
+            # Reuse the transport-owner entry, never the routed profile's names.
+            platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
+            platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
+        platform_allowlist = _auth_env(platform_allow_env) if resolver is None else ""
+        platform_allow_all = False
+        if resolver is not None:
+            try:
+                def active_value(name):
+                    present, value = _platform_gate_env_present(name)
+                    return value if present else None
+
+                getenv = active_value
+                if home is not None:
+                    from gateway.policy_environment import owner_environment_getter
+                    getenv = owner_environment_getter(adapter_profile, home, active_value)
+                # Acquire BOTH fields before any grant: failure is not absence.
+                allowed = getenv(platform_allow_env) if platform_allow_env else None
+                allow_all = getenv(platform_allow_all_var) if platform_allow_all_var else None
+                platform_allowlist = allowed if allowed is not None else policy.get("allowed_users", [])
+                platform_allow_all = (
+                    allow_all.strip().lower() in _TRUTHY if allow_all is not None
+                    else policy.get("allow_all_users", False)
+                )
+            except Exception:
+                return False
+        else:
+            platform_allow_all = bool(platform_allow_all_var and _env_truthy(platform_allow_all_var))
         is_group = source.chat_type in _GROUP_CHAT_TYPES
         is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
         if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
             return True
-        user_id = source.user_id
         if not user_id:
             return False
-
-        platform_allow_env = _ALLOWED_USERS_ENV.get(source.platform, "")
-        platform_allow_all_var = _ALLOW_ALL_ENV.get(source.platform, "")
-        if source.platform not in _ALLOWED_USERS_ENV:
-            entry = _registry_entry(source.platform)
-            with contextlib.suppress(Exception):
-                platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
-                platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
-        if platform_allow_all_var and _env_truthy(platform_allow_all_var):
+        if platform_allow_all:
             return True
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
         if allow_adapter_delegation and getattr(source, "role_authorized", False) is True:
@@ -659,7 +737,6 @@ class GatewayAuthorizationMixin:
         if pairing_store is not None and pairing_store.is_approved(source.platform.value if source.platform else "", user_id):
             return True
 
-        platform_allowlist = _auth_env(platform_allow_env)
         group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""
         group_chat_allowlist = _auth_env(_GROUP_CHAT_ENV.get(source.platform, "")) if is_group_or_forum else ""
         global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
@@ -670,7 +747,7 @@ class GatewayAuthorizationMixin:
                 verdict = self._own_policy_authorizes(source, user_id, is_group, adapter_profile)
                 if verdict is not None:
                     return verdict
-            if self._adapter_extra_allowlist_authorizes(source, user_id, is_group):
+            if resolver is None and self._adapter_extra_allowlist_authorizes(source, user_id, is_group):
                 return True
             return _env_truthy("GATEWAY_ALLOW_ALL_USERS")
 
@@ -692,6 +769,12 @@ class GatewayAuthorizationMixin:
         )
         if platform_allowlist:
             allowed_ids |= self._adapter_resolved_allowlist_ids(source)
+        if normalizer is not None:
+            try:
+                allowed_ids = {"*" if item == "*" else normalizer(item) for item in allowed_ids}
+            except Exception:
+                return False
+            return "*" in allowed_ids or user_id in allowed_ids
         return "*" in allowed_ids or _principal_matches_allowlist(source, user_id, allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform], *, profile: Optional[str] = None) -> str:

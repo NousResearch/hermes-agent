@@ -96,6 +96,20 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertNotIn("abc123def456", content)
         self.assertIn("OPENAI_API_KEY=", content)
 
+    def test_unknown_client_method_is_not_dispatched(self) -> None:
+        response = self._dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "terminal/create",
+                "params": {"command": "should-not-run"},
+            },
+            cwd="/tmp",
+        )
+
+        self.assertEqual(response["error"]["code"], -32601)
+        self.assertIn("not supported", response["error"]["message"])
+
     def test_fs_read_text_file_decodes_as_utf8_under_non_utf8_locale(self) -> None:
         """Regression for #18637 (bug 2): fs/read_text_file used
         ``path.read_text()`` with no explicit encoding, so on Windows
@@ -461,6 +475,7 @@ def test_model_discovery_does_not_allow_file_requests(tmp_path):
 import sys
 
 initialize = json.loads(sys.stdin.readline())
+assert "fs" not in initialize["params"]["clientCapabilities"]
 print(json.dumps({{"jsonrpc": "2.0", "id": initialize["id"], "result": {{"protocolVersion": 1}}}}), flush=True)
 session = json.loads(sys.stdin.readline())
 print(json.dumps({{"jsonrpc": "2.0", "id": 99, "method": "fs/read_text_file", "params": {{"path": {str(target)!r}}}}}), flush=True)
@@ -477,6 +492,21 @@ print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId
     )
 
     assert client.list_models(timeout_seconds=30) == ["gpt-5.6-sol"]
+
+
+def test_initialize_capabilities_match_supported_dispatch_surface():
+    from agent.copilot_acp_client import _FS_HANDLERS, _initialize_params
+
+    enabled = _initialize_params(allow_file_requests=True)["clientCapabilities"]
+    advertised_fs_methods = {
+        "fs/read_text_file" for supported in [enabled["fs"].get("readTextFile")] if supported
+    } | {
+        "fs/write_text_file" for supported in [enabled["fs"].get("writeTextFile")] if supported
+    }
+    assert advertised_fs_methods == set(_FS_HANDLERS)
+
+    disabled = _initialize_params(allow_file_requests=False)["clientCapabilities"]
+    assert "fs" not in disabled
 
 
 # --- concurrent sessions on a shared client ---------------------------------

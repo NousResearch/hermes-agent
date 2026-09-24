@@ -147,6 +147,7 @@ STATUS_SCHEMA = _schema("brv_status", "Check ByteRover status — CLI version, c
 
 class ByteRoverMemoryProvider(MemoryProvider):
     """ByteRover persistent memory via the brv CLI."""
+    read_only_tool_names = frozenset({"brv_query", "brv_status"})
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self._config = dict(config) if config is not None else _load_plugin_config()

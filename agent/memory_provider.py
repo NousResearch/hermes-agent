@@ -87,6 +87,10 @@ class MemoryProvider(ABC):
     # Providers that durably checkpoint every successful on_pre_compress() set this to
     # PRE_COMPRESS_CHECKPOINT_API_VERSION; 1 = best-effort legacy.
     pre_compress_checkpoint_api_version = 1
+    # Explicit capability declaration for delegated/on-demand agents.  The
+    # default is deliberately empty: an older or third-party provider is not
+    # assumed read-only merely because a tool name sounds like a query.
+    read_only_tool_names: frozenset[str] = frozenset()
 
     @property
     @abstractmethod
@@ -141,6 +145,27 @@ class MemoryProvider(ABC):
     @abstractmethod
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """OpenAI function-calling schemas ({"name", "description", "parameters"}); [] if none."""
+
+    def get_read_only_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Schemas safe for a query-only agent.
+
+        Providers with tools whose mutability depends on arguments must override
+        this method with a narrowed schema and also override
+        :meth:`is_read_only_tool_call`.  Undeclared tools fail closed.
+        """
+        allowed = self.read_only_tool_names
+        return [
+            schema for schema in self.get_tool_schemas()
+            if isinstance(schema, dict)
+            and (
+                schema.get("name")
+                or (schema.get("function") or {}).get("name")
+            ) in allowed
+        ]
+
+    def is_read_only_tool_call(self, tool_name: str, args: Dict[str, Any]) -> bool:
+        """Whether this exact call is safe on a query-only surface."""
+        return tool_name in self.read_only_tool_names
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         """Handle one of this provider's tools; must return a JSON string."""

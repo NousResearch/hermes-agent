@@ -1641,6 +1641,14 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
+    from agent.agent_init import memory_tool_call_allowed
+    if not memory_tool_call_allowed(agent, function_name):
+        return _SequentialDispatch(
+            lambda _next_args: json.dumps({
+                "error": f"Memory tool '{function_name}' is not permitted by this agent's memory_mode."
+            }),
+            finish_in_finally=False,
+        )
     if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
         # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
         inline_executor = INLINE_TOOL_EXECUTORS[function_name]

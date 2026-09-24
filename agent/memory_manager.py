@@ -14,7 +14,7 @@ import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, cast
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
@@ -108,6 +108,14 @@ def memory_provider_tools_exposed(agent: Any) -> bool:
     """
     tools = getattr(agent, "tools", None)
     present = isinstance(tools, (list, tuple)) and any(_tool_name(t) == "memory" for t in tools)
+    policy = getattr(agent, "_memory_provider_tool_allowlist", None)
+    manager = getattr(agent, "_memory_manager", None)
+    if isinstance(policy, (set, frozenset)) and manager is not None:
+        get_names = getattr(manager, "get_all_tool_names", None)
+        return bool(
+            callable(get_names)
+            and set(cast(Iterable[Any], get_names())) & set(policy)
+        )
     enabled, disabled = getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
     return memory_provider_tools_enabled(enabled, disabled, memory_tool_present=present)
 
@@ -637,6 +645,54 @@ class MemoryManager:
     def get_all_tool_names(self) -> set:
         return set(self._tool_to_provider)
 
+    def get_read_only_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Collect only provider-declared query schemas.
+
+        A provider must opt in through ``get_read_only_tool_schemas``; missing,
+        malformed, shadowed, or mismatched declarations fail closed.
+        """
+        schemas: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for provider in self._providers:
+            getter = getattr(provider, "get_read_only_tool_schemas", None)
+            if not callable(getter):
+                continue
+            try:
+                raw_schemas = list(cast(Iterable[Any], getter() or ()))
+            except Exception as exc:
+                logger.warning(
+                    "Memory provider '%s' read-only schema discovery failed: %s",
+                    provider.name, exc,
+                )
+                continue
+            for raw_schema in raw_schemas or ():
+                schema = normalize_tool_schema(raw_schema)
+                name = schema.get("name") if schema else None
+                if (
+                    schema is not None
+                    and isinstance(name, str)
+                    and name not in seen
+                    and self._tool_to_provider.get(name) is provider
+                ):
+                    schemas.append(schema)
+                    seen.add(name)
+        return schemas
+
+    def get_read_only_tool_names(self) -> set[str]:
+        return {schema["name"] for schema in self.get_read_only_tool_schemas()}
+
+    def read_only_view(
+        self, *, allowed_names: Optional[set[str]] = None,
+        include_system_prompt: bool = False, owns_parent: bool = False,
+    ) -> "ReadOnlyMemoryManagerView":
+        """Return a capability-limited facade over this initialized manager."""
+        return ReadOnlyMemoryManagerView(
+            self,
+            allowed_names=allowed_names,
+            include_system_prompt=include_system_prompt,
+            owns_parent=owns_parent,
+        )
+
     def has_tool(self, tool_name: str) -> bool:
         return tool_name in self._tool_to_provider
 
@@ -650,6 +706,26 @@ class MemoryManager:
         except Exception as e:
             logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
+
+    def handle_read_only_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        """Dispatch only an exact call the provider declares non-mutating."""
+        provider = self._tool_to_provider.get(tool_name)
+        if provider is None:
+            return tool_error(f"No memory provider handles tool '{tool_name}'")
+        checker = getattr(provider, "is_read_only_tool_call", None)
+        try:
+            permitted = callable(checker) and checker(tool_name, args)
+        except Exception as exc:
+            logger.warning(
+                "Memory provider '%s' read-only policy check failed for %s: %s",
+                provider.name, tool_name, exc,
+            )
+            permitted = False
+        if not permitted:
+            return tool_error(
+                f"Memory tool '{tool_name}' is not permitted on a read-only memory surface"
+            )
+        return self.handle_tool_call(tool_name, args, **kwargs)
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         def _tick(p: MemoryProvider) -> None:
@@ -900,3 +976,106 @@ class MemoryManager:
             kwargs["hermes_home"] = str(get_hermes_home())
         self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
                             level=logging.WARNING)
+
+
+class ReadOnlyMemoryManagerView:
+    """Borrowed/owned query-only facade over an initialized :class:`MemoryManager`.
+
+    It deliberately implements lifecycle hooks as no-ops: delegated and on-demand
+    agents may issue explicit reads, but cannot trigger automatic recall, transcript
+    synchronization, extraction, checkpointing, or writes.  A root on-demand agent
+    owns its backing manager; delegated views borrow it and therefore never shut it
+    down out from under the parent.
+    """
+
+    def __init__(
+        self, parent: MemoryManager, *, allowed_names: Optional[set[str]] = None,
+        include_system_prompt: bool = False, owns_parent: bool = False,
+    ) -> None:
+        self._parent = parent
+        available = parent.get_read_only_tool_names()
+        self._allowed_names = frozenset(
+            available if allowed_names is None else available & set(allowed_names)
+        )
+        self._include_system_prompt = bool(include_system_prompt)
+        self._owns_parent = bool(owns_parent)
+        self._shutdown = False
+
+    @property
+    def providers(self) -> List[MemoryProvider]:
+        return self._parent.providers
+
+    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
+        return [
+            schema for schema in self._parent.get_read_only_tool_schemas()
+            if schema["name"] in self._allowed_names
+        ]
+
+    get_read_only_tool_schemas = get_all_tool_schemas
+
+    def get_all_tool_names(self) -> set[str]:
+        return set(self._allowed_names)
+
+    get_read_only_tool_names = get_all_tool_names
+
+    def has_tool(self, tool_name: str) -> bool:
+        return tool_name in self._allowed_names
+
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        if tool_name not in self._allowed_names:
+            return tool_error(
+                f"Memory tool '{tool_name}' is not permitted on a read-only memory surface"
+            )
+        return self._parent.handle_read_only_tool_call(tool_name, args, **kwargs)
+
+    def read_only_view(
+        self, *, allowed_names: Optional[set[str]] = None,
+        include_system_prompt: bool = False, owns_parent: bool = False,
+    ) -> "ReadOnlyMemoryManagerView":
+        allowed = set(self._allowed_names)
+        if allowed_names is not None:
+            allowed.intersection_update(allowed_names)
+        # A nested view can only narrow prompt visibility and never acquire
+        # ownership of a manager borrowed by its parent.
+        return ReadOnlyMemoryManagerView(
+            self._parent,
+            allowed_names=allowed,
+            include_system_prompt=self._include_system_prompt and include_system_prompt,
+            owns_parent=False,
+        )
+
+    def build_system_prompt(self) -> str:
+        return self._parent.build_system_prompt() if self._include_system_prompt else ""
+
+    def prefetch_all(self, *args, **kwargs) -> str:
+        return ""
+
+    def describe_recall(self) -> str:
+        return ""
+
+    def get_provider(self, name: str) -> Optional[MemoryProvider]:
+        return self._parent.get_provider(name)
+
+    def supports_pre_compress_checkpoint(self, *args, **kwargs) -> bool:
+        return False
+
+    def on_pre_compress(self, *args, **kwargs) -> str:
+        return ""
+
+    def shutdown_all(self) -> None:
+        if self._owns_parent and not self._shutdown:
+            self._shutdown = True
+            self._parent.shutdown_all()
+
+    # Explicit no-op hooks prevent any implicit write/recall path from reaching
+    # the backing manager, even if a caller forgets the lifecycle flag.
+    def initialize_all(self, *args, **kwargs) -> None: pass
+    def on_turn_start(self, *args, **kwargs) -> None: pass
+    def queue_prefetch_all(self, *args, **kwargs) -> None: pass
+    def sync_all(self, *args, **kwargs) -> None: pass
+    def on_session_end(self, *args, **kwargs) -> None: pass
+    def on_session_switch(self, *args, **kwargs) -> None: pass
+    def commit_session_boundary_async(self, *args, **kwargs) -> None: pass
+    def notify_memory_tool_write(self, *args, **kwargs) -> None: pass
+    def on_memory_write(self, *args, **kwargs) -> None: pass
+    def on_delegation(self, *args, **kwargs) -> None: pass

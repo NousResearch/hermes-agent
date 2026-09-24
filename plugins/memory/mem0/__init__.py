@@ -125,6 +125,7 @@ _PROMPT_BODY = (
 
 class Mem0MemoryProvider(MemoryProvider):
     """Mem0 memory with server-side extraction and semantic search (platform, self-hosted or OSS)."""
+    read_only_tool_names = frozenset({"mem0_search"})
 
     def __init__(self):
         self._config = self._backend = self._sync_thread = self._prefetch_thread = None

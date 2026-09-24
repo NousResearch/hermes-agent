@@ -516,7 +516,13 @@ def _memory_parts(agent: Any) -> List[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
     tools the toolset config gated off)."""
-    parts: List[str] = []
+    # Explicit on-demand/off modes are tool-only/no-memory respectively. Legacy
+    # callers that omit memory_mode retain the historical prompt behavior.
+    explicit_mode = getattr(agent, "_memory_mode_explicit", False) is True
+    mode = getattr(agent, "_memory_mode", "full")
+    parts: List[str] = [f"<!-- hermes-memory-mode:{mode} -->"] if explicit_mode else []
+    if explicit_mode and mode != "full":
+        return parts
     if agent._memory_store:
         for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):
             block = agent._memory_store.format_for_system_prompt(kind) if enabled else None

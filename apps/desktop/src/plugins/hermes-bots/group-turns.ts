@@ -226,7 +226,9 @@ export function retainedGroupTurnError(state: GroupSessionSnapshot | null | unde
  *  carries no start time, so two identical consecutive failures differ only
  *  by `turn_started_at`. */
 function retainedGroupTurnKey(state: GroupSessionSnapshot | null | undefined): null | string {
-  return retainedGroupTurnError(state) === null ? null : JSON.stringify([state?.turn_started_at ?? null, state?.inflight])
+  return retainedGroupTurnError(state) === null
+    ? null
+    : JSON.stringify([state?.turn_started_at ?? null, state?.inflight])
 }
 
 /** Does a user row follow the stranded turn's own prompt? Then a later turn
@@ -1378,7 +1380,9 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const retained = laterTurnAfterStranded(messages, strandedBefore) ? null : retainedGroupTurnError(state)
 
     const pick =
-      retained === null && messages.length > strandedBefore ? pickStrandedGroupTurnReply(messages, strandedBefore) : null
+      retained === null && messages.length > strandedBefore
+        ? pickStrandedGroupTurnReply(messages, strandedBefore)
+        : null
 
     const reply = typeof pick === 'string' ? pick : null
     const failedNotice = typeof pick === 'string' ? null : (pick?.failedNotice ?? null)

@@ -621,6 +621,19 @@ class TestCompactThread:
 
 class TestServerRequestRouting:
 
+    def test_permissions_request_declines_by_granting_no_permissions(self):
+        """#121297: permission escalations require a grant profile, not a decision."""
+        client = FakeClient()
+        client.queue_server_request("item/permissions/requestApproval", request_id="permissions-1")
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        make_session(client).run_turn("hi", turn_timeout=0.2)
+
+        assert ("permissions-1", {"permissions": {}}) in client.responses
+
 
 
     def test_unknown_server_request_replied_with_error(self):

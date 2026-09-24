@@ -706,7 +706,10 @@ class CodexAppServerSession:
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {
         "item/commandExecution/requestApproval": lambda self, p: {"decision": self._decide_exec_approval(p)},
         "item/fileChange/requestApproval": lambda self, p: {"decision": self._decide_apply_patch_approval(p)},
-        "item/permissions/requestApproval": lambda self, p: {"decision": "decline"},
+        # Permission-request responses are grant profiles, unlike command and
+        # file-change approval responses. An empty profile safely grants none
+        # of the requested additional permissions.
+        "item/permissions/requestApproval": lambda self, p: {"permissions": {}},
         "mcpServer/elicitation/request": _respond_elicitation,
     }
 

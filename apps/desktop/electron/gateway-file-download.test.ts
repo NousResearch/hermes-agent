@@ -12,6 +12,7 @@ import {
   gatewayFilePath,
   gatewayFileRequestPaths,
   isNotFoundError,
+  nativeGatewayPath,
   parseDataUrlToBuffer,
   pumpStreamToFile,
   resolveGatewayFileBackend,
@@ -291,6 +292,60 @@ test('gatewayFilePath preserves bare paths and file:// URLs for gateway-native c
   assert.equal(gatewayFilePath('file:///Users/me/a%20b.md'), 'file:///Users/me/a%20b.md')
   assert.equal(gatewayFilePath(''), '')
   assert.equal(gatewayFilePath(null), '')
+})
+
+test('nativeGatewayPath maps the slash-prefixed drive form a MEDIA card delivers', () => {
+  // The reported bug: a card for `MEDIA:C:\Users\fabio\Downloads\report.zip`
+  // renders to `#media:%2FC%3A%5CUsers%5Cfabio%5CDownloads%5Creport.zip`, so the
+  // Download button sent the gateway `/C:/Users/...` and it answered 404.
+  assert.equal(
+    nativeGatewayPath('/C:/Users/fabio/Downloads/report.zip', 'win32'),
+    'C:\\Users\\fabio\\Downloads\\report.zip'
+  )
+  assert.equal(nativeGatewayPath('/C:/Users/me/notes.md', 'win32'), 'C:\\Users\\me\\notes.md')
+  assert.equal(nativeGatewayPath('C:/Users/me/notes.md', 'win32'), 'C:\\Users\\me\\notes.md')
+  assert.equal(nativeGatewayPath('C:\\Users\\me\\notes.md', 'win32'), 'C:\\Users\\me\\notes.md')
+  // Mixed spellings from one delivery still land on one native path.
+  assert.equal(nativeGatewayPath('/C:\\Users/me\\notes.md', 'win32'), 'C:\\Users\\me\\notes.md')
+})
+
+test('nativeGatewayPath leaves POSIX, MSYS and file: spellings alone', () => {
+  const posix = [
+    '/home/hermes/report.md',
+    // MSYS drive mounts are NOT native Windows paths — the gateway 404s either
+    // way, but rewriting `/c/Users/...` into `c:\Users\...` would be worse.
+    '/c/Users/me/notes.md',
+    '~/notes.md',
+    'relative/notes.md',
+    'file:///C:/Users/me/a%20b.md'
+  ]
+
+  for (const candidate of posix) {
+    assert.equal(nativeGatewayPath(candidate, 'win32'), candidate)
+  }
+
+  // A POSIX client handling its own POSIX gateway keeps everything as sent.
+  assert.equal(nativeGatewayPath('/home/hermes/report.md', 'linux'), '/home/hermes/report.md')
+  assert.equal(nativeGatewayPath('/C:/Users/me/x', 'darwin'), '/C:/Users/me/x')
+})
+
+test('nativeGatewayPath hands the gateway a path its own resolver maps to the same file', () => {
+  // Contract with the gateway's `/api/fs` resolver: it resolves a bare drive
+  // path as absolute, but treats a leading-slash drive form as a rooted path
+  // with no drive and appends it to its process cwd. Pin the equivalence the
+  // desktop depends on without booting the gateway.
+  const delivered = '/C:/Users/fabio/Downloads/BP-PedidosAbertos-BluePrism-download.zip'
+  const native = nativeGatewayPath(delivered, 'win32')
+
+  assert.equal(native, 'C:\\Users\\fabio\\Downloads\\BP-PedidosAbertos-BluePrism-download.zip')
+  assert.equal(path.resolve(native), path.win32.resolve('C:/Users/fabio/Downloads/BP-PedidosAbertos-BluePrism-download.zip'))
+  // The old spelling is what made the gateway append it to its own cwd instead.
+  assert.notEqual(path.win32.resolve(native), path.win32.resolve('C:/Users/fabio/hermes-agent', delivered))
+})
+
+test('nativeGatewayPath is a no-op for empty input', () => {
+  assert.equal(nativeGatewayPath('', 'win32'), '')
+  assert.equal(nativeGatewayPath('   ', 'win32'), '')
 })
 
 test('gatewayFileRequestPaths keeps streaming and fallback requests on the same registered backend', () => {

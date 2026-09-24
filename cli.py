@@ -160,6 +160,7 @@ from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
     _build_cpr_disabled_output,
     _cli_multiline_shortcuts_enabled,
     _collect_query_images,
+    _composer_max_lines,
     _detect_file_drop,
     _disable_prompt_toolkit_cpr_warning,
     _enable_extended_enter_keys,

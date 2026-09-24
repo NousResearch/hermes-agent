@@ -250,6 +250,24 @@ describe('useGatewayRequest', () => {
     expect(result.current.gateway).toBe(fakeGateway)
   })
 
+  it('recovers when the gateway ref is stale but the active gateway is still open', async () => {
+    const primary = makePrimaryGateway()
+    primary.request.mockRejectedValueOnce(new Error('connection closed')).mockResolvedValueOnce({ recovered: true })
+
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    const { result } = renderHook(() => useGatewayRequest())
+    result.current.gatewayRef.current = null
+
+    await act(async () => {
+      await expect(result.current.requestGateway('session.resume')).resolves.toEqual({ recovered: true })
+    })
+
+    expect(primary.request).toHaveBeenCalledTimes(2)
+  })
+
   it.each([
     { error: new Error('connection closed'), label: 'closed message' },
     { error: new Error('ECONNRESET'), label: 'reset message' },

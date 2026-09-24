@@ -621,7 +621,40 @@ class TestCompactThread:
 
 class TestServerRequestRouting:
 
+    @pytest.mark.parametrize("auto_approve", [False, True])
+    @pytest.mark.parametrize("permissions", [{}, {"network": {"enabled": True}}])
+    def test_permission_escalation_declines_with_empty_grant(self, auto_approve, permissions):
+        class PermissionClient(FakeClient):
+            def respond(self, request_id, result):
+                super().respond(request_id, result)
+                self.queue_notification(
+                    "turn/completed", threadId="t",
+                    turn={"id": "tu1", "status": "completed", "error": None},
+                )
 
+        client = PermissionClient()
+        client.queue_server_request(
+            "item/permissions/requestApproval", request_id="permission-1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
+            itemId="item-1", permissions=permissions, reason="needs network",
+        )
+        callbacks = []
+
+        def approval(*args, **kwargs):
+            callbacks.append(args)
+            return "once"
+
+        session = make_session(
+            client, approval_callback=approval,
+            request_routing=_ServerRequestRouting(
+                auto_approve_exec=auto_approve, auto_approve_apply_patch=auto_approve,
+            ),
+        )
+        result = session.run_turn("hi", turn_timeout=2.0)
+        assert client.responses == [("permission-1", {"permissions": {}})]
+        assert callbacks == []  # Permission escalation remains unconditionally denied.
+        assert not client.error_responses
+        assert result.error is None
 
     def test_unknown_server_request_replied_with_error(self):
         client = FakeClient()

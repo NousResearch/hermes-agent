@@ -3,10 +3,28 @@
  * packaged framework, not the host's Electron (which may be another version).
  * Windows identity stamping stays in afterExtract, before ASAR integrity.
  */
-import { mkdir, readdir } from 'node:fs/promises'
+import { access, cp, mkdir, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
+/**
+ * electron-builder normally materializes asarUnpack entries itself. Keep an
+ * explicit post-pack copy for dist because it is both the app entry point and
+ * the filesystem-served renderer payload; a missing unpacked tree otherwise
+ * produces a package that launches without either of them.
+ */
+export async function copyUnpackedDesktopDist({ appOutDir, packager }) {
+  const source = path.join(packager.projectDir, 'dist')
+  const destination = path.join(packager.getResourcesDir(appOutDir), 'app.asar.unpacked', 'dist')
+  await cp(source, destination, { recursive: true, force: true })
+  await Promise.all([
+    access(path.join(destination, 'electron-main.mjs')),
+    access(path.join(destination, 'index.html'))
+  ])
+}
+
 export default async function afterPack({ electronPlatformName, appOutDir, packager }) {
+  await copyUnpackedDesktopDist({ appOutDir, packager })
+
   if (electronPlatformName !== 'darwin') {
     return
   }

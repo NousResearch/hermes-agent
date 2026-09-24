@@ -5262,19 +5262,6 @@ def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_he
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
 
 
-def _aux_explicit_custom_identity(requested_provider: str, custom_entry: Dict[str, Any]) -> bool:
-    """Shared foreign-origin trust rule (see runtime_provider_custom._is_explicit_custom_identity).
-
-    Import-optional like every runtime_provider collaborator in this module;
-    unresolvable import fails closed (treat as explicit → guard applies).
-    """
-    try:
-        from hermes_cli.runtime_provider_custom import _is_explicit_custom_identity
-        return _is_explicit_custom_identity(requested_provider, custom_entry)
-    except ImportError:
-        return True
-
-
 def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResult]:
     """Named custom provider (config.yaml providers dict / custom_providers list); None if no entry matches."""
     from hermes_cli.runtime_provider import _get_named_custom_provider
@@ -5300,29 +5287,13 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         and configured_base
         and base_url_origin(custom_base) != base_url_origin(configured_base)
     )
-    if origin_left_configured and _aux_explicit_custom_identity(
-        req.original_provider or req.provider, custom_entry
-    ):
-        # An explicit custom identity (``custom:<name>``, a display alias, or a
-        # legacy ``custom_providers`` entry) binds its inline/env/cmd/pool
-        # credentials to the entry's configured origin. An endpoint override
-        # that leaves that origin crosses a trust boundary and must carry its
-        # own explicit key (or remain keyless), never borrow saved auth.
-        # The bare durable ``providers.<key>`` spelling keeps the documented
-        # field-by-field composition — a URL-only task override wins and the
-        # entry fills the blanks including the key (pinned by
-        # test_named_provider_defaults_compose_under_task_overrides). Same
-        # predicate as the runtime guard (runtime_provider_custom).
+    if origin_left_configured:
+        # Provider spellings do not grant credential authority. Any foreign
+        # destination must supply its own explicit key, never saved or ambient auth.
         custom_key = key_for_explicit_endpoint or "no-key-required"
     else:
-        # Bare-spelling composition covers the ENTRY's own credential
-        # (inline api_key / key_env / key_cmd) only. Credential-pool selection
-        # matches name-first without origin affinity, so once the destination
-        # left the configured origin the pool stays fail-closed for every
-        # spelling — otherwise a URL-only override exfiltrates a live pool key.
         custom_key = key_for_explicit_endpoint or _named_custom_api_key(
             custom_entry, provider, custom_base, original_provider=req.original_provider,
-            allow_pool=not origin_left_configured,
         )
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "

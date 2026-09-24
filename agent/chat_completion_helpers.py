@@ -2572,11 +2572,17 @@ class _BedrockStream:
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
                 metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
             wants_reasoning = agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
-            streamed_response = stream_converse_with_callbacks({"stream": stream},
-                on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
-                on_tool_start=self._after_first(agent._fire_tool_gen_started),
-                on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
-                on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
+            try:
+                streamed_response = stream_converse_with_callbacks({"stream": stream},
+                    on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
+                    on_tool_start=self._after_first(agent._fire_tool_gen_started),
+                    on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
+                    on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
+            except EmptyStreamError:
+                # IAM-denied fallback: no stream events, but converse() already completed.
+                if stream.final_response is None:
+                    raise
+                streamed_response = None
             self.result["response"] = stream.final_response or streamed_response
         except Exception as e:
             self.result["error"] = e

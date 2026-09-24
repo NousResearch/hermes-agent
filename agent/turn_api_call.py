@@ -23,6 +23,10 @@ from agent.turn_failure_copy import site_copy, stamp_failure
 logger = logging.getLogger("agent.conversation_loop")
 
 
+class SkillReloadDeliveryBlocked(RuntimeError):
+    """A required Skill is absent from the final payload; do not retry the provider."""
+
+
 def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
     """Stop the spinner silently and clear the thinking callback; returns ``None`` so
     callers can rebind ``thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)``."""
@@ -92,32 +96,55 @@ def perform_api_call(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
+        # Execution middleware can replace the builder's payload. Validate only after
+        # that middleware and transport normalization, immediately before dispatch.
+        compressor = getattr(agent, "context_compressor", None)
+        missing_results = getattr(compressor, "skill_view_results_missing_from", None)
+        missing: Any = missing_results(next_api_kwargs) if callable(missing_results) else []
+        if missing:
+            labels = list(dict.fromkeys(
+                f"{entry.get('name', 'skill')} ({entry.get('file_path') or 'SKILL.md'})"
+                for _, entry in missing
+            ))
+            raise SkillReloadDeliveryBlocked(
+                "Required skill_view resource(s) " + ", ".join(labels)
+                + " are missing from the outgoing request. No model request was sent; "
+                "the resource remains pending."
+            )
         if _use_streaming:
-            return agent._interruptible_streaming_api_call(
+            response = agent._interruptible_streaming_api_call(
                 next_api_kwargs, on_first_delta=_stop_spinner
             )
-        from agent import relay_llm
+        else:
+            from agent import relay_llm
 
-        return relay_llm.execute(
-            next_api_kwargs,
-            agent._interruptible_api_call,
-            session_id=str(agent.session_id or ""),
-            name=str(agent.provider or "provider"),
-            model_name=str(agent.model or ""),
-            metadata={
-                "api_mode": agent.api_mode,
-                "api_request_id": api_request_id,
-                "call_role": (
-                    "delegated"
-                    if getattr(agent, "is_subagent", False)
-                    else "fallback"
-                    if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                    else "primary"
-                ),
-                "retry_count": retry_count,
-            },
-            defer_logical_completion=True,
-        )
+            response = relay_llm.execute(
+                next_api_kwargs,
+                agent._interruptible_api_call,
+                session_id=str(agent.session_id or ""),
+                name=str(agent.provider or "provider"),
+                model_name=str(agent.model or ""),
+                metadata={
+                    "api_mode": agent.api_mode,
+                    "api_request_id": api_request_id,
+                    "call_role": (
+                        "delegated"
+                        if getattr(agent, "is_subagent", False)
+                        else "fallback"
+                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
+                        else "primary"
+                    ),
+                    "retry_count": retry_count,
+                },
+                defer_logical_completion=True,
+            )
+        if response is not None:
+            _acknowledge = getattr(
+                getattr(agent, "context_compressor", None), "acknowledge_skill_view_results", None
+            )
+            if callable(_acknowledge):
+                _acknowledge(next_api_kwargs)
+        return response
 
     from hermes_cli.middleware import run_llm_execution_middleware
 
@@ -137,6 +164,9 @@ def perform_api_call(
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
             api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
         )
+    except SkillReloadDeliveryBlocked:
+        _stop_spinner()
+        raise
     finally:
         with _bracket:
             if _model_request_active is not None:

@@ -117,6 +117,12 @@ def assemble_api_request(
     )
     from agent.model_metadata import estimate_messages_tokens_rough
 
+    pending_skill_restore = getattr(
+        getattr(agent, "context_compressor", None), "restore_pending_skill_view_results", None
+    )
+    if callable(pending_skill_restore):
+        pending_skill_restore(messages)
+
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
         ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,

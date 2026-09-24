@@ -1093,6 +1093,15 @@ def _commit_tool_result(
             _log_result = verbose_text(function_result)
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
+    if function_name == "skill_view" and not blocked and not is_error:
+        try:
+            _tracker = getattr(getattr(agent, "context_compressor", None), "track_skill_view_result", None)
+            if callable(_tracker):
+                _model_content = agent._tool_result_content_for_active_model(function_name, function_result)
+                _tracker(tool_call_id, function_args, function_result, _model_content)
+        except Exception:
+            logger.debug("could not retain successful skill_view result for request delivery", exc_info=True)
+
     agent._current_tool = None
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")

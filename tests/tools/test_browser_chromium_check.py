@@ -37,7 +37,33 @@ class TestChromiumSearchRoots:
         assert any(r == os.path.join(home, ".cache", "ms-playwright") for r in roots)
 
 
+    def test_includes_agent_browser_managed_cache(self, monkeypatch, tmp_path):
+        """``agent-browser install`` — the command the missing-Chromium error prints — puts Chrome
+        in ``$AGENT_BROWSER_HOME/browsers``, never in Playwright's cache."""
+        monkeypatch.setenv("AGENT_BROWSER_HOME", str(tmp_path))
+        assert os.path.join(str(tmp_path), "browsers") in bt_install._chromium_search_roots()
+
+
 class TestChromiumInstalled:
+    def test_true_when_chrome_lives_in_agent_browser_managed_cache(self, monkeypatch, tmp_path):
+        """Regression: the probe must see the browser ``agent-browser`` itself would launch.
+
+        Reported state: ``agent-browser open <url>`` succeeds, no system Chrome and no Playwright
+        cache on the box, yet every browser tool call answered "Chromium browser is missing. Install
+        it with: npx agent-browser install" — running that command just re-creates the directory the
+        probe refused to read, so the hint could never satisfy the gate.
+        """
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setattr(shutil, "which", lambda name, path=None: None)
+
+        assert bt_install._chromium_installed() is False
+        (tmp_path / ".agent-browser" / "browsers" / "chrome-153.0.8010.52").mkdir(parents=True)
+        bt._cached_chromium_installed = None
+        assert bt_install._chromium_installed() is True
+
+
     def test_true_when_plain_chromium_on_path(self, monkeypatch):
         monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
         monkeypatch.setattr(

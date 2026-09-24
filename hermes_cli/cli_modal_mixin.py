@@ -109,10 +109,12 @@ class CLIModalMixin:
             self._inline_pastes(target_buffer)
             self._skip_paste_collapse = True
             # Submission here is driven by the custom `enter` keybinding, NOT the buffer's
-            # accept_handler, so validate_and_handle can't route through it; chain a done-callback
-            # that re-uses the real submit pipeline (TUI Ctrl+G parity: save == send).
+            # accept_handler. By default, Ctrl+G save-and-quit submits the edited draft (TUI parity).
+            # Set display.editor_auto_submit: false to leave it in the input area for Enter instead.
             task = target_buffer.open_in_editor(validate_and_handle=False)
-            if task is not None and hasattr(task, "add_done_callback"):
+            display = getattr(self, "config", None) or {}
+            editor_auto_submit = (display.get("display") or {}).get("editor_auto_submit", True)
+            if editor_auto_submit and task is not None and hasattr(task, "add_done_callback"):
                 task.add_done_callback(lambda _t, b=target_buffer: self._submit_editor_buffer(b))
             return True
         except Exception as exc:

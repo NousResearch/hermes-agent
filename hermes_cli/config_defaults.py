@@ -840,6 +840,7 @@ DEFAULT_CONFIG = {
         # (final raw only) | "error" (raw only on non-zero exit) | "off".
         "background_process_notifications": "concise",
         "streaming": False,
+        "editor_auto_submit": True,  # Auto-submit on Ctrl+G in external editor; false leaves the draft for Enter.
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw

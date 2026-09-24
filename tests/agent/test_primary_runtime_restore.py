@@ -868,6 +868,30 @@ class TestSwitchModelRequestOverridesSnapshot:
         assert result is True
         assert agent.request_overrides == overrides
 
+    def test_switch_to_matched_custom_restores_destination_extra_body(self):
+        destination = {
+            "name": "local",
+            "base_url": "https://my-llm.example.com/v1",
+            "model": "local-model",
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+        }
+        expected = {"temperature": 0.2, "extra_body": destination["extra_body"]}
+        agent = _make_agent(request_overrides={"temperature": 0.2})
+        with patch("hermes_cli.config.load_config", return_value={"custom_providers": [destination]}):
+            self._switch(
+                agent, new_model="local-model", new_provider="custom:local",
+                base_url=destination["base_url"],
+            )
+        assert agent.request_overrides == expected
+        assert agent._primary_runtime["request_overrides"] == expected
+        assert agent._primary_runtime["request_overrides"] is not agent.request_overrides
+
+        agent._fallback_activated = True
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime()
+        assert agent.request_overrides == expected
+
     def test_switch_to_custom_restores_route_scoped_fast_overrides(self):
         agent = _make_agent()
         agent.provider = "anthropic"

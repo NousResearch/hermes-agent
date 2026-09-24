@@ -875,8 +875,8 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ? AND claim_expires IS ?",
-                (tid, row["claim_lock"], row["claim_expires"]),
+                "  AND claim_lock IS ? AND claim_expires IS ? AND worker_pid IS ?",
+                (tid, row["claim_lock"], row["claim_expires"], pid),
             )
             if cur.rowcount != 1:
                 continue

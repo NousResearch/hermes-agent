@@ -61,6 +61,10 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     if stored_model == current_model and not provider_changed:
         return None
     api_mode = runtime.get("api_mode") or None
+    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+    if is_foreign_provider_endpoint(provider, base_url):
+        # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
+        base_url = api_mode = None
     # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
     # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
     # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
@@ -719,6 +723,9 @@ class CLIModelSwitchMixin:
                     model_list = cached_provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
+            from hermes_cli.models_validate import offered_model_ids
+            model_list = offered_model_ids(
+                model_list, provider_data.get("slug"), provider_data.get("api_url"))
             state.update(
                 stage="model", provider_data=provider_data, model_list=model_list,
                 selected=0, filter="", _filtered_pairs=None)

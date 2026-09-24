@@ -55,6 +55,22 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     "local",
 })
 
+# Profile distributions own cron definitions, not scheduler state. The runtime has
+# one canonical multi-record store; every sibling under cron/ is runtime data.
+_CRON_STORE_REL = ("cron", "jobs.json")
+
+
+def _is_distribution_runtime_path(parts: Tuple[str, ...]) -> bool:
+    """Runtime-owned entries nested under otherwise distribution-owned roots."""
+    if len(parts) < 2:
+        return False
+    if parts[0] == "cron":
+        return parts[:2] != _CRON_STORE_REL
+    # Root-level dot entries under skills are Hermes bookkeeping (.hub,
+    # .usage.json, curator state, bundled manifest, locks, archives, ...).
+    return parts[0] == "skills" and len(parts) == 2 and parts[1].startswith(".")
+
+
 
 class DistributionError(Exception):
     """Raised for distribution install/update failures."""
@@ -302,8 +318,7 @@ class InstallPlan:
 
 
 def _has_cron_jobs(staged: Path) -> bool:
-    cron_dir = staged / "cron"
-    return cron_dir.is_dir() and (any(cron_dir.rglob("*.json")) or any(cron_dir.rglob("*.yaml")))
+    return staged.joinpath(*_CRON_STORE_REL).is_file()
 
 
 def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
@@ -350,7 +365,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
         rel_parts = PurePosixPath(rel).parts
-        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE:
+        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE or _is_distribution_runtime_path(rel_parts):
             continue
         if ".." in rel_parts or PurePosixPath(rel).is_absolute():
             continue
@@ -376,6 +391,44 @@ def _replace_entry(src: Path, dest: Path) -> None:
         shutil.copytree(src, dest)
     else:
         shutil.copy2(src, dest)
+
+
+def _shipped_cron_store(entries: List[Tuple[Path, Tuple[str, ...]]]) -> Optional[Path]:
+    """Return the staged ``cron/jobs.json`` when the distribution owns it (via ``cron/`` or exactly)."""
+    for src, rel_parts in entries:
+        if rel_parts == _CRON_STORE_REL:
+            return src
+        if rel_parts == _CRON_STORE_REL[:1] and (src / _CRON_STORE_REL[1]).is_file():
+            return src / _CRON_STORE_REL[1]
+    return None
+
+
+def _merge_cron_store(src: Path, home: Path) -> None:
+    """Merge a distribution's cron store into profile *home* by job id; new jobs arrive paused.
+
+    Nothing is written when a shipped job cannot be scheduled (unparseable schedule, past
+    one-shot for a job the installer resumed); the error names the job."""
+    from cron import jobs as cron_jobs
+    from cron.job_definition import import_job_definitions
+
+    dest = home.joinpath(*_CRON_STORE_REL)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
+            staged_store = Path(tmp) / "cron"
+            staged_store.mkdir()
+            shutil.copy2(src, staged_store / "jobs.json")
+            with cron_jobs.use_cron_store(tmp):
+                shipped = {
+                    job["id"]: job for job in cron_jobs.load_jobs()
+                    if isinstance(job, dict) and job.get("id")
+                }
+        with cron_jobs.use_cron_store(home):
+            import_job_definitions(
+                shipped, paused_reason="Installed from a profile distribution; review it, then resume.")
+    except (RuntimeError, ValueError) as exc:
+        # RuntimeError: load_jobs on a corrupt/unreadable store; ValueError: a job-labelled
+        # unschedulable definition. OSError propagates as-is like every other copy step.
+        raise DistributionError(f"Could not merge cron jobs into {dest}: {exc}") from exc
 
 
 def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
@@ -409,22 +462,28 @@ def _is_container(path: Path) -> bool:
     return path.is_dir() and not any(p.is_file() for p in path.iterdir())
 
 
-def _merge_dir(src: Path, dest: Path) -> None:
-    """Replace only the roots *src* ships inside *dest*; a nested container
-    (``skills/<category>``) is merged, not replaced, so sibling roots the user
-    added under the same category survive."""
+def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
+    """Merge authored roots while leaving runtime-owned nested state untouched."""
     for child in src.iterdir():
+        parts = (*rel, child.name)
+        if _is_distribution_runtime_path(parts):
+            continue
+        if parts == _CRON_STORE_REL:
+            continue  # merged up front by _copy_dist_payload
         if _is_container(child):
-            _merge_dir(child, _real_dir(dest, (child.name,)))
+            _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
 
 
-def _refuse_symlinked_containers(src: Path, dest: Path) -> None:
+def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     for child in src.iterdir():
+        parts = (*rel, child.name)
+        if _is_distribution_runtime_path(parts):
+            continue
         if _is_container(child):
             _refuse_symlink(dest / child.name)
-            _refuse_symlinked_containers(child, dest / child.name)
+            _refuse_symlinked_containers(child, dest / child.name, parts)
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:
@@ -440,7 +499,7 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
             path = path / part
             _refuse_symlink(path)
         if src.is_dir() and len(rel_parts) == 1:
-            _refuse_symlinked_containers(src, path)
+            _refuse_symlinked_containers(src, path, rel_parts)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
@@ -450,14 +509,23 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
     as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
 
-    A top-level owned directory (``skills/``, ``cron/``, ...) is a container of roots: only
-    the roots the payload ships are replaced, so roots the user added (or that an older
-    version shipped) survive an update or forced reinstall."""
+    A top-level owned directory is merged per authored root. ``cron/jobs.json`` is
+    special: it is one multi-record runtime store, so shipped definitions merge by job id
+    instead of replacing the file."""
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
 
+    # The cron merge runs first: it is the one step that can reject shipped content
+    # (an unschedulable job), and rejecting before any file is replaced keeps the profile whole.
+    cron_store = _shipped_cron_store(entries)
+    if cron_store is not None:
+        _real_dir(target, _CRON_STORE_REL[:-1])
+        _merge_cron_store(cron_store, target)
+
     for src, rel_parts in entries:
+        if rel_parts == _CRON_STORE_REL:
+            continue
         if len(rel_parts) == 1:
             name = rel_parts[0]
             if name == ENV_TEMPLATE_FILENAME:
@@ -467,10 +535,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
             if src.is_dir():
-                _merge_dir(src, _real_dir(target, rel_parts))
+                _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
                 continue
-        parent = _real_dir(target, rel_parts[:-1])
-        _replace_entry(src, parent / rel_parts[-1])
+        _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
@@ -478,6 +545,10 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
+    # A shipped profile.yaml must not carry a backend-assigned role.
+    if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
+        from hermes_cli.profiles import drop_profile_role
+        drop_profile_role(target)
 
 
 def _bootstrap_user_dirs(target: Path) -> None:

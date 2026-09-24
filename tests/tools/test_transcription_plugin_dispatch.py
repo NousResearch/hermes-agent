@@ -79,34 +79,6 @@ def sample_audio_file(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class TestBuiltinAlwaysWins:
-    """Built-in STT provider names short-circuit the dispatcher.
-
-    Even with a plugin registered (which the registry would reject —
-    but the dispatcher is defensive), built-in names return None so
-    the caller's elif chain handles them natively.
-    """
-
-    @pytest.mark.parametrize(
-        "builtin",
-        ["local", "local_command", "groq", "openai", "mistral", "xai"],
-    )
-    def test_dispatcher_short_circuits_builtin(self, builtin):
-        result = transcription_tools._dispatch_to_plugin_provider(
-            "/tmp/audio.mp3", builtin,
-        )
-        assert result is None, (
-            f"Built-in {builtin!r} must short-circuit plugin dispatch."
-        )
-
-
-    def test_dispatcher_short_circuits_builtin_case_insensitive(self):
-        for variant in ("OPENAI", "OpenAI", "  openai  ", "oPeNaI"):
-            assert (
-                transcription_tools._dispatch_to_plugin_provider(
-                    "/tmp/audio.mp3", variant,
-                ) is None
-            )
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
-    host_mandated_api_mode, is_aggregator, resolve_provider_full)
+    host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -670,8 +670,9 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
 
     # Suffix quality: pro/max/plus/turbo (0) > no suffix / omni / flash / mini (1). "sol" is the
     # flagship tier of the GPT-5.6 series (sol > terra > luna); without it `/model gpt` would
-    # tiebreak alphabetically onto luna, the cheapest. Revisit if a vendor ships a non-flagship "-sol".
-    suffix_rank = 0 if suffix in ("pro", "max", "plus", "turbo", "sol") else 1
+    # tiebreak alphabetically onto luna, the cheapest. GPT-6 put "astra" above "sol": both rank 0 and
+    # the alphabetical tiebreak lands on astra, so `/model gpt` still resolves to the flagship.
+    suffix_rank = 0 if suffix in ("pro", "max", "plus", "turbo", "sol", "astra") else 1
     return version_key + (suffix_rank, suffix) + date_key
 
 
@@ -736,7 +737,16 @@ def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
         f"Pick one with /model <exact-model-name>.")
 
 
-def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, str, str]]:
+def _provider_identity(name: str, user_providers: Optional[dict] = None,
+                       custom_providers: Optional[list] = None) -> str:
+    """Id a provider name routes to, e.g. ``custom:<name>`` for a legacy ``custom_providers``
+    entry, so an alias naming it by its bare name compares equal to the resolved provider."""
+    pdef = resolve_provider_full(name, user_providers, custom_providers) if name else None
+    return pdef.id if pdef is not None else normalize_provider(name or "")
+
+
+def resolve_alias(raw_input: str, current_provider: str, user_providers: Optional[dict] = None,
+                  custom_providers: Optional[list] = None) -> Optional[tuple[str, str, str]]:
     """Resolve a short alias against the current provider's catalog.
 
     Direct aliases (and reverse lookup by exact model id) win; then :data:`MODEL_ALIASES` is
@@ -751,10 +761,20 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
         return (direct.provider, direct.model, key)
 
     # Reverse lookup so full names ("kimi-k2.5") route through direct aliases instead of
-    # falling through to the catalog/OpenRouter.
+    # falling through to the catalog/OpenRouter. Several aliases may expose one model id on
+    # different providers: prefer the one served by current_provider, since insertion order is
+    # not a routing decision and the wrong alias hands back another provider's base_url.
+    reverse_fallback: Optional[tuple[str, str, str]] = None
+    current_id = _provider_identity(current_provider, user_providers, custom_providers)
     for alias_name, da in DIRECT_ALIASES.items():
-        if da.model.lower() == key:
+        if da.model.lower() != key:
+            continue
+        if _provider_identity(da.provider, user_providers, custom_providers) == current_id:
             return (da.provider, da.model, alias_name)
+        if reverse_fallback is None:
+            reverse_fallback = (da.provider, da.model, alias_name)
+    if reverse_fallback is not None:
+        return reverse_fallback
 
     process_catalog, process_aliases = _external_process_catalog(current_provider)
     if process_catalog:
@@ -835,12 +855,14 @@ def get_authenticated_provider_slugs(
 
 
 def _resolve_alias_fallback(
-    raw_input: str, authenticated_providers: list[str] = ()) -> Optional[tuple[str, str, str]]:
+    raw_input: str, authenticated_providers: list[str] = (), user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None) -> Optional[tuple[str, str, str]]:
     """Resolve an alias on the user's authenticated providers (``("openrouter", "nous")`` when none given).
 
     AmbiguousAliasError propagates: the alias exists on this provider, the user just has to
     choose — trying the next provider would silently switch them somewhere they didn't ask for."""
-    results = (resolve_alias(raw_input, p) for p in authenticated_providers or ("openrouter", "nous"))
+    results = (resolve_alias(raw_input, p, user_providers, custom_providers)
+               for p in authenticated_providers or ("openrouter", "nous"))
     return next((r for r in results if r is not None), None)
 
 
@@ -1227,11 +1249,17 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
                 f"Specify the model explicitly: /model <model-name> --provider {st.explicit_provider}")
 
     try:
-        alias_result = resolve_alias(st.new_model, st.target_provider)
+        alias_result = resolve_alias(st.new_model, st.target_provider, st.user_providers, st.custom_providers)
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err), target_provider=st.target_provider)
     if alias_result is not None:
-        _, st.new_model, st.resolved_alias = alias_result
+        alias_provider, st.new_model, alias_name = alias_result
+        # Adopt the alias (and with it its base_url and key) only when it belongs to the provider
+        # the user named: a reverse model-id match may land on another provider's alias, and
+        # honouring it would send the turn to that provider's endpoint under this one's identity.
+        if (_provider_identity(alias_provider, st.user_providers, st.custom_providers)
+                == _provider_identity(st.target_provider, st.user_providers, st.custom_providers)):
+            st.resolved_alias = alias_name
     return None
 
 
@@ -1241,7 +1269,7 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
         current_provider=st.current_provider, user_providers=st.user_providers, custom_providers=st.custom_providers,
     )
     try:
-        fallback_result = _resolve_alias_fallback(st.raw_input, authed)
+        fallback_result = _resolve_alias_fallback(st.raw_input, authed, st.user_providers, st.custom_providers)
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err))
     if fallback_result is None:
@@ -1333,7 +1361,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
         st.target_provider, st.new_model, st.resolved_alias = "moa", moa_match, ""
     else:
         try:
-            alias_result = resolve_alias(raw_input, current_provider)
+            alias_result = resolve_alias(raw_input, current_provider, st.user_providers, st.custom_providers)
         except AmbiguousAliasError as err:
             return st.fail(_ambiguous_alias_message(err))
         if alias_result is not None:

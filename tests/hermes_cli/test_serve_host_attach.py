@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import host_rendezvous as hr
+from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 from hermes_cli.main_dashboard import _attach_to_host_backend
 
 
@@ -91,6 +92,31 @@ def test_second_serve_attaches_to_the_live_host_backend(host_dir, owner, capsys)
     assert f"port {owner.port}" in capsys.readouterr().out
 
 
+def test_inherited_desktop_flag_without_spawn_credential_still_attaches(host_dir, owner, monkeypatch):
+    """A terminal spawned by Desktop inherits its marker, not Desktop ownership.
+
+    Only the Desktop backend receives the per-spawn session credential.  A bare
+    marker must therefore preserve the one-host-backend attach invariant.
+    """
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    _publish(hr.process_create_time(), port=owner.port)
+
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(), headless_backend=True)
+
+    assert exc.value.code == 0
+
+
+def test_desktop_owned_backend_keeps_its_separate_lifecycle(host_dir, owner, monkeypatch):
+    """Desktop's credential-bearing backend does not attach to the host owner."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    _publish(hr.process_create_time(), port=owner.port)
+
+    assert _attach_to_host_backend(_args(), headless_backend=True) is None
+
+
 def test_stale_record_is_ignored_and_the_launch_proceeds(host_dir):
     """A record whose creation time does not match the live PID is a recycled PID, not a
     backend: the launch must fall through and bind, never attach."""
@@ -139,7 +165,9 @@ def test_an_explicit_endpoint_the_owner_cannot_serve_is_refused(host_dir, owner,
     with pytest.raises(SystemExit) as exc:
         _attach_to_host_backend(_args(**over), headless_backend=True)
 
-    assert exc.value.code == 1
+    # 78 (EX_CONFIG) is the deliberate refusal a supervisor parks on; exit 1 under
+    # Restart=always was an infinite loop with nothing listening (#119824).
+    assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
     assert f"PID {os.getpid()}" in capsys.readouterr().out
 
 
@@ -152,5 +180,5 @@ def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys
     with pytest.raises(SystemExit) as exc:
         _attach_to_host_backend(_args(), headless_backend=False)
 
-    assert exc.value.code == 1
+    assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
     assert "no dashboard UI" in capsys.readouterr().out

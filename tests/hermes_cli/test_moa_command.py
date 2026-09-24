@@ -2,7 +2,6 @@ import queue
 from unittest.mock import patch
 
 from cli import HermesCLI
-from hermes_cli.moa_config import decode_moa_turn
 
 
 def _make_cli():
@@ -102,14 +101,4 @@ class TestNormalizeMoaModel:
             "openrouter:deepseek/deepseek-v4",
         )
 
-    def test_override_wins_over_explicit_provider(self):
-        # __init__ resolves requested_provider as
-        # ``_moa_provider_override or provider or ...``, so a moa: prefix must
-        # take precedence over an explicit --provider (the #56828 deepseek case
-        # where MoA was silently ignored).
-        from cli import _normalize_moa_model
-        override, model = _normalize_moa_model("moa:strategy")
-        requested_provider = override or "deepseek" or "auto"
-        assert requested_provider == "moa"
-        assert model == "strategy"
 

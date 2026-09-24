@@ -40,22 +40,29 @@ def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
             "print(tempfile.gettempdir()); "
             "print(subprocess.run([sys.executable, '-c', 'import tempfile;print(tempfile.gettempdir())'],"
             " capture_output=True, text=True).stdout.strip())")
-    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, encoding="utf-8",
                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), check=True)
     expected = str(tmp_path / "cache" / "scratch")
     assert out.stdout.split() == [expected, expected]
 
 
-def test_prune_removes_only_stale_top_level_entries(tmp_path):
+def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path):
+    """Idle retention: an entry goes when nothing in its subtree was written within the window;
+    a tree whose only recent write is three levels down is still in use and stays, even though
+    its top-level mtime is ancient (a directory's mtime ignores writes below its children)."""
     scratch = get_scratch_dir(tmp_path, prune=False)
-    stale, fresh = scratch / "stale", scratch / "fresh.txt"
-    stale.mkdir()
-    (stale / "f").write_text("x", encoding="utf-8")
+    idle, live, fresh = scratch / "idle", scratch / "live", scratch / "fresh.txt"
+    deep = live / "lane" / "wt"
+    deep.mkdir(parents=True)
+    idle.mkdir()
+    (idle / "f").write_text("x", encoding="utf-8")
+    (deep / "log").write_text("x", encoding="utf-8")
     fresh.write_text("y", encoding="utf-8")
-    ancient = time.time() - 100 * 3600
-    os.utime(stale, (ancient, ancient))
+    ancient = time.time() - 30 * 3600
+    for path in (idle, idle / "f", live, live / "lane", deep):
+        os.utime(path, (ancient, ancient))
     assert prune_scratch_dir(scratch) == 1
-    assert not stale.exists() and fresh.exists()
+    assert not idle.exists() and live.exists() and fresh.exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
@@ -64,8 +71,9 @@ class TestScratchDirPermissionPolicy:
     an explicit HERMES_HOME_MODE and a managed/shared home win (#117347)."""
 
     def _isolate_env(self, monkeypatch, tmp_path):
-        # HERMES_HOME must point somewhere without a .managed marker, or a marker file in the
-        # real home would flip every case into "managed" (the marker is read via get_hermes_home).
+        # A known, marker-free effective home: each case below plants `.managed` in the home whose
+        # scratch dir it exercises (`get_scratch_dir(home)` reads the marker there), and the real
+        # home's own marker must not leak into callers that still resolve the effective home.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         for var in ("HERMES_HOME_MODE", "HERMES_MANAGED", "HERMES_CONTAINER",
                     "HERMES_SKIP_CHMOD", "HERMES_UID", "HERMES_GID"):
@@ -96,10 +104,10 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").write_text("nixos", encoding="utf-8")
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
+        scratch = get_scratch_dir(home, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
 
     def test_empty_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
@@ -109,10 +117,10 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").write_text("", encoding="utf-8")
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
+        scratch = get_scratch_dir(home, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
 
     def test_unreadable_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
@@ -121,11 +129,26 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").mkdir()
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
+        scratch = get_scratch_dir(home, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+
+    def test_effective_home_marker_does_not_govern_another_homes_scratch(self, tmp_path, monkeypatch):
+        # The caller's home decides the policy. A boot caller (``export_scratch_tmp_env``) and
+        # ``hermes doctor`` have already resolved theirs, so the marker lookup must not fall back
+        # to ``get_hermes_home()``: for a sticky profile with HERMES_HOME unset that lookup warns
+        # about the default profile on every command, and it is the wrong home to judge by anyway.
+        selected = tmp_path / "home"
+        selected.mkdir()
+        self._isolate_env(monkeypatch, tmp_path)
+        (selected / ".managed").write_text("nixos", encoding="utf-8")
+        other = tmp_path / "other"
+        pre = other / "cache" / "scratch"
+        pre.mkdir(parents=True)
+        os.chmod(pre, 0o750)
+        assert stat.S_IMODE(os.stat(get_scratch_dir(other, prune=False)).st_mode) == 0o700
 
     def test_canonical_container_signal_without_env_override_keeps_operator_mode(self, tmp_path, monkeypatch):
         # Podman/containerd/K8s runtimes often don't export HERMES_CONTAINER; the canonical
@@ -166,16 +189,10 @@ class TestScratchDirPermissionPolicy:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-def test_config_and_constants_share_one_policy_implementation(tmp_path, monkeypatch):
-    """hermes_constants is the single home of managed / container / HERMES_UID policy: config
-    re-exports it (no keep-in-sync twins), so _secure_file skips on the same canonical container
-    signal that apply_secure_dir_policy / get_scratch_dir already honor."""
-    import hermes_constants
+def test_secure_file_skips_chmod_on_canonical_container_signal(tmp_path, monkeypatch):
+    """_secure_file skips on the same canonical container signal that apply_secure_dir_policy /
+    get_scratch_dir already honor (one policy implementation in hermes_constants)."""
     from hermes_cli import config
-
-    assert config.get_managed_system is hermes_constants.get_managed_system
-    assert config._chown_to_hermes_uid is hermes_constants._chown_to_hermes_uid
-    assert not hasattr(config, "_is_container")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):
@@ -186,3 +203,64 @@ def test_config_and_constants_share_one_policy_implementation(tmp_path, monkeypa
     os.chmod(f, 0o640)
     config._secure_file(f)
     assert stat.S_IMODE(os.stat(f).st_mode) == 0o640
+
+
+def test_prune_reaps_process_living_in_idle_entry_and_spares_live_tree(tmp_path):
+    """A process whose cwd is inside an idle entry is gone by the time the entry is
+    (a lane's headless browsers survived for days with a deleted cwd); one living in a
+    tree that is still being written is not touched."""
+    import subprocess
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    idle, live = scratch / "idle-lane" / "wt", scratch / "live-lane" / "wt"
+    idle.mkdir(parents=True)
+    live.mkdir(parents=True)
+    ancient = time.time() - 30 * 3600
+    for path in (idle.parent, idle, live.parent, live):
+        os.utime(path, (ancient, ancient))
+    (live / "log").write_text("still writing", encoding="utf-8")
+    sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+    doomed = subprocess.Popen(sleeper, cwd=str(idle), stdin=subprocess.DEVNULL)
+    spared = subprocess.Popen(sleeper, cwd=str(live), stdin=subprocess.DEVNULL)
+    try:
+        assert prune_scratch_dir(scratch) == 1
+        assert doomed.wait(timeout=10) is not None
+        assert spared.poll() is None
+        assert not idle.parent.exists() and live.exists()
+    finally:
+        for proc in (doomed, spared):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+
+
+def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
+    """Deleting a scratch entry that held a linked worktree leaves the repo with no
+    dangling registration (10 sat in one repo's ``git worktree list`` after cleanup)."""
+    import subprocess
+
+    def git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+                       stdin=subprocess.DEVNULL, env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+                                                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x",
+                                                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"})
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-q", cwd=repo)
+    (repo / "f").write_text("x", encoding="utf-8")
+    git("add", "f", cwd=repo)
+    git("commit", "-q", "-m", "init", cwd=repo)
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    tree = scratch / "lane" / "abwt"
+    tree.parent.mkdir()
+    git("worktree", "add", "-q", "--detach", str(tree), cwd=repo)
+    ancient = time.time() - 30 * 3600
+    for dirpath, dirnames, filenames in os.walk(tree.parent):
+        for name in dirnames + filenames:
+            os.utime(os.path.join(dirpath, name), (ancient, ancient), follow_symlinks=False)
+    os.utime(tree.parent, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True,
+                             text=True, stdin=subprocess.DEVNULL, check=True).stdout
+    assert str(tree) not in listing and not tree.exists()

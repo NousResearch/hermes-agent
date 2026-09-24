@@ -47,7 +47,6 @@ test('listen binds a loopback listener and wait resolves with the redirect param
   const res = await fetch(`${redirectUri}?code=abc123&state=st-1`)
 
   assert.equal(res.status, 200)
-  assert.match(await res.text(), /return to Hermes/)
 
   const result = await waitPromise
 

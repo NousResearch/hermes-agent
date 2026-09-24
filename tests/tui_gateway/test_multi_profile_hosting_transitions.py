@@ -125,11 +125,17 @@ def test_release_resets_every_scope_when_one_reset_fails(two_homes, monkeypatch)
     scopes = server._profile_runtime_scope_tokens(str(b))
     assert current_secret_scope() is not None and get_hermes_home_override() == str(b)
 
+    real_reset = terminal_scope.reset_terminal_scope
+
     def exploding(_token):
         raise RuntimeError("terminal reset blew up")
 
     monkeypatch.setattr(terminal_scope, "reset_terminal_scope", exploding)
     server._release_build_profile_scopes(scopes)  # suppresses the re-raised failure
+    # The exploding reset left the terminal ContextVar bound to B's scope on this thread. The
+    # scenario is proven here; unbind it, or every later test in the process inherits B's scope.
+    real_reset(scopes.terminal)
+    assert terminal_scope.get_terminal_scope() is None
     assert current_secret_scope() is None
     assert get_hermes_home_override() is None
     assert Path(server._hermes_home) == root

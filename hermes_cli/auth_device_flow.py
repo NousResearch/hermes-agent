@@ -320,7 +320,7 @@ def _poll_device_token_generic(
     on_timeout: Callable[[], Exception]) -> Dict[str, Any]:
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 
-    ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
+    ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 5s (cap 30s).
     Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
     via the supplied factories so each caller keeps its exact error contract.
     """
@@ -342,7 +342,7 @@ def _poll_device_token_generic(
             time.sleep(current_interval)
             continue
         if error_code == "slow_down":
-            current_interval = min(current_interval + 1, 30)
+            current_interval = min(current_interval + 5, 30)
             time.sleep(current_interval)
             continue
         raise on_error(response, error_payload)

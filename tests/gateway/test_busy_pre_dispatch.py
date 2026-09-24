@@ -2,7 +2,6 @@
 
 from types import SimpleNamespace
 
-
 import pytest
 
 from gateway.config import Platform
@@ -72,7 +71,6 @@ async def test_busy_rewrite_survives_adapter_fallback_and_is_not_reapplied(monke
     runner.config = SimpleNamespace(multiplex_profiles=False)
     runner._startup_restore_in_progress = False
     runner._intake_adapter_for = lambda source: None
-
     # The cold admission of the drained event must not execute the hook twice.
     admitted = await runner._hm_admit_event(event)
     assert admitted is not None and admitted[0].text == "screened"
@@ -87,7 +85,10 @@ async def test_adapter_only_pending_is_screened_before_next_turn(monkeypatch):
     runner._draining = False
     runner._promote_queued_event = lambda key, adapter, event: event
     event = _event("sender-b", "unaddressed")
-    adapter = SimpleNamespace(_pending_messages={"session": event})
+    pending_slot = {"session": event}
+    adapter = SimpleNamespace(
+        _pending_messages=pending_slot, get_pending_message=lambda key: pending_slot.pop(key, None)
+    )
     seen = []
 
     def hook(name, **kwargs):
@@ -102,3 +103,32 @@ async def test_adapter_only_pending_is_screened_before_next_turn(monkeypatch):
     )
     assert (pending_event, pending) == (None, None)
     assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_skipped_fallback_head_does_not_strand_next_sender(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._draining = False
+    first, second = _event("sender-a"), _event("sender-b", "allowed")
+    pending_slot = {"session": first}
+    overflow = [second]
+    runner._overflow_queue = lambda key: overflow
+    adapter = SimpleNamespace(
+        _pending_messages=pending_slot, get_pending_message=lambda key: pending_slot.pop(key, None)
+    )
+    seen = []
+
+    def hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            seen.append(kwargs["event"].source.user_id)
+            return [{"action": "skip"}] if len(seen) == 1 else []
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hook)
+    pending_event, pending = await runner._run_agent_drain_pending(
+        {"final_response": "done"}, adapter, first.source, "session"
+    )
+    assert pending_event is second and pending == "allowed"
+    assert seen == ["sender-a", "sender-b"]

@@ -3612,14 +3612,17 @@ class GatewayTurnMixin:
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
             skipped_pending = False
             # Adapter-only fallback queues without visiting the runner's busy handler.
-            # Admit those at the drain; already-admitted busy events must not run twice.
-            if pending_event and not pending_event.internal and not getattr(
+            # A skipped head must not strand the FIFO tail in the pending slot.
+            while pending_event and not pending_event.internal and not getattr(
                 pending_event, "_pre_gateway_dispatch_admitted", False
             ):
                 pending_event._gateway_busy_followup = True
                 pending_event = self._hm_pre_gateway_dispatch_hook(pending_event, pending_event.source)
                 if pending_event is None:
                     skipped_pending = True
+                    pending_event = self._promote_queued_event(
+                        session_key, adapter, _dequeue_pending_event(adapter, session_key)
+                    )
                 else:
                     pending_event._pre_gateway_dispatch_admitted = True
             if result.get("interrupted") and not pending_event and not skipped_pending and result.get("interrupt_message"):

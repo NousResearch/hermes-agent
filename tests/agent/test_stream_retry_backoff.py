@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 from agent import chat_completion_helpers as cch
 
@@ -20,6 +21,7 @@ def _bare_call(agent):
     call.first_delta_fired = {"done": False}
     call.provider_tool_in_flight = {"yes": False}
     call._cancel_current_stream_attempt = MagicMock()
+    call.last_chunk_time = {"t": 0.0}
     return call
 
 
@@ -33,31 +35,25 @@ def _agent(**kw):
     )
 
 
+@pytest.mark.real_retry_backoff
 def test_transient_drops_retry_with_capped_exponential_backoff():
     """Each reconnect waits 1s, 2s, 4s, 4s — including Anthropic SDK connection errors."""
-    import anthropic
+    anthropic = pytest.importorskip("anthropic")
 
-    slept = []
-    clock = [0.0]
-
-    def fake_sleep(s):
-        slept.append(s)
-        clock[0] += s
-
+    waits = []
     call = _bare_call(_agent())
     req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     errors = [anthropic.APIConnectionError(request=req), httpx.ConnectError("reset"),
               httpx.ReadError("reset"), httpx.RemoteProtocolError("closed")]
-    per_attempt = []
-    with patch.object(cch.time, "sleep", fake_sleep), patch.object(cch.time, "monotonic", lambda: clock[0]):
+    with patch.object(cch, "_wait_stream_retry_backoff", lambda agent, delay: waits.append(delay) or True):
         for attempt, err in enumerate(errors):
-            before = clock[0]
             assert call._handle_stream_error(err, attempt, max_retries=10) is True
-            per_attempt.append(round(clock[0] - before, 6))
-    assert per_attempt == [1.0, 2.0, 4.0, 4.0]
+    assert waits == [1.0, 2.0, 4.0, 4.0]
+    assert call.last_chunk_time["t"] > 0.0  # stale clock restarted after the backoff
     assert "error" not in call.result
 
 
+@pytest.mark.real_retry_backoff
 def test_backoff_wait_returns_immediately_on_interrupt():
     agent = _agent()
     call = _bare_call(agent)

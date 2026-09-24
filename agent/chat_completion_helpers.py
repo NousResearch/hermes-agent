@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -2405,34 +2406,23 @@ def _rejects_stream_options(exc: BaseException) -> bool:
         k in body for k in ("extra", "not supported", "unrecognized", "unexpected", "unknown"))
 
 
-_STREAM_RETRY_BACKOFF_BASE_S = 1.0
-_STREAM_RETRY_BACKOFF_CAP_S = 4.0
-
-
-def _stream_retry_backoff_seconds(attempt: int) -> float:
-    """Delay before stream-level reconnect ``attempt`` (0-based): 1s, 2s, 4s, capped."""
-    return min(_STREAM_RETRY_BACKOFF_BASE_S * (2 ** max(0, attempt)), _STREAM_RETRY_BACKOFF_CAP_S)
-
-
-def _wait_stream_retry_backoff(agent, delay: float) -> bool:
-    """Sleep ``delay`` seconds in 0.1s steps, returning False as soon as the
-    agent is interrupted (so /stop is never held hostage by a backoff)."""
+def _wait_stream_retry_backoff(agent, delay: float) -> None:
+    """Sleep ``delay`` seconds in 0.1s steps, returning early as soon as the agent
+    is interrupted (so /stop is never held hostage by a backoff; the retry loop's
+    own interrupt check then ends the call)."""
     deadline = time.monotonic() + max(0.0, delay)
-    while True:
-        if getattr(agent, "_interrupt_requested", False):
-            return False
+    while not getattr(agent, "_interrupt_requested", False):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return True
+            return
         time.sleep(min(0.1, remaining))
 
 
 def _anthropic_connection_error_types() -> tuple:
-    try:
-        from anthropic import APIConnectionError as _AnthropicConnErr
-    except Exception:
-        return ()
-    return (_AnthropicConnErr,)
+    # An Anthropic error instance implies the SDK is already imported; never import
+    # (or lazy-install) it from inside an error handler.
+    anthropic = sys.modules.get("anthropic")
+    return (anthropic.APIConnectionError,) if anthropic is not None else ()
 
 
 def _is_sse_connection_error(exc: BaseException) -> bool:
@@ -3402,7 +3392,12 @@ class _StreamingCall(StreamingWaitMonitor):
         self.clients.close_once(reason)
         # Exponential backoff between stream-level reconnects (back-to-back retries
         # hammer a provider that just dropped us). Interruptible: /stop exits at once.
-        _wait_stream_retry_backoff(self.agent, _stream_retry_backoff_seconds(attempt))
+        from agent.retry_utils import jittered_backoff
+        _wait_stream_retry_backoff(
+            self.agent, jittered_backoff(attempt + 1, base_delay=1.0, max_delay=4.0, jitter_ratio=0.0))
+        # The backoff is not the dead attempt's silence: restart the stale clock so the
+        # stale monitor cannot kill (and strike) a stream that has not reopened yet.
+        self.last_chunk_time["t"] = time.time()
 
     def _maybe_disable_streaming(self, e) -> None:
         """Flip to non-streaming for failures streaming itself cannot survive, or that

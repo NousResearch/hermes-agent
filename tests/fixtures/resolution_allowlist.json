@@ -1,0 +1,732 @@
+[
+  {
+    "path": "agent/anthropic_adapter.py",
+    "symbol": "_claude_code_candidates",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/anthropic_credentials.py",
+    "symbol": "run_oauth_setup_token",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/lsp/cli.py",
+    "symbol": "_backend_warnings",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/lsp/install.py",
+    "symbol": "_do_install",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/lsp/install.py",
+    "symbol": "_existing_binary",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/lsp/install.py",
+    "symbol": "_install_go",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/lsp/servers.py",
+    "symbol": "_which",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/proxy_sources/iron_proxy.py",
+    "symbol": "_verify_checksums_signature",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/proxy_sources/iron_proxy.py",
+    "symbol": "ensure_ca_cert",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/proxy_sources/iron_proxy.py",
+    "symbol": "find_iron_proxy",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/secret_sources/bitwarden.py",
+    "symbol": "find_bws",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/secret_sources/onepassword.py",
+    "symbol": "find_op",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/vault_backends/base.py",
+    "symbol": "is_installed",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/vault_backends/bitwarden.py",
+    "symbol": "BitwardenLoginBackend._bw",
+    "kind": "bare_which"
+  },
+  {
+    "path": "cron/scheduler_delivery.py",
+    "symbol": "_deliver_to_bot_chat",
+    "kind": "bare_which"
+  },
+  {
+    "path": "cron/scheduler_script.py",
+    "symbol": "_script_argv",
+    "kind": "bare_which"
+  },
+  {
+    "path": "gateway/platforms/base.py",
+    "symbol": "transcode_to_ogg_opus",
+    "kind": "bare_which"
+  },
+  {
+    "path": "gateway/platforms/signal.py",
+    "symbol": "_remux_aac_to_m4a",
+    "kind": "bare_which"
+  },
+  {
+    "path": "gateway/platforms/whatsapp_cloud.py",
+    "symbol": "<module>",
+    "kind": "bare_which"
+  },
+  {
+    "path": "gateway/run.py",
+    "symbol": "_resolve_hermes_bin",
+    "kind": "bare_which"
+  },
+  {
+    "path": "gateway/run_shutdown.py",
+    "symbol": "GatewayShutdownMixin._launch_detached_restart_command",
+    "kind": "bare_which"
+  },
+  {
+    "path": "gateway/shutdown_forensics.py",
+    "symbol": "spawn_async_diagnostic",
+    "kind": "bare_which"
+  },
+  {
+    "path": "gateway/slash_commands.py",
+    "symbol": "_spawn_detached_update",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_find_uv_binary",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/_subprocess_compat.py",
+    "symbol": "resolve_node_command",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/auth.py",
+    "symbol": "_external_process_spec",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/cli_session_mixin.py",
+    "symbol": "CLISessionMixin._clear_terminal_on_exit",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/commands_completion.py",
+    "symbol": "SlashCommandCompleter._get_project_files",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/config.py",
+    "symbol": "edit_config",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/dep_ensure.py",
+    "symbol": "<module>",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/dep_ensure.py",
+    "symbol": "_has_system_browser",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/dep_ensure.py",
+    "symbol": "ensure_dependency",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/doctor_live.py",
+    "symbol": "_browser_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/doctor_platform.py",
+    "symbol": "_macos_desktop_dr",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/doctor_tools.py",
+    "symbol": "_safe_which",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "_build_wsl_interop_paths",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "_ensure_linger_enabled",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "_get_parent_pid",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "_preflight_user_systemd",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway_setup_wizard.py",
+    "symbol": "_setup_signal",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "_windows_process_listing",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "_windows_scheduled_task_state",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "get_systemd_linger_status",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "supports_systemd_services",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway_service_unit.py",
+    "symbol": "_append_node_dir_for_service",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway_windows.py",
+    "symbol": "_exec_schtasks",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/git_credentials.py",
+    "symbol": "_credential_fill",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/git_credentials.py",
+    "symbol": "_gh_cli_token",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/kanban_db_dispatch.py",
+    "symbol": "_resolve_hermes_argv",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/linux_desktop_entry.py",
+    "symbol": "_refresh_hicolor_cache",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/linux_desktop_entry.py",
+    "symbol": "refresh_desktop_databases",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/local_runtime/hardware.py",
+    "symbol": "_nvidia_smi_path",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main.py",
+    "symbol": "_exec_in_container",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "_desktop_linux_sandbox_fixup",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "_desktop_linux_userns_sandbox_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "_desktop_macos_has_valid_real_signature",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "_desktop_macos_local_codesign",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "_desktop_macos_relaunchable_fixup",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "_desktop_macos_setup_tcc_identity",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_install_repair.py",
+    "symbol": "_resolve_node_runtime_npm",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_tui_launch.py",
+    "symbol": "_apply_tui_python_env",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_tui_launch.py",
+    "symbol": "_ensure_tui_node",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_tui_launch.py",
+    "symbol": "_restore_tui_workspace",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_web_build.py",
+    "symbol": "_nixos_build_env",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/managed_uv.py",
+    "symbol": "_macos_sign_managed_python",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/mcp_app_detection.py",
+    "symbol": "_Scan.path_candidates",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/mcp_catalog.py",
+    "symbol": "_do_git_install",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/nous_subscription.py",
+    "symbol": "_has_agent_browser",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/plugins_cmd.py",
+    "symbol": "_resolve_git_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/profiles.py",
+    "symbol": "create_wrapper_script",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/relaunch.py",
+    "symbol": "resolve_hermes_bin",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/session_lost_and_found.py",
+    "symbol": "find_sqlite3_cli",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/setup_terminal.py",
+    "symbol": "_setup_backend_singularity",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/setup_tts.py",
+    "symbol": "_install_neutts_deps",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/stdio.py",
+    "symbol": "_default_windows_editor",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/tools_config_cua.py",
+    "symbol": "_repair_cua_driver_autostart_windows",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/tools_config_cua.py",
+    "symbol": "install_cua_driver",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/tools_config_post_setup.py",
+    "symbol": "_ensure_browser_use_cli",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_abort_recovery.py",
+    "symbol": "_run_fresh_recovery_process",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_abort_recovery.py",
+    "symbol": "_serve_unit_recovery_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_cmd_deps.py",
+    "symbol": "_ensure_uv_for_termux",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_cmd_deps.py",
+    "symbol": "_update_node_dependencies",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_cmd_maint.py",
+    "symbol": "_refresh_cua_driver_after_update",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_restart_recovery.py",
+    "symbol": "_systemctl_scopes",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_restart_recovery.py",
+    "symbol": "_systemd_verified_active",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/web_git.py",
+    "symbol": "_gh",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/web_routers/git.py",
+    "symbol": "_probe_gh_auth",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/web_routers/tools.py",
+    "symbol": "_probe_singularity_backend",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_constants.py",
+    "symbol": "find_node_executable_on_path",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_relay.py",
+    "symbol": "_hermes_cli",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/browser_lightpanda.py",
+    "symbol": "find_lightpanda_binary",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/browser_tool_install.py",
+    "symbol": "_agent_browser_candidates",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/browser_tool_install.py",
+    "symbol": "_chromium_installed",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/browser_tool_install.py",
+    "symbol": "_find_agent_browser",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/browser_tool_install.py",
+    "symbol": "_resolve_npx_bin",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/browser_use_cli.py",
+    "symbol": "_find_cli",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/browser_use_cli.py",
+    "symbol": "install_cli",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/checkpoint_manager.py",
+    "symbol": "CheckpointManager.ensure_checkpoint",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/checkpoint_manager_profile_rename.py",
+    "symbol": "migrate_profile_checkpoint_projects",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/computer_use/cua_backend_daemon.py",
+    "symbol": "_validate_cua_driver_app_signature",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/computer_use/cua_backend_driver.py",
+    "symbol": "resolve_cua_driver_cmd",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/delegate_tool_config.py",
+    "symbol": "_require_pinned_command",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/env_probe.py",
+    "symbol": "_build_probe_line",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/env_probe.py",
+    "symbol": "_py_out",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/docker.py",
+    "symbol": "find_docker",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/local.py",
+    "symbol": "_find_bash",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/local.py",
+    "symbol": "_resolve_hermes_bin_dir",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/local.py",
+    "symbol": "_windows_bash_candidates",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/local_gitbash_probe.py",
+    "symbol": "_mandatory_aslr_enabled",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/singularity.py",
+    "symbol": "_find_singularity_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/ssh.py",
+    "symbol": "_ensure_ssh_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/lazy_deps.py",
+    "symbol": "_uv_binary",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_resolve_stdio_command",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/process_registry.py",
+    "symbol": "_build_systemd_scope_argv",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/process_registry.py",
+    "symbol": "_stop_systemd_unit",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/process_registry.py",
+    "symbol": "_systemd_run_user_scope_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/read_extract.py",
+    "symbol": "_pdf_page_texts",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/skillevaluator_scan.py",
+    "symbol": "run_tier1_scan",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/skillevaluator_scan.py",
+    "symbol": "scanner_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/terminal_tool_backends.py",
+    "symbol": "<module>",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tirith_security.py",
+    "symbol": "_find_local_tirith",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tirith_security.py",
+    "symbol": "_is_install_failed_on_disk",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tirith_security.py",
+    "symbol": "_resolve_locally",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tirith_security.py",
+    "symbol": "_verify_cosign",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tirith_security.py",
+    "symbol": "_verify_release_provenance",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/transcription_audio.py",
+    "symbol": "_convert_caf_to_wav",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/transcription_audio.py",
+    "symbol": "_find_binary",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tts_tool_delivery.py",
+    "symbol": "_concat_audio_files",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tts_tool_delivery.py",
+    "symbol": "_finalize_wav_output",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/tts_tool_delivery.py",
+    "symbol": "_write_wav_bytes_as",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/vision_tools_image_prep.py",
+    "symbol": "_rasterize_svg_to_png",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/voice_mode.py",
+    "symbol": "_play_audio_file_impl",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/voice_mode.py",
+    "symbol": "_termux_api_app_installed",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/voice_mode.py",
+    "symbol": "_termux_microphone_command",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/voice_mode.py",
+    "symbol": "_wsl_powershell_player_cmd",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/voice_mode.py",
+    "symbol": "_wsl_powershell_tts_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/working_diff.py",
+    "symbol": "collect_working_diff",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tui_gateway/methods_prompt.py",
+    "symbol": "_",
+    "kind": "bare_which"
+  },
+  {
+    "path": "agent/anthropic_adapter.py",
+    "symbol": "<module>",
+    "kind": "known_path_table"
+  },
+  {
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_find_uv_binary",
+    "kind": "known_path_table"
+  },
+  {
+    "path": "tools/computer_use/cua_backend_driver.py",
+    "symbol": "_candidate_cua_driver_commands",
+    "kind": "known_path_table"
+  },
+  {
+    "path": "tools/bot_desktop/browser.py",
+    "symbol": "_system_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/install.py",
+    "symbol": "_run",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "missing_binaries",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "package_manager",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "installable",
+    "kind": "bare_which"
+  }
+]

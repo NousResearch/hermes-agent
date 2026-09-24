@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
+from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -236,7 +237,8 @@ def recover_before_classification(
     api_kwargs: Any, active_system_prompt: Any,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
-    sanitization, provider image-content rejection (record the (provider, model);
+    sanitization, Anthropic fast mode with no capacity (drop ``speed`` for that model),
+    provider image-content rejection (record the (provider, model);
     build_api_request strips images from that model's requests only), and the Bedrock
     AnthropicBedrock SDK streaming fallback. Returns ``(retry_now, active_system_prompt)``;
     the prompt may be ASCII-sanitized in place."""
@@ -246,6 +248,14 @@ def recover_before_classification(
         )
         if _recovered:
             return True, active_system_prompt
+
+    # Anthropic fast mode with no capacity: a 429 whose fast-mode limit header is 0 can never
+    # succeed at fast speed, and it says nothing about the key's standard-speed limits. Stop
+    # sending ``speed`` to this model and retry now, before credential rotation benches the key.
+    if fast_mode_unprovisioned(api_error, api_kwargs) and mark_fast_mode_unavailable(agent):
+        _vlines(agent, f"⚠️  Fast mode isn't available for {agent.model} on this Anthropic organization — using standard speed for this session, retrying...")
+        logger.warning("%sFast mode: %s has a fast-mode limit of 0; standard speed for this session", agent.log_prefix, agent.model)
+        return True, active_system_prompt
 
     # Some providers 4xx on image_url content: record the (provider, model) and retry;
     # build_api_request strips images from that model's requests only. English phrase
@@ -763,6 +773,39 @@ def _failed_turn_result(final_response: str, messages: Any, api_call_count: int,
     }
 
 
+def settle_delivered_partial(agent: Any, messages: Any, current_turn_user_idx: Any) -> str:
+    """Visible text already delivered this turn ("" when none), collapsing any continuation
+    trail first so the terminal persist never keeps a dangling synthetic nudge (#119001).
+
+    ``build_api_request`` resets ``_current_streamed_assistant_text`` per attempt, so after a
+    mid-stream death + continuation + pre-stream error the live accumulator is empty and the
+    fragment rows (now collapsed into one assistant row) are the only record.
+    """
+    from agent.turn_truncation import collapse_continuation_trail
+    collapsed = collapse_continuation_trail(
+        agent, messages, current_turn_user_idx, finish_reason="error",
+    )
+    live = getattr(agent, "_current_streamed_assistant_text", "")
+    if isinstance(live, str) and live.strip():
+        from agent.agent_runtime_helpers import strip_think_blocks
+        return strip_think_blocks(agent, live).strip() or collapsed
+    return collapsed
+
+
+def _with_delivered_partial(final_response: str, error_summary: str, delivered: str) -> tuple:
+    """Prepend delivered partial text to a terminal error body ("" unchanged).
+
+    Returns ``(final_response, keep_partial)``; callers set ``result["partial"]``
+    when ``keep_partial`` so the gateway emits ``payload.partial`` and surfaces
+    retain the bubble instead of clearing it. ``final_response`` must stay
+    distinct from ``error`` — that inequality is the retention contract.
+    """
+    _delivered = (delivered or "").strip()
+    if not _delivered or _delivered == (error_summary or "").strip():
+        return final_response, False
+    return f"{_delivered}\n\n{final_response}", True
+
+
 def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
     """Epoch seconds when the provider says its limit lifts (Retry-After header, ``resets_at`` /
     ``retry_after`` body fields, "try again in N" text) — the same datum the backoff honours."""
@@ -930,6 +973,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
+    delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -1033,14 +1077,19 @@ def nonretryable_client_error_result(
             classified, provider=provider, model=model, summary=_nonretryable_summary,
             prefix_suggestion=_prefix_suggestion,
         )
-    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
     # "Provider error" and offers Retry instead of a re-login.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _nonretryable_summary, delivered,
+    )
+    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     result.update({
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
+    if _keep_partial:
+        result["partial"] = True
     _stamp_limit_reset(result, agent, api_error)
     if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
@@ -1059,7 +1108,7 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -1180,6 +1229,15 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    # Retry-exhaustion after partial delivery (#119001): the text was already
+    # shown, so keep it as the reply (marked failed) instead of an error-only
+    # turn — the gateway flags ``partial`` and surfaces retain the bubble.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _final_summary, delivered,
+    )
+    if _keep_partial:
+        result["final_response"] = _final_response
+        result["partial"] = True
     _stamp_limit_reset(result, agent, api_error)
     if _free_tier_kind:
         _stamp_free_tier(result, _free_tier_kind, (
@@ -1258,6 +1316,10 @@ def abort_turn_on_interrupt(
     """Announce ``abort_message``, close any open tool sequence with ``interrupt_text``,
     persist, clear the interrupt and return the ``interrupted`` result dict."""
     _vlines(agent, f"⚡ {abort_message}")
+    # Empty-response recovery can leave a synthetic assistant+nudge pair after an
+    # already-executed tool result. Strip only that request-local scaffold before
+    # closing, so this exit owner can persist its specific interrupt reason.
+    agent._drop_trailing_empty_response_scaffolding(messages)
     close_interrupted_tool_sequence(messages, interrupt_text)
     agent._persist_session(messages, conversation_history)
     # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next

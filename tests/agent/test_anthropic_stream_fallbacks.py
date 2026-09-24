@@ -55,3 +55,28 @@ def test_anthropic_partial_stub_passes_transport_validation(content, overflow):
     assert transport.validate_response(stub)
     assert transport.response_finish_reason(stub) == "length"
     assert stub._overflow_terminal is overflow
+
+
+def test_null_usage_stream_is_normalized_before_sdk_accumulation():
+    # #60683 main turn: MiniMax sends usage:null on message_start/message_delta; the SDK's
+    # accumulate_event() crashes mid-iteration unless _call_anthropic normalizes the raw events.
+    from anthropic import NOT_GIVEN
+    from anthropic._models import construct_type_unchecked
+    from anthropic.lib.streaming import MessageStream
+    from anthropic.types import RawMessageStreamEvent
+
+    from agent.anthropic_adapter import normalize_stream_usage
+
+    raw = [construct_type_unchecked(type_=RawMessageStreamEvent, value=v) for v in (
+        {"type": "message_start", "message": {"id": "m", "type": "message", "role": "assistant",
+                                              "model": "MiniMax-M2", "content": [], "usage": None}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": None},
+        {"type": "message_stop"},
+    )]
+    stream = normalize_stream_usage(MessageStream(iter(raw), output_format=NOT_GIVEN))
+    list(stream)
+    final = stream.get_final_message()
+    assert final.content[0].text == "hi" and final.stop_reason == "end_turn"

@@ -710,6 +710,48 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
         tool["eager_input_streaming"] = False
 
 
+class _UsageNormalizingStream:
+    """Raw SSE iterator proxy that fills ``usage: null`` before the SDK accumulates it (#60683)."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __iter__(self):
+        # Lazy: the SDK import is deliberately kept off module import (see _anthropic_sdk).
+        from anthropic.types import MessageDeltaUsage, Usage
+        output_tokens = 0
+        for event in self._inner:
+            etype = getattr(event, "type", None)
+            if etype == "message_start":
+                message = getattr(event, "message", None)
+                usage = getattr(message, "usage", None)
+                if message is not None and usage is None:
+                    message.usage = Usage(input_tokens=0, output_tokens=0)
+                elif usage is not None:
+                    output_tokens = getattr(usage, "output_tokens", 0) or 0
+            elif etype == "message_delta" and getattr(event, "usage", None) is None:
+                # accumulate_event() assigns delta output_tokens unconditionally; carry
+                # message_start's count forward instead of clobbering it with 0.
+                event.usage = MessageDeltaUsage(output_tokens=output_tokens)
+            yield event
+
+
+def normalize_stream_usage(message_stream: Any) -> Any:
+    """Patch ``usage: null`` on raw SSE events before the SDK accumulates them.
+
+    Anthropic-compatible providers (MiniMax) send ``usage: null`` on message_start and/or
+    message_delta; the SDK's accumulate_event() then dies on ``usage.output_tokens`` mid-
+    iteration (#60683). Wraps ``MessageStream._raw_stream`` in place; no-op for other shapes."""
+    raw = getattr(message_stream, "_raw_stream", None)
+    if raw is None or not hasattr(raw, "__iter__"):
+        return message_stream
+    message_stream._raw_stream = _UsageNormalizingStream(raw)
+    return message_stream
+
+
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()

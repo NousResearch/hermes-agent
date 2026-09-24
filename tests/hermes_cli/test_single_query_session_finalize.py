@@ -57,6 +57,25 @@ def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch
 
 
 
+def test_finalize_single_query_closes_the_agent_before_releasing_the_lease(monkeypatch):
+    """#121298: chat -q must reach agent.close() so the codex app-server reaps descendants."""
+    calls = []
+    fake_cli = SimpleNamespace(
+        agent=SimpleNamespace(close=lambda: calls.append("close")),
+        session_id="cli-session",
+        _release_active_session=lambda: calls.append("release"),
+    )
+    monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda _cli: calls.append("finalize"))
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **kwargs: calls.append("cleanup"))
+    monkeypatch.setattr(cli, "_wait_for_oneshot_background_completions", lambda _cli: None)
+    monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda _cli: None)
+
+    cli._finalize_single_query(fake_cli)
+
+    assert calls.index("close") > calls.index("cleanup")
+    assert calls[-1] == "release"
+
+
 def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):
     calls = []
     fake_agent = SimpleNamespace(session_id="agent-session", platform="cli")

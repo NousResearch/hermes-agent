@@ -613,6 +613,18 @@ def _refresh_access_token(
         raise AuthError(
             f"Nous Portal is temporarily unavailable (HTTP {response.status_code}).",
             provider="nous", code="temporarily_unavailable", retryable=True)
+    # Vercel's Security Checkpoint in front of the Portal answers non-browser clients with a
+    # 403 (``x-vercel-mitigated: deny``) or 429 (``challenge``) page (#120602). That is the edge
+    # refusing the request, not the token endpoint rejecting the grant, so keep the credentials
+    # and retry later instead of forcing a re-login.
+    mitigated = response.headers.get("x-vercel-mitigated") if response.status_code in {403, 429} else None
+    if mitigated:
+        from agent.retry_utils import parse_retry_after_seconds
+        raise AuthError(
+            f"Nous Portal's edge firewall blocked the token refresh (HTTP {response.status_code}, "
+            f"x-vercel-mitigated={mitigated}). Your login is still valid; Hermes will retry.",
+            provider="nous", code="upstream_blocked", retryable=True,
+            retry_after=parse_retry_after_seconds(response.headers))
     from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     try:
         error_payload = response.json()

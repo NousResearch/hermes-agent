@@ -149,6 +149,7 @@ DEFAULT_DRIVES: Dict[str, Any] = {
         "silent_streak": 0,
         "wakes_since_change": 0,
         "last_evolve_at": None,
+        "identity_links": {},
     },
     # Slow drift of his resting levels with lived experience (see physics.PLASTIC).
     "temperament": {},

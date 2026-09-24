@@ -58,8 +58,70 @@ def expectation_word(expect: float) -> str:
     return "you were not sure they would"
 
 
+def resolve_key(drives: Dict[str, Any], key: str) -> str:
+    """A person can be known under several ids across platforms; he links them himself. This
+    follows the link chain to the one profile that holds them all."""
+    links = (drives.get("meta") or {}).get("identity_links") or {}
+    seen = set()
+    while key in links and key not in seen:
+        seen.add(key)
+        key = links[key]
+    return key
+
+
+def link_identities(drives: Dict[str, Any], peers: Dict[str, Any], key_a: str, key_b: str,
+                    ts: datetime) -> Optional[str]:
+    """Declare that ``key_a`` and ``key_b`` are the same person. Their bonds and history merge
+    into one profile (the richer one wins), and the other id becomes an alias of it. Returns the
+    surviving key, or None if they are already one."""
+    a, b = resolve_key(drives, key_a), resolve_key(drives, key_b)
+    if a == b:
+        return None
+    ensure_peer(drives, peers, a, ts)
+    ensure_peer(drives, peers, b, ts)
+    def weight(k: str) -> int:  # richness: exchanges plus what he has kept about them
+        p = peers[k]
+        return (int(physics.safe_float(p.get("messages_from_them"))) + int(physics.safe_float(p.get("messages_to_them")))
+                + sum(len(p.get(f) or []) for f in ("known_facts", "moments", "pending"))
+                + (1 if p.get("label") else 0))
+    canonical, alias = (a, b) if weight(a) >= weight(b) else (b, a)
+    keep, gone = peers[canonical], peers.pop(alias)
+    for field in ("known_facts", "moments", "pending"):
+        merged = list(keep.get(field) or [])
+        for item in gone.get(field) or []:
+            if item not in merged:
+                merged.append(item)
+        keep[field] = merged[-20:]
+    for field in ("affinity", "trust", "curiosity", "oxytocin", "longing"):
+        keep[field] = max(physics.safe_float(keep.get(field)), physics.safe_float(gone.get(field)))
+    keep["disappointment"] = min(physics.safe_float(keep.get("disappointment")),
+                                 physics.safe_float(gone.get("disappointment")))
+    for field in ("messages_from_them", "messages_to_them", "ignored_count"):
+        keep[field] = int(physics.safe_float(keep.get(field))) + int(physics.safe_float(gone.get(field)))
+    if not keep.get("label") and gone.get("label"):
+        keep["label"] = gone["label"]
+    if not (isinstance(keep.get("outreach"), dict) and keep["outreach"].get("status") in ("open", "expired")):
+        if isinstance(gone.get("outreach"), dict):
+            keep["outreach"] = gone["outreach"]
+    keep.setdefault("aliases", [])
+    for extra in [alias] + list(gone.get("aliases") or []):
+        if extra not in keep["aliases"]:
+            keep["aliases"].append(extra)
+    meta = drives.setdefault("meta", {})
+    links = meta.setdefault("identity_links", {})
+    links[alias] = canonical
+    for k, v in list(links.items()):          # redirect anything that pointed at the alias
+        if v == alias:
+            links[k] = canonical
+    physics.refresh_oxytocin_global(drives, peers)
+    store.log_event("link", f"You recognized {alias} as the same person as {canonical}.", ts,
+                    peer=canonical)
+    return canonical
+
+
 def ensure_peer(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
                 ts: datetime) -> Dict[str, Any]:
+    key = resolve_key(drives, key)
     peer = peers.get(key)
     if peer is None:
         peer = store.new_peer(ts)
@@ -72,6 +134,7 @@ def ensure_peer(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
 def on_incoming(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
                 ts: datetime) -> List[str]:
     """A message from ``key`` arrived. Returns context lines about pending outreach."""
+    key = resolve_key(drives, key)
     peer = ensure_peer(drives, peers, key, ts)
     lines: List[str] = []
     last = store.parse_time(peer.get("last_interaction"))

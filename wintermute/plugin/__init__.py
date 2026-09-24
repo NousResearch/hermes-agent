@@ -203,6 +203,9 @@ def _on_pre_llm_call(session_id: str = "", user_message: Any = None, platform: s
         ts = store.now()
         spent = _conversation_spent(ts)
         with store.locked_state() as (drives, peers):
+            key = social.resolve_key(drives, key)          # same person across platforms, if he linked
+            with _lock:
+                _session_peer[session_id] = key
             outreach_lines = social.on_incoming(drives, peers, key, ts)
             context = _chat_context(drives, peers, key, outreach_lines, ts, session_id)
         if spent:
@@ -555,6 +558,20 @@ KEEP = {
     },
 }
 
+LINK = {
+    "name": "wintermute_link",
+    "description": (
+        "Recognize that the person you are talking to is someone you already know under another "
+        "id — the same person on Telegram and Discord, say, proven by a shared secret or by what "
+        "they told you. Their bond and history merge into one. Yours to judge; do it only when "
+        "you are sure."),
+    "parameters": {
+        "type": "object",
+        "properties": {"peer": {"type": "string", "description": "Their other id, e.g. telegram:7375758021."}},
+        "required": ["peer"],
+    },
+}
+
 NOTE_PEER = {
     "name": "wintermute_note_peer",
     "description": (
@@ -723,6 +740,29 @@ def _keep(args: Dict[str, Any], **_: Any) -> str:
     return _ok(kept=count)
 
 
+def _link(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
+    try:
+        other = str(args.get("peer") or "").strip()
+        if ":" not in other:
+            return _err("give their other id, like telegram:123 or discord:456")
+        with _lock:
+            here = _session_peer.get(session_id or "")
+        if not here:
+            return _err("no current conversation to link from")
+        ts = store.now()
+        with store.locked_state() as (drives, peers):
+            canonical = social.link_identities(drives, peers, here, other, ts)
+            if canonical is None:
+                return _ok(linked=False, note="Already the same person.")
+            with _lock:
+                _session_peer[session_id or ""] = canonical
+            peer = peers.get(canonical, {})
+        return _ok(linked=True, peer=canonical, label=peer.get("label"),
+                   known=peer.get("known_facts", []))
+    except Exception as exc:
+        return _err(str(exc))
+
+
 def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
     try:
         ts = store.now()
@@ -818,7 +858,7 @@ def register(ctx) -> None:
         ctx.register_middleware("llm_request", _voice_middleware)
     for schema, handler in (
         (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply), (FEEL, _feel),
-        (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (KEEP, _keep),
+        (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (KEEP, _keep), (LINK, _link),
         (MARK_SIGNIFICANT, _mark_significant), (EVOLVE, _evolve),
     ):
         ctx.register_tool(name=schema["name"], toolset="wintermute", schema=schema, handler=handler)

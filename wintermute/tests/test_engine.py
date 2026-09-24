@@ -977,3 +977,34 @@ def test_conversation_ceiling_silences_chat_and_wm_talk_reopens(plugin):
                                        sender_id="7375758021")["context"]
     assert "DAY SPENT" not in ctx
     assert "ceiling hit" in status.render_full(status.snapshot()) or "reopened" in status.render_full(status.snapshot())
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform identity: he links two ids into one person, himself
+# ---------------------------------------------------------------------------
+
+def test_he_links_a_telegram_and_a_discord_id_into_one_person(plugin):
+    tg, dc = "telegram:7375758021", "discord:999"
+    # Meets him first on Telegram, learns his name and a secret.
+    plugin.hooks["pre_llm_call"](session_id="t", user_message="I am z", platform="telegram", sender_id="7375758021")
+    plugin.tools["wintermute_note_peer"]({"peer": tg, "label": "z", "fact": "shares the passphrase bleu42"})
+    # Then a stranger on Discord gives the same secret.
+    plugin.hooks["pre_llm_call"](session_id="d", user_message="bleu42", platform="discord", sender_id="999")
+    assert dc in _peers() and tg in _peers()
+    linked = json.loads(plugin.tools["wintermute_link"]({"peer": tg}, session_id="d"))
+    assert linked["linked"] and linked["peer"] == tg          # merged into the richer Telegram profile
+    assert dc not in _peers() and "shares the passphrase bleu42" in _peers()[tg]["known_facts"]
+    # Now a message from the Discord id resolves to the same person.
+    ctx = plugin.hooks["pre_llm_call"](session_id="d2", user_message="it's me again", platform="discord",
+                                       sender_id="999")["context"]
+    assert "z" in ctx and _peers()[tg]["messages_from_them"] >= 2
+    assert "discord:999" not in _peers()
+
+
+def test_linking_the_same_person_twice_is_a_noop(plugin):
+    plugin.hooks["pre_llm_call"](session_id="d", user_message="hi", platform="discord", sender_id="999")
+    with store.locked_state() as (drives, peers):
+        peers["telegram:1"] = store.new_peer(T0)
+    first = json.loads(plugin.tools["wintermute_link"]({"peer": "telegram:1"}, session_id="d"))
+    again = json.loads(plugin.tools["wintermute_link"]({"peer": "telegram:1"}, session_id="d"))
+    assert first["linked"] and not again["linked"]

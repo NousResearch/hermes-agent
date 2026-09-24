@@ -208,6 +208,9 @@ def peer_lines(drives: Dict[str, Any], key: str, peer: Dict[str, Any], ts: datet
     last = store.parse_time(peer.get("last_interaction"))
     seen = f"{social.span(store.hours_between(last, ts))} ago" if last else "never"
     lines = [f"{key} — {label} (last contact {seen})", "  " + _bond(drives, peer)]
+    aliases = [str(a) for a in peer.get("aliases") or []]
+    if aliases:
+        lines.append("  also known here: " + ", ".join(aliases))
     for field, title, count in (("known_facts", "known", 3), ("moments", "shared", 3),
                                 ("pending", "unresolved", 5)):
         items = [str(i) for i in peer.get(field) or []][-count:]

@@ -284,7 +284,8 @@ def _peers_block(snap: Dict[str, Any], limit: int = 3) -> List[str]:
         last = store.parse_time(peer.get("last_interaction"))
         seen = f"last contact {social.span(store.hours_between(last, snap['ts']))} ago" if last else "never seen"
         name = f"{bold(peer['label'])} {dim(key)}" if peer.get("label") else bold(key)
-        lines.append(f"  {name}  {dim(seen)}")
+        aliases = ", ".join(str(a) for a in peer.get("aliases") or [])
+        lines.append(f"  {name}  {dim(seen)}" + (dim(f"  = {aliases}") if aliases else ""))
         lines.append(f"    affinity {peer['affinity']:.0f}  trust {peer['trust']:.0f}  "
                      f"disappointment {peer['disappointment']:.0f}  bond {peer['oxytocin']:.0f}  "
                      f"longing {physics.safe_float(peer.get('longing')):.0f}  "

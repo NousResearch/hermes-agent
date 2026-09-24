@@ -4,8 +4,13 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import * as registryModule from './canonical-group-registry'
+import * as workspaceModule from './canonical-group-workspace'
 import type { CanonicalGroupBinding } from './canonical-groups'
-import { pluginSdkMock, scriptedStorage } from './group-test-utils'
+import * as chatModule from './group-chat'
+import { scriptedStorage } from './group-test-utils'
+import * as sharedModule from './shared'
+import * as adoptionModule from './shipped-group-adoption'
 
 const runtime = vi.hoisted(() => ({
   activation: 1,
@@ -24,6 +29,7 @@ const runtime = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const original = await importOriginal<typeof HermesSdk>()
+  const { pluginSdkMock } = await import('./group-test-utils')
 
   const sdk = await pluginSdkMock({
     ...original.host,
@@ -430,15 +436,14 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
 }
 
 async function modules() {
-  const [adoption, chat, registry, shared, workspace] = await Promise.all([
-    import('./shipped-group-adoption'),
-    import('./group-chat'),
-    import('./canonical-group-registry'),
-    import('./shared'),
-    import('./canonical-group-workspace')
-  ])
-
-  return { adoption, chat, registry, shared, workspace }
+  // Compile the real module graph during collection, not in the first state-reset hook.
+  return {
+    adoption: adoptionModule,
+    chat: chatModule,
+    registry: registryModule,
+    shared: sharedModule,
+    workspace: workspaceModule
+  }
 }
 
 async function coldHydrate(storage: Map<string, unknown>) {

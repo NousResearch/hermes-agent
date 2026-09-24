@@ -555,3 +555,49 @@ def test_an_action_that_does_nothing_says_why_where_the_dashboard_reads(board_ap
     assert response.status == 409 and response.body["error"]["message"].startswith("Nothing changed:")
     missing = api.write("/platform/v1/work/t_nope/decide", ADMIN, {"action": "resume"})
     assert missing.status == 404
+
+
+# -- the Knowledge screen: real-sized documents, any-script names, extraction -----
+
+
+def test_uploads_may_be_real_documents_and_other_writes_stay_small():
+    """The flat 64 KiB write limit refused any document over ~48 KB — most real ones."""
+    from nova.control.server import MAX_BODY_BYTES, body_limit
+    from nova.knowledge.sources import DEFAULT_MAX_FILE_BYTES
+
+    upload = body_limit("/platform/v1/knowledge/company-handbook/upload")
+    assert upload >= DEFAULT_MAX_FILE_BYTES * 4 // 3 + 4096, "an 8 MiB file, base64 in JSON"
+    assert body_limit("/platform/v1/settings/logo") > 1_500_000 * 4 // 3
+    for other in ("/platform/v1/work/t_1/decide", "/platform/v1/agents/x/update",
+                  "/platform/v1/knowledge/company-handbook/remove"):
+        assert body_limit(other) == MAX_BODY_BYTES, other
+
+
+@pytest.mark.parametrize("raw, stored", [
+    ("عربي-دليل.md", "عربي-دليل.md"),
+    ("Hagaha Soomaaliga.md", "Hagaha-Soomaaliga.md"),
+    ("ünïcode.md", "unicode.md"),
+    ("../../etc/passwd.md", "passwd.md"),
+    ("report‮gpj.md", "report-gpj.md"),   # a bidi override cannot disguise the name
+])
+def test_a_filename_keeps_its_script_and_loses_only_what_could_mislead(raw, stored):
+    from nova.knowledge.store import safe_name
+
+    assert safe_name(raw) == stored
+
+
+def test_an_upload_is_indexed_with_the_runtimes_extractor(tmp_path, runtime, audit, monkeypatch):
+    """Uploads were indexed with the plain-text reader only, so a PDF or Office file was
+    stored, reported saved, and never searchable."""
+    import nova.knowledge as knowledge
+
+    api, _ = _agent_api(tmp_path, runtime, audit)
+    seen = {}
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(knowledge, "ingest", spy)
+    api._reindex("company-handbook", "c", "alice")
+    assert seen.get("extractor") is runtime

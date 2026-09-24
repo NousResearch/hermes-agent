@@ -52,6 +52,21 @@ from nova.errors import NovaError
 #: rather than a buffer.
 MAX_BODY_BYTES = 64 * 1024
 
+#: The two writes that carry a file, base64 inside JSON (a third larger than the file). The
+#: flat 64 KiB above applied to them too, so any document over ~48 KB — most real ones —
+#: was refused although the corpus accepts 8 MiB, and a logo over ~48 KB likewise.
+UPLOAD_BODY_BYTES = 12 * 1024 * 1024   # knowledge: 8 MiB file (sources.DEFAULT_MAX_FILE_BYTES)
+LOGO_BODY_BYTES = 2_500_000            # logo: 1.5 MB image (branding.MAX_LOGO_BYTES)
+
+
+def body_limit(path: str) -> int:
+    """The largest write body ``path`` accepts."""
+    if path.startswith("/platform/") and path.endswith("/upload") and "/knowledge/" in path:
+        return UPLOAD_BODY_BYTES
+    if path.endswith("/settings/logo"):
+        return LOGO_BODY_BYTES
+    return MAX_BODY_BYTES
+
 logger = logging.getLogger("nova.control")
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -237,13 +252,15 @@ class _Handler(BaseHTTPRequestHandler):
                 400, {"error": {"status": 400, "message": "a malformed Content-Length"}}
             )
             return
-        if length > MAX_BODY_BYTES:
+        limit = body_limit(path)
+        if length > limit:
+            what = "an upload" if limit > MAX_BODY_BYTES else "a write body"
             self._send_json(
                 413,
                 {
                     "error": {
                         "status": 413,
-                        "message": f"a write body may not exceed {MAX_BODY_BYTES} bytes",
+                        "message": f"{what} may not exceed {limit:,} bytes",
                     }
                 },
             )

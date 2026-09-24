@@ -723,6 +723,30 @@ def _objective(args) -> int:
     return 0
 
 
+def _index_knowledge(bundle, runtime, audit) -> None:
+    """Bring the knowledge index up to date as part of an apply.
+
+    Nothing did before: an apply granted agents their corpora and installed the search
+    tool, and the index stayed empty until someone ran ``nova knowledge ingest`` or clicked
+    "Rebuild the index" — so on a fresh deployment every knowledge search found nothing,
+    with no sign why. Found sweeping the Knowledge screen: both corpora "not indexed".
+
+    Incremental (unchanged documents are skipped), so it costs a directory walk when
+    nothing changed. Never fails the apply: the agents are already applied, and a corpus
+    that could not be indexed is reported, not fatal.
+    """
+    if not bundle.knowledge.sources or not runtime.capabilities.knowledge_retrieval:
+        return
+    from nova.knowledge import ingest
+
+    try:
+        report = ingest(bundle.knowledge, runtime.knowledge_index_path, extractor=runtime, audit=audit)
+        print(f"knowledge: {report.summary()}")
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        print(f"WARNING: knowledge index not updated ({type(exc).__name__}: {exc}). "
+              f"Run `nova knowledge ingest` to retry.")
+
+
 def _knowledge(args) -> int:
     """``nova knowledge ...`` — ingest, inspect and rehearse retrieval."""
     from nova.knowledge import KnowledgeIndex, ingest
@@ -1190,6 +1214,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         _report(report, verb="apply")
         if not dry_run:
+            _index_knowledge(bundle, runtime, audit)
             print(f"\naudit: {audit.path}")
             open_intents = audit.open_intents()
             if open_intents:

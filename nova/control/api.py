@@ -1296,6 +1296,9 @@ class ControlAPI:
             report = ingest(
                 self.bundle.knowledge,
                 self.runtime.knowledge_index_path,
+                # The runtime's extractor, as `nova knowledge ingest` uses: without it an
+                # uploaded PDF or Office file was stored, reported saved, and never indexed.
+                extractor=self.runtime,
                 source_ids=[source_id],
                 audit=self.audit.with_actor(actor) if self.audit else None,
                 correlation_id=correlation_id,

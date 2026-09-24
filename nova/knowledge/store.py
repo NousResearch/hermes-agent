@@ -37,7 +37,11 @@ from nova.knowledge.sources import RESERVED_FILES
 #: Characters kept in a stored filename. Everything else becomes a hyphen. Deliberately
 #: strict: this name is joined to a filesystem path and later shown in a UI, and the set of
 #: things that are safe in both is small.
-_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+#: Letters and digits of any script, plus dot, hyphen and underscore. An ASCII-only rule
+#: reduced an Arabic filename to "md" and refused it; every character that could mislead —
+#: path separators, control characters, the bidi overrides that make "gpj.exe" read as
+#: "exe.jpg" — is outside ``\w`` and still becomes a hyphen.
+_SAFE = re.compile(r"[^\w.-]+")
 
 #: Longest stored basename. Filesystems cap at 255 bytes; leaving room avoids a write that
 #: fails only for a user whose language needs more bytes per character.

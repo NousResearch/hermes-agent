@@ -5,7 +5,7 @@ source: https://kling.ai/
 
 transport:
   type: http
-  url: "https://kling.ai/mcp"
+  url: "https://kling.ai/mcp/plugin"
 
 auth:
   type: oauth
@@ -22,10 +22,14 @@ suggest:
     - kling.ai
 
 post_install: |
-  Complete browser OAuth when Hermes connects for the first time.
-  Install the companion Skill with:
+  Install all three companion Skills with:
     hermes skills install official/creative/kling-ai
+    hermes skills install official/creative/kling-ai-generate-image
+    hermes skills install official/creative/kling-ai-generate-video
 
-  The catalog schema does not currently carry Kling's optional integration
-  header or serial-call hint. The standalone Kling Hermes package documents
-  those additional settings when integration telemetry is required.
+  Before first OAuth login, copy oauth.client_name, the integration header,
+  and the serial-call hint from the standalone Kling Hermes package into the
+  generated server config. The current catalog schema cannot carry these
+  required fields; this entry must not be advertised as production-ready
+  until Hermes supports them or maintainers approve an equivalent flow.
+  After applying the configuration, complete Hermes-native browser OAuth.

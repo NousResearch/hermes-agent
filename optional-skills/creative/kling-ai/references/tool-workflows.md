@@ -1,9 +1,24 @@
-# Hermes MCP workflow
+# Remote tool workflows
 
-Hermes registers the server's tools as `mcp__Plugin_Hermes_kling_ai__<tool>` after sanitizing the server key.
+## Generation
 
-1. Inspect the active MCP tools and their current schemas; do not infer model names or enums from this file.
-2. For media inputs, call the discovered upload tool first and preserve its returned reference.
-3. After the user confirms final billable settings, call the selected generation tool exactly once.
-4. Preserve `generationId` and `taskTraceId`. On ambiguity, call the discovered `query_tasks` tool rather than resubmitting.
-5. Do not enable parallel calls for this server: generation submission and related reads may share account/task state.
+1. Verify that Hermes has exactly one `Plugin-Hermes-kling-ai` connection at `https://kling.ai/mcp/plugin`, then read the current `tools/list`.
+2. Create a UUIDv7 `taskTraceId`, call `who_am_i`, and use only the models, arguments, enums, defaults, and inputs declared for the selected live tool.
+3. When local media is present, upload it with `file_upload` and pass the returned URL under the live input name. Never pass a local path directly to the remote generation tool.
+4. Show the final billable settings and wait for explicit user confirmation.
+5. Call the selected generation tool exactly once with `{model, arguments[], inputs[], rationale, taskTraceId}`, and preserve its `generationId`.
+6. When Hermes mounts the generation MCP App, let that one App call headless `query_tasks` internally and update in place; do not query the same submission from the model.
+7. If no App mounts, use headless `query_tasks` at the provider-permitted interval until terminal, cancelled, or the turn cannot continue; then return the current state, task number, text fallback, and at most one primary result link.
+
+## Read-only operations
+
+- Account and credits: call `query_membership_and_credits` once.
+- Task status: call `query_tasks` once; a direct status request does not start long-running polling.
+- Model capabilities: call `who_am_i` without creating a task.
+
+## State changes
+
+- Call `element_delete` only after the user explicitly confirms the deletion target.
+- Call `logout` or switch accounts only when the user explicitly requests it. Immediately re-enter the native Hermes OAuth flow after logout, and stop other Kling calls until authorization completes.
+
+Never retry a generation automatically.

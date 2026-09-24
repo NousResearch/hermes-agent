@@ -12,7 +12,7 @@ def test_kling_ai_catalog_manifest() -> None:
 
     assert entry.name == "Plugin-Hermes-kling-ai"
     assert entry.transport.type == "http"
-    assert entry.transport.url == "https://kling.ai/mcp"
+    assert entry.transport.url == "https://kling.ai/mcp/plugin"
     assert entry.auth.type == "oauth"
     assert entry.auth.env == []
     assert entry.suggest is not None
@@ -25,6 +25,6 @@ def test_kling_ai_catalog_builds_one_oauth_server() -> None:
     entry = _parse_manifest(MANIFEST)
 
     assert _build_server_config(entry, {}) == {
-        "url": "https://kling.ai/mcp",
+        "url": "https://kling.ai/mcp/plugin",
         "auth": "oauth",
     }

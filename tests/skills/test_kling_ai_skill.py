@@ -41,7 +41,7 @@ def test_kling_ai_skill_contract_and_structure() -> None:
     assert positions == sorted(positions)
     for phrase in (
         "Plugin-Hermes-kling-ai",
-        "https://kling.ai/mcp",
+        "https://kling.ai/mcp/plugin",
         "credit-consuming",
         "at most once",
         "generationId",
@@ -50,7 +50,22 @@ def test_kling_ai_skill_contract_and_structure() -> None:
     ):
         assert phrase in text
 
-    assert "https://klingai.com/mcp" not in text
+    assert "https://klingai.com/mcp/plugin" not in text
 
     assert (SKILL_DIR / "references" / "tool-workflows.md").is_file()
     assert (SKILL_DIR / "references" / "troubleshooting.md").is_file()
+
+
+def test_kling_skill_family_links_and_metadata() -> None:
+    for directory in SKILL_DIR.parent.glob("kling-ai*"):
+        skill = directory / "SKILL.md"
+        text = skill.read_text(encoding="utf-8")
+        assert _frontmatter_value(text, "name") == directory.name
+        description = _frontmatter_value(text, "description")
+        assert len(description) <= 60 and description.endswith(".")
+        assert _frontmatter_value(text, "author").startswith("William (@Wlain)")
+        for document in directory.rglob("*.md"):
+            for target in re.findall(r"\]\(([^)]+)\)", document.read_text(encoding="utf-8")):
+                if "://" not in target:
+                    path = target.split("#", 1)[0]
+                    assert (document.parent / path).exists(), (document, target)

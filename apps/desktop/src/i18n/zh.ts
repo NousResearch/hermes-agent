@@ -1932,9 +1932,10 @@ export const zh = defineLocale({
         notice: {
           loggedOut: {
             title: '连接你的 Nous 账户',
-            message: '在 TUI 中运行 /portal，或打开 Nous 门户连接账户。',
-            action: '打开门户 ↗'
+            message: '登录你的 Nous 账户，即可在此查看余额、套餐和用量。',
+            action: '登录'
           },
+          openPortal: '打开门户 ↗',
           noCard: {
             title: '尚未添加支付方式',
             message: '添加银行卡后才能购买额度和使用自动充值。请在门户中添加。',

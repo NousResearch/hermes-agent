@@ -1575,9 +1575,10 @@ export const zhHant = defineLocale({
         notice: {
           loggedOut: {
             title: '連接你的 Nous 帳戶',
-            message: '在 TUI 中執行 /portal，或開啟 Nous 入口網站連接帳戶。',
-            action: '開啟入口網站 ↗'
+            message: '登入你的 Nous 帳戶，即可在此查看餘額、方案和用量。',
+            action: '登入'
           },
+          openPortal: '開啟入口網站 ↗',
           noCard: {
             title: '尚未新增付款方式',
             message: '新增銀行卡後才能購買額度和使用自動儲值。請在入口網站中新增。',

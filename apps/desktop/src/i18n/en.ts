@@ -2006,9 +2006,10 @@ export const en: Translations = {
         notice: {
           loggedOut: {
             title: 'Connect your Nous account',
-            message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
-            action: 'Open portal ↗'
+            message: 'Sign in with your Nous account to see your balance, plan and usage here.',
+            action: 'Sign in'
           },
+          openPortal: 'Open portal ↗',
           noCard: {
             title: 'No payment method on file',
             message:

@@ -2390,9 +2390,11 @@ export const fr = defineLocale({
         notice: {
           loggedOut: {
             title: 'Connectez votre compte Nous',
-            message: 'Exécutez /portal dans la TUI ou ouvrez le portail Nous pour connecter votre compte.',
-            action: 'Ouvrir le portail ↗'
+            message:
+              'Connectez-vous avec votre compte Nous pour voir ici votre solde, votre offre et votre utilisation.',
+            action: 'Se connecter'
           },
+          openPortal: 'Ouvrir le portail ↗',
           noCard: {
             title: 'Aucun moyen de paiement enregistré',
             message:

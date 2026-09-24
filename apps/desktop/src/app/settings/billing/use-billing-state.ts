@@ -222,13 +222,12 @@ export function deriveBillingView(
     return freeTierView(billing, b)
   }
 
+  // Signing in is the only thing that writes a credential; a portal link never would, so the
+  // page would stay logged out after the user logged in on the web (#87792).
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
       notice: {
-        action: {
-          label: b.state.notice.loggedOut.action,
-          url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL
-        },
+        action: { label: b.state.notice.loggedOut.action, onSelect: openFreeTierSignIn },
         message: b.state.notice.loggedOut.message,
         title: b.state.notice.loggedOut.title
       },
@@ -365,7 +364,7 @@ function refusalNotice(refusal: BillingRefusal, b: Translations['settings']['bil
   const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : undefined
 
   return {
-    action: portalUrl ? { label: b.state.notice.loggedOut.action, url: portalUrl } : undefined,
+    action: portalUrl ? { label: b.state.notice.openPortal, url: portalUrl } : undefined,
     message: resolved.message,
     title: resolved.title,
     tone: 'warn'

@@ -2376,9 +2376,10 @@ export const es = defineLocale({
         notice: {
           loggedOut: {
             title: 'Conecta tu cuenta de Nous',
-            message: 'Ejecuta /portal en la TUI o abre el portal de Nous para conectar tu cuenta.',
-            action: 'Abrir el portal ↗'
+            message: 'Inicia sesión con tu cuenta de Nous para ver aquí tu saldo, plan y uso.',
+            action: 'Iniciar sesión'
           },
+          openPortal: 'Abrir el portal ↗',
           noCard: {
             title: 'No hay ningún método de pago registrado',
             message:

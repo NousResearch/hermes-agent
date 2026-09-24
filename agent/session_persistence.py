@@ -354,8 +354,8 @@ class SessionPersistenceMixin:
         from agent.agent_runtime_helpers import note_turn_persisted
         with _persist_lock(self):
             # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
-            # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``,
-            # ``handle_api_interrupt``): only it knows the reason to record.
+            # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``): only it knows
+            # the reason to record.
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
